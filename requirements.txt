@@ -1,0 +1,10 @@
+# PyReborn Requirements
+# This package uses only Python standard library - no external dependencies required
+
+# Development dependencies (optional)
+# Install with: pip install -e ".[dev]"
+# pytest>=6.0
+# pytest-cov
+# flake8
+# black
+# mypy
