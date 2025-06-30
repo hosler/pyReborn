@@ -25,6 +25,11 @@ class EventType(Enum):
     LEVEL_ENTERED = auto()
     LEVEL_LEFT = auto()
     LEVEL_UPDATE = auto()
+    TILES_UPDATED = auto()
+    LEVEL_BOARD_LOADED = auto()
+    LEVEL_SIGN_ADDED = auto()
+    LEVEL_CHEST_ADDED = auto()
+    LEVEL_LINK_ADDED = auto()
     
     # Chat events
     CHAT_MESSAGE = auto()

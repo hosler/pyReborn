@@ -97,6 +97,8 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_OTHERPLPROPS] = self._handle_other_player_props
         self.handlers[ServerToPlayer.PLO_LEVELNAME] = self._handle_level_name
         self.handlers[ServerToPlayer.PLO_BOARDMODIFY] = self._handle_board_modify
+        self.handlers[ServerToPlayer.PLO_BOARDPACKET] = self._handle_board_packet
+        print(f"🔧 Registered board packet handler for ID {ServerToPlayer.PLO_BOARDPACKET}")  # Debug
         self.handlers[ServerToPlayer.PLO_PLAYERWARP] = self._handle_player_warp
         self.handlers[ServerToPlayer.PLO_TOALL] = self._handle_toall
         self.handlers[ServerToPlayer.PLO_PRIVATEMESSAGE] = self._handle_private_message
@@ -127,13 +129,43 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_UNKNOWN198] = self._handle_unknown198
         self.handlers[65] = self._handle_rc_listrcs  # PLI_RC_LISTRCS
         
+        # Note: Board data after 0-byte board packet is handled as raw stream, not packets
+        
     
     def handle_packet(self, packet_id: int, data: bytes) -> Optional[Dict[str, Any]]:
         """Handle a single packet"""
+        print(f"🔍 PACKET DEBUG: ID={packet_id}, Size={len(data)} bytes")
+        
+        # Show raw data for debugging (first 50 bytes)
+        if len(data) > 0:
+            hex_preview = data[:50].hex()
+            print(f"   Raw data: {hex_preview}{'...' if len(data) > 50 else ''}")
+        
         if packet_id in self.handlers:
+            handler_name = self.handlers[packet_id].__name__
+            print(f"   ✅ Handler found: {handler_name}")
+            
             reader = PacketReader(data)
-            return self.handlers[packet_id](reader)
-        return None
+            try:
+                result = self.handlers[packet_id](reader)
+                if result:
+                    print(f"   📤 Handler result: {result.get('type', 'unknown')}")
+                    if result.get('type') == 'board_packet':
+                        print(f"   🎯 BOARD PACKET: {len(result.get('board_data', b''))} bytes")
+                return result
+            except Exception as e:
+                print(f"   ❌ Handler error: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+        else:
+            print(f"   ❌ NO HANDLER for packet ID {packet_id}")
+            # Try to identify what this packet might be
+            if len(data) == 8192:
+                print(f"   🎯 UNHANDLED 8192-byte packet - could be board data!")
+            elif len(data) > 1000:
+                print(f"   📦 Large unhandled packet ({len(data)} bytes)")
+            return None
     
     def _handle_player_props(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle player properties update"""
@@ -228,6 +260,41 @@ class PacketHandler:
             "height": height,
             "tiles": tiles
         }
+    
+    def _handle_board_packet(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle full board data packet"""
+        print(f"🎯 BOARD PACKET HANDLER TRIGGERED!")
+        print(f"   Data size: {len(reader.data)} bytes")
+        print(f"   Position: {reader.pos}")
+        print(f"   Remaining: {reader.remaining()}")
+        
+        # Board packet is 8192 bytes (64x64 tiles, 2 bytes per tile)
+        board_data = b''
+        remaining = reader.remaining()
+        
+        if remaining >= 8192:
+            print(f"   ✅ Reading 8192 bytes of board data")
+            # Read raw board data
+            board_data = reader.data[reader.pos:reader.pos+8192]
+            reader.pos += 8192
+            
+            # Show first few tile IDs for debugging
+            import struct
+            first_tiles = []
+            for i in range(min(10, len(board_data)//2)):
+                tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                first_tiles.append(tile_id)
+            print(f"   First 10 tile IDs: {first_tiles}")
+        else:
+            print(f"   ❌ Not enough data for board (need 8192, have {remaining})")
+        
+        result = {
+            "type": "board_packet",
+            "board_data": board_data,
+            "size": len(board_data)
+        }
+        print(f"   📤 Returning board packet result: {len(board_data)} bytes")
+        return result
     
     def _handle_player_warp(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle player warp"""

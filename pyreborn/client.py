@@ -28,6 +28,7 @@ from .models.player import Player
 from .models.level import Level
 from .events import EventManager, EventType
 from .session import SessionManager
+from .level_manager import LevelManager
 
 
 class GraalClient:
@@ -73,6 +74,9 @@ class GraalClient:
         
         # Session management
         self.session = SessionManager()
+        
+        # Level management
+        self.level_manager = LevelManager(self)
         
         # Threading
         self._recv_thread: Optional[threading.Thread] = None
@@ -314,6 +318,45 @@ class GraalClient:
         packet = PrivateMessagePacket(player_id, message)
         self._send_packet(packet)
     
+    def _decode_truncated_hex(self, truncated_hex):
+        """Decode truncated hex board data to binary format"""
+        print(f"🔧 Decoding {len(truncated_hex)} characters of truncated hex")
+        
+        # Base64 character set for truncated hex  
+        base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        
+        board_data = bytearray(8192)  # 4096 tiles * 2 bytes each
+        
+        tile_count = 0
+        for i in range(0, len(truncated_hex), 2):
+            if i + 1 < len(truncated_hex) and tile_count < 4096:
+                char1 = truncated_hex[i]
+                char2 = truncated_hex[i + 1]
+                
+                if char1 in base64_chars and char2 in base64_chars:
+                    # Convert two chars to tile ID
+                    tile_id = base64_chars.index(char1) * 64 + base64_chars.index(char2)
+                    
+                    # Store as little-endian 2-byte value
+                    struct.pack_into('<H', board_data, tile_count * 2, tile_id)
+                    tile_count += 1
+                else:
+                    # Invalid character, use tile ID 0
+                    struct.pack_into('<H', board_data, tile_count * 2, 0)
+                    tile_count += 1
+        
+        print(f"   Decoded {tile_count} tiles from truncated hex")
+        
+        # Show first few tile IDs for verification
+        first_tiles = []
+        for i in range(min(10, tile_count)):
+            tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+            first_tiles.append(tile_id)
+        print(f"   First 10 tile IDs: {first_tiles}")
+        
+        return bytes(board_data)
+    
+    
     # Event subscription
     def on(self, event_type: EventType, handler: Callable):
         """Subscribe to event"""
@@ -411,6 +454,80 @@ class GraalClient:
     def get_level_visit_history(self) -> List[Tuple[str, float, float]]:
         """Get level visit history with durations"""
         return self.session.get_level_visit_history()
+    
+    # Level management convenience methods
+    def get_current_level(self) -> Optional[Level]:
+        """Get the current level object"""
+        return self.level_manager.get_current_level()
+    
+    def get_level(self, name: str) -> Optional[Level]:
+        """Get a level by name"""
+        return self.level_manager.get_level(name)
+    
+    def get_tile(self, x: int, y: int, layer: int = 0) -> int:
+        """Get tile at position in current level"""
+        return self.level_manager.get_tile(x, y, layer)
+    
+    def is_position_blocked(self, x: float, y: float) -> bool:
+        """Check if position is blocked by tiles"""
+        return self.level_manager.is_position_blocked(x, y)
+    
+    def find_level_links_at(self, x: float, y: float) -> List:
+        """Find level links at position"""
+        return self.level_manager.find_level_links_at(x, y)
+    
+    def get_current_level_signs(self) -> List:
+        """Get all signs in current level"""
+        level = self.get_current_level()
+        return level.signs if level else []
+    
+    def get_current_level_chests(self) -> List:
+        """Get all chests in current level"""
+        level = self.get_current_level()
+        return level.chests if level else []
+    
+    def get_current_level_npcs(self) -> Dict:
+        """Get all NPCs in current level"""
+        level = self.get_current_level()
+        return level.npcs if level else {}
+    
+    def get_level_size(self) -> Tuple[int, int]:
+        """Get current level dimensions (width, height)"""
+        level = self.get_current_level()
+        return (level.width, level.height) if level else (0, 0)
+    
+    def request_level_file(self, level_name: str, callback: Optional[Callable] = None):
+        """Request a level file from the server"""
+        filename = f"{level_name}.nw"
+        self.level_manager.request_file(filename, callback)
+    
+    def set_level_cache_directory(self, cache_dir: str):
+        """Set directory for caching level files and assets"""
+        self.level_manager.set_cache_directory(cache_dir)
+    
+    def get_level_summary(self) -> Dict[str, Any]:
+        """Get comprehensive level manager summary"""
+        return self.level_manager.get_level_summary()
+    
+    def get_loaded_levels(self) -> List[str]:
+        """Get names of all loaded levels"""
+        return list(self.level_manager.levels.keys())
+    
+    def get_cached_assets(self) -> List[str]:
+        """Get list of cached asset filenames"""
+        return list(self.level_manager.assets.keys())
+    
+    def load_tile_mapping(self, tileset_dir: str) -> bool:
+        """Load Graal tile mapping for collision detection"""
+        return self.level_manager.load_tile_mapping(tileset_dir)
+    
+    def analyze_current_level_tiles(self) -> Dict[str, Any]:
+        """Analyze tile composition of current level"""
+        return self.level_manager.analyze_current_level_tiles()
+    
+    def is_position_blocked_precise(self, x: float, y: float) -> bool:
+        """Check if position is blocked using tile mapping data"""
+        return self.level_manager.is_position_blocked_by_tiles(x, y)
     
     # Internal methods (fixed to match working client)
     def _send_packet(self, packet: Any):
@@ -533,7 +650,74 @@ class GraalClient:
             if not decrypted:
                 return
             
-            # Process the decrypted data
+            # Check if we're in board data streaming mode - collect truncated hex from large packets!
+            if hasattr(self, 'board_stream_active') and self.board_stream_active:
+                # Look for large packets containing truncated hex board data
+                # These appear as negative packet IDs with 1900+ bytes of data
+                pos = 0
+                while pos < len(decrypted):
+                    if pos + 3 < len(decrypted):
+                        # Read packet ID and size
+                        packet_id = struct.unpack('<h', decrypted[pos:pos+2])[0]  # signed short
+                        packet_size = struct.unpack('<H', decrypted[pos+2:pos+4])[0]  # unsigned short
+                        
+                        # Check if this is a large packet with board data
+                        if packet_size >= 1900 and pos + 4 + packet_size <= len(decrypted):
+                            print(f"🎯 Found large packet: ID={packet_id}, Size={packet_size} bytes (likely board data)")
+                            
+                            # Extract the packet data (truncated hex)
+                            packet_data = decrypted[pos+4:pos+4+packet_size]
+                            
+                            # Initialize board buffer if not exists
+                            if not hasattr(self, 'board_hex_buffer'):
+                                self.board_hex_buffer = b''
+                            
+                            # Append truncated hex data
+                            self.board_hex_buffer += packet_data
+                            print(f"   Collected {packet_size} bytes of truncated hex")
+                            print(f"   Total hex buffer: {len(self.board_hex_buffer)} bytes")
+                            
+                            # Check if we have enough for a full board (8192 characters = 4096 tiles)
+                            if len(self.board_hex_buffer) >= 8192:
+                                print(f"🎯 Found enough truncated hex data! Converting to binary...")
+                                
+                                # Take exactly 8192 characters and convert from truncated hex
+                                truncated_hex = self.board_hex_buffer[:8192].decode('ascii', errors='ignore')
+                                board_data = self._decode_truncated_hex(truncated_hex)
+                                
+                                # Apply board data to level
+                                if self.level_manager.current_level:
+                                    self.level_manager.current_level.set_board_data(board_data)
+                                    self.level_manager.current_level.width = 64
+                                    self.level_manager.current_level.height = 64
+                                    print(f"📦 Applied {len(board_data)} bytes to level!")
+                                    
+                                    # Save for debugging
+                                    with open("board_stream_extracted.bin", "wb") as f:
+                                        f.write(board_data)
+                                    print(f"💾 Saved extracted board data")
+                                    
+                                    # Test first few tiles
+                                    import struct
+                                    print(f"🔍 First few tiles from stream:")
+                                    for i in range(min(5, len(board_data)//2)):
+                                        tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                                        print(f"   Tile {i}: ID {tile_id}")
+                                
+                                # Clear board stream state
+                                self.board_stream_active = False
+                                self.board_hex_buffer = b''
+                                print(f"✅ Board stream complete!")
+                                return
+                        
+                        # Move to next packet
+                        pos += 4 + packet_size
+                    else:
+                        break
+                
+                return  # Don't process as normal packets when in board stream mode
+            
+            # Process the decrypted data normally
             pos = 0
             while pos < len(decrypted):
                 # Find the next newline (packet terminator)
@@ -647,6 +831,9 @@ class GraalClient:
             self.session.current_level = self.current_level
             self.events.emit(EventType.LEVEL_ENTERED, level=self.current_level)
             
+            # Update level manager
+            self.level_manager.handle_level_name(level_name)
+            
             # Mark that we've loaded a level
             self.level_loaded = True
             
@@ -711,6 +898,9 @@ class GraalClient:
             self.current_level = self.levels[warp_level]
             self.session.current_level = self.current_level
             
+            # Update level manager
+            self.level_manager.handle_player_warp(warp_x, warp_y, warp_level)
+            
             self.events.emit(EventType.PLAYER_WARP, level=warp_level, x=warp_x, y=warp_y)
             
         elif packet_type == "flag_set":
@@ -726,8 +916,78 @@ class GraalClient:
             
         elif packet_type == "file":
             # File received
+            filename = result["filename"]
+            data = result["data"]
+            
+            # Handle through level manager
+            self.level_manager.handle_file_data(filename, data)
+            
             self.events.emit(EventType.FILE_RECEIVED, 
-                           filename=result["filename"], 
-                           data=result["data"])
+                           filename=filename, 
+                           data=data)
+        
+        elif packet_type == "level_board":
+            # Level board data (tile data)
+            self.level_manager.handle_level_board(result["data"])
+        
+        elif packet_type == "board_packet":
+            # Board packet in streaming protocol
+            print(f"🎯 CLIENT: Received board packet!")
+            board_data = result.get("board_data", b'')
+            print(f"   Board data size: {len(board_data)} bytes")
+            print(f"   Current level: {self.level_manager.current_level.name if self.level_manager.current_level else 'None'}")
+            
+            if len(board_data) > 0:
+                if len(board_data) == 8192:
+                    # Complete board data - apply immediately
+                    print(f"📦 Complete board packet with {len(board_data)} bytes")
+                    if self.level_manager.current_level:
+                        self.level_manager.current_level.set_board_data(board_data)
+                        print(f"✅ Applied board data to current level!")
+                    else:
+                        print(f"⚠️ No current level to apply board data to")
+                else:
+                    # Partial board data - start streaming mode
+                    print(f"📦 Initial board packet with {len(board_data)} bytes")
+                    print(f"🔄 Board stream starting - expecting truncated hex chunks...")
+                    self.board_stream_active = True
+                    if not hasattr(self, 'board_hex_buffer'):
+                        self.board_hex_buffer = b''
+            elif len(board_data) == 0:
+                # 0-byte board packet - might be end signal
+                print(f"🔄 0-byte board packet received")
+                if hasattr(self, 'board_stream_active') and self.board_stream_active:
+                    print(f"   Stream already active, continuing...")
+                else:
+                    print(f"   Starting board stream...")
+                    self.board_stream_active = True
+                if not hasattr(self, 'board_chunks'):
+                    self.board_chunks = []
+        
+            
+        elif packet_type == "board_modify":
+            # Tile modification
+            self.level_manager.handle_board_modify(
+                result["x"], result["y"], 
+                result["width"], result["height"], 
+                result["tiles"]
+            )
+            
+        elif packet_type == "level_sign":
+            # Level sign
+            self.level_manager.handle_level_sign(
+                result["x"], result["y"], result["text"]
+            )
+            
+        elif packet_type == "level_chest":
+            # Level chest
+            self.level_manager.handle_level_chest(
+                result["x"], result["y"], 
+                result["item"], result["sign_text"]
+            )
+            
+        elif packet_type == "level_link":
+            # Level link
+            self.level_manager.handle_level_link(result["data"])
         
         # Many more packet types to handle...

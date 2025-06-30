@@ -301,3 +301,59 @@ class SessionManager:
             history.append((level_name, enter_time, duration))
             
         return history
+    
+    # Level management integration
+    def add_level_event(self, level_name: str, event: str):
+        """Add an event to a specific level's history"""
+        session = self.get_or_create_level_session(level_name)
+        session.add_event(event)
+    
+    def log_tile_update(self, level_name: str, x: int, y: int, width: int, height: int):
+        """Log tile update in level session"""
+        event = f"Tiles updated at ({x}, {y}) size {width}x{height}"
+        self.add_level_event(level_name, event)
+    
+    def log_level_object_added(self, level_name: str, obj_type: str, x: int, y: int, details: str = ""):
+        """Log level object addition (sign, chest, link, etc.)"""
+        event = f"{obj_type} added at ({x}, {y})"
+        if details:
+            event += f": {details[:50]}..."
+        self.add_level_event(level_name, event)
+    
+    def get_level_activity_summary(self, level_name: str) -> Dict[str, Any]:
+        """Get activity summary for a specific level"""
+        if level_name not in self.level_sessions:
+            return {"error": "Level not visited"}
+        
+        session = self.level_sessions[level_name]
+        current_time = time.time()
+        
+        # Calculate time spent
+        time_spent = 0
+        if session.entered_time:
+            if self.current_level and self.current_level.name == level_name:
+                time_spent = current_time - session.entered_time
+            else:
+                # Find when we left this level
+                for i, (hist_level, hist_time) in enumerate(self.level_history):
+                    if hist_level == level_name and i + 1 < len(self.level_history):
+                        time_spent = self.level_history[i + 1][1] - hist_time
+                        break
+        
+        return {
+            "level_name": level_name,
+            "time_spent": time_spent,
+            "players_seen": len(session.players_seen),
+            "chat_messages": len(session.chat_history),
+            "events": len(session.events),
+            "last_entered": session.entered_time,
+            "is_current": self.current_level and self.current_level.name == level_name,
+            "recent_events": session.events[-5:] if session.events else []
+        }
+    
+    def get_all_level_summaries(self) -> Dict[str, Dict[str, Any]]:
+        """Get activity summaries for all visited levels"""
+        summaries = {}
+        for level_name in self.level_sessions:
+            summaries[level_name] = self.get_level_activity_summary(level_name)
+        return summaries
