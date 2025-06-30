@@ -49,9 +49,6 @@ class LevelRenderer:
     
     def get_tile_image(self, level, x: int, y: int) -> Optional[Image.Image]:
         """Get tile image for position"""
-        if level.is_tile_transparent(x, y):
-            return None  # Skip transparent tiles
-        
         # Get tileset position
         tileset_x, tileset_y = level.get_tile_tileset_position(x, y)
         

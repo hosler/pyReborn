@@ -159,9 +159,6 @@ class Level:
         tileset_x, tileset_y = self.get_tile_tileset_position(x, y)
         return (tileset_x * tile_size, tileset_y * tile_size)
     
-    def is_tile_transparent(self, x: int, y: int) -> bool:
-        """Check if tile at position is transparent (ID 2047)"""
-        return self.get_tile_id(x, y) == 2047
     
     def __repr__(self):
         return f"Level(name='{self.name}', size={self.width}x{self.height}, players={len(self.players)}, npcs={len(self.npcs)})"
