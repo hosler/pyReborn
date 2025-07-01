@@ -31,6 +31,7 @@ class TileDefs:
     DAMAGE_TILES = {LAVA, LAVA_SWAMP, HURT_UNDERGROUND}
     SPECIAL_TILES = {CHAIR, SWAMP, THROW_THROUGH, JUMPING}
     SITTABLE_TILES = {CHAIR}  # Can sit on these
+    BUSH_TILES = {2, 3, 18, 19}  # Bush tiles that can be picked up
     
     def __init__(self, tiledefs_path: str = None):
         """Initialize tile definitions
@@ -97,9 +98,9 @@ class TileDefs:
     
     def is_blocking(self, tile_id: int, tileset_type: int = 0) -> bool:
         """Check if a tile blocks movement"""
-        # Bush tiles (2, 3, 18, 19) are not blocking - they can be picked up
-        if tile_id in {2, 3, 18, 19}:
-            return False
+        # Bush tiles ARE blocking until picked up
+        if tile_id in self.BUSH_TILES:
+            return True
         tile_type = self.get_tile_type(tile_id, tileset_type)
         return tile_type in self.BLOCKING_TILES
     
@@ -112,6 +113,10 @@ class TileDefs:
         """Check if a tile causes damage"""
         tile_type = self.get_tile_type(tile_id, tileset_type)
         return tile_type in self.DAMAGE_TILES
+    
+    def is_bush(self, tile_id: int) -> bool:
+        """Check if a tile is a bush that can be picked up"""
+        return tile_id in self.BUSH_TILES
     
     def get_tile_name(self, tile_type: int) -> str:
         """Get human-readable name for a tile type"""
