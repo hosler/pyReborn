@@ -140,7 +140,7 @@ class PygameClient:
                         self.running = False
                     elif event.key == pygame.K_SPACE:
                         # Swing sword
-                        self.client.set_weapon_image("sword1.png")
+                        self.client.set_gani("sword")
                     else:
                         self.keys_pressed.add(event.key)
                         
