@@ -14,6 +14,7 @@ from pyreborn import RebornClient
 from pyreborn.protocol.enums import Direction
 from pyreborn.events import EventType
 from gani_parser import GaniManager
+from tile_defs import TileDefs
 
 # Constants
 SCREEN_WIDTH = 1024
@@ -57,6 +58,9 @@ class PygameClient:
         # Initialize GANI manager
         self.gani_manager = GaniManager(os.path.dirname(__file__))
         
+        # Initialize tile definitions for collision detection
+        self.tile_defs = TileDefs()
+        
         # Sound system
         pygame.mixer.init()
         self.sound_cache = {}
@@ -70,6 +74,7 @@ class PygameClient:
                 
         # Debug options
         self.debug_updates = False  # Set to True to see update frequency
+        self.debug_tiles = False  # Set to True to see tile info under cursor
         
         # Keep sprite cache for performance
         self.sprite_cache = {}
@@ -212,6 +217,10 @@ class PygameClient:
                         self.grabbing = True
                         self.client.set_gani("grab")
                         self.animation_frame = 0
+                    elif event.key == pygame.K_F3:
+                        # Toggle tile debug
+                        self.debug_tiles = not self.debug_tiles
+                        print(f"Tile debug: {'ON' if self.debug_tiles else 'OFF'}")
                     else:
                         self.keys_pressed.add(event.key)
                         
@@ -380,13 +389,20 @@ class PygameClient:
             new_x = self.client.local_player.x + dx
             new_y = self.client.local_player.y + dy
             
-            # Determine final direction (prioritize last pressed)
-            if direction is None:
-                direction = self.last_direction
-            
-            self.client.move_to(new_x, new_y, direction)
-            self.last_move_time = current_time
-            self.last_direction = direction
+            # Check collision before moving
+            if self.can_move_to(new_x, new_y):
+                # Determine final direction (prioritize last pressed)
+                if direction is None:
+                    direction = self.last_direction
+                
+                self.client.move_to(new_x, new_y, direction)
+                self.last_move_time = current_time
+                self.last_direction = direction
+            else:
+                # Still update direction even if blocked
+                if direction is not None:
+                    self.last_direction = direction
+                    self.client.set_direction(direction)
             
             # Set walking animation if not already moving
             if not self.is_moving:
@@ -402,6 +418,49 @@ class PygameClient:
         # Always update camera to follow player
         self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
         self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
+        
+    def can_move_to(self, x: float, y: float) -> bool:
+        """Check if player can move to a position (collision detection)
+        
+        Args:
+            x: Target X position
+            y: Target Y position
+            
+        Returns:
+            True if movement is allowed, False if blocked
+        """
+        if not self.current_level:
+            return True
+            
+        # Check bounds
+        if x < 0 or y < 0 or x >= 64 or y >= 64:
+            return False
+            
+        # Get player's bounding box (player is roughly 1x1.5 tiles)
+        # Check multiple points for better collision
+        check_points = [
+            (x, y),                    # Top-left
+            (x + 0.9, y),             # Top-right
+            (x, y + 1.4),             # Bottom-left
+            (x + 0.9, y + 1.4),       # Bottom-right
+            (x + 0.45, y + 0.7)       # Center
+        ]
+        
+        for check_x, check_y in check_points:
+            # Get tile at this position
+            tile_x = int(check_x)
+            tile_y = int(check_y)
+            
+            if tile_x < 0 or tile_y < 0 or tile_x >= 64 or tile_y >= 64:
+                return False
+                
+            tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+            
+            # Check if tile is blocking
+            if self.tile_defs.is_blocking(tile_id):
+                return False
+                
+        return True
         
     def get_tile_surface(self, tile_id):
         """Get a surface for a specific tile ID from the tileset
@@ -637,7 +696,22 @@ class PygameClient:
                 # Try to use tileset first
                 tile_surface = self.get_tile_surface(tile_id)
                 if tile_surface:
-                    self.screen.blit(tile_surface, (screen_x, screen_y))
+                    # Apply tint for special tiles
+                    tile_type = self.tile_defs.get_tile_type(tile_id)
+                    if tile_type != 0:  # Not a normal tile
+                        tinted_surface = tile_surface.copy()
+                        if self.tile_defs.is_water(tile_id):
+                            # Blue tint for water
+                            tinted_surface.fill((100, 100, 255, 100), special_flags=pygame.BLEND_MULT)
+                        elif self.tile_defs.is_damaging(tile_id):
+                            # Red tint for damaging tiles
+                            tinted_surface.fill((255, 100, 100, 100), special_flags=pygame.BLEND_MULT)
+                        elif self.tile_defs.is_blocking(tile_id):
+                            # Slight dark tint for blocking
+                            tinted_surface.fill((200, 200, 200, 255), special_flags=pygame.BLEND_MULT)
+                        self.screen.blit(tinted_surface, (screen_x, screen_y))
+                    else:
+                        self.screen.blit(tile_surface, (screen_x, screen_y))
                 else:
                     # Fallback to colored rectangles
                     if tile_id == 0:
@@ -826,6 +900,29 @@ class PygameClient:
         player_text = self.font.render(f"Players: {len(self.players) + 1}", True, WHITE)
         self.screen.blit(player_text, (10, 60))
         
+        # Tile debug info
+        if self.debug_tiles:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            tile_x = int(mouse_x // TILE_SIZE + self.camera_x)
+            tile_y = int(mouse_y // TILE_SIZE + self.camera_y)
+            
+            if 0 <= tile_x < 64 and 0 <= tile_y < 64 and self.current_level:
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                tile_type = self.tile_defs.get_tile_type(tile_id)
+                tile_name = self.tile_defs.get_tile_name(tile_type)
+                
+                debug_text = [
+                    f"Tile ({tile_x}, {tile_y})",
+                    f"ID: {tile_id}",
+                    f"Type: {tile_name}"
+                ]
+                
+                y_offset = 90
+                for text in debug_text:
+                    debug_surface = self.small_font.render(text, True, WHITE)
+                    self.screen.blit(debug_surface, (10, y_offset))
+                    y_offset += 15
+        
         # Chat mode
         if self.chat_mode:
             chat_prompt = self.font.render(f"Chat: {self.chat_buffer}_", True, WHITE)
@@ -833,7 +930,7 @@ class PygameClient:
             pygame.draw.rect(self.screen, BLACK, chat_rect.inflate(10, 5))
             self.screen.blit(chat_prompt, chat_rect)
         else:
-            help_text = self.small_font.render("Arrow keys: Move | S: Sword | A: Grab/Pull | Tab: Chat | Esc: Quit", 
+            help_text = self.small_font.render("Arrow keys: Move | S: Sword | A: Grab/Pull | Tab: Chat | F3: Tile Debug | Esc: Quit", 
                                              True, WHITE)
             self.screen.blit(help_text, (10, SCREEN_HEIGHT - 20))
             
