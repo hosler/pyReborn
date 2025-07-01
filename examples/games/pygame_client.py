@@ -57,9 +57,9 @@ class PygameClient:
         self.event_queue = queue.Queue()
         
         # Movement
-        self.move_speed = 0.5
+        self.move_speed = 0.5  # Half tile per move
         self.last_move_time = 0
-        self.move_cooldown = 0.1  # 100ms between moves
+        self.move_cooldown = 0.05  # 50ms between moves (smoother movement)
         
         # Setup event handlers
         self._setup_events()
@@ -105,8 +105,8 @@ class PygameClient:
         self.client.set_nickname("PygamePlayer")
         
         # Center camera on player
-        self.camera_x = self.client.player_x - VIEWPORT_TILES_X // 2
-        self.camera_y = self.client.player_y - VIEWPORT_TILES_Y // 2
+        self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
+        self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
         
         return True
         
@@ -138,6 +138,9 @@ class PygameClient:
                         self.chat_mode = True
                     elif event.key == pygame.K_ESCAPE:
                         self.running = False
+                    elif event.key == pygame.K_SPACE:
+                        # Swing sword
+                        self.client.set_weapon_image("sword1.png")
                     else:
                         self.keys_pressed.add(event.key)
                         
@@ -167,15 +170,18 @@ class PygameClient:
                     self.current_level = self.client.level_manager.get_current_level()
                     # Update player list
                     self.players = {}
-                    for player in self.client.session_manager.get_all_players():
-                        if player.level == self.current_level.name:
-                            self.players[player.id] = player
+                    for player in self.client.session.get_current_level_players():
+                        self.players[player.id] = player
                             
             except queue.Empty:
                 break
                 
     def handle_movement(self):
-        """Handle player movement based on input"""
+        """Handle player movement based on input
+        
+        Note: move_to() sets absolute position, so we move in small increments
+        to create smooth movement rather than teleporting.
+        """
         if self.chat_mode:
             return
             
@@ -195,12 +201,15 @@ class PygameClient:
             dy += self.move_speed
             
         if dx != 0 or dy != 0:
-            self.client.move(dx, dy)
+            # Calculate new position based on small increments
+            new_x = self.client.local_player.x + dx
+            new_y = self.client.local_player.y + dy
+            self.client.move_to(new_x, new_y)
             self.last_move_time = current_time
             
             # Update camera to follow player
-            self.camera_x = self.client.player_x - VIEWPORT_TILES_X // 2
-            self.camera_y = self.client.player_y - VIEWPORT_TILES_Y // 2
+            self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
+            self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
             
     def draw_level(self):
         """Draw the current level"""
@@ -295,7 +304,7 @@ class PygameClient:
     def draw_ui(self):
         """Draw UI elements"""
         # Position info
-        pos_text = self.font.render(f"Position: ({self.client.player_x:.1f}, {self.client.player_y:.1f})", 
+        pos_text = self.font.render(f"Position: ({self.client.local_player.x:.1f}, {self.client.local_player.y:.1f})", 
                                    True, WHITE)
         self.screen.blit(pos_text, (10, 10))
         
@@ -315,7 +324,7 @@ class PygameClient:
             pygame.draw.rect(self.screen, BLACK, chat_rect.inflate(10, 5))
             self.screen.blit(chat_prompt, chat_rect)
         else:
-            help_text = self.small_font.render("Arrow keys: Move | Tab: Chat | Esc: Quit", 
+            help_text = self.small_font.render("Arrow keys: Move | Space: Sword | Tab: Chat | Esc: Quit", 
                                              True, WHITE)
             self.screen.blit(help_text, (10, SCREEN_HEIGHT - 20))
             
@@ -367,6 +376,7 @@ def main():
     print("Connected! Starting game...")
     print("\nControls:")
     print("- Arrow keys: Move")
+    print("- Space: Swing sword")
     print("- Tab: Enter chat mode")
     print("- Escape: Quit")
     print()
