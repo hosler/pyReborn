@@ -26,7 +26,8 @@ from .encryption import GraalEncryption, CompressionType
 from .handlers.packet_handler import PacketHandler
 from .models.player import Player
 from .models.level import Level
-from .events import EventManager, EventType
+from .events import EventType
+from .events_enhanced import EventManager
 from .session import SessionManager
 from .level_manager import LevelManager
 from .actions import PlayerActions
