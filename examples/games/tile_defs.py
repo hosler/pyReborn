@@ -30,6 +30,7 @@ class TileDefs:
     WATER_TILES = {WATER, SHALLOW_WATER}
     DAMAGE_TILES = {LAVA, LAVA_SWAMP, HURT_UNDERGROUND}
     SPECIAL_TILES = {CHAIR, SWAMP, THROW_THROUGH, JUMPING}
+    SITTABLE_TILES = {CHAIR}  # Can sit on these
     
     def __init__(self, tiledefs_path: str = None):
         """Initialize tile definitions

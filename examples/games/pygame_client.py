@@ -402,7 +402,8 @@ class PygameClient:
                 # Still update direction even if blocked
                 if direction is not None:
                     self.last_direction = direction
-                    self.client.set_direction(direction)
+                    # Update direction by sending a movement packet with current position
+                    self.client.move_to(self.client.local_player.x, self.client.local_player.y, direction)
             
             # Set walking animation if not already moving
             if not self.is_moving:
