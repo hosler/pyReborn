@@ -7,7 +7,7 @@ import sys
 import time
 sys.path.insert(0, '../..')
 
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
 def main():
     """Basic bot that logs in, moves around, and chats"""

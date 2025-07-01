@@ -9,7 +9,7 @@ import math
 import threading
 sys.path.insert(0, '../..')
 
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
 class PlayerFollower:
     def __init__(self, client, target_name):
