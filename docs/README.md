@@ -12,6 +12,14 @@ Comprehensive guide to the Graal Reborn protocol implementation including:
 - Player properties and chat system
 - Complete packet reference
 
+### [EXTENDING_PYREBORN.md](EXTENDING_PYREBORN.md)
+Guide for extending PyReborn with custom functionality:
+- Creating custom client classes
+- Using the event system
+- Adding custom packet handlers
+- Building plugin systems
+- Best practices for extensions
+
 ## Quick References
 
 ### Basic API Usage
