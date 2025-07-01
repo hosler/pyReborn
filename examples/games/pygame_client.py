@@ -59,7 +59,7 @@ class PygameClient:
         # Movement
         self.move_speed = 0.5  # Half tile per move
         self.last_move_time = 0
-        self.move_cooldown = 0.05  # 50ms between moves (smoother movement)
+        self.move_cooldown = 0.02  # 20ms between moves (smoother movement)
         
         # Setup event handlers
         self._setup_events()
@@ -103,6 +103,9 @@ class PygameClient:
             
         self.connected = True
         self.client.set_nickname("PygamePlayer")
+        
+        # Reduce packet send rate for smoother gameplay
+        self.client.set_packet_send_rate(0.02)  # 20ms between packets
         
         # Center camera on player
         self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
