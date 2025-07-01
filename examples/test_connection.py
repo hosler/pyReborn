@@ -7,7 +7,7 @@ A simple script to test connection to a GServer.
 
 import sys
 import time
-from pyreborn import GraalClient, EventType
+from pyreborn import RebornClient, EventType
 
 
 def main():
@@ -33,7 +33,7 @@ def main():
         return 1
     
     # Create client
-    client = GraalClient(host, port)
+    client = RebornClient(host, port)
     
     # Event handlers
     def on_connected():

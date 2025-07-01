@@ -31,7 +31,7 @@ from .session import SessionManager
 from .level_manager import LevelManager
 
 
-class GraalClient:
+class RebornClient:
     """Main client for connecting to Graal servers"""
     
     def __init__(self, host: str, port: int = 14900):

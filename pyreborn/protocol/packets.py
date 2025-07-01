@@ -5,6 +5,81 @@ Packet structure definitions and builders
 from typing import List, Union, Optional
 from ..protocol.enums import PlayerToServer, ServerToPlayer, PlayerProp
 
+
+class PacketReader:
+    """Utility for reading packet data"""
+    
+    def __init__(self, data: bytes):
+        self.data = data
+        self.pos = 0
+    
+    def read_byte(self) -> int:
+        """Read single byte (with -32 decoding)"""
+        if self.pos >= len(self.data):
+            return 0
+        value = self.data[self.pos] - 32
+        self.pos += 1
+        return max(0, value)
+    
+    def read_raw_byte(self) -> int:
+        """Read raw byte without decoding"""
+        if self.pos >= len(self.data):
+            return 0
+        value = self.data[self.pos]
+        self.pos += 1
+        return value
+    
+    def read_short(self) -> int:
+        """Read 2-byte value"""
+        low = self.read_byte()
+        high = self.read_byte()
+        return low | (high << 8)
+    
+    def read_int(self) -> int:
+        """Read 4-byte value"""
+        value = 0
+        for i in range(4):
+            value |= (self.read_byte() << (i * 8))
+        return value
+    
+    def read_string(self, length: Optional[int] = None) -> str:
+        """Read string with optional fixed length"""
+        if length is None:
+            # Read length-prefixed string
+            length = self.read_byte()
+            if length < 0 or length > 223:  # Sanity check
+                return ""
+        
+        if self.pos + length > len(self.data):
+            length = len(self.data) - self.pos
+        text = self.data[self.pos:self.pos + length].decode('ascii', errors='replace')
+        self.pos += length
+        return text
+    
+    def read_gstring(self) -> str:
+        """Read newline-terminated string"""
+        text = ""
+        while self.pos < len(self.data):
+            char = self.read_raw_byte()
+            if char == ord('\n'):
+                break
+            text += chr(char)
+        return text
+    
+    def bytes_available(self) -> int:
+        """Get remaining bytes"""
+        return len(self.data) - self.pos
+    
+    def has_more(self) -> bool:
+        """Check if more data available"""
+        return self.pos < len(self.data)
+    
+    def peek_byte(self) -> int:
+        """Peek at next byte without advancing"""
+        if self.pos >= len(self.data):
+            return 0
+        return self.data[self.pos] - 32
+
 class PacketBuilder:
     """Utility class for building packets"""
     

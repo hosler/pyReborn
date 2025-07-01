@@ -8,7 +8,7 @@ import time
 import random
 sys.path.insert(0, '..')
 
-from pyreborn import GraalClient, EventType
+from pyreborn import RebornClient, EventType
 from pyreborn.protocol.enums import Direction
 
 # Trash talk phrases
@@ -57,7 +57,7 @@ def random_walk_pattern():
     return random.choice(patterns)
 
 def main():
-    client = GraalClient("localhost", 14900)
+    client = RebornClient("localhost", 14900)
     
     # Track other players for targeted trash talk
     other_players = {}

@@ -80,7 +80,21 @@ class Level:
         """Set board data from server and parse tiles"""
         self.board_data = board_data
         
-        # Parse board data into 2D tile array
+        # Standard Graal board is always 64x64 tiles (4096 tiles * 2 bytes = 8192 bytes)
+        if len(board_data) >= 8192:
+            # Parse as 64x64 array of tile IDs
+            self.board_tiles_64x64 = []
+            for i in range(4096):  # 64*64 = 4096 tiles
+                if i * 2 + 1 < len(board_data):
+                    tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                    self.board_tiles_64x64.append(tile_id)
+                else:
+                    self.board_tiles_64x64.append(0)
+        else:
+            self.board_tiles_64x64 = [0] * 4096
+        
+        # Also maintain the legacy 2D tiles array for compatibility
+        # Use the actual level dimensions from the server
         self.tiles = []
         for y in range(self.height):
             row = []
@@ -94,10 +108,50 @@ class Level:
             self.tiles.append(row)
     
     def get_tile_id(self, x: int, y: int) -> int:
-        """Get raw tile ID at position"""
+        """Get raw tile ID at position (using level dimensions)"""
         if 0 <= x < self.width and 0 <= y < self.height:
             return self.tiles[y][x]
         return 0
+    
+    def get_board_tile_id(self, x: int, y: int) -> int:
+        """Get tile ID from 64x64 board data"""
+        if 0 <= x < 64 and 0 <= y < 64:
+            idx = y * 64 + x
+            if hasattr(self, 'board_tiles_64x64') and idx < len(self.board_tiles_64x64):
+                return self.board_tiles_64x64[idx]
+        return 0
+    
+    def get_board_tiles_array(self) -> List[int]:
+        """Get the full 64x64 board as a flat array of tile IDs"""
+        if hasattr(self, 'board_tiles_64x64'):
+            return self.board_tiles_64x64[:]
+        return [0] * 4096
+    
+    def get_board_tiles_2d(self) -> List[List[int]]:
+        """Get the 64x64 board as a 2D array of tile IDs"""
+        if not hasattr(self, 'board_tiles_64x64'):
+            return [[0] * 64 for _ in range(64)]
+        
+        board_2d = []
+        for y in range(64):
+            row = []
+            for x in range(64):
+                idx = y * 64 + x
+                row.append(self.board_tiles_64x64[idx] if idx < len(self.board_tiles_64x64) else 0)
+            board_2d.append(row)
+        return board_2d
+    
+    @staticmethod
+    def tile_to_tileset_coords(tile_id: int) -> Tuple[int, int, int, int]:
+        """
+        Convert tile ID to tileset coordinates using server algorithm.
+        Returns: (tx, ty, px, py) where tx,ty are tile coords and px,py are pixel coords
+        """
+        tx = (tile_id // 512) * 16 + (tile_id % 16)
+        ty = (tile_id // 16) % 32
+        px = tx * 16
+        py = ty * 16
+        return tx, ty, px, py
     
     def get_tile_string(self, x: int, y: int) -> str:
         """Get tile string representation (AA, AB, etc.) at position"""

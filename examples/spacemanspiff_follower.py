@@ -5,11 +5,11 @@ Bot that follows SpaceManSpiff around
 
 import time
 import math
-from pyreborn import GraalClient, EventType
+from pyreborn import RebornClient, EventType
 
 class SpaceManSpiffFollower:
     def __init__(self):
-        self.client = GraalClient("localhost", 14900)
+        self.client = RebornClient("localhost", 14900)
         self.spaceman_id = None
         self.spaceman_position = None
         self.last_move_time = 0

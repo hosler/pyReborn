@@ -1,51 +1,48 @@
 # PyReborn
 
-A Python library for connecting to GServer (Graal Reborn) servers with full protocol support including encryption, player tracking, and real-time communication.
+A Python client library for connecting to GServer (Graal Reborn) servers. Pure client implementation focused on server communication, level data handling, and game state management - designed for building bots and automation tools.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
-- 🔐 **Full ENCRYPT_GEN_5 support** - Proper partial packet encryption
-- 🎮 **Real-time player tracking** - See other players move around
-- 💬 **Chat system** - Send and receive chat messages  
-- 🤖 **Bot creation** - Build intelligent bots and automation
-- 📦 **Packet streaming** - Handle multiple packets in single TCP reads
-- 🔧 **Session management** - Track levels, players, and game state
-- 📚 **Complete protocol** - All major packet types supported
+- 🔐 **ENCRYPT_GEN_5 support** - XOR-based stream cipher encryption
+- 🎮 **Event-driven architecture** - Real-time player and level tracking
+- 💬 **Full chat system** - Chat bubbles, messages, and communication
+- 🗺️ **Level data parsing** - 64x64 tile arrays with tileset coordinate conversion
+- 🤖 **Bot framework** - Easy-to-use API for automation and bot creation
+- 📦 **Packet handling** - Complete Graal protocol implementation
+- 🧵 **Multi-threaded** - Separate threads for sending/receiving with rate limiting
+- 📚 **Type annotations** - Full type hint support with py.typed marker
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/pyReborn.git
 cd pyReborn
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ### Basic Connection
 
 ```python
-from pyreborn import GraalClient
+from pyreborn.client import RebornClient
 
 # Create client
-client = GraalClient("localhost", 14900)
+client = RebornClient("localhost", 14900)
 
 # Connect and login
 if client.connect() and client.login("username", "password"):
     print("✅ Connected successfully!")
     
-    # Send a chat message
-    client.say("Hello from PyReborn!")
+    # Set appearance and chat
+    client.set_nickname("PyBot")
+    client.set_chat("Hello from PyReborn!")
     
     # Move around
     client.move_to(30.5, 25.0)
-    
-    # Set nickname and appearance
-    client.set_nickname("PyBot")
-    client.set_body_image("body23.png")
     
     # Keep connection alive
     import time
@@ -56,209 +53,44 @@ if client.connect() and client.login("username", "password"):
 
 ## Examples
 
-### Player Tracking Bot
+See the [examples/](examples/) directory for complete, working examples:
 
+### Basic Bot (`examples/bots/basic_bot.py`)
 ```python
-from pyreborn import GraalClient, EventType
+from pyreborn.client import RebornClient
 
-client = GraalClient("localhost", 14900)
-
-# Track when players join/leave
-def on_player_added(player):
-    print(f"👋 {player.nickname} joined at ({player.x}, {player.y})")
-    client.say(f"Welcome {player.nickname}!")
-
-def on_player_removed(player):
-    print(f"🚪 {player.nickname} left")
-
-def on_chat(player_id, message):
-    player = client.get_player_by_id(player_id)
-    if player:
-        print(f"💬 {player.nickname}: {message}")
-        
-        # Auto-respond to greetings
-        if "hello" in message.lower():
-            client.say(f"Hello {player.nickname}!")
-
-# Subscribe to events
-client.on(EventType.PLAYER_ADDED, on_player_added)
-client.on(EventType.PLAYER_REMOVED, on_player_removed)
-client.on(EventType.CHAT_MESSAGE, on_chat)
-
-# Connect and run
-if client.connect() and client.login("tracker_bot", "password"):
-    print("🤖 Player tracker online!")
-    
-    try:
-        while True:
-            # Show periodic stats
-            print(f"📊 Tracking {len(client.players)} players")
-            time.sleep(30)
-    except KeyboardInterrupt:
-        print("Shutting down...")
-    
+client = RebornClient("localhost", 14900)
+if client.connect() and client.login("basicbot", "1234"):
+    client.set_nickname("BasicBot")
+    client.set_chat("Hello, I'm a basic bot!")
+    client.move_to(30, 30)
     client.disconnect()
 ```
 
-### Follower Bot
-
+### Follower Bot (`examples/bots/follower_bot.py`)
 ```python
-import math
-from pyreborn import GraalClient, EventType
-
-class FollowerBot:
-    def __init__(self, target_name):
-        self.client = GraalClient("localhost", 14900)
-        self.target_name = target_name
-        self.target_player = None
-        
-        self.client.on(EventType.OTHER_PLAYER_UPDATE, self.on_player_update)
-    
-    def on_player_update(self, player):
-        # Check if this is our target
-        if player.nickname and self.target_name in player.nickname:
-            self.target_player = player
-            self.follow_target()
-    
-    def follow_target(self):
-        if not self.target_player:
-            return
-            
-        # Calculate distance
-        my_pos = (self.client.local_player.x, self.client.local_player.y)
-        target_pos = (self.target_player.x, self.target_player.y)
-        
-        distance = math.sqrt(
-            (target_pos[0] - my_pos[0])**2 + 
-            (target_pos[1] - my_pos[1])**2
-        )
-        
-        # Follow if too far away
-        if distance > 3.0:
-            # Move closer
-            dx = target_pos[0] - my_pos[0]
-            dy = target_pos[1] - my_pos[1]
-            
-            if distance > 0:
-                new_x = my_pos[0] + (dx / distance) * 1.0
-                new_y = my_pos[1] + (dy / distance) * 1.0
-                self.client.move_to(new_x, new_y)
-    
-    def run(self):
-        if self.client.connect() and self.client.login("follower", "password"):
-            print(f"🎯 Following {self.target_name}")
-            self.client.set_nickname("Follower")
-            self.client.say(f"Now following {self.target_name}!")
-            
-            try:
-                while True:
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                pass
-            
-            self.client.disconnect()
-
-# Usage
-bot = FollowerBot("SpaceManSpiff")
-bot.run()
+# Follows a target player and mimics their actions
+python examples/bots/follower_bot.py SpaceManSpiff
 ```
 
-### Combat Bot
-
+### Level Snapshot (`examples/utilities/level_snapshot.py`)
 ```python
-from pyreborn import GraalClient, EventType
-from pyreborn.protocol.enums import Direction
+# Creates PNG snapshots of levels using tileset graphics
+from pyreborn.client import RebornClient
 
-client = GraalClient("localhost", 14900)
+client = RebornClient("localhost", 14900)
+client.connect() and client.login("snapshotbot", "1234")
 
-def on_player_update(player):
-    # Get nearby players
-    my_pos = (client.local_player.x, client.local_player.y)
-    nearby = client.get_nearby_players(my_pos[0], my_pos[1], radius=3.0)
-    
-    if nearby:
-        # Found enemies nearby - attack!
-        client.set_gani("sword")  # Sword animation
-        client.say("En garde!")
-        
-        # Drop a bomb
-        client.drop_bomb(power=2)
-        
-        # Shoot an arrow
-        client.shoot_arrow()
-
-client.on(EventType.OTHER_PLAYER_UPDATE, on_player_update)
-
-if client.connect() and client.login("warrior", "password"):
-    client.set_nickname("CombatBot")
-    client.set_body_image("body19.png")  # Armor
-    
-    # Give ourselves equipment
-    client.set_arrows(99)
-    client.set_bombs(20)
-    client.set_hearts(3, 3)
-    
-    client.say("Combat bot ready for battle! ⚔️")
-    
-    # Patrol around
-    import random
-    while True:
-        x = random.randint(20, 40)
-        y = random.randint(20, 40) 
-        client.move_to(x, y)
-        time.sleep(5)
+# Get level and create snapshot
+level = client.level_manager.get_current_level()
+tiles = level.get_board_tiles_array()  # 64x64 tile array
+# ... render using tileset coordinates
 ```
 
-### Advanced Session Management
-
+### Player Tracker (`examples/utilities/player_tracker.py`)
 ```python
-from pyreborn import GraalClient, EventType
-
-client = GraalClient("localhost", 14900)
-
-# Get comprehensive session info
-def show_session_stats():
-    stats = client.get_session_summary()
-    
-    print(f"📊 Session Statistics:")
-    print(f"   Current level: {stats['current_level']}")
-    print(f"   Players seen: {stats['players_seen']}")
-    print(f"   Chat messages: {stats['chat_messages']}")
-    print(f"   Levels visited: {len(stats['levels_visited'])}")
-    print(f"   Session duration: {stats['session_duration']:.1f}s")
-
-# Get conversation history
-def show_chat_with_player(player_name):
-    # Find player by name
-    players = client.find_players_by_name(player_name)
-    if players:
-        player = players[0]
-        conversation = client.get_conversation_with(player.id)
-        
-        print(f"💬 Chat history with {player.nickname}:")
-        for msg in conversation[-10:]:  # Last 10 messages
-            print(f"   {msg['timestamp']}: {msg['message']}")
-
-# Track level changes
-def on_level_entered(level):
-    print(f"🚪 Entered level: {level.name}")
-    
-    # Get level info
-    level_info = client.get_level_session_info(level.name)
-    if level_info:
-        print(f"   Time in level: {level_info['time_spent']:.1f}s")
-        print(f"   Players here: {len(level_info['players'])}")
-
-client.on(EventType.LEVEL_ENTERED, on_level_entered)
-
-if client.connect() and client.login("session_bot", "password"):
-    client.say("Session tracking bot online!")
-    
-    # Show stats every 30 seconds
-    import time
-    while True:
-        time.sleep(30)
-        show_session_stats()
+# Monitors and logs all player activity
+python examples/utilities/player_tracker.py output.json
 ```
 
 ## Protocol Documentation
@@ -275,107 +107,64 @@ For detailed protocol implementation, see [GRAAL_PROTOCOL_GUIDE.md](docs/GRAAL_P
 
 ## API Reference
 
-### GraalClient
+### RebornClient
 
 Main client class for connecting to GServer.
 
 ```python
-class GraalClient:
+class RebornClient:
     def __init__(self, host: str, port: int = 14900)
     def connect() -> bool
-    def login(account: str, password: str, timeout: float = 5.0) -> bool
+    def login(account: str, password: str) -> bool
     def disconnect()
     
     # Movement
-    def move_to(x: float, y: float, direction: Optional[Direction] = None)
+    def move_to(x: float, y: float)
     
-    # Chat
-    def say(message: str)
-    def send_pm(player_id: int, message: str)
+    # Chat & Communication
+    def set_chat(message: str)  # Chat bubble
     
     # Appearance
     def set_nickname(nickname: str)
     def set_body_image(image: str)
     def set_head_image(image: str)
-    def set_chat(message: str)  # Chat bubble
-    
-    # Combat
-    def drop_bomb(x: float = None, y: float = None, power: int = 1)
-    def shoot_arrow()
-    def fire_effect()
-    
-    # Items
-    def set_arrows(count: int)
-    def set_bombs(count: int)
-    def set_rupees(count: int)
-    def set_hearts(current: float, maximum: float = None)
-    
-    # Players
-    def get_all_players() -> Dict[int, Player]
-    def get_player_by_id(player_id: int) -> Optional[Player]
-    def get_nearby_players(x: float, y: float, radius: float = 5.0) -> List[Player]
-    def find_players_by_name(name: str) -> List[Player]
     
     # Events
-    def on(event_type: EventType, handler: Callable)
-    def off(event_type: EventType, handler: Callable)
+    events: EventManager  # Use events.subscribe(event_name, handler)
+    
+    # Managers
+    level_manager: LevelManager
+    session_manager: SessionManager
 ```
 
-### Event Types
+### Level Data
 
 ```python
-class EventType(Enum):
-    # Connection
-    CONNECTED = auto()
-    DISCONNECTED = auto()
-    LOGIN_SUCCESS = auto()
+class Level:
+    name: str
+    board_tiles_64x64: List[int]  # 4096 tile IDs (64x64)
     
-    # Players
-    PLAYER_ADDED = auto()
-    PLAYER_REMOVED = auto()
-    OTHER_PLAYER_UPDATE = auto()
-    PLAYER_WARP = auto()
+    def get_board_tiles_array() -> List[int]
+    def get_board_tiles_2d() -> List[List[int]]
+    def get_board_tile_id(x: int, y: int) -> int
     
-    # Chat
-    CHAT_MESSAGE = auto()
-    PRIVATE_MESSAGE = auto()
-    SERVER_MESSAGE = auto()
-    
-    # Levels
-    LEVEL_ENTERED = auto()
-    LEVEL_LEFT = auto()
-    
-    # Raw packets (advanced)
-    RAW_PACKET_RECEIVED = auto()
+    @staticmethod
+    def tile_to_tileset_coords(tile_id: int) -> Tuple[int, int, int, int]
+        # Returns: (tx, ty, px, py) - tile coords and pixel coords
 ```
 
-### Player Model
+### Event System
 
 ```python
-class Player:
-    id: int
-    nickname: str
-    account: str
-    x: float
-    y: float
-    level: str
-    
-    # Appearance
-    body_image: str
-    head_image: str
-    colors: List[int]
-    
-    # Stats
-    hearts: float
-    max_hearts: float
-    arrows: int
-    bombs: int
-    rupees: int
-    
-    # State
-    chat: str      # Current chat bubble
-    gani: str      # Current animation
-    direction: Direction
+# Subscribe to events
+client.events.subscribe('player_moved', my_handler)
+client.events.subscribe('player_chat', my_handler)
+client.events.subscribe('level_changed', my_handler)
+
+# Event handlers receive event dict
+def my_handler(event):
+    player = event.get('player')
+    message = event.get('message')
 ```
 
 ## Requirements
@@ -394,14 +183,19 @@ class Player:
 ## Testing
 
 ```bash
-# Run basic connection test
+# Run tests
+pytest
+
+# Basic connection test
 python examples/test_connection.py
 
-# Run player tracking test
-python examples/test_player_tracking.py
+# Example bots
+python examples/bots/basic_bot.py
+python examples/bots/follower_bot.py SpaceManSpiff
 
-# Run follower bot
-python examples/spacemanspiff_follower.py
+# Utilities
+python examples/utilities/level_snapshot.py
+python examples/utilities/player_tracker.py
 ```
 
 ## License

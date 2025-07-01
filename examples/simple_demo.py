@@ -7,12 +7,12 @@ import sys
 import time
 sys.path.insert(0, '..')
 
-from pyreborn import GraalClient, EventType
+from pyreborn import RebornClient, EventType
 from pyreborn.protocol.enums import Direction
 
 def main():
     # Create client
-    client = GraalClient("localhost", 14900)
+    client = RebornClient("localhost", 14900)
     
     # Connect
     print("Connecting to server...")

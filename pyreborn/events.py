@@ -20,6 +20,13 @@ class EventType(Enum):
     PLAYER_ADDED = auto()
     PLAYER_REMOVED = auto()
     PLAYER_WARP = auto()
+    PLAYER_UPDATE = auto()
+    PLAYER_JOINED = auto()
+    PLAYER_LEFT = auto()
+    SELF_UPDATE = auto()
+    STATS_UPDATE = auto()
+    PLAYER_HURT = auto()
+    PLAYER_KILLED = auto()
     
     # Level events
     LEVEL_ENTERED = auto()
@@ -30,17 +37,26 @@ class EventType(Enum):
     LEVEL_SIGN_ADDED = auto()
     LEVEL_CHEST_ADDED = auto()
     LEVEL_LINK_ADDED = auto()
+    LEVEL_CHANGE = auto()
+    LEVEL_BOARD_UPDATE = auto()
+    NPCS_UPDATE = auto()
+    SIGNS_UPDATE = auto()
+    LINKS_UPDATE = auto()
     
     # Chat events
     CHAT_MESSAGE = auto()
     PRIVATE_MESSAGE = auto()
     SERVER_MESSAGE = auto()
+    GUILD_MESSAGE = auto()
+    TOALL_MESSAGE = auto()
     
     # Combat events
     BOMB_ADDED = auto()
     BOMB_EXPLODED = auto()
     ARROW_SHOT = auto()
     PLAYER_HIT = auto()
+    BOMB_PLACED = auto()
+    ITEM_TAKEN = auto()
     
     # NPC events
     NPC_ADDED = auto()
@@ -63,6 +79,7 @@ class EventType(Enum):
     # Raw packet events (for advanced users)
     RAW_PACKET_RECEIVED = auto()
     RAW_PACKET_SENT = auto()
+    PACKET_RECEIVED = auto()
 
 
 class EventManager:

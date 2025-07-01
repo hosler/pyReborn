@@ -509,7 +509,7 @@ class PacketReader:
 import threading
 from queue import Queue
 
-class GraalClient:
+class RebornClient:
     def __init__(self):
         self.send_queue = Queue()
         self.receive_thread = None
