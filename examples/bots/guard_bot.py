@@ -4,6 +4,7 @@ Guard Bot - Guards an area and warns/chases away intruders
 """
 
 from pyreborn import RebornClient
+from pyreborn.events import EventType
 import math
 import time
 import logging
@@ -30,12 +31,10 @@ class GuardBot:
         """Calculate distance from a position to the guard post"""
         return math.sqrt((x - self.guard_x) ** 2 + (y - self.guard_y) ** 2)
         
-    def on_player_moved(self, event):
+    def on_player_update(self, player):
         """Check if player is entering guarded area"""
-        player = event['player']
-        
         # Don't guard against ourselves
-        if player.name == self.client.account_name:
+        if player.id == self.client.local_player.id:
             return
             
         dist = self.distance_to_guard_post(player.x, player.y)
@@ -44,7 +43,8 @@ class GuardBot:
         # Check if player is in warning zone
         if dist < self.warning_radius:
             # Check if we've warned this player recently
-            last_warning = self.warned_players.get(player.name, 0)
+            player_key = player.nickname or f"Player{player.id}"
+            last_warning = self.warned_players.get(player_key, 0)
             
             if current_time - last_warning > 5.0:  # Warn every 5 seconds
                 if dist < self.guard_radius:
@@ -57,15 +57,15 @@ class GuardBot:
                     self.client.set_chat(f"Stay back, {player.nickname}!")
                     logging.info(f"Warning {player.nickname} - distance: {dist:.1f}")
                     
-                self.warned_players[player.name] = current_time
+                self.warned_players[player_key] = current_time
                 
     def chase_player(self, player):
         """Chase a player away from the guard post"""
-        self.chasing = player.name
+        self.chasing = player.nickname or f"Player{player.id}"
         
         # Calculate direction to player
-        dx = player.x - self.client.player_x
-        dy = player.y - self.client.player_y
+        dx = player.x - self.client.local_player.x
+        dy = player.y - self.client.local_player.y
         
         # Normalize and move towards them
         if dx != 0 or dy != 0:
@@ -95,13 +95,13 @@ class GuardBot:
         self.return_thread.daemon = True
         self.return_thread.start()
         
-    def on_player_left(self, event):
+    def on_player_removed(self, player):
         """Clean up when player leaves"""
-        player = event['player']
-        if player.name in self.warned_players:
-            del self.warned_players[player.name]
+        player_key = player.nickname or f"Player{player.id}"
+        if player_key in self.warned_players:
+            del self.warned_players[player_key]
             
-        if self.chasing == player.name:
+        if self.chasing == player_key:
             self.client.set_chat("Good riddance!")
             self.chasing = None
 
@@ -116,44 +116,62 @@ def main():
     guard = GuardBot(client, guard_x, guard_y, guard_radius)
     
     # Subscribe to events
-    client.events.subscribe('player_moved', guard.on_player_moved)
-    client.events.subscribe('player_left', guard.on_player_left)
+    client.events.subscribe(EventType.OTHER_PLAYER_UPDATE, guard.on_player_update)
+    client.events.subscribe(EventType.PLAYER_REMOVED, guard.on_player_removed)
     
     # Handle chat commands
-    def on_chat(event):
-        player = event['player']
-        message = event['message'].lower()
+    last_chat = {}
+    
+    def on_player_added(player):
+        """Initialize chat tracking"""
+        last_chat[player.id] = player.chat or ""
+    
+    def on_chat_update(player):
+        """Handle chat commands"""
+        # Skip our own updates
+        if player.id == client.local_player.id:
+            return
+            
+        # Check if chat changed
+        current_chat = player.chat or ""
+        previous_chat = last_chat.get(player.id, "")
         
-        if message == "!radius":
-            client.set_chat(f"Guard radius: {guard.guard_radius} tiles")
+        if current_chat and current_chat != previous_chat:
+            last_chat[player.id] = current_chat
+            message = current_chat.lower()
             
-        elif message.startswith("!radius "):
-            try:
-                new_radius = float(message.split()[1])
-                guard.guard_radius = max(3, min(20, new_radius))
-                guard.warning_radius = guard.guard_radius + 3
-                client.set_chat(f"Guard radius set to {guard.guard_radius}")
-            except:
-                client.set_chat("Usage: !radius <number>")
+            if message == "!radius":
+                client.set_chat(f"Guard radius: {guard.guard_radius} tiles")
                 
-        elif message == "!post":
-            client.set_chat(f"Guarding ({guard.guard_x}, {guard.guard_y})")
+            elif message.startswith("!radius "):
+                try:
+                    new_radius = float(message.split()[1])
+                    guard.guard_radius = max(3, min(20, new_radius))
+                    guard.warning_radius = guard.guard_radius + 3
+                    client.set_chat(f"Guard radius set to {guard.guard_radius}")
+                except:
+                    client.set_chat("Usage: !radius <number>")
+                    
+            elif message == "!post":
+                client.set_chat(f"Guarding ({guard.guard_x}, {guard.guard_y})")
             
-    client.events.subscribe('player_chat', on_chat)
+    client.events.subscribe(EventType.PLAYER_ADDED, on_player_added)
+    client.events.subscribe(EventType.OTHER_PLAYER_UPDATE, on_chat_update)
     
     # Connect and run
     if client.connect():
         logging.info("Connected to server")
         
-        if client.login("guardbot", "1234"):
+        if client.login("hosler", "1234"):
             logging.info("Login successful")
             
             # Set appearance
             client.set_nickname("GuardBot")
             client.set_head_image("head3.png")
             client.set_body_image("body3.png")
-            client.set_shield_image("shield1.png")
-            client.set_sword_image("sword1.png")
+            # Note: Shield and sword appearances are typically set by power levels,
+            # not by direct image setting. You would need to pick up shield/sword items
+            # to change these appearances.
             
             # Move to guard position
             client.move_to(guard_x, guard_y)

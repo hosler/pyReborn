@@ -4,6 +4,7 @@ Echo Bot - Repeats everything said in chat
 """
 
 from pyreborn import RebornClient
+from pyreborn.events import EventType
 import time
 import logging
 
@@ -18,33 +19,46 @@ def main():
     
     # Keep track of last echo to avoid infinite loops
     last_echo_time = {}
+    last_chat = {}
     
-    def on_chat(event):
-        player = event['player']
-        message = event['message']
-        
-        # Don't echo our own messages
-        if player.name == client.account_name:
+    def on_player_added(player):
+        """Track new players"""
+        last_chat[player.id] = player.chat or ""
+        logging.info(f"Player joined: {player.nickname} (ID: {player.id})")
+    
+    def on_player_update(player):
+        """Monitor player chat bubble changes"""
+        # Skip our own updates
+        if player.id == client.local_player.id:
             return
-            
-        # Rate limit echoes per player
-        current_time = time.time()
-        if player.name in last_echo_time:
-            if current_time - last_echo_time[player.name] < 2.0:
-                return
-                
-        last_echo_time[player.name] = current_time
         
-        # Echo the message
-        echo_msg = f"Echo: {message}"
-        if len(echo_msg) > 200:  # Respect chat limits
-            echo_msg = echo_msg[:200] + "..."
+        # Check if chat changed
+        current_chat = player.chat or ""
+        previous_chat = last_chat.get(player.id, "")
+        
+        if current_chat and current_chat != previous_chat:
+            last_chat[player.id] = current_chat
+            logging.info(f"Chat detected from {player.nickname}: {current_chat}")
             
-        client.set_chat(echo_msg)
-        logging.info(f"Echoed {player.nickname}: {message}")
+            # Rate limit echoes per player
+            current_time = time.time()
+            if player.id in last_echo_time:
+                if current_time - last_echo_time[player.id] < 2.0:
+                    return
+                    
+            last_echo_time[player.id] = current_time
+            
+            # Echo the message
+            echo_msg = f"Echo: {current_chat}"
+            if len(echo_msg) > 200:  # Respect chat limits
+                echo_msg = echo_msg[:197] + "..."
+                
+            client.set_chat(echo_msg)
+            logging.info(f"Echoed: {echo_msg}")
     
-    # Subscribe to chat events
-    client.events.subscribe('player_chat', on_chat)
+    # Subscribe to player events to monitor chat changes
+    client.events.subscribe(EventType.PLAYER_ADDED, on_player_added)
+    client.events.subscribe(EventType.OTHER_PLAYER_UPDATE, on_player_update)
     
     # Connect and run
     if client.connect():

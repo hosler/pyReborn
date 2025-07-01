@@ -853,11 +853,19 @@ class RebornClient:
         elif packet_type == "other_player_props":
             # Update other player
             player_id = result["player_id"]
-            if player_id not in self.players:
+            is_new_player = player_id not in self.players
+            
+            if is_new_player:
                 self.players[player_id] = Player(player_id)
+            
             self.players[player_id].update_from_props(result["props"])
             self.session.update_player(self.players[player_id])
-            self.events.emit(EventType.OTHER_PLAYER_UPDATE, player=self.players[player_id])
+            
+            # Emit appropriate event
+            if is_new_player:
+                self.events.emit(EventType.PLAYER_ADDED, player=self.players[player_id])
+            else:
+                self.events.emit(EventType.OTHER_PLAYER_UPDATE, player=self.players[player_id])
             
         elif packet_type == "add_player":
             # Add new player
