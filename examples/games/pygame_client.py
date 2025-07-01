@@ -72,6 +72,7 @@ class PygameClient:
         self.client.events.subscribe('player_joined', self._on_player_joined)
         self.client.events.subscribe('player_left', self._on_player_left)
         self.client.events.subscribe('player_moved', self._on_player_moved)
+        self.client.events.subscribe('player_props_update', self._on_player_props_update)
         self.client.events.subscribe('player_chat', self._on_player_chat)
         self.client.events.subscribe('level_changed', self._on_level_changed)
         
@@ -86,6 +87,10 @@ class PygameClient:
     def _on_player_moved(self, event):
         """Handle player movement"""
         self.event_queue.put(('player_moved', event))
+        
+    def _on_player_props_update(self, event):
+        """Handle player property updates (including animations)"""
+        self.event_queue.put(('player_props_update', event))
         
     def _on_player_chat(self, event):
         """Handle player chat"""
@@ -171,6 +176,11 @@ class PygameClient:
                     self.players.pop(player.id, None)
                     
                 elif event_type == 'player_moved':
+                    player = event_data['player']
+                    if player.id in self.players:
+                        self.players[player.id] = player
+                        
+                elif event_type == 'player_props_update':
                     player = event_data['player']
                     if player.id in self.players:
                         self.players[player.id] = player
@@ -290,16 +300,44 @@ class PygameClient:
             screen_x = (player.x - self.camera_x) * TILE_SIZE
             screen_y = (player.y - self.camera_y) * TILE_SIZE
             
-            # Draw player as circle
-            pygame.draw.circle(self.screen, BLUE, 
-                             (int(screen_x + TILE_SIZE/2), 
-                              int(screen_y + TILE_SIZE/2)), 
-                             TILE_SIZE//2)
+            # Choose color based on animation state
+            if player.gani == "walk":
+                color = (0, 100, 255)  # Darker blue when walking
+            elif player.gani == "sword":
+                color = RED  # Red when attacking
+            else:
+                color = BLUE  # Normal blue when idle
+                
+            # Draw player as circle with direction indicator
+            center_x = int(screen_x + TILE_SIZE/2)
+            center_y = int(screen_y + TILE_SIZE/2)
+            pygame.draw.circle(self.screen, color, (center_x, center_y), TILE_SIZE//2)
+            
+            # Draw direction indicator
+            dir_length = TILE_SIZE // 3
+            if player.direction == Direction.UP:
+                pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                               (center_x, center_y - dir_length), 2)
+            elif player.direction == Direction.DOWN:
+                pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                               (center_x, center_y + dir_length), 2)
+            elif player.direction == Direction.LEFT:
+                pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                               (center_x - dir_length, center_y), 2)
+            elif player.direction == Direction.RIGHT:
+                pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                               (center_x + dir_length, center_y), 2)
                              
             # Draw nickname
             name_text = self.small_font.render(player.nickname, True, WHITE)
             name_rect = name_text.get_rect(center=(screen_x + TILE_SIZE/2, screen_y - 5))
             self.screen.blit(name_text, name_rect)
+            
+            # Draw current animation/state
+            if player.gani:
+                state_text = self.small_font.render(f"[{player.gani}]", True, (200, 200, 200))
+                state_rect = state_text.get_rect(center=(screen_x + TILE_SIZE/2, screen_y + TILE_SIZE + 5))
+                self.screen.blit(state_text, state_rect)
             
             # Draw chat
             if player.chat:
@@ -314,10 +352,33 @@ class PygameClient:
         screen_x = (local_player.x - self.camera_x) * TILE_SIZE
         screen_y = (local_player.y - self.camera_y) * TILE_SIZE
         
-        pygame.draw.circle(self.screen, GREEN, 
-                         (int(screen_x + TILE_SIZE/2), 
-                          int(screen_y + TILE_SIZE/2)), 
-                         TILE_SIZE//2)
+        # Choose color based on animation state
+        if local_player.gani == "walk":
+            color = (0, 200, 0)  # Darker green when walking
+        elif local_player.gani == "sword":
+            color = (255, 255, 0)  # Yellow when attacking
+        else:
+            color = GREEN  # Normal green when idle
+            
+        # Draw player with direction indicator
+        center_x = int(screen_x + TILE_SIZE/2)
+        center_y = int(screen_y + TILE_SIZE/2)
+        pygame.draw.circle(self.screen, color, (center_x, center_y), TILE_SIZE//2)
+        
+        # Draw direction indicator
+        dir_length = TILE_SIZE // 3
+        if local_player.direction == Direction.UP:
+            pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                           (center_x, center_y - dir_length), 2)
+        elif local_player.direction == Direction.DOWN:
+            pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                           (center_x, center_y + dir_length), 2)
+        elif local_player.direction == Direction.LEFT:
+            pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                           (center_x - dir_length, center_y), 2)
+        elif local_player.direction == Direction.RIGHT:
+            pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
+                           (center_x + dir_length, center_y), 2)
                          
         # Draw local player name
         name_text = self.small_font.render(local_player.nickname, True, WHITE)
