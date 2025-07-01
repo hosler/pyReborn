@@ -40,9 +40,9 @@ class BushHandler:
     # Bush tile IDs
     BUSH_TILES = {2, 3, 18, 19}
     
-    # Throwing parameters
-    THROW_SPEED = 8.0  # tiles per second
-    MAX_THROW_DISTANCE = 5.0  # tiles
+    # Throwing parameters - more violent!
+    THROW_SPEED = 20.0  # tiles per second (was 8)
+    MAX_THROW_DISTANCE = 10.0  # tiles (was 5)
     
     def __init__(self):
         self.carrying_bush = False
@@ -53,37 +53,27 @@ class BushHandler:
         """Check if a tile is a bush"""
         return tile_id in self.BUSH_TILES
     
-    def check_bush_at_position(self, level, x: float, y: float) -> Optional[Tuple[int, int]]:
-        """Check if there's a bush at the given position
+    def check_grabbable_at_position(self, level, tile_defs, x: float, y: float) -> Optional[Tuple[int, int]]:
+        """Check if there's a grabbable (blocking) tile at the given position
         
         Returns:
-            Tuple of (tile_x, tile_y) if bush found, None otherwise
+            Tuple of (tile_x, tile_y) if grabbable tile found, None otherwise
         """
-        # Check the tile at player position
+        # Check the tile at position
         tile_x = int(x)
         tile_y = int(y)
         
         if 0 <= tile_x < 64 and 0 <= tile_y < 64:
             tile_id = level.get_board_tile_id(tile_x, tile_y)
-            if self.is_bush_tile(tile_id):
-                return (tile_x, tile_y)
-                
-        # Also check adjacent tiles for better pickup detection
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                check_x = tile_x + dx
-                check_y = tile_y + dy
-                if 0 <= check_x < 64 and 0 <= check_y < 64:
-                    tile_id = level.get_board_tile_id(check_x, check_y)
-                    if self.is_bush_tile(tile_id):
-                        # Check if player is close enough
-                        dist = math.sqrt((x - check_x - 0.5)**2 + (y - check_y - 0.5)**2)
-                        if dist < 1.5:  # Within pickup range
-                            return (check_x, check_y)
-        
+            # Only blocking tiles can be grabbed
+            if tile_defs.is_blocking(tile_id):
+                # For now, only bushes can actually be picked up
+                if self.is_bush_tile(tile_id):
+                    return (tile_x, tile_y)
+                    
         return None
     
-    def try_pickup_bush(self, level, player_x: float, player_y: float, direction: Direction) -> Optional[Tuple[int, int]]:
+    def try_pickup_bush(self, level, tile_defs, player_x: float, player_y: float, direction: Direction) -> Optional[Tuple[int, int]]:
         """Try to pick up a bush in front of the player
         
         Returns:
@@ -103,13 +93,13 @@ class BushHandler:
         elif direction == Direction.RIGHT:
             dx = 1
             
-        check_x = player_x + dx * 0.5
-        check_y = player_y + dy * 0.5
+        check_x = player_x + dx
+        check_y = player_y + dy
         
-        bush_pos = self.check_bush_at_position(level, check_x, check_y)
-        if bush_pos:
-            # Pick up the bush
-            tile_x, tile_y = bush_pos
+        grabbable_pos = self.check_grabbable_at_position(level, tile_defs, check_x, check_y)
+        if grabbable_pos:
+            # Pick up the tile (for now only bushes)
+            tile_x, tile_y = grabbable_pos
             self.carrying_bush = True
             return (tile_x, tile_y)
             

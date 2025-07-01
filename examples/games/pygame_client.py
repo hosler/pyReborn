@@ -10,6 +10,7 @@ import pygame
 import threading
 import time
 import queue
+import math
 from pyreborn import RebornClient
 from pyreborn.protocol.enums import Direction
 from pyreborn.events import EventType
@@ -71,7 +72,7 @@ class PygameClient:
         self.sound_channels = {i: pygame.mixer.Channel(i) for i in range(8)}  # 8 channels
         
         # Preload common GANIs
-        for gani_name in ['idle', 'walk', 'sword', 'grab', 'pull']:
+        for gani_name in ['idle', 'walk', 'sword', 'grab', 'pull', 'carry', 'sit', 'lift']:
             gani = self.gani_manager.load_gani(gani_name)
             if gani:
                 print(f"Loaded GANI: {gani_name}")
@@ -118,6 +119,9 @@ class PygameClient:
         self.sword_animating = False
         self.sword_start_time = 0
         self.grabbing = False
+        self.on_chair = False  # Track if sitting on a chair
+        self.throwing = False  # Track if throwing animation is playing
+        self.throw_start_time = 0
         
         # Setup event handlers
         self._setup_events()
@@ -209,10 +213,11 @@ class PygameClient:
                         self.running = False
                     elif event.key == pygame.K_SPACE or event.key == pygame.K_s:
                         # Swing sword
-                        if not self.sword_animating:
+                        if not self.sword_animating and not self.throwing:
                             self.client.set_gani("sword")
                             self.animation_frame = 0
                             self.sword_animating = True
+                            self.throwing = False  # Cancel any throw pause
                             self.sword_start_time = time.time()
                             # Play sound for first frame
                             self.play_gani_sounds('sword', 0)
@@ -227,13 +232,35 @@ class PygameClient:
                             )
                             self.client.set_gani("sword")  # Use sword animation for throwing
                             self.animation_frame = 0
-                            # Clear carry sprite
+                            self.throwing = True  # Start throw pause
+                            self.throw_start_time = time.time()
+                            # Clear carry sprite and notify server about throwing
                             self.set_carry_sprite("")
+                            self.throw_carried()
                         else:
-                            # Try to grab
-                            self.grabbing = True
-                            self.client.set_gani("grab")
-                            self.animation_frame = 0
+                            # Start grabbing - check if there's something to grab in front
+                            dx, dy = 0, 0
+                            if self.last_direction == Direction.UP:
+                                dy = -1
+                            elif self.last_direction == Direction.DOWN:
+                                dy = 1
+                            elif self.last_direction == Direction.LEFT:
+                                dx = -1
+                            elif self.last_direction == Direction.RIGHT:
+                                dx = 1
+                                
+                            check_x = self.client.local_player.x + dx
+                            check_y = self.client.local_player.y + dy
+                            
+                            # Check if there's a grabbable tile in front
+                            grabbable = self.bush_handler.check_grabbable_at_position(
+                                self.current_level, self.tile_defs, check_x, check_y
+                            )
+                            
+                            if grabbable:
+                                self.grabbing = True
+                                self.client.set_gani("grab")
+                                self.animation_frame = 0
                     elif event.key == pygame.K_F3:
                         # Toggle tile debug
                         self.debug_tiles = not self.debug_tiles
@@ -247,6 +274,7 @@ class PygameClient:
                         # Try to pick up bush when releasing grab
                         bush_pos = self.bush_handler.try_pickup_bush(
                             self.current_level,
+                            self.tile_defs,
                             self.client.local_player.x,
                             self.client.local_player.y,
                             self.last_direction
@@ -383,7 +411,7 @@ class PygameClient:
         Note: move_to() sets absolute position, so we move in small increments
         to create smooth movement rather than teleporting.
         """
-        if self.chat_mode or self.sword_animating:
+        if self.chat_mode or self.sword_animating or self.throwing:
             return
             
         current_time = time.time()
@@ -441,18 +469,26 @@ class PygameClient:
             
             # Set walking animation if not already moving
             if not self.is_moving:
-                self.client.set_gani("walk")
+                self.on_chair = False  # Clear chair state when starting to move
+                # Use carry animation if carrying a bush
+                if self.bush_handler.carrying_bush:
+                    self.client.set_gani("carry")
+                else:
+                    self.client.set_gani("walk")
                 self.is_moving = True
         else:
             # Set idle animation when stopped
             if self.is_moving:
-                self.client.set_gani("idle")
                 self.is_moving = False
                 self.animation_frame = 0  # Reset animation frame
+                # Don't change animation here - let check_chair_status handle it
                 
         # Always update camera to follow player
         self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
         self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
+        
+        # Check if we're on a chair
+        self.check_chair_status()
         
     def can_move_to(self, x: float, y: float) -> bool:
         """Check if player can move to a position (collision detection)
@@ -496,6 +532,62 @@ class PygameClient:
                 return False
                 
         return True
+        
+    def check_chair_status(self):
+        """Check if player is on a chair tile and update animation"""
+        if not self.current_level:
+            return
+            
+        # Don't sit while moving
+        if self.is_moving:
+            if self.on_chair:
+                self.on_chair = False
+            return
+            
+        # Check tiles around the player's position for special tiles
+        player_x = self.client.local_player.x
+        player_y = self.client.local_player.y
+        
+        # Check multiple points around the player
+        check_points = [
+            (player_x + 0.5, player_y + 0.5),    # Center
+            (player_x + 0.2, player_y + 0.2),    # Top-left
+            (player_x + 0.8, player_y + 0.2),    # Top-right
+            (player_x + 0.2, player_y + 0.8),    # Bottom-left
+            (player_x + 0.8, player_y + 0.8),    # Bottom-right
+            (player_x + 0.5, player_y + 1.0),    # Bottom center (feet)
+        ]
+        
+        # Check if any of these points are on a chair
+        on_chair_tile = False
+        for check_x, check_y in check_points:
+            tile_x = int(check_x)
+            tile_y = int(check_y)
+            
+            if 0 <= tile_x < 64 and 0 <= tile_y < 64:
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                tile_type = self.tile_defs.get_tile_type(tile_id)
+                
+                if tile_type == self.tile_defs.CHAIR:
+                    on_chair_tile = True
+                    break
+        
+        # Update chair state based on whether we found a chair tile
+        if on_chair_tile:
+            if not self.on_chair:
+                self.on_chair = True
+                self.client.set_gani("sit")
+                self.animation_frame = 0
+        else:
+            if self.on_chair:
+                self.on_chair = False
+                self.animation_frame = 0
+            # Always set appropriate idle animation when not on chair and not moving
+            if not self.is_moving:
+                if self.bush_handler.carrying_bush:
+                    self.client.set_gani("carry")
+                else:
+                    self.client.set_gani("idle")
         
     def replace_bush_tiles(self, tile_x: int, tile_y: int):
         """Replace a bush (2x2 tiles) with the picked-up tiles"""
@@ -545,6 +637,13 @@ class PygameClient:
         packet.add_property(PlayerProp.PLPROP_CARRYSPRITE, sprite_name)
         self.client._send_packet(packet)
         
+    def throw_carried(self):
+        """Notify server about throwing carried item"""
+        # TODO: PyReborn needs a throw_carried() method in the client/actions
+        # For now, the visual throwing is handled locally by the pygame client
+        # The server should be notified via a proper PyReborn method when available
+        pass
+        
     def get_tile_surface(self, tile_id):
         """Get a surface for a specific tile ID from the tileset
         
@@ -573,6 +672,39 @@ class PygameClient:
             return tile_surface
             
         return None
+        
+    def draw_carried_object(self, screen_x: float, screen_y: float, carry_sprite: str):
+        """Draw a carried object above a player
+        
+        Args:
+            screen_x: Screen X position of player
+            screen_y: Screen Y position of player
+            carry_sprite: Name of carried object (e.g. "bush", "pot", "bomb")
+        """
+        if carry_sprite == "bush":
+            # Draw all 4 bush tiles (2,3,18,19) as a 2x2 block above player
+            tiles = [2, 3, 18, 19]
+            offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        elif carry_sprite == "pot":
+            # Example: pot could be a different set of tiles
+            tiles = [128]  # Single tile for pot
+            offsets = [(0, 0)]
+        elif carry_sprite == "bomb":
+            # Example: bomb sprite
+            tiles = [130]
+            offsets = [(0, 0)]
+        else:
+            # Unknown carry sprite, skip
+            return
+            
+        # Draw the tiles
+        for tile_id, (dx, dy) in zip(tiles, offsets):
+            surface = self.get_tile_surface(tile_id)
+            if surface:
+                # Position object above player's head, centered
+                obj_x = screen_x + (dx * TILE_SIZE) - (TILE_SIZE // 2)  # Center horizontally
+                obj_y = screen_y - (2 * TILE_SIZE) + (dy * TILE_SIZE)  # Above head
+                self.screen.blit(surface, (obj_x, obj_y))
         
     def get_player_sprites_with_positions(self, direction, gani="idle", frame=0):
         """Get sprites and their positions for a player based on GANI data
@@ -683,6 +815,26 @@ class PygameClient:
             else:
                 body_sprite_id = 253 + (dir_idx - 1)  # 253=left, 254=down, 255=right
             head_sprite_id = 104 + dir_idx  # Special pulling heads
+            
+        elif gani == "carry":
+            # Carry animation with walking frames
+            # Based on sit.gani: carrying sprites are 264-275 (3 frames)
+            carry_frame = frame % 3  # 3 frames of walking
+            base_sprite = 264 + (carry_frame * 4)  # Each frame has 4 directions
+            body_sprite_id = base_sprite + dir_idx
+            head_sprite_id = 100 + dir_idx
+            
+        elif gani == "lift":
+            # Lift animation - same as carry for now
+            body_sprite_id = 256 + dir_idx  # 256=up, 257=left, 258=down, 259=right
+            head_sprite_id = 100 + dir_idx
+            
+        elif gani == "sit":
+            # Sitting animation uses specific sprites from sit.gani
+            # Based on the sit.gani file: 256=up, 281=left, 279=down, 283=right
+            sit_bodies = {0: 256, 1: 281, 2: 279, 3: 283}
+            body_sprite_id = sit_bodies.get(dir_idx, 279)
+            head_sprite_id = 100 + dir_idx
         
         # Get surfaces from GANI manager
         body_surface = None
@@ -823,17 +975,20 @@ class PygameClient:
             screen_x = (x - self.camera_x) * TILE_SIZE
             screen_y = (y - self.camera_y) * TILE_SIZE
             
-            # Draw a small bush sprite (using tile 2 for now)
-            bush_surface = self.get_tile_surface(2)
-            if bush_surface:
-                # Make it smaller while flying
-                small_bush = pygame.transform.scale(bush_surface, (TILE_SIZE//2, TILE_SIZE//2))
-                self.screen.blit(small_bush, (screen_x + TILE_SIZE//4, screen_y + TILE_SIZE//4))
-            else:
-                # Fallback to green circle
-                pygame.draw.circle(self.screen, (0, 150, 0), 
-                                 (int(screen_x + TILE_SIZE/2), int(screen_y + TILE_SIZE/2)), 
-                                 TILE_SIZE//3)
+            # Draw all 4 bush tiles as a smaller 2x2 block while flying
+            bush_tiles = [2, 3, 18, 19]
+            bush_offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+            
+            for tile_id, (dx, dy) in zip(bush_tiles, bush_offsets):
+                bush_surface = self.get_tile_surface(tile_id)
+                if bush_surface:
+                    # Keep bush nearly full size while flying (90%)
+                    scale_factor = 0.9
+                    scaled_size = int(TILE_SIZE * scale_factor)
+                    small_bush = pygame.transform.scale(bush_surface, (scaled_size, scaled_size))
+                    bush_x = screen_x + (dx * scaled_size)
+                    bush_y = screen_y + (dy * scaled_size)
+                    self.screen.blit(small_bush, (bush_x, bush_y))
         
         # Draw explosions
         for exp_x, exp_y, exp_time in self.bush_handler.bush_explosions:
@@ -842,19 +997,24 @@ class PygameClient:
                 screen_x = (exp_x - self.camera_x) * TILE_SIZE
                 screen_y = (exp_y - self.camera_y) * TILE_SIZE
                 
-                # Explosion effect - expanding circles
-                radius = int(TILE_SIZE * (1 + age * 2))
-                alpha = int(255 * (1 - age * 2))
-                
-                # Draw multiple circles for effect
-                colors = [(255, 200, 0), (255, 150, 0), (200, 100, 0)]
-                for i, color in enumerate(colors):
-                    r = radius - i * 5
-                    if r > 0:
-                        # Create a surface for alpha blending
-                        surf = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
-                        pygame.draw.circle(surf, (*color, alpha), (r, r), r)
-                        self.screen.blit(surf, (screen_x + TILE_SIZE/2 - r, screen_y + TILE_SIZE/2 - r))
+                # Leaf explosion effect - draw green particles
+                num_leaves = 8
+                for i in range(num_leaves):
+                    angle = (i / num_leaves) * 2 * 3.14159
+                    distance = age * TILE_SIZE * 3  # Leaves spread out
+                    leaf_x = screen_x + TILE_SIZE/2 + math.cos(angle) * distance
+                    leaf_y = screen_y + TILE_SIZE/2 + math.sin(angle) * distance
+                    
+                    # Leaf size and alpha based on age
+                    leaf_size = int(TILE_SIZE/4 * (1 - age * 1.5))
+                    alpha = int(255 * (1 - age * 2))
+                    
+                    if leaf_size > 0 and alpha > 0:
+                        # Create a green leaf surface
+                        surf = pygame.Surface((leaf_size*2, leaf_size*2), pygame.SRCALPHA)
+                        leaf_color = (0, 150 + i*10, 0, alpha)  # Varying green shades
+                        pygame.draw.circle(surf, leaf_color, (leaf_size, leaf_size), leaf_size)
+                        self.screen.blit(surf, (leaf_x - leaf_size, leaf_y - leaf_size))
                                
     def draw_players(self):
         """Draw all players"""
@@ -943,6 +1103,11 @@ class PygameClient:
                     pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
                                    (center_x + dir_length, center_y), 2)
                              
+            # Draw carried object if player is carrying something
+            if hasattr(player, 'carry_sprite') and player.carry_sprite and player.carry_sprite != -1:
+                # Convert carry_sprite to object name (server sends sprite names)
+                self.draw_carried_object(screen_x, screen_y, str(player.carry_sprite))
+                
             # Draw nickname
             name_text = self.small_font.render(player.nickname, True, WHITE)
             name_rect = name_text.get_rect(center=(screen_x + TILE_SIZE/2, screen_y - 20))
@@ -997,6 +1162,20 @@ class PygameClient:
             elif local_player.direction == Direction.RIGHT:
                 pygame.draw.line(self.screen, WHITE, (center_x, center_y), 
                                (center_x + dir_length, center_y), 2)
+                         
+        # Draw carried bush above player if carrying
+        if self.bush_handler.carrying_bush:
+            # Draw all 4 bush tiles (2,3,18,19) as a 2x2 block above player
+            bush_tiles = [2, 3, 18, 19]
+            bush_offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]  # Relative positions
+            
+            for tile_id, (dx, dy) in zip(bush_tiles, bush_offsets):
+                bush_surface = self.get_tile_surface(tile_id)
+                if bush_surface:
+                    # Position bush above player's head, centered
+                    bush_x = screen_x + (dx * TILE_SIZE) - (TILE_SIZE // 2)  # Center horizontally
+                    bush_y = screen_y - (2 * TILE_SIZE) + (dy * TILE_SIZE)  # Above head with gap
+                    self.screen.blit(bush_surface, (bush_x, bush_y))
                          
         # Draw local player name
         name_text = self.small_font.render(local_player.nickname, True, WHITE)
@@ -1076,6 +1255,20 @@ class PygameClient:
             # Update animation
             current_time = time.time()
             
+            # Check for short throw pause (0.2 seconds)
+            if self.throwing and current_time - self.throw_start_time > 0.2:
+                self.throwing = False
+                self.sword_animating = False
+                # Check if movement keys are still pressed
+                movement_keys = {pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT}
+                if any(key in self.keys_pressed for key in movement_keys):
+                    self.client.set_gani("walk")
+                    self.is_moving = True
+                else:
+                    self.client.set_gani("idle")
+                    self.is_moving = False
+                self.animation_frame = 0
+            
             # Sword animation runs at half speed
             anim_speed = self.animation_speed * 2 if self.sword_animating else self.animation_speed
             
@@ -1093,16 +1286,28 @@ class PygameClient:
                     
                     if self.animation_frame >= 4:  # Sword has 4 frames
                         self.sword_animating = False
-                        # Check if we should return to walking
-                        if self.is_moving:
-                            self.client.set_gani("walk")
-                        else:
+                        # Check if this was a throw animation
+                        if self.throwing:
+                            self.throwing = False
+                            # After throw, always return to idle
                             self.client.set_gani("idle")
+                        else:
+                            # Check if we should return to walking
+                            if self.is_moving:
+                                if self.bush_handler.carrying_bush:
+                                    self.client.set_gani("carry")
+                                else:
+                                    self.client.set_gani("walk")
+                            else:
+                                if self.bush_handler.carrying_bush:
+                                    self.client.set_gani("carry")
+                                else:
+                                    self.client.set_gani("idle")
                         self.animation_frame = 0
                 else:
                     # Loop other animations based on their frame count
                     gani = self.client.local_player.gani
-                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1}.get(gani, 1)
+                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'carry': 3, 'sit': 1, 'lift': 1}.get(gani, 1)
                     old_frame = self.animation_frame
                     self.animation_frame = (self.animation_frame + 1) % max_frames
                     
@@ -1128,7 +1333,7 @@ class PygameClient:
                         anim_state['gani'] = gani
                         anim_state['frame'] = 0
                     else:
-                        max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4}.get(gani, 1)
+                        max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4, 'carry': 3, 'sit': 1, 'lift': 1}.get(gani, 1)
                         anim_state['frame'] = (anim_state['frame'] + 1) % max_frames
             
             # Update thrown bushes
