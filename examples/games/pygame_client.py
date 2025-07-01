@@ -10,6 +10,7 @@ import threading
 import time
 import queue
 from pyreborn import RebornClient
+from pyreborn.protocol.enums import Direction
 
 # Constants
 SCREEN_WIDTH = 1024
@@ -60,6 +61,8 @@ class PygameClient:
         self.move_speed = 0.5  # Half tile per move
         self.last_move_time = 0
         self.move_cooldown = 0.02  # 20ms between moves (smoother movement)
+        self.is_moving = False
+        self.last_direction = Direction.DOWN
         
         # Setup event handlers
         self._setup_events()
@@ -106,6 +109,9 @@ class PygameClient:
         
         # Reduce packet send rate for smoother gameplay
         self.client.set_packet_send_rate(0.02)  # 20ms between packets
+        
+        # Set initial idle animation
+        self.client.set_gani("idle")
         
         # Center camera on player
         self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
@@ -193,26 +199,47 @@ class PygameClient:
             return
             
         dx, dy = 0, 0
+        direction = None
         
         if pygame.K_LEFT in self.keys_pressed:
             dx -= self.move_speed
+            direction = Direction.LEFT
         if pygame.K_RIGHT in self.keys_pressed:
             dx += self.move_speed
+            direction = Direction.RIGHT
         if pygame.K_UP in self.keys_pressed:
             dy -= self.move_speed
+            direction = Direction.UP
         if pygame.K_DOWN in self.keys_pressed:
             dy += self.move_speed
+            direction = Direction.DOWN
             
         if dx != 0 or dy != 0:
             # Calculate new position based on small increments
             new_x = self.client.local_player.x + dx
             new_y = self.client.local_player.y + dy
-            self.client.move_to(new_x, new_y)
-            self.last_move_time = current_time
             
-            # Update camera to follow player
-            self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
-            self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
+            # Determine final direction (prioritize last pressed)
+            if direction is None:
+                direction = self.last_direction
+            
+            self.client.move_to(new_x, new_y, direction)
+            self.last_move_time = current_time
+            self.last_direction = direction
+            
+            # Set walking animation if not already moving
+            if not self.is_moving:
+                self.client.set_gani("walk")
+                self.is_moving = True
+        else:
+            # Set idle animation when stopped
+            if self.is_moving:
+                self.client.set_gani("idle")
+                self.is_moving = False
+                
+        # Always update camera to follow player
+        self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
+        self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
             
     def draw_level(self):
         """Draw the current level"""
