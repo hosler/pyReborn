@@ -1,5 +1,5 @@
 """
-Tile mapping utilities for Graal - handles tile IDs, strings, and tileset positions
+Tile mapping utilities for Reborn - handles tile IDs, strings, and tileset positions
 """
 
 import os
@@ -245,8 +245,8 @@ class TilesetMapper:
         return tiles
 
 
-def load_graal_tiles(tileset_dir: str) -> Optional[TileMapping]:
-    """Load Graal tile mapping from directory"""
+def load_reborn_tiles(tileset_dir: str) -> Optional[TileMapping]:
+    """Load Reborn tile mapping from directory"""
     mapping_file = os.path.join(tileset_dir, "mytext.txt")
     
     tile_mapping = TileMapping()

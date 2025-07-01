@@ -80,7 +80,7 @@ class Level:
         """Set board data from server and parse tiles"""
         self.board_data = board_data
         
-        # Standard Graal board is always 64x64 tiles (4096 tiles * 2 bytes = 8192 bytes)
+        # Standard Reborn board is always 64x64 tiles (4096 tiles * 2 bytes = 8192 bytes)
         if len(board_data) >= 8192:
             # Parse as 64x64 array of tile IDs
             self.board_tiles_64x64 = []

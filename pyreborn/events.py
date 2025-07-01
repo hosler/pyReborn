@@ -3,7 +3,7 @@ Event system for pyReborn
 """
 
 from enum import Enum, auto
-from typing import Callable, List, Dict, Any
+from typing import Callable, List, Dict, Any, Union
 
 class EventType(Enum):
     """Event types that can be subscribed to"""
@@ -83,32 +83,64 @@ class EventType(Enum):
 
 
 class EventManager:
-    """Manages event subscriptions and dispatching"""
+    """Manages event subscriptions and dispatching
+    
+    Supports both EventType enums and string events for flexibility.
+    """
     
     def __init__(self):
         self._handlers: Dict[EventType, List[Callable]] = {}
+        self._string_handlers: Dict[str, List[Callable]] = {}
         
-    def subscribe(self, event_type: EventType, handler: Callable):
-        """Subscribe to an event"""
-        if event_type not in self._handlers:
-            self._handlers[event_type] = []
-        self._handlers[event_type].append(handler)
+    def subscribe(self, event_type: Union[EventType, str], handler: Callable):
+        """Subscribe to an event (enum or string)"""
+        if isinstance(event_type, str):
+            if event_type not in self._string_handlers:
+                self._string_handlers[event_type] = []
+            self._string_handlers[event_type].append(handler)
+        else:
+            if event_type not in self._handlers:
+                self._handlers[event_type] = []
+            self._handlers[event_type].append(handler)
         
-    def unsubscribe(self, event_type: EventType, handler: Callable):
-        """Unsubscribe from an event"""
-        if event_type in self._handlers:
-            self._handlers[event_type].remove(handler)
+    def unsubscribe(self, event_type: Union[EventType, str], handler: Callable):
+        """Unsubscribe from an event (enum or string)"""
+        if isinstance(event_type, str):
+            if event_type in self._string_handlers:
+                self._string_handlers[event_type].remove(handler)
+        else:
+            if event_type in self._handlers:
+                self._handlers[event_type].remove(handler)
             
-    def emit(self, event_type: EventType, **kwargs):
-        """Emit an event to all subscribers"""
-        if event_type in self._handlers:
-            for handler in self._handlers[event_type]:
-                try:
-                    handler(**kwargs)
-                except Exception as e:
-                    # Log error but don't crash
-                    print(f"Event handler error: {e}")
+    def emit(self, event_type: Union[EventType, str], data: Dict[str, Any] = None, **kwargs):
+        """Emit an event to all subscribers
+        
+        Can be called with either:
+        - emit(event_type, key=value, key2=value2)
+        - emit(event_type, {"key": value, "key2": value2})
+        """
+        # Handle both dict and kwargs
+        if data is not None:
+            event_data = data
+        else:
+            event_data = kwargs
+            
+        if isinstance(event_type, str):
+            if event_type in self._string_handlers:
+                for handler in self._string_handlers[event_type]:
+                    try:
+                        handler(event_data)
+                    except Exception as e:
+                        print(f"Event handler error for '{event_type}': {e}")
+        else:
+            if event_type in self._handlers:
+                for handler in self._handlers[event_type]:
+                    try:
+                        handler(**event_data)
+                    except Exception as e:
+                        print(f"Event handler error for {event_type}: {e}")
     
     def clear(self):
         """Clear all event subscriptions"""
         self._handlers.clear()
+        self._string_handlers.clear()

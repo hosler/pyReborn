@@ -1,5 +1,5 @@
 """
-Graal encryption implementation (ENCRYPT_GEN_5)
+Reborn encryption implementation (ENCRYPT_GEN_5)
 """
 
 import struct
@@ -9,7 +9,7 @@ class CompressionType:
     ZLIB = 0x04
     BZ2 = 0x06
 
-class GraalEncryption:
+class RebornEncryption:
     """ENCRYPT_GEN_5 implementation (fixed from working client)"""
     
     def __init__(self, key: int = 0):

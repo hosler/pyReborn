@@ -1,5 +1,5 @@
 """
-Protocol enumerations for Graal Reborn
+Protocol enumerations for Reborn
 """
 
 from enum import IntEnum

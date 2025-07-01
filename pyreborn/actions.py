@@ -142,3 +142,16 @@ class PlayerActions:
         self.client.local_player.hearts = current
         if maximum is not None:
             self.client.local_player.max_hearts = maximum
+            
+    def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0):
+        """Warp to a specific level"""
+        from .protocol.packets import RebornPacket
+        from .protocol.enums import PlayerToServer
+        
+        packet = RebornPacket(PlayerToServer.PLI_LEVELWARP)
+        packet.builder.add_byte(int(x * 2))
+        packet.builder.add_byte(int(y * 2))
+        packet.builder.add_gstring(level_name)
+        
+        self.client._send_packet(packet)
+        print(f"Warping to level '{level_name}' at ({x}, {y})")

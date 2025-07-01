@@ -305,7 +305,7 @@ class LevelManager:
                 print(f"📄 Parsing level file: {filename}")
                 
                 # Try to extract basic info
-                if level_data[0:4] == b'GRLV':  # Graal level magic
+                if level_data[0:4] == b'GRLV':  # Reborn level magic
                     # Version info would be next
                     pos = 8
                 
@@ -397,8 +397,8 @@ class LevelManager:
     def load_tile_mapping(self, tileset_dir: str) -> bool:
         """Load tile mapping for collision detection"""
         try:
-            from .tile_mapping import load_graal_tiles
-            self.tile_mapping = load_graal_tiles(tileset_dir)
+            from .tile_mapping import load_reborn_tiles
+            self.tile_mapping = load_reborn_tiles(tileset_dir)
             if self.tile_mapping:
                 print(f"🗺️  Loaded tile mapping from: {tileset_dir}")
                 return True
@@ -457,7 +457,7 @@ class LevelManager:
     
     def _convert_numeric_to_tile_id(self, tile_num: int) -> str:
         """Convert numeric tile ID to 2-character string format"""
-        # This is a simplified conversion - the real Graal encoding is more complex
+        # This is a simplified conversion - the real Reborn encoding is more complex
         # For now, use a basic mapping
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         if tile_num < len(chars) * len(chars):

@@ -22,7 +22,7 @@ setup(
     version=get_version(),
     author="PyReborn Contributors",
     author_email="",
-    description="A Python library for connecting to GServer (Graal Reborn) servers",
+    description="A Python library for connecting to Reborn servers",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/pyReborn",
@@ -70,8 +70,8 @@ setup(
     project_urls={
         "Bug Reports": "https://github.com/yourusername/pyReborn/issues",
         "Source": "https://github.com/yourusername/pyReborn",
-        "Documentation": "https://github.com/yourusername/pyReborn/blob/main/docs/GRAAL_PROTOCOL_GUIDE.md",
+        "Documentation": "https://github.com/yourusername/pyReborn/blob/main/docs/REBORN_PROTOCOL_GUIDE.md",
     },
-    keywords="graal gserver game networking protocol client library",
+    keywords="reborn game networking protocol client library",
     zip_safe=False,
 )

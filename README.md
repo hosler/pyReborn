@@ -1,239 +1,401 @@
 # PyReborn
 
-A Python client library for connecting to GServer (Graal Reborn) servers. Pure client implementation focused on server communication, level data handling, and game state management - designed for building bots and automation tools.
+A pure Python client library for connecting to Reborn servers. PyReborn provides a complete implementation of the Reborn protocol, allowing you to create bots, automation tools, and custom clients.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ## Features
 
-- 🔐 **ENCRYPT_GEN_5 support** - XOR-based stream cipher encryption
-- 🎮 **Event-driven architecture** - Real-time player and level tracking
-- 💬 **Full chat system** - Chat bubbles, messages, and communication
-- 🗺️ **Level data parsing** - 64x64 tile arrays with tileset coordinate conversion
-- 🤖 **Bot framework** - Easy-to-use API for automation and bot creation
-- 📦 **Packet handling** - Complete Graal protocol implementation
-- 🧵 **Multi-threaded** - Separate threads for sending/receiving with rate limiting
-- 📚 **Type annotations** - Full type hint support with py.typed marker
+- 🚀 **Pure Python** - No external dependencies, just standard library
+- 🔐 **Full Protocol Support** - Complete implementation including ENCRYPT_GEN_5 encryption
+- 🎮 **Event-Driven Architecture** - React to game events with simple callbacks
+- 🧩 **Modular Design** - Easy to extend and customize
+- 📦 **Type Hints** - Full type annotation support
+- 🎯 **High-Level API** - Simple methods for movement, chat, and game actions
+- 🗺️ **Level Management** - Parse and interact with game levels
+- 🤖 **Bot-Friendly** - Designed specifically for creating game bots
 
-## Quick Start
+## Installation
 
-### Installation
-
+### From PyPI (when published)
 ```bash
-cd pyReborn
+pip install pyreborn
+```
+
+### From Source
+```bash
+git clone https://github.com/yourusername/pyreborn.git
+cd pyreborn
+pip install -e .
+```
+
+### Development Installation
+```bash
 pip install -e ".[dev]"
 ```
 
+## Quick Start
+
 ### Basic Connection
-
 ```python
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
-# Create client
+# Connect to server
 client = RebornClient("localhost", 14900)
-
-# Connect and login
 if client.connect() and client.login("username", "password"):
-    print("✅ Connected successfully!")
+    print("Connected!")
     
-    # Set appearance and chat
-    client.set_nickname("PyBot")
-    client.set_chat("Hello from PyReborn!")
+    # Set your appearance
+    client.set_nickname("MyBot")
+    client.set_chat("Hello, world!")
     
     # Move around
-    client.move_to(30.5, 25.0)
-    
-    # Keep connection alive
-    import time
-    time.sleep(10)
-    
-    client.disconnect()
-```
-
-## Examples
-
-See the [examples/](examples/) directory for complete, working examples:
-
-### Basic Bot (`examples/bots/basic_bot.py`)
-```python
-from pyreborn.client import RebornClient
-
-client = RebornClient("localhost", 14900)
-if client.connect() and client.login("basicbot", "1234"):
-    client.set_nickname("BasicBot")
-    client.set_chat("Hello, I'm a basic bot!")
     client.move_to(30, 30)
+    
+    # Stay connected for a bit
+    import time
+    time.sleep(5)
+    
     client.disconnect()
 ```
 
-### Follower Bot (`examples/bots/follower_bot.py`)
+### Event Handling
 ```python
-# Follows a target player and mimics their actions
-python examples/bots/follower_bot.py SpaceManSpiff
-```
-
-### Level Snapshot (`examples/utilities/level_snapshot.py`)
-```python
-# Creates PNG snapshots of levels using tileset graphics
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
 client = RebornClient("localhost", 14900)
-client.connect() and client.login("snapshotbot", "1234")
 
-# Get level and create snapshot
-level = client.level_manager.get_current_level()
-tiles = level.get_board_tiles_array()  # 64x64 tile array
-# ... render using tileset coordinates
+# Subscribe to events
+def on_player_moved(event):
+    player = event['player']
+    print(f"{player.name} moved to ({player.x}, {player.y})")
+
+def on_chat(event):
+    player = event['player']
+    message = event['message']
+    print(f"{player.name}: {message}")
+
+client.events.subscribe('player_moved', on_player_moved)
+client.events.subscribe('player_chat', on_chat)
+
+# Connect and run
+if client.connect() and client.login("bot", "password"):
+    # Keep running until disconnected
+    while client.connected:
+        time.sleep(0.1)
 ```
 
-### Player Tracker (`examples/utilities/player_tracker.py`)
+## Core Concepts
+
+### The Client
+The `RebornClient` is your main interface to the game server. It handles:
+- Connection management
+- Authentication
+- Packet encoding/decoding
+- Event dispatching
+- Game state management
+
+### Events
+PyReborn uses an event-driven architecture. Common events include:
+- `player_joined` - A player entered the level
+- `player_left` - A player left the level
+- `player_moved` - A player moved
+- `player_chat` - A player sent a chat message
+- `level_changed` - You entered a new level
+- `private_message` - You received a PM
+
+### Players
+Player objects represent other players in the game:
 ```python
-# Monitors and logs all player activity
-python examples/utilities/player_tracker.py output.json
+player.name      # Account name
+player.nickname  # Display name
+player.x, player.y  # Position
+player.level     # Current level
+player.hearts    # Health
 ```
 
-## Protocol Documentation
+### Levels
+Level objects provide access to tile data:
+```python
+level = client.level_manager.get_current_level()
+tiles = level.get_board_tiles_array()  # Flat array of tile IDs
+tiles_2d = level.get_board_tiles_2d()  # 2D array [y][x]
+```
 
-For detailed protocol implementation, see [GRAAL_PROTOCOL_GUIDE.md](docs/GRAAL_PROTOCOL_GUIDE.md).
+## Example Bots
 
-### Key Protocol Features
+### Echo Bot
+Repeats everything said in chat:
+```python
+from pyreborn import RebornClient
 
-- **ENCRYPT_GEN_5**: Partial packet encryption (first X bytes only)
-- **Compression**: UNCOMPRESSED, ZLIB, BZ2 support
-- **Packet Streaming**: Multiple packets per TCP read
-- **Player Properties**: 80+ different property types
-- **Real-time Updates**: Position, chat, actions, level changes
+client = RebornClient("localhost", 14900)
+
+def on_chat(event):
+    message = event['message']
+    client.set_chat(f"Echo: {message}")
+
+client.events.subscribe('player_chat', on_chat)
+
+if client.connect() and client.login("echobot", "password"):
+    client.set_nickname("EchoBot")
+    while client.connected:
+        time.sleep(0.1)
+```
+
+### Follow Bot
+Follows a specific player:
+```python
+from pyreborn import RebornClient
+import time
+
+client = RebornClient("localhost", 14900)
+target_player = "PlayerName"
+
+def on_player_moved(event):
+    player = event['player']
+    if player.name == target_player:
+        # Move to their position with slight offset
+        client.move_to(player.x + 1, player.y)
+
+client.events.subscribe('player_moved', on_player_moved)
+
+if client.connect() and client.login("followbot", "password"):
+    client.set_nickname("FollowBot")
+    while client.connected:
+        time.sleep(0.1)
+```
+
+### Patrol Bot
+Patrols between waypoints:
+```python
+from pyreborn import RebornClient
+import time
+import threading
+
+client = RebornClient("localhost", 14900)
+
+waypoints = [(30, 30), (40, 30), (40, 40), (30, 40)]
+current_waypoint = 0
+
+def patrol():
+    global current_waypoint
+    while client.connected:
+        target = waypoints[current_waypoint]
+        client.move_to(target[0], target[1])
+        current_waypoint = (current_waypoint + 1) % len(waypoints)
+        time.sleep(3)
+
+if client.connect() and client.login("patrolbot", "password"):
+    client.set_nickname("PatrolBot")
+    
+    # Start patrol in background
+    patrol_thread = threading.Thread(target=patrol)
+    patrol_thread.daemon = True
+    patrol_thread.start()
+    
+    while client.connected:
+        time.sleep(0.1)
+```
+
+## Advanced Usage
+
+### Custom Packet Handlers
+```python
+from pyreborn import RebornClient
+
+class CustomClient(RebornClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+    def handle_custom_packet(self, packet):
+        # Handle your custom packet type
+        pass
+```
+
+### Level Analysis
+```python
+# Get current level
+level = client.level_manager.get_current_level()
+
+# Access tile data
+for y in range(64):
+    for x in range(64):
+        tile_id = level.get_tile_at(x, y)
+        if tile_id > 0:  # Non-empty tile
+            # Convert to tileset coordinates
+            tx, ty, px, py = level.tile_to_tileset_coords(tile_id)
+            print(f"Tile at ({x},{y}) uses tileset tile ({tx},{ty})")
+
+# Find all players on current level
+for player in client.session_manager.get_players_on_level(level.name):
+    print(f"{player.name} is at ({player.x}, {player.y})")
+```
+
+### Threading and Async
+```python
+import threading
+
+def background_task(client):
+    while client.connected:
+        # Do something periodically
+        client.set_chat("Still running!")
+        time.sleep(10)
+
+# Start background task
+thread = threading.Thread(target=background_task, args=(client,))
+thread.daemon = True
+thread.start()
+```
 
 ## API Reference
 
 ### RebornClient
 
-Main client class for connecting to GServer.
+#### Connection Methods
+- `connect() -> bool` - Connect to server
+- `disconnect()` - Disconnect from server
+- `login(account: str, password: str) -> bool` - Authenticate
+- Keep connection alive with `while client.connected: time.sleep(0.1)`
 
-```python
-class RebornClient:
-    def __init__(self, host: str, port: int = 14900)
-    def connect() -> bool
-    def login(account: str, password: str) -> bool
-    def disconnect()
-    
-    # Movement
-    def move_to(x: float, y: float)
-    
-    # Chat & Communication
-    def set_chat(message: str)  # Chat bubble
-    
-    # Appearance
-    def set_nickname(nickname: str)
-    def set_body_image(image: str)
-    def set_head_image(image: str)
-    
-    # Events
-    events: EventManager  # Use events.subscribe(event_name, handler)
-    
-    # Managers
-    level_manager: LevelManager
-    session_manager: SessionManager
-```
+#### Player Actions
+- `move(dx: float, dy: float)` - Move relative to current position
+- `move_to(x: float, y: float)` - Move to absolute position
+- `set_chat(message: str)` - Set chat bubble
+- `set_nickname(nickname: str)` - Set display name
+- `say(message: str)` - Send chat message
 
-### Level Data
+#### Combat Actions
+- `take_bomb()` - Pick up a bomb
+- `take_bow()` - Pick up a bow  
+- `take_sword()` - Pick up a sword
+- `throw_bomb()` - Throw a bomb
+- `shoot_arrow()` - Shoot an arrow
 
-```python
-class Level:
-    name: str
-    board_tiles_64x64: List[int]  # 4096 tile IDs (64x64)
-    
-    def get_board_tiles_array() -> List[int]
-    def get_board_tiles_2d() -> List[List[int]]
-    def get_board_tile_id(x: int, y: int) -> int
-    
-    @staticmethod
-    def tile_to_tileset_coords(tile_id: int) -> Tuple[int, int, int, int]
-        # Returns: (tx, ty, px, py) - tile coords and pixel coords
-```
+#### Game Actions
+- `warp_to(x: float, y: float, level: str)` - Warp to level
+- `play_sound(filename: str)` - Play a sound effect
+- `set_player_prop(prop_id: int, value)` - Set player property
 
-### Event System
+### EventManager
 
-```python
-# Subscribe to events
-client.events.subscribe('player_moved', my_handler)
-client.events.subscribe('player_chat', my_handler)
-client.events.subscribe('level_changed', my_handler)
+- `subscribe(event_name: str, handler: Callable)` - Subscribe to event
+- `unsubscribe(event_name: str, handler: Callable)` - Unsubscribe
+- `emit(event_name: str, data: dict)` - Emit an event
 
-# Event handlers receive event dict
-def my_handler(event):
-    player = event.get('player')
-    message = event.get('message')
-```
+### Common Events
 
-## Requirements
+| Event | Data | Description |
+|-------|------|-------------|
+| `connected` | `{}` | Connected to server |
+| `login_success` | `{}` | Login successful |
+| `player_joined` | `{player}` | Player joined level |
+| `player_left` | `{player}` | Player left level |
+| `player_moved` | `{player, old_x, old_y}` | Player moved |
+| `player_chat` | `{player, message}` | Chat message |
+| `level_changed` | `{old_level, new_level}` | Changed levels |
+| `private_message` | `{from_player, message}` | Received PM |
 
-- Python 3.8+
-- No external dependencies (uses only standard library)
+## Examples Directory
 
-## Contributing
+The `examples/` directory contains many more examples:
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+- `bots/` - Fun and useful bots
+  - `echo_bot.py` - Repeats chat messages
+  - `follow_bot.py` - Follows players
+  - `patrol_bot.py` - Patrols waypoints
+  - `guard_bot.py` - Guards an area
+  - `trader_bot.py` - Simple trading system
+  - `quest_bot.py` - Gives quests
+  - `dance_bot.py` - Dances around
 
-## Testing
+- `games/` - Mini-games and interactive examples  
+  - `pygame_client.py` - Full Pygame client
+  - `tag_game.py` - Play tag with bots
+  - `maze_solver.py` - Solves mazes
 
-```bash
-# Run tests
-pytest
+- `utilities/` - Useful tools
+  - `server_monitor.py` - Monitor server activity
+  - `player_tracker.py` - Track player movements
+  - `level_mapper.py` - Generate level maps
+  - `chat_logger.py` - Log all chat
 
-# Basic connection test
-python examples/test_connection.py
-
-# Example bots
-python examples/bots/basic_bot.py
-python examples/bots/follower_bot.py SpaceManSpiff
-
-# Utilities
-python examples/utilities/level_snapshot.py
-python examples/utilities/player_tracker.py
-```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- GServer development team for the original protocol
-- OpenGraal community for protocol documentation
-- Contributors to protocol reverse engineering efforts
+- `advanced/` - Advanced examples
+  - `multi_bot_coordinator.py` - Coordinate multiple bots
+  - `custom_protocol.py` - Extend the protocol
+  - `plugin_system.py` - Plugin architecture
 
 ## Troubleshooting
 
-### Common Issues
+### Connection Issues
+- Ensure server is running: `docker-compose ps`
+- Check server logs: `docker-compose logs -f reborn-server`
+- Verify credentials in `CLAUDE.md`
 
-**Connection fails:**
-- Check server address and port
-- Ensure server is running and accessible
-- Verify firewall settings
+### Encryption Desync
+- The client maintains 50ms rate limiting to prevent desync
+- Don't send packets too quickly
+- Let the client handle rate limiting
 
-**Login timeout:**
-- Check username/password
-- Verify account exists on server
-- Check for server-side login restrictions
+### Missing Players
+- Players may be on different levels
+- Use `session_manager.get_all_players()` for all online players
+- Subscribe to `player_joined`/`player_left` events
 
-**Broken pipe errors:**
-- Ensure login completes before sending actions
-- Check encryption setup
-- Verify packet format
+## Development
 
-**Can't see other players:**
-- Check if players are in same level
-- Verify packet decryption is working
-- Check player property parsing
+### Running Tests
+```bash
+pytest
+```
 
-For more help, see the [troubleshooting guide](docs/TROUBLESHOOTING.md) or open an issue.
+### Code Style
+```bash
+black pyreborn/
+flake8 pyreborn/
+mypy pyreborn/
+```
 
----
+### Building
+```bash
+python -m build
+```
 
-**PyReborn** - Bringing Python to the Graal universe! 🐍⚔️
+## Architecture
+
+PyReborn follows a layered architecture:
+
+1. **Network Layer** - Raw socket communication
+2. **Protocol Layer** - Packet encoding/decoding, encryption
+3. **Session Layer** - Connection state, authentication
+4. **Game Layer** - Players, levels, game state
+5. **API Layer** - High-level client methods
+6. **Event Layer** - Event system for extensibility
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Write tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Acknowledgments
+
+- Reborn team for the server implementation
+- Original developers for the protocol
+- Community members who documented the protocol
+
+## Resources
+
+- [Reborn](https://www.reborn.com/)
+- [Protocol Documentation](https://github.com/xtjoeytx/reborn-serverlist/wiki)
+- [Reborn Server Source](https://github.com/xtjoeytx/RebornServer-v2)

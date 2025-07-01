@@ -104,7 +104,7 @@ class PacketBuilder:
         return self
     
     def add_gstring(self, text: str) -> 'PacketBuilder':
-        """Add a Graal string (newline terminated)"""
+        """Add a Reborn string (newline terminated)"""
         self.data.extend(text.encode('ascii', errors='replace'))
         self.add_raw_byte(ord('\n'))
         return self
@@ -136,7 +136,7 @@ class PacketBuilder:
         return bytes(self.data)
 
 
-class GraalPacket:
+class RebornPacket:
     """Base class for all packets"""
     
     def __init__(self, packet_id: Union[PlayerToServer, ServerToPlayer]):
@@ -147,7 +147,7 @@ class GraalPacket:
         raise NotImplementedError
 
 
-class PlayerPropsPacket(GraalPacket):
+class PlayerPropsPacket(RebornPacket):
     """Set player properties"""
     
     def __init__(self):
@@ -198,7 +198,7 @@ class PlayerPropsPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class LoginPacket(GraalPacket):
+class LoginPacket(RebornPacket):
     """Login packet with PLTYPE_CLIENT3 format (fixed from working client)"""
     
     def __init__(self, account: str, password: str, encryption_key: int):
@@ -222,7 +222,7 @@ class LoginPacket(GraalPacket):
         return bytes(packet)
 
 
-class ToAllPacket(GraalPacket):
+class ToAllPacket(RebornPacket):
     """Send chat message to all players"""
     
     def __init__(self, message: str):
@@ -236,7 +236,7 @@ class ToAllPacket(GraalPacket):
         return builder.build()
 
 
-class BombAddPacket(GraalPacket):
+class BombAddPacket(RebornPacket):
     """Drop a bomb"""
     
     def __init__(self, x: float, y: float, power: int = 1, timer: int = 55):
@@ -256,7 +256,7 @@ class BombAddPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class ArrowAddPacket(GraalPacket):
+class ArrowAddPacket(RebornPacket):
     """Shoot an arrow (simple)"""
     
     def __init__(self):
@@ -268,7 +268,7 @@ class ArrowAddPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class FireSpyPacket(GraalPacket):
+class FireSpyPacket(RebornPacket):
     """Fire effect"""
     
     def __init__(self):
@@ -280,7 +280,7 @@ class FireSpyPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class WeaponAddPacket(GraalPacket):
+class WeaponAddPacket(RebornPacket):
     """Add a weapon"""
     
     def __init__(self, weapon_id: int):
@@ -294,7 +294,7 @@ class WeaponAddPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class ShootPacket(GraalPacket):
+class ShootPacket(RebornPacket):
     """Shoot projectile (v1 format)"""
     
     def __init__(self, x: float, y: float, angle: float = 0, speed: int = 20, 
@@ -336,7 +336,7 @@ class ShootPacket(GraalPacket):
         return builder.end_packet().build()
 
 
-class Shoot2Packet(GraalPacket):
+class Shoot2Packet(RebornPacket):
     """Shoot projectile (v2 format with gravity)"""
     
     def __init__(self, x: float, y: float, angle: float = 0, speed: int = 20,
@@ -379,7 +379,7 @@ class Shoot2Packet(GraalPacket):
         return builder.end_packet().build()
 
 
-class WantFilePacket(GraalPacket):
+class WantFilePacket(RebornPacket):
     """Request a file from server"""
     
     def __init__(self, filename: str):
@@ -393,7 +393,7 @@ class WantFilePacket(GraalPacket):
         return builder.build()
 
 
-class FlagSetPacket(GraalPacket):
+class FlagSetPacket(RebornPacket):
     """Set a server flag"""
     
     def __init__(self, flag_name: str, value: str = ""):
@@ -409,7 +409,7 @@ class FlagSetPacket(GraalPacket):
         return builder.build()
 
 
-class PrivateMessagePacket(GraalPacket):
+class PrivateMessagePacket(RebornPacket):
     """Send private message to player"""
     
     def __init__(self, player_id: int, message: str):

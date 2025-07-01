@@ -1,5 +1,5 @@
 """
-Main Graal client implementation
+Main Reborn client implementation
 """
 
 import socket
@@ -19,22 +19,20 @@ from .protocol.enums import (
 from .protocol.packets import (
     LoginPacket, PlayerPropsPacket, ToAllPacket, BombAddPacket,
     ArrowAddPacket, FireSpyPacket, WeaponAddPacket, ShootPacket,
-    Shoot2Packet, WantFilePacket, FlagSetPacket, PrivateMessagePacket,
-    PacketBuilder
+    Shoot2Packet, WantFilePacket, FlagSetPacket, PrivateMessagePacket
 )
-from .encryption import GraalEncryption, CompressionType
+from .encryption import RebornEncryption, CompressionType
 from .handlers.packet_handler import PacketHandler
 from .models.player import Player
 from .models.level import Level
-from .events import EventType
-from .events_enhanced import EventManager
+from .events import EventType, EventManager
 from .session import SessionManager
 from .level_manager import LevelManager
 from .actions import PlayerActions
 
 
 class RebornClient:
-    """Main client for connecting to Graal servers"""
+    """Main client for connecting to Reborn servers"""
     
     def __init__(self, host: str, port: int = 14900):
         self.host = host
@@ -54,8 +52,8 @@ class RebornClient:
         
         # Encryption (fixed to match working client)
         self.encryption_key = random.randint(0, 255)
-        self.in_codec = GraalEncryption()
-        self.out_codec = GraalEncryption()
+        self.in_codec = RebornEncryption()
+        self.out_codec = RebornEncryption()
         self.first_encrypted_packet = True
         
         # Protocol
@@ -98,11 +96,11 @@ class RebornClient:
             
             # Start threads
             # Start buffer threads
-            self.receive_thread = threading.Thread(target=self._receive_loop, name="GraalReceive")
+            self.receive_thread = threading.Thread(target=self._receive_loop, name="RebornReceive")
             self.receive_thread.daemon = True
             self.receive_thread.start()
             
-            self.send_thread = threading.Thread(target=self._send_loop, name="GraalSend")
+            self.send_thread = threading.Thread(target=self._send_loop, name="RebornSend")
             self.send_thread.daemon = True
             self.send_thread.start()
             
@@ -152,20 +150,39 @@ class RebornClient:
         # Wait for login response (PLO_SIGNATURE packet)
         self.login_success = False
         self.level_loaded = False
+        self.board_data_received = False
         start_time = time.time()
         
-        # Wait for either login success or player warp
+        # Wait for login success first
         while time.time() - start_time < timeout:
-            if self.login_success or self.level_loaded:
-                if self.login_success:
-                    print("Login accepted by server")
-                if self.level_loaded:
-                    print("Player warped to level, ready to play!")
-                return True
+            if self.login_success:
+                print("Login accepted by server")
+                break
             time.sleep(0.1)
-        
-        print("Login timeout - no response from server")
-        return False
+            
+        if not self.login_success:
+            print("Login timeout - no response from server")
+            return False
+            
+        # Now wait for initial board data
+        print("Waiting for initial level data...")
+        board_wait_start = time.time()
+        while time.time() - board_wait_start < 5.0:  # Wait up to 5 more seconds
+            # Check if we have board data
+            if hasattr(self, 'board_buffer') and len(self.board_buffer) >= 8192:
+                self.board_data_received = True
+                print("✅ Board data received through buffer")
+                break
+            if self.level_manager.current_level and hasattr(self.level_manager.current_level, 'board_tiles_64x64') and self.level_manager.current_level.board_tiles_64x64:
+                self.board_data_received = True
+                print("✅ Board data received in level")
+                break
+            time.sleep(0.1)
+            
+        if not self.board_data_received:
+            print("⚠️ No board data received yet (may come later)")
+            
+        return True
     
     # Movement and properties
     def move_to(self, x: float, y: float, direction: Optional[Direction] = None):
@@ -195,6 +212,10 @@ class RebornClient:
     def set_gani(self, gani: str):
         """Set animation"""
         self._actions.set_gani(gani)
+    
+    def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0):
+        """Warp to a specific level"""
+        self._actions.warp_to_level(level_name, x, y)
     
     # Combat
     def drop_bomb(self, x: Optional[float] = None, y: Optional[float] = None, 
@@ -470,7 +491,7 @@ class RebornClient:
         return list(self.level_manager.assets.keys())
     
     def load_tile_mapping(self, tileset_dir: str) -> bool:
-        """Load Graal tile mapping for collision detection"""
+        """Load Reborn tile mapping for collision detection"""
         return self.level_manager.load_tile_mapping(tileset_dir)
     
     def analyze_current_level_tiles(self) -> Dict[str, Any]:
@@ -503,7 +524,7 @@ class RebornClient:
             compressed_data = zlib.compress(data)
         
         # Create a new codec for this packet with the appropriate limit
-        packet_codec = GraalEncryption(self.encryption_key)
+        packet_codec = RebornEncryption(self.encryption_key)
         packet_codec.iterator = self.out_codec.iterator  # Copy current iterator state
         packet_codec.limit_from_type(compression_type)
         
@@ -671,6 +692,34 @@ class RebornClient:
             
             # Process the decrypted data normally
             pos = 0
+            
+            # Debug: Check if this looks like it contains board data
+            if len(decrypted) > 1000:
+                print(f"📦 Large decrypted chunk: {len(decrypted)} bytes")
+                # Check for PLO_BOARDPACKET (101 + 32 = 133 = 0x85)
+                board_marker = bytes([133])  # PLO_BOARDPACKET encoded
+                if board_marker in decrypted:
+                    board_pos = decrypted.find(board_marker)
+                    print(f"🎯 Found PLO_BOARDPACKET marker at position {board_pos}!")
+                    
+                    # Debug: Show what's around the marker
+                    start = max(0, board_pos - 10)
+                    end = min(len(decrypted), board_pos + 20)
+                    snippet = decrypted[start:end]
+                    print(f"   Context: {snippet.hex()}")
+                    print(f"   As text: {repr(snippet)}")
+                    
+                    # Check if there's a newline before it (packet boundary)
+                    prev_newline = decrypted.rfind(b'\n', 0, board_pos)
+                    next_newline = decrypted.find(b'\n', board_pos)
+                    print(f"   Previous newline at: {prev_newline}")
+                    print(f"   Next newline at: {next_newline}")
+                    
+                    if next_newline > board_pos:
+                        packet_size = next_newline - board_pos
+                        print(f"   Packet size would be: {packet_size} bytes")
+                    
+            packets_processed = 0
             while pos < len(decrypted):
                 # Find the next newline (packet terminator)
                 next_newline = decrypted.find(b'\n', pos)
@@ -681,22 +730,80 @@ class RebornClient:
                     
                 # Extract one packet (not including the newline)
                 packet = decrypted[pos:next_newline]
+                
+                # Debug position tracking
+                if len(decrypted) > 1000:  # For large chunks
+                    print(f"   Packet #{packets_processed}: pos={pos}, next_newline={next_newline}, packet_len={len(packet)}")
+                    if packet:
+                        print(f"     First byte: {packet[0]} (ID: {packet[0] - 32})")
+                    
+                    # Show what's coming next
+                    if pos < len(decrypted):
+                        next_10 = decrypted[pos:pos+10]
+                        print(f"     Next in stream: {next_10.hex()}")
+                
                 pos = next_newline + 1
+                packets_processed += 1
                 
                 if packet and len(packet) >= 1:
-                    # First byte is Graal-encoded packet ID
+                    # First byte is Reborn-encoded packet ID
                     packet_id = packet[0] - 32
                     packet_data = packet[1:]
                     
                     # Update session packet count
                     self.session.increment_packet_count()
                     
+                    # Special handling for PLO_BOARDPACKET (101)
+                    if packet_id == 101:  # PLO_BOARDPACKET
+                        print(f"🎯 PLO_BOARDPACKET detected!")
+                        # The board data is in the packet_data itself!
+                        # The packet is 8193 bytes: 1 byte ID + 8192 bytes of board data
+                        
+                        if len(packet_data) >= 8192:
+                            # The board data is in packet_data
+                            board_data = packet_data[:8192]
+                            
+                            print(f"✅ Read {len(board_data)} bytes of board data")
+                            
+                            # Apply board data
+                            if self.level_manager.current_level:
+                                self.level_manager.current_level.set_board_data(board_data)
+                                print(f"📦 Applied board data to level {self.level_manager.current_level.name}")
+                                
+                                # Show first few tiles
+                                import struct
+                                first_tiles = []
+                                for i in range(min(10, len(board_data)//2)):
+                                    tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                                    first_tiles.append(tile_id)
+                                print(f"   First 10 tile IDs: {first_tiles}")
+                                
+                                self.board_data_received = True
+                            else:
+                                print(f"⚠️ No current level to apply board data")
+                        else:
+                            print(f"❌ Not enough data in packet for board (need 8192, have {len(packet_data)})")
+                        
+                        # Continue processing remaining packets
+                        continue
+                    
                     result = self.packet_handler.handle_packet(packet_id, packet_data)
                     if result:
                         self._handle_packet_result(packet_id, result)
-                    self.events.emit(EventType.RAW_PACKET_RECEIVED, packet_id=packet_id, data=packet_data)
+                    self.events.emit(EventType.RAW_PACKET_RECEIVED, packet_id=packet_id, packet_data=packet_data)
+            
+            # Debug: Did we process all the data?
+            if len(decrypted) > 1000:
+                print(f"📊 Large chunk processing complete. Processed {packets_processed} packets, {pos} of {len(decrypted)} bytes")
+                if pos < len(decrypted):
+                    print(f"⚠️ {len(decrypted) - pos} bytes remaining unprocessed!")
+                    # Show what's left
+                    remaining = decrypted[pos:pos+50]
+                    print(f"   Remaining data starts with: {remaining.hex()}")
         except Exception as e:
-            pass
+            print(f"❌ Error processing packet: {e}")
+            import traceback
+            traceback.print_exc()
     
     def recv_encrypted_packet_data(self, packet: bytes):
         """Decrypt packet data"""
@@ -707,7 +814,7 @@ class RebornClient:
         encrypted_data = packet[1:]
         
         # Create a new codec for this packet with the appropriate limit
-        packet_codec = GraalEncryption(self.encryption_key)
+        packet_codec = RebornEncryption(self.encryption_key)
         packet_codec.iterator = self.in_codec.iterator  # Copy current iterator state
         packet_codec.limit_from_type(compression_type)
             

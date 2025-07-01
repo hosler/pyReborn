@@ -65,7 +65,7 @@ class PacketReader:
     def read_string_with_length(self) -> str:
         """Read string with length prefix"""
         length = self.read_byte()
-        if length < 0 or length > 223:  # Sanity check for Graal encoding
+        if length < 0 or length > 223:  # Sanity check for Reborn encoding
             return ""
         return self.read_string(length)
     
@@ -118,6 +118,7 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_ARROWADD] = self._handle_arrow_add
         self.handlers[ServerToPlayer.PLO_FIRESPY] = self._handle_firespy
         self.handlers[ServerToPlayer.PLO_EXPLOSION] = self._handle_explosion
+        self.handlers[ServerToPlayer.PLO_SHOWIMG] = self._handle_show_img
         self.handlers[ServerToPlayer.PLO_NPCPROPS] = self._handle_npc_props
         self.handlers[ServerToPlayer.PLO_NPCDEL] = self._handle_npc_del
         self.handlers[ServerToPlayer.PLO_NPCDEL2] = self._handle_npc_del2
@@ -127,6 +128,9 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_NC_CLASSADD] = self._handle_nc_classadd
         self.handlers[ServerToPlayer.PLO_FULLSTOP2] = self._handle_fullstop2
         self.handlers[ServerToPlayer.PLO_UNKNOWN198] = self._handle_unknown198
+        self.handlers[ServerToPlayer.PLO_NEWWORLDTIME] = self._handle_newworld_time
+        self.handlers[ServerToPlayer.PLO_STAFFGUILDS] = self._handle_staff_guilds
+        self.handlers[ServerToPlayer.PLO_TRIGGERACTION] = self._handle_trigger_action
         self.handlers[65] = self._handle_rc_listrcs  # PLI_RC_LISTRCS
         
         # Note: Board data after 0-byte board packet is handled as raw stream, not packets
@@ -135,6 +139,10 @@ class PacketHandler:
     def handle_packet(self, packet_id: int, data: bytes) -> Optional[Dict[str, Any]]:
         """Handle a single packet"""
         print(f"🔍 PACKET DEBUG: ID={packet_id}, Size={len(data)} bytes")
+        
+        # Special debug for board packet
+        if packet_id == 101:
+            print(f"🎯🎯🎯 PLO_BOARDPACKET (101) DETECTED IN HANDLER!")
         
         # Show raw data for debugging (first 50 bytes)
         if len(data) > 0:
@@ -441,7 +449,7 @@ class PacketHandler:
     
     def _handle_clear_weapons(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle clear weapons packet (PLO_CLEARWEAPONS)"""
-        # According to GServer source: blank packet sent before weapon list
+        # According to Reborn Server source: blank packet sent before weapon list
         return {"type": "clear_weapons"}
     
     def _handle_nc_classadd(self, reader: PacketReader) -> Dict[str, Any]:
@@ -460,6 +468,34 @@ class PacketHandler:
         """Handle unknown packet 198 (PLO_UNKNOWN198)"""
         # Unknown purpose, valid in 6.037
         return {"type": "unknown198", "data": reader.data[reader.pos:]}
+    
+    def _handle_newworld_time(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle new world time packet (PLO_NEWWORLDTIME)"""
+        # Server clock/time update
+        # Format: 4 bytes for time value
+        if reader.remaining() >= 4:
+            time_value = reader.read_int()
+            return {"type": "newworld_time", "time": time_value}
+        return {"type": "newworld_time", "raw": reader.data[reader.pos:]}
+    
+    def _handle_show_img(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle show image packet (PLO_SHOWIMG)"""
+        # Display image on screen
+        # Format varies - could be image name, position, etc.
+        return {"type": "show_img", "data": reader.data[reader.pos:]}
+    
+    def _handle_staff_guilds(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle staff guilds packet (PLO_STAFFGUILDS)"""
+        # List of staff guilds - read as gstring (null-terminated)
+        guilds_str = reader.read_gstring()
+        guilds = guilds_str.split(",") if guilds_str else []
+        return {"type": "staff_guilds", "guilds": guilds}
+    
+    def _handle_trigger_action(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle trigger action packet (PLO_TRIGGERACTION)"""
+        # Trigger action from server/NPC
+        # Format varies - action name, parameters, etc.
+        return {"type": "trigger_action", "data": reader.data[reader.pos:]}
     
     def _handle_rc_listrcs(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle RC list RCs packet (PLI_RC_LISTRCS)"""
