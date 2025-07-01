@@ -29,6 +29,7 @@ from .models.level import Level
 from .events import EventManager, EventType
 from .session import SessionManager
 from .level_manager import LevelManager
+from .actions import PlayerActions
 
 
 class RebornClient:
@@ -77,6 +78,9 @@ class RebornClient:
         
         # Level management
         self.level_manager = LevelManager(self)
+        
+        # Actions delegate
+        self._actions = PlayerActions(self)
         
         # Threading
         self._recv_thread: Optional[threading.Thread] = None
@@ -165,81 +169,45 @@ class RebornClient:
     # Movement and properties
     def move_to(self, x: float, y: float, direction: Optional[Direction] = None):
         """Move to position"""
-        if direction is None:
-            direction = self.local_player.direction
-            
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_X, x)
-        packet.add_property(PlayerProp.PLPROP_Y, y)
-        packet.add_property(PlayerProp.PLPROP_SPRITE, direction)
-        self._send_packet(packet)
-        
-        # Update local state
-        self.local_player.x = x
-        self.local_player.y = y
-        self.local_player.direction = direction
+        self._actions.move_to(x, y, direction)
     
     def set_nickname(self, nickname: str):
         """Set nickname"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_NICKNAME, nickname)
-        self._send_packet(packet)
-        self.local_player.nickname = nickname
+        self._actions.set_nickname(nickname)
     
     def set_chat(self, message: str):
         """Set chat bubble"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_CURCHAT, message)
-        self._send_packet(packet)
-        self.local_player.chat = message
+        self._actions.set_chat(message)
     
     def say(self, message: str):
         """Send chat message to all"""
-        packet = ToAllPacket(message)
-        self._send_packet(packet)
+        self._actions.say(message)
     
     def set_body_image(self, body_image: str):
         """Set body image"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_BODYIMG, body_image)
-        self._send_packet(packet)
-        self.local_player.body_image = body_image
+        self._actions.set_body_image(body_image)
     
     def set_head_image(self, head_image: str):
         """Set head image"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_HEADGIF, head_image)
-        self._send_packet(packet)
-        self.local_player.head_image = head_image
+        self._actions.set_head_image(head_image)
     
     def set_gani(self, gani: str):
         """Set animation"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_GANI, gani)
-        self._send_packet(packet)
-        self.local_player.gani = gani
+        self._actions.set_gani(gani)
     
     # Combat
     def drop_bomb(self, x: Optional[float] = None, y: Optional[float] = None, 
                   power: int = 1, timer: int = 55):
         """Drop a bomb"""
-        if x is None:
-            x = self.local_player.x
-        if y is None:
-            y = self.local_player.y
-            
-        packet = BombAddPacket(x, y, power, timer)
-        self._send_packet(packet)
+        self._actions.drop_bomb(x, y, power)
     
     def shoot_arrow(self):
         """Shoot arrow (simple)"""
-        packet = ArrowAddPacket()
-        self._send_packet(packet)
+        self._actions.shoot_arrow()
     
     def fire_effect(self):
         """Create fire effect"""
-        packet = FireSpyPacket()
-        self._send_packet(packet)
+        self._actions.fire_effect()
     
     def add_weapon(self, weapon_id: LevelItemType):
         """Add weapon"""
@@ -271,35 +239,19 @@ class RebornClient:
     # Items and inventory
     def set_arrows(self, count: int):
         """Set arrow count"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_ARROWSCOUNT, count)
-        self._send_packet(packet)
-        self.local_player.arrows = count
+        self._actions.set_arrows(count)
     
     def set_bombs(self, count: int):
         """Set bomb count"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_BOMBSCOUNT, count)
-        self._send_packet(packet)
-        self.local_player.bombs = count
+        self._actions.set_bombs(count)
     
     def set_rupees(self, count: int):
         """Set rupee count"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_RUPEESCOUNT, count)
-        self._send_packet(packet)
-        self.local_player.rupees = count
+        self._actions.set_rupees(count)
     
     def set_hearts(self, current: float, maximum: Optional[float] = None):
         """Set hearts"""
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_CURPOWER, int(current * 2))
-        if maximum is not None:
-            packet.add_property(PlayerProp.PLPROP_MAXPOWER, int(maximum * 2))
-        self._send_packet(packet)
-        self.local_player.hearts = current
-        if maximum is not None:
-            self.local_player.max_hearts = maximum
+        self._actions.set_hearts(current, maximum)
     
     # Files and flags
     def request_file(self, filename: str):
@@ -315,8 +267,7 @@ class RebornClient:
     
     def send_pm(self, player_id: int, message: str):
         """Send private message"""
-        packet = PrivateMessagePacket(player_id, message)
-        self._send_packet(packet)
+        self._actions.send_pm(player_id, message)
     
     def _decode_truncated_hex(self, truncated_hex):
         """Decode truncated hex board data to binary format"""
