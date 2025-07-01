@@ -97,6 +97,9 @@ class TileDefs:
     
     def is_blocking(self, tile_id: int, tileset_type: int = 0) -> bool:
         """Check if a tile blocks movement"""
+        # Bush tiles (2, 3, 18, 19) are not blocking - they can be picked up
+        if tile_id in {2, 3, 18, 19}:
+            return False
         tile_type = self.get_tile_type(tile_id, tileset_type)
         return tile_type in self.BLOCKING_TILES
     

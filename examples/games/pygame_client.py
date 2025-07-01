@@ -15,6 +15,7 @@ from pyreborn.protocol.enums import Direction
 from pyreborn.events import EventType
 from gani_parser import GaniManager
 from tile_defs import TileDefs
+from bush_handler import BushHandler
 
 # Constants
 SCREEN_WIDTH = 1024
@@ -60,6 +61,9 @@ class PygameClient:
         
         # Initialize tile definitions for collision detection
         self.tile_defs = TileDefs()
+        
+        # Initialize bush handler
+        self.bush_handler = BushHandler()
         
         # Sound system
         pygame.mixer.init()
@@ -213,10 +217,23 @@ class PygameClient:
                             # Play sound for first frame
                             self.play_gani_sounds('sword', 0)
                     elif event.key == pygame.K_a:
-                        # Grab/pull
-                        self.grabbing = True
-                        self.client.set_gani("grab")
-                        self.animation_frame = 0
+                        # Grab/pull/throw
+                        if self.bush_handler.carrying_bush:
+                            # Throw the bush
+                            self.bush_handler.throw_bush(
+                                self.client.local_player.x,
+                                self.client.local_player.y,
+                                self.last_direction
+                            )
+                            self.client.set_gani("sword")  # Use sword animation for throwing
+                            self.animation_frame = 0
+                            # Clear carry sprite
+                            self.set_carry_sprite("")
+                        else:
+                            # Try to grab
+                            self.grabbing = True
+                            self.client.set_gani("grab")
+                            self.animation_frame = 0
                     elif event.key == pygame.K_F3:
                         # Toggle tile debug
                         self.debug_tiles = not self.debug_tiles
@@ -226,8 +243,25 @@ class PygameClient:
                         
             elif event.type == pygame.KEYUP:
                 if event.key == pygame.K_a:
+                    if self.grabbing and not self.bush_handler.carrying_bush:
+                        # Try to pick up bush when releasing grab
+                        bush_pos = self.bush_handler.try_pickup_bush(
+                            self.current_level,
+                            self.client.local_player.x,
+                            self.client.local_player.y,
+                            self.last_direction
+                        )
+                        if bush_pos:
+                            # Replace bush tiles with new tiles
+                            tile_x, tile_y = bush_pos
+                            self.replace_bush_tiles(tile_x, tile_y)
+                            self.client.set_gani("lift")  # Lift animation
+                            self.animation_frame = 0
+                            # Notify server we're carrying a bush
+                            self.set_carry_sprite("bush")
                     self.grabbing = False
-                    self.client.set_gani("idle")
+                    if not self.bush_handler.carrying_bush:
+                        self.client.set_gani("idle")
                 self.keys_pressed.discard(event.key)
                 
     def process_game_events(self):
@@ -462,6 +496,54 @@ class PygameClient:
                 return False
                 
         return True
+        
+    def replace_bush_tiles(self, tile_x: int, tile_y: int):
+        """Replace a bush (2x2 tiles) with the picked-up tiles"""
+        if not self.current_level:
+            return
+            
+        # Get the current tile to determine which bush tile it is
+        current_tile = self.current_level.get_board_tile_id(tile_x, tile_y)
+        
+        # Determine the top-left corner of the bush based on which tile was grabbed
+        if current_tile == 2:  # Top-left
+            base_x, base_y = tile_x, tile_y
+        elif current_tile == 3:  # Top-right
+            base_x, base_y = tile_x - 1, tile_y
+        elif current_tile == 18:  # Bottom-left
+            base_x, base_y = tile_x, tile_y - 1
+        elif current_tile == 19:  # Bottom-right
+            base_x, base_y = tile_x - 1, tile_y - 1
+        else:
+            return  # Not a bush tile
+            
+        # Replace the 2x2 bush with the new tiles
+        # Note: We're modifying the local display only - server would handle the actual change
+        replacement_tiles = [
+            (base_x, base_y, 677),      # Top-left
+            (base_x + 1, base_y, 678),  # Top-right
+            (base_x, base_y + 1, 693),  # Bottom-left
+            (base_x + 1, base_y + 1, 694)  # Bottom-right
+        ]
+        
+        # Update the tile data in memory for display
+        tiles_2d = self.current_level.get_board_tiles_2d()
+        for x, y, new_tile_id in replacement_tiles:
+            if 0 <= x < 64 and 0 <= y < 64:
+                tiles_2d[y][x] = new_tile_id
+                # Also update the flat array
+                idx = y * 64 + x
+                if hasattr(self.current_level, 'board_tiles_64x64'):
+                    self.current_level.board_tiles_64x64[idx] = new_tile_id
+                    
+    def set_carry_sprite(self, sprite_name: str):
+        """Set the carry sprite (what player is holding)"""
+        from pyreborn.protocol.enums import PlayerProp
+        from pyreborn.protocol.packets import PlayerPropsPacket
+        
+        packet = PlayerPropsPacket()
+        packet.add_property(PlayerProp.PLPROP_CARRYSPRITE, sprite_name)
+        self.client._send_packet(packet)
         
     def get_tile_surface(self, tile_id):
         """Get a surface for a specific tile ID from the tileset
@@ -730,6 +812,49 @@ class PygameClient:
                         
                     pygame.draw.rect(self.screen, color, 
                                    (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+                                   
+    def draw_thrown_bushes(self):
+        """Draw thrown bushes and explosions"""
+        current_time = time.time()
+        
+        # Draw thrown bushes
+        for bush in self.bush_handler.thrown_bushes:
+            x, y = bush.get_position(current_time)
+            screen_x = (x - self.camera_x) * TILE_SIZE
+            screen_y = (y - self.camera_y) * TILE_SIZE
+            
+            # Draw a small bush sprite (using tile 2 for now)
+            bush_surface = self.get_tile_surface(2)
+            if bush_surface:
+                # Make it smaller while flying
+                small_bush = pygame.transform.scale(bush_surface, (TILE_SIZE//2, TILE_SIZE//2))
+                self.screen.blit(small_bush, (screen_x + TILE_SIZE//4, screen_y + TILE_SIZE//4))
+            else:
+                # Fallback to green circle
+                pygame.draw.circle(self.screen, (0, 150, 0), 
+                                 (int(screen_x + TILE_SIZE/2), int(screen_y + TILE_SIZE/2)), 
+                                 TILE_SIZE//3)
+        
+        # Draw explosions
+        for exp_x, exp_y, exp_time in self.bush_handler.bush_explosions:
+            age = current_time - exp_time
+            if age < 0.5:  # 0.5 second explosion
+                screen_x = (exp_x - self.camera_x) * TILE_SIZE
+                screen_y = (exp_y - self.camera_y) * TILE_SIZE
+                
+                # Explosion effect - expanding circles
+                radius = int(TILE_SIZE * (1 + age * 2))
+                alpha = int(255 * (1 - age * 2))
+                
+                # Draw multiple circles for effect
+                colors = [(255, 200, 0), (255, 150, 0), (200, 100, 0)]
+                for i, color in enumerate(colors):
+                    r = radius - i * 5
+                    if r > 0:
+                        # Create a surface for alpha blending
+                        surf = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
+                        pygame.draw.circle(surf, (*color, alpha), (r, r), r)
+                        self.screen.blit(surf, (screen_x + TILE_SIZE/2 - r, screen_y + TILE_SIZE/2 - r))
                                
     def draw_players(self):
         """Draw all players"""
@@ -1006,9 +1131,14 @@ class PygameClient:
                         max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4}.get(gani, 1)
                         anim_state['frame'] = (anim_state['frame'] + 1) % max_frames
             
+            # Update thrown bushes
+            self.bush_handler.update_thrown_bushes(self.current_level, self.tile_defs, current_time)
+            self.bush_handler.update_explosions(current_time)
+            
             # Draw
             self.screen.fill(BLACK)
             self.draw_level()
+            self.draw_thrown_bushes()
             self.draw_players()
             self.draw_ui()
             
