@@ -164,4 +164,4 @@ cython_debug/
 # PyReborn specific
 *.log
 test_output/
-debug_packets.txt
+debug_packets.txtexamples/games/assets/
