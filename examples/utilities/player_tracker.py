@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 sys.path.insert(0, '../..')
 
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
 class PlayerTracker:
     def __init__(self, client):

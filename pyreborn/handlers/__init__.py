@@ -1,12 +1,6 @@
 """
 Packet handlers for PyReborn.
 """
-from .registry import PacketHandlerRegistry, create_handler_decorator
-from .base import BasePacketHandler, PacketHandlerMixin
+from .packet_handler import PacketHandler, PacketReader
 
-__all__ = [
-    'PacketHandlerRegistry',
-    'create_handler_decorator',
-    'BasePacketHandler',
-    'PacketHandlerMixin'
-]
+__all__ = ['PacketHandler', 'PacketReader']

@@ -9,7 +9,7 @@ import os
 from collections import Counter
 sys.path.insert(0, '../..')
 
-from pyreborn.client import RebornClient
+from pyreborn import RebornClient
 
 try:
     from PIL import Image

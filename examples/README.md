@@ -2,6 +2,46 @@
 
 This directory contains example scripts demonstrating PyReborn functionality.
 
+## Feature Demonstrations
+
+### feature_demo.py
+Comprehensive demonstration of all PyReborn features:
+- Connection and authentication
+- Movement patterns and positioning
+- Chat bubble system
+- Appearance customization (heads, bodies, nickname)
+- Event handling system demonstration
+- Level data access and tile information
+- Player tracking and session management
+- Tileset coordinate conversion
+
+**Usage:**
+```bash
+cd examples
+python feature_demo.py
+```
+
+### interactive_demo.py
+Interactive bot that responds to player commands:
+- **Commands**: help, follow me, stop, dance, stats
+- **Movement patterns**: circle, square, random
+- **Tile inspection**: Check tile IDs at coordinates
+- **Chat responses**: Responds to greetings and mentions
+- **Real-time following**: Follows players who request it
+
+**Usage:**
+```bash
+cd examples
+python interactive_demo.py
+```
+
+**In-game commands:**
+- `help` - Show all available commands
+- `follow me` - Bot will follow you around
+- `move circle` - Move in a circle pattern
+- `dance` - Perform a dance animation
+- `tile 30,30` - Check tile at coordinates
+
 ## Bots
 
 ### basic_bot.py
