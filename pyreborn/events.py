@@ -80,6 +80,16 @@ class EventType(Enum):
     RAW_PACKET_RECEIVED = auto()
     RAW_PACKET_SENT = auto()
     PACKET_RECEIVED = auto()
+    
+    # New GServer-V2 events
+    TRIGGER_ACTION = auto()
+    GROUP_CHANGED = auto()
+    LEVELGROUP_CHANGED = auto()
+    GHOST_TEXT = auto()
+    GHOST_ICON = auto()
+    MINIMAP_UPDATE = auto()
+    SERVER_WARP = auto()
+    CLIENT_FREEZE = auto()
 
 
 class EventManager:

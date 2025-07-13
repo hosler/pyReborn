@@ -133,6 +133,13 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_TRIGGERACTION] = self._handle_trigger_action
         self.handlers[65] = self._handle_rc_listrcs  # PLI_RC_LISTRCS
         
+        # New GServer-V2 packet handlers
+        self.handlers[ServerToPlayer.PLO_GHOSTTEXT] = self._handle_ghost_text
+        self.handlers[ServerToPlayer.PLO_GHOSTICON] = self._handle_ghost_icon
+        self.handlers[ServerToPlayer.PLO_MINIMAP] = self._handle_minimap
+        self.handlers[ServerToPlayer.PLO_SERVERWARP] = self._handle_server_warp
+        self.handlers[ServerToPlayer.PLO_FULLSTOP] = self._handle_fullstop
+        
         # Note: Board data after 0-byte board packet is handled as raw stream, not packets
         
     
@@ -494,8 +501,20 @@ class PacketHandler:
     def _handle_trigger_action(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle trigger action packet (PLO_TRIGGERACTION)"""
         # Trigger action from server/NPC
-        # Format varies - action name, parameters, etc.
-        return {"type": "trigger_action", "data": reader.data[reader.pos:]}
+        # Format: action_name,param1,param2,...
+        data = reader.read_gstring()
+        
+        # Parse action and parameters
+        parts = data.split(',') if data else []
+        action = parts[0] if parts else ""
+        params = parts[1:] if len(parts) > 1 else []
+        
+        return {
+            "type": "trigger_action", 
+            "action": action,
+            "params": params,
+            "raw": data
+        }
     
     def _handle_rc_listrcs(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle RC list RCs packet (PLI_RC_LISTRCS)"""
@@ -506,3 +525,44 @@ class PacketHandler:
         """Handle NPC action packet (PLO_NPCACTION)"""
         # Format varies, usually contains NPC ID and action data
         return {"type": "npc_action", "data": reader.data[reader.pos:]}
+    
+    def _handle_ghost_text(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle ghost text packet (PLO_GHOSTTEXT)"""
+        # Shows static text in lower-right corner of screen only when in ghost mode
+        text = reader.read_gstring()
+        return {"type": "ghost_text", "text": text}
+    
+    def _handle_ghost_icon(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle ghost icon packet (PLO_GHOSTICON)"""
+        # Pass 1 to enable the ghost icon
+        enabled = reader.read_byte() == 1 if reader.has_more() else False
+        return {"type": "ghost_icon", "enabled": enabled}
+    
+    def _handle_minimap(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle minimap packet (PLO_MINIMAP)"""
+        # Format: [172] minimap.txt,minimapimage.png,10,10
+        data = reader.read_gstring()
+        parts = data.split(',')
+        result = {"type": "minimap", "raw": data}
+        
+        if len(parts) >= 4:
+            result.update({
+                "text_file": parts[0],
+                "image_file": parts[1],
+                "x": int(parts[2]) if parts[2].isdigit() else 0,
+                "y": int(parts[3]) if parts[3].isdigit() else 0
+            })
+        
+        return result
+    
+    def _handle_server_warp(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle server warp packet (PLO_SERVERWARP)"""
+        # Server-initiated warp to another server
+        # Format appears to be server info for connection
+        data = reader.data[reader.pos:]
+        return {"type": "server_warp", "data": data}
+    
+    def _handle_fullstop(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle fullstop packet (PLO_FULLSTOP)"""
+        # Sending this causes the entire client to not respond to normal input and hides the HUD
+        return {"type": "fullstop"}

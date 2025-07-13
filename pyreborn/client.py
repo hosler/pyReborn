@@ -1061,4 +1061,51 @@ class RebornClient:
             # Level link
             self.level_manager.handle_level_link(result["data"])
         
+        elif packet_type == "trigger_action":
+            # Trigger action from server
+            action = result.get("action", "")
+            params = result.get("params", [])
+            
+            # Special handling for known actions
+            if action == "gr.setgroup" and params:
+                self.local_player.group = params[0]
+                self.events.emit(EventType.GROUP_CHANGED, group=params[0])
+            elif action == "gr.setlevelgroup" and params:
+                self.local_player.group = params[0]
+                self.events.emit(EventType.LEVELGROUP_CHANGED, group=params[0])
+            
+            # Always emit the raw event
+            self.events.emit(EventType.TRIGGER_ACTION, 
+                           action=action, 
+                           params=params,
+                           raw=result.get("raw", ""))
+        
+        elif packet_type == "ghost_text":
+            # Ghost mode text
+            self.events.emit(EventType.GHOST_TEXT, text=result.get("text", ""))
+        
+        elif packet_type == "ghost_icon":
+            # Ghost mode icon
+            self.events.emit(EventType.GHOST_ICON, enabled=result.get("enabled", False))
+        
+        elif packet_type == "minimap":
+            # Minimap data
+            self.events.emit(EventType.MINIMAP_UPDATE, 
+                           text_file=result.get("text_file", ""),
+                           image_file=result.get("image_file", ""),
+                           x=result.get("x", 0),
+                           y=result.get("y", 0))
+        
+        elif packet_type == "server_warp":
+            # Server-initiated warp to another server
+            self.events.emit(EventType.SERVER_WARP, data=result.get("data", b''))
+        
+        elif packet_type == "fullstop":
+            # Client freeze
+            self.events.emit(EventType.CLIENT_FREEZE, freeze_type="fullstop")
+        
+        elif packet_type == "fullstop2":
+            # Client freeze type 2
+            self.events.emit(EventType.CLIENT_FREEZE, freeze_type="fullstop2")
+        
         # Many more packet types to handle...

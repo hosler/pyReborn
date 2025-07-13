@@ -423,3 +423,63 @@ class PrivateMessagePacket(RebornPacket):
         builder.add_short(self.player_id)
         builder.add_gstring(self.message)
         return builder.build()
+
+
+class RequestUpdateBoardPacket(RebornPacket):
+    """Request board update for specific level region"""
+    
+    def __init__(self, level: str, mod_time: int, x: int, y: int, width: int, height: int):
+        super().__init__(PlayerToServer.PLI_REQUESTUPDATEBOARD)
+        self.level = level
+        self.mod_time = mod_time
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    
+    def to_bytes(self) -> bytes:
+        builder = PacketBuilder()
+        builder.add_packet_id(self.packet_id)
+        builder.add_string(self.level)
+        
+        # Add 5-byte mod time
+        for i in range(5):
+            builder.add_byte((self.mod_time >> (i * 7)) & 0x7F)
+        
+        # Add coordinates
+        builder.add_short(self.x)
+        builder.add_short(self.y)
+        builder.add_short(self.width)
+        builder.add_short(self.height)
+        
+        return builder.end_packet().build()
+
+
+class RequestTextPacket(RebornPacket):
+    """Request a text value from server"""
+    
+    def __init__(self, key: str):
+        super().__init__(PlayerToServer.PLI_REQUESTTEXT)
+        self.key = key
+    
+    def to_bytes(self) -> bytes:
+        builder = PacketBuilder()
+        builder.add_packet_id(self.packet_id)
+        builder.add_gstring(self.key)
+        return builder.build()
+
+
+class SendTextPacket(RebornPacket):
+    """Send a text value to server"""
+    
+    def __init__(self, key: str, value: str):
+        super().__init__(PlayerToServer.PLI_SENDTEXT)
+        self.key = key
+        self.value = value
+    
+    def to_bytes(self) -> bytes:
+        builder = PacketBuilder()
+        builder.add_packet_id(self.packet_id)
+        builder.add_string(self.key)
+        builder.add_gstring(self.value)
+        return builder.build()

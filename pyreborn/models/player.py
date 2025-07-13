@@ -59,6 +59,11 @@ class Player:
         self.kills = 0
         self.deaths = 0
         self.rating = 0
+        
+        # New GServer-V2 properties
+        self.community_name = ""  # Alias/community name
+        self.playerlist_category = 0  # Player list categorization
+        self.group = ""  # Player group for group maps
     
     @property
     def player_id(self) -> int:
@@ -79,6 +84,15 @@ class Player:
         elif prop == PlayerProp.PLPROP_Y:
             self.y = value / 2.0
         elif prop == PlayerProp.PLPROP_Z:
+            self.z = value
+        elif prop == PlayerProp.PLPROP_X2:
+            # High precision X coordinate (pixels)
+            self.x = value / 16.0
+        elif prop == PlayerProp.PLPROP_Y2:
+            # High precision Y coordinate (pixels)
+            self.y = value / 16.0
+        elif prop == PlayerProp.PLPROP_Z2:
+            # High precision Z coordinate
             self.z = value
         elif prop == PlayerProp.PLPROP_SPRITE:
             self.direction = Direction(value % 4)
@@ -128,6 +142,10 @@ class Player:
             self.rating = value
         elif prop == PlayerProp.PLPROP_ID:
             self.id = value
+        elif prop == PlayerProp.PLPROP_COMMUNITYNAME:
+            self.community_name = value
+        elif prop == PlayerProp.PLPROP_PLAYERLISTCATEGORY:
+            self.playerlist_category = value
         elif prop == PlayerProp.PLPROP_COLORS:
             if isinstance(value, list) and len(value) >= 5:
                 self.colors = value[:5]

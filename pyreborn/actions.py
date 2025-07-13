@@ -7,7 +7,8 @@ from typing import Optional, TYPE_CHECKING
 from .protocol.enums import PlayerProp, Direction
 from .protocol.packets import (
     PlayerPropsPacket, ToAllPacket, BombAddPacket,
-    ArrowAddPacket, FireSpyPacket, PrivateMessagePacket
+    ArrowAddPacket, FireSpyPacket, PrivateMessagePacket,
+    RequestUpdateBoardPacket, RequestTextPacket, SendTextPacket
 )
 
 if TYPE_CHECKING:
@@ -166,3 +167,43 @@ class PlayerActions:
         
         self.client._send_packet(packet)
         print(f"Warping to level '{level_name}' at ({x}, {y})")
+    
+    # New GServer-V2 features
+    def request_board_update(self, level: str, x: int, y: int, width: int, height: int, mod_time: int = 0):
+        """Request partial board update for a level region"""
+        packet = RequestUpdateBoardPacket(level, mod_time, x, y, width, height)
+        self.client._send_packet(packet)
+    
+    def request_text(self, key: str):
+        """Request a text value from the server"""
+        packet = RequestTextPacket(key)
+        self.client._send_packet(packet)
+    
+    def send_text(self, key: str, value: str):
+        """Send a text value to the server"""
+        packet = SendTextPacket(key, value)
+        self.client._send_packet(packet)
+    
+    def set_group(self, group: str):
+        """Set player group (for group maps)"""
+        # Store locally - server handles via triggeraction
+        self.client.local_player.group = group
+    
+    def move_with_precision(self, x: float, y: float, z: float = 0.0, direction: Optional[Direction] = None):
+        """Move using high-precision coordinates"""
+        if direction is None:
+            direction = self.client.local_player.direction
+            
+        packet = PlayerPropsPacket()
+        # Use high-precision properties
+        packet.add_property(PlayerProp.PLPROP_X2, int(x * 16))
+        packet.add_property(PlayerProp.PLPROP_Y2, int(y * 16))
+        packet.add_property(PlayerProp.PLPROP_Z2, int(z))
+        packet.add_property(PlayerProp.PLPROP_SPRITE, direction)
+        self.client._send_packet(packet)
+        
+        # Update local state
+        self.client.local_player.x = x
+        self.client.local_player.y = y
+        self.client.local_player.z = z
+        self.client.local_player.direction = direction
