@@ -90,6 +90,17 @@ class PlayerActions:
         self.client._send_packet(packet)
         self.client.local_player.gani = gani
         
+    def set_carry_sprite(self, sprite_id: int):
+        """Set carry sprite (item being carried)
+        
+        Args:
+            sprite_id: The sprite ID to carry (-1 for none)
+        """
+        packet = PlayerPropsPacket()
+        packet.add_property(PlayerProp.PLPROP_CARRYSPRITE, sprite_id)
+        self.client._send_packet(packet)
+        self.client.local_player.carry_sprite = sprite_id
+        
     # Combat
     def drop_bomb(self, x: Optional[float] = None, y: Optional[float] = None, power: int = 1):
         """Drop a bomb"""
