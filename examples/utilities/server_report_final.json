@@ -1,0 +1,22 @@
+{
+  "generated_at": "2025-07-01T11:18:33.248680",
+  "runtime_seconds": 76.988194,
+  "runtime_hours": 0.021385609444444443,
+  "statistics": {
+    "total_unique_players": 0,
+    "total_joins": 0,
+    "total_leaves": 0,
+    "total_chat_messages": 0,
+    "total_movements": 0,
+    "peak_concurrent_players": 0,
+    "current_online_players": 0,
+    "average_players": 0.0
+  },
+  "online_now": {},
+  "player_rankings": {
+    "most_active": [],
+    "most_talkative": [],
+    "longest_playtime": []
+  },
+  "recent_chat": []
+}

@@ -213,6 +213,10 @@ class RebornClient:
         """Set animation"""
         self._actions.set_gani(gani)
     
+    def set_carry_sprite(self, sprite_id: int):
+        """Set carry sprite (item being carried)"""
+        self._actions.set_carry_sprite(sprite_id)
+    
     def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0):
         """Warp to a specific level"""
         self._actions.warp_to_level(level_name, x, y)
