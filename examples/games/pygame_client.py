@@ -33,6 +33,15 @@ RED = (255, 0, 0)
 BLUE = (0, 0, 255)
 GRAY = (128, 128, 128)
 DARK_GREEN = (0, 128, 0)
+YELLOW = (255, 255, 0)
+PURPLE = (128, 0, 128)
+CYAN = (0, 255, 255)
+
+# UI Colors
+UI_BG = (20, 20, 30)
+UI_BORDER = (60, 60, 80)
+UI_TEXT = (200, 200, 220)
+UI_HIGHLIGHT = (100, 100, 150)
 
 class PygameClient:
     def __init__(self):
@@ -41,8 +50,15 @@ class PygameClient:
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("PyReborn Pygame Client")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 24)
-        self.small_font = pygame.font.Font(None, 16)
+        # Fonts
+        self.font_large = pygame.font.Font(None, 36)
+        self.font_medium = pygame.font.Font(None, 24)
+        self.font_small = pygame.font.Font(None, 18)
+        self.font_tiny = pygame.font.Font(None, 14)
+        
+        # Backward compatibility
+        self.font = self.font_medium
+        self.small_font = self.font_small
         
         # Load tileset
         self.tileset = None
@@ -51,11 +67,20 @@ class PygameClient:
             tileset_path = os.path.join(os.path.dirname(__file__), "assets", "pics1.png")
             if os.path.exists(tileset_path):
                 self.tileset = pygame.image.load(tileset_path).convert_alpha()
-                print(f"Loaded tileset from {tileset_path}")
+                print(f"✅ Loaded tileset from {tileset_path}")
+                print(f"   Tileset size: {self.tileset.get_size()}")
             else:
-                print(f"Tileset not found at {tileset_path}")
+                print(f"⚠️  WARNING: Tileset not found at {tileset_path}")
+                print(f"   Current directory: {os.getcwd()}")
+                print(f"   Script directory: {os.path.dirname(__file__)}")
+                # Check if assets directory exists
+                assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+                if os.path.exists(assets_dir):
+                    print(f"   Assets directory exists, contents: {os.listdir(assets_dir)[:5]}...")
+                else:
+                    print(f"   Assets directory does not exist!")
         except Exception as e:
-            print(f"Failed to load tileset: {e}")
+            print(f"❌ Failed to load tileset: {e}")
             
         # Initialize GANI manager
         self.gani_manager = GaniManager(os.path.dirname(__file__))
@@ -72,7 +97,7 @@ class PygameClient:
         self.sound_channels = {i: pygame.mixer.Channel(i) for i in range(8)}  # 8 channels
         
         # Preload common GANIs
-        for gani_name in ['idle', 'walk', 'sword', 'grab', 'pull', 'carry', 'sit', 'lift']:
+        for gani_name in ['idle', 'walk', 'sword', 'grab', 'pull', 'carry', 'sit', 'lift', 'push']:
             gani = self.gani_manager.load_gani(gani_name)
             if gani:
                 print(f"Loaded GANI: {gani_name}")
@@ -80,6 +105,17 @@ class PygameClient:
         # Debug options
         self.debug_updates = False  # Set to True to see update frequency
         self.debug_tiles = False  # Set to True to see tile info under cursor
+        self.debug_collision = False  # Set to True to show collision box in red
+        
+        # Collision configuration
+        self.collision_config = {
+            'RIGHT': {'x_offset': 1.0, 'y_offset': 1.0},  # 16 pixels right, 16 pixels down
+            'DOWN': {'x_offset': 1.0, 'y_offset': 1.0},
+            'LEFT': {'x_offset': 1.0, 'y_offset': 1.0},
+            'UP': {'x_offset': 1.0, 'y_offset': 1.0},
+            'shadow_width': 1.2,  # Twice as wide (was 0.6)
+            'shadow_height': 0.6
+        }
         
         # Keep sprite cache for performance
         self.sprite_cache = {}
@@ -97,6 +133,8 @@ class PygameClient:
         self.keys_pressed = set()
         self.chat_mode = False
         self.chat_buffer = ""
+        self.chat_history = []  # Store chat messages
+        self.max_chat_history = 10
         
         # Game state
         self.players = {}
@@ -104,6 +142,7 @@ class PygameClient:
         self.player_predictions = {}  # Track predicted positions for smooth movement
         self.current_level = None
         self.event_queue = queue.Queue()
+        self.grabbed_tile_pos = None  # Position of tile being grabbed
         
         # Movement
         self.move_speed = 0.5  # Half tile per move
@@ -122,6 +161,20 @@ class PygameClient:
         self.on_chair = False  # Track if sitting on a chair
         self.throwing = False  # Track if throwing animation is playing
         self.throw_start_time = 0
+        self.pushing = False  # Track if pushing against a wall
+        self.push_start_time = 0
+        self.blocked_direction = None  # Direction we're blocked in
+        
+        # UI State
+        self.show_debug = False
+        self.show_minimap = False
+        self.show_player_list = False
+        self.messages = []  # System messages
+        self.message_duration = 5.0
+        
+        # Performance tracking
+        self.fps_history = []
+        self.fps_sample_size = 60
         
         # Setup event handlers
         self._setup_events()
@@ -183,6 +236,14 @@ class PygameClient:
         
         return True
         
+    def add_message(self, text: str, color=WHITE):
+        """Add a system message"""
+        self.messages.append({
+            'text': text,
+            'color': color,
+            'time': time.time()
+        })
+        
     def handle_events(self):
         """Handle pygame events"""
         for event in pygame.event.get():
@@ -211,6 +272,18 @@ class PygameClient:
                         self.chat_mode = True
                     elif event.key == pygame.K_ESCAPE:
                         self.running = False
+                    elif event.key == pygame.K_F1:
+                        self.show_debug = not self.show_debug
+                        self.add_message("Debug: " + ("ON" if self.show_debug else "OFF"), YELLOW)
+                    elif event.key == pygame.K_F2:
+                        self.debug_collision = not self.debug_collision
+                        self.add_message("Collision Debug: " + ("ON" if self.debug_collision else "OFF"), YELLOW)
+                    elif event.key == pygame.K_m:
+                        self.show_minimap = not self.show_minimap
+                        self.add_message("Minimap: " + ("ON" if self.show_minimap else "OFF"), YELLOW)
+                    elif event.key == pygame.K_p:
+                        self.show_player_list = not self.show_player_list
+                        self.add_message("Player list: " + ("ON" if self.show_player_list else "OFF"), YELLOW)
                     elif event.key == pygame.K_SPACE or event.key == pygame.K_s:
                         # Swing sword
                         if not self.sword_animating and not self.throwing:
@@ -249,8 +322,13 @@ class PygameClient:
                             elif self.last_direction == Direction.RIGHT:
                                 dx = 1
                                 
-                            check_x = self.client.local_player.x + dx
-                            check_y = self.client.local_player.y + dy
+                            # Grab check starts from player's center position
+                            base_x = self.client.local_player.x + 0.5  # Center of tile
+                            base_y = self.client.local_player.y + 0.5  # Center of tile
+                            
+                            # Extend check position in the facing direction
+                            check_x = base_x + dx * 0.8
+                            check_y = base_y + dy * 0.8
                             
                             # Check if there's a grabbable tile in front
                             grabbable = self.bush_handler.check_grabbable_at_position(
@@ -261,6 +339,18 @@ class PygameClient:
                                 self.grabbing = True
                                 self.client.set_gani("grab")
                                 self.animation_frame = 0
+                                # Store grabbed tile position for visual feedback
+                                self.grabbed_tile_pos = grabbable
+                                
+                                # Check if it's a bush or just a grabbable object
+                                tile_x, tile_y = grabbable
+                                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                                if self.bush_handler.is_bush_tile(tile_id):
+                                    self.add_message("Grabbing bush - release A to pick up!", GREEN)
+                                else:
+                                    self.add_message("Grabbing object - pull with opposite arrow!", YELLOW)
+                            else:
+                                self.add_message("Nothing to grab here", RED)
                     elif event.key == pygame.K_F3:
                         # Toggle tile debug
                         self.debug_tiles = not self.debug_tiles
@@ -288,6 +378,7 @@ class PygameClient:
                             # Notify server we're carrying a bush
                             self.set_carry_sprite("bush")
                     self.grabbing = False
+                    self.grabbed_tile_pos = None  # Clear grabbed tile position
                     if not self.bush_handler.carrying_bush:
                         self.client.set_gani("idle")
                 self.keys_pressed.discard(event.key)
@@ -302,6 +393,9 @@ class PygameClient:
                     player = event_data.get('player')
                     if player and player.id != self.client.local_player.id:
                         self.players[player.id] = player
+                        # Use nickname if available, otherwise use id
+                        player_name = getattr(player, 'nickname', getattr(player, 'name', f"Player{player.id}"))
+                        self.add_message(f"{player_name} joined", CYAN)
                         # Initialize animation state
                         self.player_animations[player.id] = {
                             'gani': player.gani or 'idle',
@@ -324,6 +418,8 @@ class PygameClient:
                     
                 elif event_type == 'player_left':
                     player = event_data['player']
+                    if player.id in self.players:
+                        self.add_message(f"{self.players[player.id].name} left", CYAN)
                     self.players.pop(player.id, None)
                     self.player_animations.pop(player.id, None)
                     self.player_predictions.pop(player.id, None)
@@ -395,8 +491,26 @@ class PygameClient:
                                     (old_gani == 'idle' and player.gani == 'walk')):
                                 self.player_animations[player.id]['frame'] = 0
                         
+                elif event_type == 'player_chat':
+                    player_name = event_data.get('player_name', 'Unknown')
+                    message = event_data.get('message', '')
+                    if message:
+                        chat_entry = f"{player_name}: {message}"
+                        self.chat_history.append(chat_entry)
+                        if len(self.chat_history) > self.max_chat_history:
+                            self.chat_history.pop(0)
+                            
                 elif event_type == 'level_changed':
                     self.current_level = self.client.level_manager.get_current_level()
+                    if self.current_level:
+                        self.add_message(f"Entered: {self.current_level.name}", GREEN)
+                        # Check if board data is available
+                        if hasattr(self.current_level, 'board_tiles_64x64') and self.current_level.board_tiles_64x64:
+                            self.add_message(f"Level has board data ({len(self.current_level.board_tiles_64x64)} tiles)", GREEN)
+                        else:
+                            self.add_message("Level loaded but no board data yet", YELLOW)
+                    else:
+                        self.add_message("Level changed but no level data", RED)
                     # Clear player list - will be repopulated by player events
                     self.players = {}
                     self.player_animations = {}
@@ -412,6 +526,12 @@ class PygameClient:
         to create smooth movement rather than teleporting.
         """
         if self.chat_mode or self.sword_animating or self.throwing:
+            return
+            
+        # Don't allow normal movement while grabbing
+        if self.grabbing:
+            # Only allow pulling movement
+            self._handle_pull_movement()
             return
             
         current_time = time.time()
@@ -434,17 +554,7 @@ class PygameClient:
             dy += self.move_speed
             direction = Direction.DOWN
             
-        # Check for pulling (grabbing + opposite direction)
-        if self.grabbing and direction is not None:
-            opposite_direction = {
-                Direction.LEFT: Direction.RIGHT,
-                Direction.RIGHT: Direction.LEFT,
-                Direction.UP: Direction.DOWN,
-                Direction.DOWN: Direction.UP
-            }.get(self.last_direction)
-            
-            if direction == opposite_direction:
-                self.client.set_gani("pull")
+        # Normal movement (not grabbing)
             
         if dx != 0 or dy != 0:
             # Calculate new position based on small increments
@@ -460,12 +570,27 @@ class PygameClient:
                 self.client.move_to(new_x, new_y, direction)
                 self.last_move_time = current_time
                 self.last_direction = direction
+                
+                # Clear pushing state when we can move
+                if self.pushing:
+                    self.pushing = False
+                    self.blocked_direction = None
             else:
-                # Still update direction even if blocked
+                # Blocked! Check for pushing
                 if direction is not None:
                     self.last_direction = direction
                     # Update direction by sending a movement packet with current position
                     self.client.move_to(self.client.local_player.x, self.client.local_player.y, direction)
+                    
+                    # Start or continue pushing
+                    if not self.pushing:
+                        self.pushing = True
+                        self.push_start_time = current_time
+                        self.blocked_direction = direction
+                    elif self.blocked_direction == direction and current_time - self.push_start_time > 0.5:
+                        # After 0.5 seconds of being blocked, show push animation
+                        if self.client.local_player.gani != "push":
+                            self.client.set_gani("push")
             
             # Set walking animation if not already moving
             if not self.is_moving:
@@ -483,9 +608,55 @@ class PygameClient:
                 self.animation_frame = 0  # Reset animation frame
                 # Don't change animation here - let check_chair_status handle it
                 
+            # Clear pushing state when no movement
+            if self.pushing:
+                self.pushing = False
+                self.blocked_direction = None
+                # Return to appropriate idle animation
+                if self.bush_handler.carrying_bush:
+                    self.client.set_gani("carry")
+                else:
+                    self.client.set_gani("idle")
+                
         # Always update camera to follow player
         self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
         self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
+        
+    def _handle_pull_movement(self):
+        """Handle pulling animation while grabbing (no actual movement)"""
+        direction = None
+        
+        # Check for arrow key presses
+        if pygame.K_LEFT in self.keys_pressed:
+            direction = Direction.LEFT
+        elif pygame.K_RIGHT in self.keys_pressed:
+            direction = Direction.RIGHT
+        elif pygame.K_UP in self.keys_pressed:
+            direction = Direction.UP
+        elif pygame.K_DOWN in self.keys_pressed:
+            direction = Direction.DOWN
+            
+        if direction is not None:
+            # Check if it's opposite direction (for pulling)
+            opposite_direction = {
+                Direction.LEFT: Direction.RIGHT,
+                Direction.RIGHT: Direction.LEFT,
+                Direction.UP: Direction.DOWN,
+                Direction.DOWN: Direction.UP
+            }.get(self.last_direction)
+            
+            if direction == opposite_direction:
+                # Just show pull animation, no movement
+                if self.client.local_player.gani != "pull":
+                    self.client.set_gani("pull")
+            else:
+                # Not pulling - just stay in grab animation
+                if self.client.local_player.gani != "grab":
+                    self.client.set_gani("grab")
+        else:
+            # No movement - stay in grab animation
+            if self.client.local_player.gani != "grab":
+                self.client.set_gani("grab")
         
         # Check if we're on a chair
         self.check_chair_status()
@@ -507,14 +678,23 @@ class PygameClient:
         if x < 0 or y < 0 or x >= 64 or y >= 64:
             return False
             
-        # Get player's bounding box (player is roughly 1x1.5 tiles)
-        # Check multiple points for better collision
+        # Player's collision box is their shadow at the feet
+        # Use configurable parameters
+        shadow_width = self.collision_config['shadow_width']
+        shadow_height = self.collision_config['shadow_height']
+        
+        # Direction-specific offsets to match sprite positioning
+        direction_name = self.last_direction.name
+        config = self.collision_config.get(direction_name, self.collision_config['UP'])
+        x_offset = config['x_offset']
+        y_offset = config['y_offset']
+        
         check_points = [
-            (x, y),                    # Top-left
-            (x + 0.9, y),             # Top-right
-            (x, y + 1.4),             # Bottom-left
-            (x + 0.9, y + 1.4),       # Bottom-right
-            (x + 0.45, y + 0.7)       # Center
+            (x + x_offset, y + y_offset),                                    # Top-left
+            (x + x_offset + shadow_width, y + y_offset),                    # Top-right
+            (x + x_offset, y + y_offset + shadow_height),                   # Bottom-left
+            (x + x_offset + shadow_width, y + y_offset + shadow_height),    # Bottom-right
+            (x + 0.5, y + 0.5)                                              # Center of shadow
         ]
         
         for check_x, check_y in check_points:
@@ -538,8 +718,8 @@ class PygameClient:
         if not self.current_level:
             return
             
-        # Don't sit while moving
-        if self.is_moving:
+        # Don't sit while moving or grabbing
+        if self.is_moving or self.grabbing:
             if self.on_chair:
                 self.on_chair = False
             return
@@ -583,7 +763,7 @@ class PygameClient:
                 self.on_chair = False
                 self.animation_frame = 0
             # Always set appropriate idle animation when not on chair and not moving
-            if not self.is_moving:
+            if not self.is_moving and not self.grabbing:
                 if self.bush_handler.carrying_bush:
                     self.client.set_gani("carry")
                 else:
@@ -630,12 +810,10 @@ class PygameClient:
                     
     def set_carry_sprite(self, sprite_name: str):
         """Set the carry sprite (what player is holding)"""
-        from pyreborn.protocol.enums import PlayerProp
-        from pyreborn.protocol.packets import PlayerPropsPacket
-        
-        packet = PlayerPropsPacket()
-        packet.add_property(PlayerProp.PLPROP_CARRYSPRITE, sprite_name)
-        self.client._send_packet(packet)
+        # This would normally update the carry sprite on the server
+        # For now, we'll just handle it locally
+        if hasattr(self.client.local_player, 'carry_sprite'):
+            self.client.local_player.carry_sprite = sprite_name
         
     def throw_carried(self):
         """Notify server about throwing carried item"""
@@ -910,6 +1088,11 @@ class PygameClient:
     def draw_level(self):
         """Draw the current level"""
         if not self.current_level:
+            # Draw a message if no level is loaded
+            font = pygame.font.Font(None, 36)
+            text = font.render("Waiting for level data...", True, WHITE)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+            self.screen.blit(text, text_rect)
             return
             
         # Get tile data
@@ -965,6 +1148,59 @@ class PygameClient:
                     pygame.draw.rect(self.screen, color, 
                                    (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                                    
+    def draw_grab_indicators(self):
+        """Draw indicators for grabbable tiles when holding grab key"""
+        if pygame.K_a in self.keys_pressed and not self.bush_handler.carrying_bush:
+            # Calculate position in front of player
+            dx, dy = 0, 0
+            if self.last_direction == Direction.UP:
+                dy = -1
+            elif self.last_direction == Direction.DOWN:
+                dy = 1
+            elif self.last_direction == Direction.LEFT:
+                dx = -1
+            elif self.last_direction == Direction.RIGHT:
+                dx = 1
+            
+            # Check area in front of player (same as grab detection)
+            base_x = self.client.local_player.x + 0.5  # Center of tile
+            base_y = self.client.local_player.y + 0.5  # Center of tile
+            
+            check_x = base_x + dx * 0.8
+            check_y = base_y + dy * 0.8
+            
+            # Get grabbable position
+            grabbable = self.bush_handler.check_grabbable_at_position(
+                self.current_level, self.tile_defs, check_x, check_y
+            )
+            
+            if grabbable:
+                tile_x, tile_y = grabbable
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                is_bush = self.bush_handler.is_bush_tile(tile_id)
+                
+                screen_x = (tile_x - self.camera_x) * TILE_SIZE
+                screen_y = (tile_y - self.camera_y) * TILE_SIZE
+                
+                # Draw highlight box with pulsing effect
+                pulse = abs(math.sin(time.time() * 4)) * 0.5 + 0.5
+                if is_bush:
+                    # Green for pickupable bushes
+                    color = (0, int(255 * pulse), 0)
+                    label = "PICK UP"
+                else:
+                    # Yellow for pullable objects
+                    color = (int(255 * pulse), int(255 * pulse), 0)
+                    label = "GRAB"
+                    
+                pygame.draw.rect(self.screen, color, 
+                               (screen_x - 2, screen_y - 2, TILE_SIZE + 4, TILE_SIZE + 4), 3)
+                
+                # Draw appropriate text
+                grab_text = self.font_tiny.render(label, True, color)
+                text_rect = grab_text.get_rect(center=(screen_x + TILE_SIZE//2, screen_y - 10))
+                self.screen.blit(grab_text, text_rect)
+    
     def draw_thrown_bushes(self):
         """Draw thrown bushes and explosions"""
         current_time = time.time()
@@ -1015,6 +1251,49 @@ class PygameClient:
                         leaf_color = (0, 150 + i*10, 0, alpha)  # Varying green shades
                         pygame.draw.circle(surf, leaf_color, (leaf_size, leaf_size), leaf_size)
                         self.screen.blit(surf, (leaf_x - leaf_size, leaf_y - leaf_size))
+    def draw_collision_debug(self):
+        """Draw collision box for debugging"""
+        if not self.debug_collision or not self.client.local_player:
+            return
+            
+        # Get player position
+        player_x = self.client.local_player.x
+        player_y = self.client.local_player.y
+        
+        # Calculate collision box using same logic as collision detection
+        shadow_width = self.collision_config['shadow_width']
+        shadow_height = self.collision_config['shadow_height']
+        
+        direction_name = self.last_direction.name
+        config = self.collision_config.get(direction_name, self.collision_config['UP'])
+        x_offset = config['x_offset']
+        y_offset = config['y_offset']
+        
+        # Calculate screen position
+        screen_x = (player_x - self.camera_x) * TILE_SIZE
+        screen_y = (player_y - self.camera_y) * TILE_SIZE
+        
+        # Draw collision box in red
+        collision_rect = pygame.Rect(
+            screen_x + x_offset * TILE_SIZE,
+            screen_y + y_offset * TILE_SIZE,
+            shadow_width * TILE_SIZE,
+            shadow_height * TILE_SIZE
+        )
+        pygame.draw.rect(self.screen, RED, collision_rect, 2)
+        
+        # Draw center point in yellow
+        center_x = screen_x + (x_offset + shadow_width/2) * TILE_SIZE
+        center_y = screen_y + (y_offset + shadow_height/2) * TILE_SIZE
+        pygame.draw.circle(self.screen, YELLOW, (int(center_x), int(center_y)), 3)
+        
+        # Draw direction indicator
+        direction_text = self.font_small.render(f"Dir: {direction_name}", True, WHITE)
+        self.screen.blit(direction_text, (10, 120))
+        
+        # Draw collision config info
+        config_text = self.font_small.render(f"Offset: ({x_offset:.1f}, {y_offset:.1f})", True, WHITE)
+        self.screen.blit(config_text, (10, 140))
                                
     def draw_players(self):
         """Draw all players"""
@@ -1072,8 +1351,10 @@ class PygameClient:
                 # Draw all sprites at their GANI-defined positions
                 for surface, x_offset, y_offset in sprites_with_pos:
                     # GANI positions are relative to player position
-                    sprite_x = screen_x + x_offset - 16  # Adjust for tile center
-                    sprite_y = screen_y + y_offset - 16
+                    # GANI offsets are already relative to the sprite origin
+                    # No need for additional -16 offset
+                    sprite_x = screen_x + x_offset
+                    sprite_y = screen_y + y_offset
                     self.screen.blit(surface, (sprite_x, sprite_y))
             else:
                 # Fallback to colored circle
@@ -1133,8 +1414,10 @@ class PygameClient:
             # Draw all sprites at their GANI-defined positions
             for surface, x_offset, y_offset in sprites_with_pos:
                 # GANI positions are relative to player position
-                sprite_x = screen_x + x_offset - 16  # Adjust for tile center
-                sprite_y = screen_y + y_offset - 16
+                # GANI offsets are already relative to the sprite origin
+                # No need for additional -16 offset  
+                sprite_x = screen_x + x_offset
+                sprite_y = screen_y + y_offset - 8  # Slight upward adjustment for feet position
                 self.screen.blit(surface, (sprite_x, sprite_y))
         else:
             # Fallback to colored circle
@@ -1191,19 +1474,27 @@ class PygameClient:
             
     def draw_ui(self):
         """Draw UI elements"""
-        # Position info
-        pos_text = self.font.render(f"Position: ({self.client.local_player.x:.1f}, {self.client.local_player.y:.1f})", 
-                                   True, WHITE)
-        self.screen.blit(pos_text, (10, 10))
+        # Draw messages
+        self._draw_messages()
         
-        # Level info
-        if self.current_level:
-            level_text = self.font.render(f"Level: {self.current_level.name}", True, WHITE)
-            self.screen.blit(level_text, (10, 35))
+        # Draw chat
+        if self.chat_mode or self.chat_history:
+            self._draw_chat()
             
-        # Player count
-        player_text = self.font.render(f"Players: {len(self.players) + 1}", True, WHITE)
-        self.screen.blit(player_text, (10, 60))
+        # Draw debug info
+        if self.show_debug:
+            self._draw_debug_info()
+            
+        # Draw minimap
+        if self.show_minimap:
+            self._draw_minimap()
+            
+        # Draw player list
+        if self.show_player_list:
+            self._draw_player_list()
+            
+        # Draw status bar
+        self._draw_status_bar()
         
         # Tile debug info
         if self.debug_tiles:
@@ -1234,9 +1525,190 @@ class PygameClient:
             chat_rect = chat_prompt.get_rect(bottom=SCREEN_HEIGHT - 10, left=10)
             pygame.draw.rect(self.screen, BLACK, chat_rect.inflate(10, 5))
             self.screen.blit(chat_prompt, chat_rect)
-        else:
-            help_text = self.small_font.render("Arrow keys: Move | S: Sword | A: Grab/Pull | Tab: Chat | F3: Tile Debug | Esc: Quit", 
-                                             True, WHITE)
+            
+    def _draw_messages(self):
+        """Draw system messages"""
+        y_offset = 100
+        current_time = time.time()
+        
+        for msg in self.messages:
+            age = current_time - msg['time']
+            if age < self.message_duration:
+                alpha = max(0, min(255, 255 * (1 - age / self.message_duration)))
+                
+                text = self.font_medium.render(msg['text'], True, msg['color'])
+                text.set_alpha(alpha)
+                
+                x = SCREEN_WIDTH // 2 - text.get_width() // 2
+                self.screen.blit(text, (x, y_offset))
+                y_offset += 30
+                
+        # Clean up old messages
+        self.messages = [msg for msg in self.messages if current_time - msg['time'] < self.message_duration]
+        
+    def _draw_chat(self):
+        """Draw chat interface"""
+        chat_y = SCREEN_HEIGHT - 200
+        
+        # Chat background
+        if self.chat_history:
+            chat_bg = pygame.Surface((400, 150))
+            chat_bg.fill(UI_BG)
+            chat_bg.set_alpha(200)
+            self.screen.blit(chat_bg, (10, chat_y))
+            
+        # Chat history
+        y_offset = 0
+        for message in self.chat_history[-7:]:
+            text = self.font_small.render(message, True, UI_TEXT)
+            self.screen.blit(text, (15, chat_y + 5 + y_offset))
+            y_offset += 20
+            
+        # Chat input
+        if self.chat_mode:
+            chat_prompt = self.font_medium.render(f"> {self.chat_buffer}", True, WHITE)
+            chat_rect = chat_prompt.get_rect(bottom=SCREEN_HEIGHT - 10, left=10)
+            
+            # Background
+            pygame.draw.rect(self.screen, UI_BG, chat_rect.inflate(10, 5))
+            pygame.draw.rect(self.screen, UI_BORDER, chat_rect.inflate(10, 5), 2)
+            
+            # Text and cursor
+            self.screen.blit(chat_prompt, chat_rect)
+            if int(time.time() * 2) % 2:
+                cursor_x = chat_rect.right + 2
+                pygame.draw.line(self.screen, WHITE, (cursor_x, chat_rect.top), (cursor_x, chat_rect.bottom), 2)
+                
+    def _draw_debug_info(self):
+        """Draw debug information"""
+        debug_info = [
+            f"FPS: {int(self.clock.get_fps())}",
+            f"Position: ({self.client.local_player.x:.1f}, {self.client.local_player.y:.1f})",
+            f"Level: {self.current_level.name if self.current_level else 'None'}",
+            f"Players: {len(self.players) + 1}",
+            f"Carrying: {self.bush_handler.carrying_bush}"
+        ]
+        
+        # Add tile debug if enabled
+        if self.debug_tiles:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            tile_x = int(mouse_x // TILE_SIZE + self.camera_x)
+            tile_y = int(mouse_y // TILE_SIZE + self.camera_y)
+            
+            if 0 <= tile_x < 64 and 0 <= tile_y < 64 and self.current_level:
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                debug_info.extend([
+                    f"Tile: ({tile_x}, {tile_y}) = {tile_id}",
+                    f"Blocking: {self.tile_defs.is_blocking(tile_id)}"
+                ])
+        
+        # Render debug panel
+        panel_height = len(debug_info) * 15 + 10
+        debug_surface = pygame.Surface((220, panel_height))
+        debug_surface.fill(UI_BG)
+        debug_surface.set_alpha(200)
+        self.screen.blit(debug_surface, (SCREEN_WIDTH - 230, 10))
+        
+        y = 15
+        for line in debug_info:
+            text = self.font_tiny.render(line, True, UI_TEXT)
+            self.screen.blit(text, (SCREEN_WIDTH - 225, y))
+            y += 15
+            
+    def _draw_minimap(self):
+        """Draw minimap"""
+        if not self.current_level:
+            return
+            
+        map_size = 150
+        map_x = SCREEN_WIDTH - map_size - 10
+        map_y = SCREEN_HEIGHT - map_size - 10
+        
+        # Background
+        pygame.draw.rect(self.screen, UI_BG, (map_x - 2, map_y - 2, map_size + 4, map_size + 4))
+        pygame.draw.rect(self.screen, UI_BORDER, (map_x - 2, map_y - 2, map_size + 4, map_size + 4), 2)
+        
+        # Scale factor
+        scale = map_size / 64
+        
+        # Draw simplified level
+        for y in range(0, 64, 2):
+            for x in range(0, 64, 2):
+                tile_id = self.current_level.get_board_tile_id(x, y)
+                
+                if self.tile_defs.is_blocking(tile_id):
+                    color = GRAY
+                elif self.tile_defs.is_water(tile_id):
+                    color = BLUE
+                else:
+                    color = DARK_GREEN
+                    
+                pygame.draw.rect(self.screen, color,
+                               (map_x + int(x * scale), map_y + int(y * scale),
+                                max(1, int(2 * scale)), max(1, int(2 * scale))))
+                                
+        # Draw players
+        for player in self.players.values():
+            px = map_x + int(player.x * scale)
+            py = map_y + int(player.y * scale)
+            pygame.draw.circle(self.screen, YELLOW, (px, py), 2)
+            
+        # Draw local player
+        px = map_x + int(self.client.local_player.x * scale)
+        py = map_y + int(self.client.local_player.y * scale)
+        pygame.draw.circle(self.screen, GREEN, (px, py), 3)
+        
+        # Draw view area
+        view_rect = (
+            map_x + int(self.camera_x * scale),
+            map_y + int(self.camera_y * scale),
+            int(VIEWPORT_TILES_X * scale),
+            int(VIEWPORT_TILES_Y * scale)
+        )
+        pygame.draw.rect(self.screen, WHITE, view_rect, 1)
+        
+    def _draw_player_list(self):
+        """Draw player list"""
+        list_width = 200
+        players_shown = min(15, len(self.players) + 1)
+        list_height = 30 + players_shown * 20
+        
+        # Background
+        list_surface = pygame.Surface((list_width, list_height))
+        list_surface.fill(UI_BG)
+        list_surface.set_alpha(220)
+        self.screen.blit(list_surface, (10, 50))
+        
+        # Border
+        pygame.draw.rect(self.screen, UI_BORDER, (10, 50, list_width, list_height), 2)
+        
+        # Title
+        title = self.font_medium.render(f"Players ({len(self.players) + 1})", True, WHITE)
+        self.screen.blit(title, (20, 55))
+        
+        # Players
+        y = 80
+        
+        # Local player
+        name = f"• {getattr(self.client.local_player, 'nickname', f'Player{self.client.local_player.id}')} (You)"
+        text = self.font_small.render(name, True, GREEN)
+        self.screen.blit(text, (20, y))
+        y += 20
+        
+        # Other players
+        for player in sorted(self.players.values(), key=lambda p: p.name)[:14]:
+            name = f"• {getattr(player, 'nickname', f'Player{player.id}')}"
+            text = self.font_small.render(name, True, UI_TEXT)
+            self.screen.blit(text, (20, y))
+            y += 20
+            
+    def _draw_status_bar(self):
+        """Draw bottom status bar"""
+        if not self.chat_mode:
+            help_text = self.font_tiny.render(
+                "Arrow/WASD: Move | Space/S: Attack | A: Grab | Tab: Chat | F1: Debug | F2: Collision | M: Map | P: Players | Esc: Quit",
+                True, GRAY
+            )
             self.screen.blit(help_text, (10, SCREEN_HEIGHT - 20))
             
     def run(self):
@@ -1307,7 +1779,7 @@ class PygameClient:
                 else:
                     # Loop other animations based on their frame count
                     gani = self.client.local_player.gani
-                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'carry': 3, 'sit': 1, 'lift': 1}.get(gani, 1)
+                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
                     old_frame = self.animation_frame
                     self.animation_frame = (self.animation_frame + 1) % max_frames
                     
@@ -1333,7 +1805,7 @@ class PygameClient:
                         anim_state['gani'] = gani
                         anim_state['frame'] = 0
                     else:
-                        max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4, 'carry': 3, 'sit': 1, 'lift': 1}.get(gani, 1)
+                        max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
                         anim_state['frame'] = (anim_state['frame'] + 1) % max_frames
             
             # Update thrown bushes
@@ -1343,8 +1815,10 @@ class PygameClient:
             # Draw
             self.screen.fill(BLACK)
             self.draw_level()
+            self.draw_grab_indicators()
             self.draw_thrown_bushes()
             self.draw_players()
+            self.draw_collision_debug()  # Debug collision box
             self.draw_ui()
             
             # Update display
@@ -1355,30 +1829,175 @@ class PygameClient:
         self.client.disconnect()
         pygame.quit()
 
+def show_login_gui():
+    """Show GUI login dialog with default values"""
+    pygame.init()
+    screen = pygame.display.set_mode((400, 300))
+    pygame.display.set_caption("PyReborn Login")
+    font = pygame.font.Font(None, 24)
+    small_font = pygame.font.Font(None, 18)
+    clock = pygame.time.Clock()
+    
+    # Input fields
+    username_input = "hosler"  # Default username
+    password_input = "1234"    # Default password
+    host_input = "localhost"
+    port_input = "14900"
+    
+    active_field = 0  # 0=username, 1=password, 2=host, 3=port
+    fields = ["username", "password", "host", "port"]
+    
+    running = True
+    result = None
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                result = None
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    # Submit login
+                    try:
+                        port = int(port_input)
+                        result = (username_input, password_input, host_input, port)
+                        running = False
+                    except ValueError:
+                        pass  # Invalid port, ignore
+                elif event.key == pygame.K_TAB:
+                    # Switch field
+                    active_field = (active_field + 1) % 4
+                elif event.key == pygame.K_ESCAPE:
+                    running = False
+                    result = None
+                elif event.key == pygame.K_BACKSPACE:
+                    # Remove character
+                    if active_field == 0 and username_input:
+                        username_input = username_input[:-1]
+                    elif active_field == 1 and password_input:
+                        password_input = password_input[:-1]
+                    elif active_field == 2 and host_input:
+                        host_input = host_input[:-1]
+                    elif active_field == 3 and port_input:
+                        port_input = port_input[:-1]
+                else:
+                    # Add character
+                    if event.unicode and len(event.unicode) == 1:
+                        char = event.unicode
+                        if active_field == 0 and len(username_input) < 20:
+                            username_input += char
+                        elif active_field == 1 and len(password_input) < 20:
+                            password_input += char
+                        elif active_field == 2 and len(host_input) < 30:
+                            host_input += char
+                        elif active_field == 3 and len(port_input) < 6 and char.isdigit():
+                            port_input += char
+        
+        # Draw
+        screen.fill((20, 20, 30))
+        
+        # Title
+        title = font.render("PyReborn Login", True, (255, 255, 255))
+        screen.blit(title, (150, 20))
+        
+        # Fields
+        field_y = 80
+        field_height = 40
+        
+        field_data = [
+            ("Username:", username_input),
+            ("Password:", "*" * len(password_input)),
+            ("Host:", host_input),
+            ("Port:", port_input)
+        ]
+        
+        for i, (label, value) in enumerate(field_data):
+            y = field_y + i * field_height
+            
+            # Label
+            label_surface = small_font.render(label, True, (200, 200, 200))
+            screen.blit(label_surface, (20, y))
+            
+            # Input box
+            box_color = (100, 100, 150) if i == active_field else (60, 60, 80)
+            border_color = (150, 150, 200) if i == active_field else (100, 100, 120)
+            input_rect = pygame.Rect(120, y - 2, 250, 25)
+            pygame.draw.rect(screen, box_color, input_rect)
+            pygame.draw.rect(screen, border_color, input_rect, 2)
+            
+            # Input text
+            text_surface = small_font.render(value, True, (255, 255, 255))
+            screen.blit(text_surface, (125, y))
+        
+        # Instructions
+        instructions = [
+            "Tab: Switch field",
+            "Enter: Connect",
+            "Esc: Cancel"
+        ]
+        
+        for i, instruction in enumerate(instructions):
+            text = small_font.render(instruction, True, (150, 150, 150))
+            screen.blit(text, (20, 240 + i * 15))
+        
+        pygame.display.flip()
+        clock.tick(60)
+    
+    pygame.quit()
+    return result
+
 def main():
     """Main entry point"""
     print("PyReborn Pygame Client")
     print("=====================")
     print()
     
-    # Get login credentials
-    username = input("Username (default: pygameplayer): ").strip() or "pygameplayer"
-    password = input("Password (default: 1234): ").strip() or "1234"
-    
-    # Create client
-    game = PygameClient()
-    
-    print("\nConnecting to server...")
-    if not game.connect_and_login(username, password):
-        print("Failed to connect or login!")
-        return 1
+    # Check for command line override (for backwards compatibility)
+    if len(sys.argv) >= 3:
+        username = sys.argv[1]
+        password = sys.argv[2]
+        host = "localhost"
+        port = 14900
+        print(f"Using credentials from command line: {username}")
+        
+        # Create client
+        game = PygameClient()
+        game.client.host = host
+        game.client.port = port
+        
+        print(f"\nConnecting to {host}:{port}...")
+        if not game.connect_and_login(username, password):
+            print("Failed to connect or login!")
+            return 1
+    else:
+        # Show GUI login
+        login_result = show_login_gui()
+        if not login_result:
+            print("Login cancelled")
+            return 0
+        
+        username, password, host, port = login_result
+        
+        # Create client
+        game = PygameClient()
+        game.client.host = host
+        game.client.port = port
+        
+        print(f"Connecting to {host}:{port} as {username}...")
+        if not game.connect_and_login(username, password):
+            print("Failed to connect or login!")
+            return 1
         
     print("Connected! Starting game...")
     print("\nControls:")
-    print("- Arrow keys: Move")
-    print("- S or Space: Swing sword")
-    print("- A: Grab (hold A + opposite arrow to pull)")
-    print("- Tab: Enter chat mode")
+    print("- Arrow keys/WASD: Move")
+    print("- Space/S: Attack")
+    print("- A: Grab/Pull/Throw")
+    print("- Tab: Chat")
+    print("- F1: Toggle debug info")
+    print("- F2: Toggle collision debug")
+    print("- M: Toggle minimap")
+    print("- P: Toggle player list")
     print("- Escape: Quit")
     print()
     

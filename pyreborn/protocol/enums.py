@@ -55,6 +55,13 @@ class PlayerToServer(IntEnum):
     PLI_SHOOT2 = 48
     PLI_RAWDATA = 50
     PLI_RC_LISTRCS = 65
+    PLI_REQUESTUPDATEBOARD = 130
+    PLI_REQUESTTEXT = 152
+    PLI_SENDTEXT = 154
+    PLI_UPDATEGANI = 157
+    PLI_UPDATESCRIPT = 158
+    PLI_UPDATEPACKAGEREQUESTFILE = 159
+    PLI_UPDATECLASS = 161
 
 class ServerToPlayer(IntEnum):
     """Server to client packet types"""
@@ -141,7 +148,12 @@ class ServerToPlayer(IntEnum):
     PLO_UNKNOWN197 = 197
     PLO_UNKNOWN198 = 198
     PLO_NC_CLASSADD = 163
+    PLO_MINIMAP = 172
+    PLO_GHOSTTEXT = 173
+    PLO_GHOSTICON = 174
+    PLO_FULLSTOP = 176
     PLO_FULLSTOP2 = 177
+    PLO_SERVERWARP = 178
 
 class PlayerProp(IntEnum):
     """Player property types"""
@@ -202,7 +214,10 @@ class PlayerProp(IntEnum):
     PLPROP_Y2 = 79  # High precision Y (v2.30+)
     PLPROP_Z2 = 80  # High precision Z (v2.30+)
     PLPROP_UNKNOWN81 = 81
+    PLPROP_PLAYERLISTCATEGORY = 81  # Player list categorization
     PLPROP_COMMUNITYNAME = 82
+    PLPROP_GMAPLEVELX = 83  # GMAP X segment position
+    PLPROP_GMAPLEVELY = 84  # GMAP Y segment position
     PLPROP_PLPOSSESSITEM = 49
     PLPROP_PLSTATUS = 50
     PLPROP_GATTRIB6 = 51
@@ -230,7 +245,10 @@ class PlayerProp(IntEnum):
     PLPROP_GATTRIB28 = 73
     PLPROP_GATTRIB29 = 74
     PLPROP_GATTRIB30 = 75
+    PLPROP_OSTYPE = 75  # Operating system type (v2.19+)
+    PLPROP_TEXTCODEPAGE = 76  # Text encoding (v2.19+)
     PLPROP_UNKNOWN77 = 77
+    PLPROP_ONLINESECS2 = 77  # Extended online time
 
 class PlayerStatus(IntEnum):
     """Player status flags"""
@@ -296,3 +314,63 @@ class Direction(IntEnum):
     LEFT = 1
     DOWN = 2
     RIGHT = 3
+
+class PlayerListCategory(IntEnum):
+    """Player list categorization flags"""
+    PLAYERLIST = 0b0000
+    EXTERNAL = 0b0001
+    CHANNEL = 0b0010
+    CHANNELUSER = 0b0100
+    CHANNELOPEN = 0b1000
+
+class NPCProp(IntEnum):
+    """NPC property types"""
+    IMAGE = 0
+    SCRIPT = 1
+    X = 2
+    Y = 3
+    SAVE0 = 4
+    SAVE1 = 5
+    SAVE2 = 6
+    SAVE3 = 7
+    SAVE4 = 8
+    SAVE5 = 9
+    SAVE6 = 10
+    SAVE7 = 11
+    SAVE8 = 12
+    SAVE9 = 13
+    NICK = 14
+    X2 = 15
+    Y2 = 16
+    VISFLAGS = 17
+    # Extended attributes
+    GATTRIB1 = 18
+    GATTRIB2 = 19
+    GATTRIB3 = 20
+    GATTRIB4 = 21
+    GATTRIB5 = 22
+    GATTRIB6 = 23
+    GATTRIB7 = 24
+    GATTRIB8 = 25
+    GATTRIB9 = 26
+    GATTRIB10 = 27
+    GATTRIB11 = 28
+    GATTRIB12 = 29
+    GATTRIB13 = 30
+    GATTRIB14 = 31
+    GATTRIB15 = 32
+    GATTRIB16 = 33
+    GATTRIB17 = 34
+    GATTRIB18 = 35
+    GATTRIB19 = 36
+    GATTRIB20 = 37
+    GATTRIB21 = 38
+    GATTRIB22 = 39
+    GATTRIB23 = 40
+    GATTRIB24 = 41
+    GATTRIB25 = 42
+    GATTRIB26 = 43
+    GATTRIB27 = 44
+    GATTRIB28 = 45
+    GATTRIB29 = 46
+    GATTRIB30 = 47
