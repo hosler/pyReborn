@@ -22,6 +22,7 @@ from .protocol.packets import (
     Shoot2Packet, WantFilePacket, FlagSetPacket, PrivateMessagePacket
 )
 from .encryption import RebornEncryption, CompressionType
+from .protocol.version_codecs import create_codec
 from .handlers.packet_handler import PacketHandler
 from .models.player import Player
 from .models.level import Level
@@ -29,14 +30,25 @@ from .events import EventType, EventManager
 from .session import SessionManager
 from .level_manager import LevelManager
 from .actions import PlayerActions
+from .managers import ItemManager, CombatManager, NPCManager
+from .gmap_utils import GMAPUtils
+from .action_modules.items import ItemActions
+from .action_modules.combat import CombatActions
+from .action_modules.npcs import NPCActions
+from .serverlist import ServerListClient
+from .server_info import ServerInfo
 
 
 class RebornClient:
     """Main client for connecting to Reborn servers"""
     
-    def __init__(self, host: str, port: int = 14900):
+    def __init__(self, host: str, port: int = 14900, version: str = "2.22"):
         self.host = host
         self.port = port
+        
+        # Version configuration
+        from .protocol.versions import get_version_config, get_default_version
+        self.version_config = get_version_config(version) or get_default_version()
         
         # Network
         self.socket: Optional[socket.socket] = None
@@ -50,8 +62,10 @@ class RebornClient:
         self.receive_thread: Optional[threading.Thread] = None
         self.packet_send_rate = 0.1  # 100ms between packets
         
-        # Encryption (fixed to match working client)
+        # Encryption 
         self.encryption_key = random.randint(0, 255)
+        self.version_codec = None  # Created after login based on version
+        # Keep old codecs for compatibility during transition
         self.in_codec = RebornEncryption()
         self.out_codec = RebornEncryption()
         self.first_encrypted_packet = True
@@ -69,6 +83,14 @@ class RebornClient:
         self.levels: Dict[str, Level] = {}
         self.flags: Dict[str, str] = {}
         
+        # Multi-packet board data handling (for ENCRYPT_GEN_5)
+        self.partial_board_data = b''
+        self.expecting_board_continuation = False
+        self.expected_next_packet_size = 0  # Size from PLO_RAWDATA
+        self.pending_board_data = None  # Board data waiting for level
+        self.board_data_level_name = None  # Which level the pending board data belongs to
+        self.expecting_text_board_data = False  # True when expecting BOARD text lines after PLO_FILE
+        
         # Events
         self.events = EventManager()
         
@@ -78,14 +100,59 @@ class RebornClient:
         # Level management
         self.level_manager = LevelManager(self)
         
+        # Board collector for text-based board data
+        from .board_collector import BoardCollector
+        from .text_data_handler import TextDataHandler
+        from .raw_data_handler import RawDataHandler
+        self._board_collector = BoardCollector(self.events)
+        self._text_handler = TextDataHandler(self.events)
+        self._raw_data_handler = RawDataHandler(self.events, self.level_manager)
+        
         # Actions delegate
         self._actions = PlayerActions(self)
+        self.actions = self._actions  # Expose actions publicly
+        
+        # Extended managers
+        self.item_manager = ItemManager()
+        self.combat_manager = CombatManager()
+        self.npc_manager = NPCManager()
+        
+        # Extended actions
+        self.items = ItemActions(self)
+        self.combat = CombatActions(self)
+        self.npcs = NPCActions(self)
         
         # Threading
         self._recv_thread: Optional[threading.Thread] = None
         self._send_queue: Queue = Queue()
         self._send_thread: Optional[threading.Thread] = None
         
+        # Register extended packet handlers
+        self._register_extended_handlers()
+        
+        # Subscribe to board complete event
+        self.events.subscribe(EventType.LEVEL_BOARD_COMPLETE, self._on_board_complete)
+    
+    @staticmethod
+    def get_server_list(account: str, password: str) -> Tuple[List[ServerInfo], dict]:
+        """Get list of available servers from the listserver.
+        
+        This is a static method that doesn't require a connected client.
+        
+        Args:
+            account: Account name for authentication
+            password: Account password
+            
+        Returns:
+            Tuple of (list of ServerInfo objects, dict with status/urls)
+        """
+        client = ServerListClient()
+        try:
+            servers, status_info = client.get_servers(account, password)
+            return servers, status_info
+        finally:
+            client.disconnect()
+    
     def connect(self) -> bool:
         """Connect to server"""
         try:
@@ -131,15 +198,38 @@ class RebornClient:
         if not self.connected:
             return False
             
-        # Create login packet with encryption key
-        packet = LoginPacket(account, password, self.encryption_key)
+        # Create login packet with encryption key and version config
+        packet = LoginPacket(account, password, self.encryption_key, self.version_config)
         raw_data = packet.to_bytes()
         
-        # Compress and send (matches working client)
-        compressed = zlib.compress(raw_data)
-        self._send_packet_raw(compressed)
+        # Send login packet with proper compression based on encryption generation
+        from .protocol.versions import EncryptionType
+        if self.version_config.encryption == EncryptionType.ENCRYPT_GEN_1:
+            # No compression
+            self._send_packet_raw(raw_data)
+        elif self.version_config.encryption == EncryptionType.ENCRYPT_GEN_2:
+            # Zlib compression
+            compressed = zlib.compress(raw_data)
+            self._send_packet_raw(compressed)
+        elif self.version_config.encryption == EncryptionType.ENCRYPT_GEN_3:
+            # Zlib compression (individual packets encrypted later)
+            compressed = zlib.compress(raw_data)
+            self._send_packet_raw(compressed)
+        elif self.version_config.encryption == EncryptionType.ENCRYPT_GEN_4:
+            # Zlib compression for login packet (BZ2 is for subsequent packets)
+            compressed = zlib.compress(raw_data)
+            self._send_packet_raw(compressed)
+        elif self.version_config.encryption == EncryptionType.ENCRYPT_GEN_5:
+            # Dynamic compression - use zlib for login packet
+            compressed = zlib.compress(raw_data)
+            self._send_packet_raw(compressed)
+        else:
+            # Fallback - no compression
+            self._send_packet_raw(raw_data)
         
-        # Setup encryption
+        # Setup encryption based on version AFTER sending login packet
+        self.version_codec = create_codec(self.version_config.encryption, self.encryption_key)
+        # Also setup old codecs for compatibility
         self.in_codec.reset(self.encryption_key)
         self.out_codec.reset(self.encryption_key)
         self.first_encrypted_packet = True
@@ -173,7 +263,18 @@ class RebornClient:
                 self.board_data_received = True
                 print("✅ Board data received through buffer")
                 break
+            # Check both level manager and client level for board data
+            level_has_board = False
             if self.level_manager.current_level and hasattr(self.level_manager.current_level, 'board_tiles_64x64') and self.level_manager.current_level.board_tiles_64x64:
+                level_has_board = True
+            elif self.current_level and hasattr(self.current_level, 'board_tiles_64x64') and self.current_level.board_tiles_64x64:
+                level_has_board = True
+            # Also check if any non-gmap level has board data
+            elif any(hasattr(level, 'board_tiles_64x64') and level.board_tiles_64x64 
+                    for name, level in self.levels.items() if not name.endswith('.gmap')):
+                level_has_board = True
+                
+            if level_has_board:
                 self.board_data_received = True
                 print("✅ Board data received in level")
                 break
@@ -188,6 +289,27 @@ class RebornClient:
     def move_to(self, x: float, y: float, direction: Optional[Direction] = None):
         """Move to position"""
         self._actions.move_to(x, y, direction)
+        
+        # Also send high-precision coordinates if server supports it
+        try:
+            packet = PlayerPropsPacket()
+            packet.add_property(PlayerProp.PLPROP_X2, x)
+            packet.add_property(PlayerProp.PLPROP_Y2, y)
+            if hasattr(self.local_player, 'z'):
+                packet.add_property(PlayerProp.PLPROP_Z2, self.local_player.z)
+                
+            self._send_packet(packet)
+            
+            # Update local player high-precision coordinates
+            if not hasattr(self.local_player, 'x2'):
+                self.local_player.x2 = 0.0
+                self.local_player.y2 = 0.0
+                self.local_player.z2 = 0.0
+                
+            self.local_player.x2 = x
+            self.local_player.y2 = y
+        except:
+            pass  # Ignore if server doesn't support
     
     def set_nickname(self, nickname: str):
         """Set nickname"""
@@ -220,6 +342,10 @@ class RebornClient:
     def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0):
         """Warp to a specific level"""
         self._actions.warp_to_level(level_name, x, y)
+    
+    def request_adjacent_level(self, x: int, y: int):
+        """Request adjacent level data for gmap streaming"""
+        self._actions.request_adjacent_level(x, y)
     
     # Combat
     def drop_bomb(self, x: Optional[float] = None, y: Optional[float] = None, 
@@ -518,11 +644,20 @@ class RebornClient:
     
     def queue_packet(self, data: bytes):
         """Queue packet for threaded sending"""
-        # Prepare encrypted packet
-        # Determine compression type
+        # Use version-specific codec if available
+        if self.version_codec:
+            packet = self.version_codec.send_packet(data)
+            self.send_queue.put(packet)
+            return
+            
+        # Fallback to ENCRYPT_GEN_5 behavior for compatibility
+        # Determine compression type (matches GServer behavior)
         if len(data) <= 55:
             compression_type = CompressionType.UNCOMPRESSED
             compressed_data = data
+        elif len(data) > 0x2000:  # > 8KB
+            compression_type = CompressionType.BZ2
+            compressed_data = bz2.compress(data)
         else:
             compression_type = CompressionType.ZLIB
             compressed_data = zlib.compress(data)
@@ -627,6 +762,7 @@ class RebornClient:
             if not decrypted:
                 return
             
+            
             # Check if we're in board data streaming mode - collect truncated hex from large packets!
             if hasattr(self, 'board_stream_active') and self.board_stream_active:
                 # Look for large packets containing truncated hex board data
@@ -725,6 +861,21 @@ class RebornClient:
                     
             packets_processed = 0
             while pos < len(decrypted):
+                # Check if raw data handler is active
+                if self._raw_data_handler.active:
+                    # Feed all remaining data to raw handler
+                    remaining = decrypted[pos:]
+                    leftover = self._raw_data_handler.process_data(remaining)
+                    
+                    if leftover is not None:
+                        # Raw handler returned leftover data to process normally
+                        decrypted = leftover
+                        pos = 0
+                        continue
+                    else:
+                        # All data consumed by raw handler
+                        break
+                
                 # Find the next newline (packet terminator)
                 next_newline = decrypted.find(b'\n', pos)
                 
@@ -750,6 +901,25 @@ class RebornClient:
                 packets_processed += 1
                 
                 if packet and len(packet) >= 1:
+                    # Check if we're expecting text board data
+                    if self.expecting_text_board_data:
+                        # Try to decode as text
+                        try:
+                            text = packet.decode('latin-1')
+                            if text.startswith("BOARD "):
+                                # This is BOARD text data!
+                                text_result = self._text_handler.check_for_text_data(packet)
+                                if text_result:
+                                    self._handle_text_data_result(text_result)
+                                    continue
+                            else:
+                                # Not BOARD data, stop expecting it
+                                self.expecting_text_board_data = False
+                                print(f"📋 End of BOARD text data (got: {text[:20]}...)")
+                        except:
+                            # Failed to decode as text, stop expecting board data
+                            self.expecting_text_board_data = False
+                    
                     # First byte is Reborn-encoded packet ID
                     packet_id = packet[0] - 32
                     packet_data = packet[1:]
@@ -760,21 +930,20 @@ class RebornClient:
                     # Special handling for PLO_BOARDPACKET (101)
                     if packet_id == 101:  # PLO_BOARDPACKET
                         print(f"🎯 PLO_BOARDPACKET detected!")
-                        # The board data is in the packet_data itself!
-                        # The packet is 8193 bytes: 1 byte ID + 8192 bytes of board data
                         
-                        if len(packet_data) >= 8192:
-                            # The board data is in packet_data
-                            board_data = packet_data[:8192]
-                            
-                            print(f"✅ Read {len(board_data)} bytes of board data")
-                            
-                            # Apply board data
-                            if self.level_manager.current_level:
-                                self.level_manager.current_level.set_board_data(board_data)
-                                print(f"📦 Applied board data to level {self.level_manager.current_level.name}")
+                        # When preceded by PLO_RAWDATA with size 8194, the board data comes in packet_data
+                        # The 8194 bytes include: PLO_BOARDPACKET header (1 byte) + board data (8192 bytes) + newline (1 byte)
+                        if hasattr(self, 'expected_next_packet_size') and self.expected_next_packet_size == 8194:
+                            print(f"   This is part of a PLO_RAWDATA stream with board data")
+                            # The packet_data contains the board tiles (8192 bytes total expected)
+                            if len(packet_data) >= 8192:
+                                board_data = packet_data[:8192]
+                                print(f"✅ Got complete board data: {len(board_data)} bytes")
                                 
-                                # Show first few tiles
+                                # Use level manager to apply board data
+                                self.level_manager.handle_board_packet(board_data)
+                                
+                                # Show first few tiles for debugging
                                 import struct
                                 first_tiles = []
                                 for i in range(min(10, len(board_data)//2)):
@@ -783,12 +952,49 @@ class RebornClient:
                                 print(f"   First 10 tile IDs: {first_tiles}")
                                 
                                 self.board_data_received = True
+                                self.expected_next_packet_size = 0  # Reset
                             else:
-                                print(f"⚠️ No current level to apply board data")
+                                # Start collecting board data
+                                print(f"   Starting board collection: {len(packet_data)} bytes")
+                                self.partial_board_data = packet_data
+                                self.expecting_board_continuation = True
                         else:
-                            print(f"❌ Not enough data in packet for board (need 8192, have {len(packet_data)})")
+                            # Regular PLO_BOARDPACKET - board data might follow in the stream
+                            print(f"   Regular PLO_BOARDPACKET with {len(packet_data)} bytes")
                         
                         # Continue processing remaining packets
+                        continue
+                    
+                    # Handle board data continuation
+                    elif hasattr(self, 'expecting_board_continuation') and self.expecting_board_continuation:
+                        # Any packet that follows PLO_BOARDPACKET is board data continuation
+                        print(f"📦 Board continuation packet (ID {packet_id}): {len(packet_data)} bytes")
+                        self.partial_board_data += packet_data
+                        
+                        # Check if we have enough now
+                        if len(self.partial_board_data) >= 8192:
+                            board_data = self.partial_board_data[:8192]
+                            print(f"✅ Collected full board data: {len(board_data)} bytes")
+                            
+                            # Use level manager to apply board data
+                            self.level_manager.handle_board_packet(board_data)
+                            
+                            # Show first few tiles for debugging
+                            import struct
+                            first_tiles = []
+                            for i in range(min(10, len(board_data)//2)):
+                                tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                                first_tiles.append(tile_id)
+                            print(f"   First 10 tile IDs: {first_tiles}")
+                            
+                            self.board_data_received = True
+                            self.expecting_board_continuation = False
+                            self.partial_board_data = b''
+                            self.expected_next_packet_size = 0
+                        else:
+                            print(f"   Total collected: {len(self.partial_board_data)} bytes")
+                        
+                        # Skip normal handler for continuation packets
                         continue
                     
                     result = self.packet_handler.handle_packet(packet_id, packet_data)
@@ -814,8 +1020,18 @@ class RebornClient:
         if not packet or len(packet) == 0:
             return None
             
+        # Use version-specific codec if available
+        if self.version_codec:
+            return self.version_codec.recv_packet(packet)
+        
+        # Fallback to ENCRYPT_GEN_5 behavior
         compression_type = packet[0]
         encrypted_data = packet[1:]
+        
+        # Debug unknown compression types
+        if compression_type not in [CompressionType.UNCOMPRESSED, CompressionType.ZLIB, CompressionType.BZ2]:
+            print(f"Unknown compression type: {compression_type}")
+            return None
         
         # Create a new codec for this packet with the appropriate limit
         packet_codec = RebornEncryption(self.encryption_key)
@@ -844,6 +1060,19 @@ class RebornClient:
             # Silently ignore decompression errors for now
             return None
     
+    def _handle_text_data_result(self, result: Dict[str, Any]):
+        """Handle text data result
+        
+        Args:
+            result: Parsed text data result
+        """
+        data_type = result.get("type")
+        
+        if data_type == "board_data_text":
+            # Board data is already handled by the event emission in TextDataHandler
+            # The board collector will pick it up from the event
+            pass  # BoardCollector now subscribes to the event directly
+        
     def _handle_packet_result(self, packet_id: int, result: Dict[str, Any]):
         """Handle parsed packet result"""
         packet_type = result.get("type")
@@ -905,6 +1134,30 @@ class RebornClient:
             # Update level manager
             self.level_manager.handle_level_name(level_name)
             
+            # Apply any pending board data (but only to non-gmap levels and correct target)
+            if (hasattr(self, 'pending_board_data') and self.pending_board_data and 
+                not level_name.endswith('.gmap') and 
+                (self.board_data_level_name == level_name or self.board_data_level_name is None)):
+                
+                print(f"📦 Applying pending board data to level: {level_name}")
+                self.current_level.set_board_data(self.pending_board_data)
+                self.board_data_received = True
+                # Show first few tiles for verification
+                import struct
+                first_tiles = []
+                for i in range(min(10, len(self.pending_board_data)//2)):
+                    tile_id = struct.unpack('<H', self.pending_board_data[i*2:i*2+2])[0]
+                    first_tiles.append(tile_id)
+                print(f"   Applied board data: {len(self.pending_board_data)} bytes, first tiles: {first_tiles}")
+                self.pending_board_data = None  # Clear it
+                self.board_data_level_name = None
+                
+            elif level_name.endswith('.gmap'):
+                print(f"📍 Entered gmap: {level_name} (world map - no board data needed)")
+                
+            elif hasattr(self, 'pending_board_data') and self.pending_board_data:
+                print(f"📍 Entered level: {level_name} (board data is for: {self.board_data_level_name})")
+            
             # Mark that we've loaded a level
             self.level_loaded = True
             
@@ -940,6 +1193,16 @@ class RebornClient:
             self.events.emit(EventType.PRIVATE_MESSAGE,
                            player_id=from_player_id,
                            message=message)
+            
+        elif packet_type == "rawdata":
+            # PLO_RAWDATA - specifies size of next packet
+            self.expected_next_packet_size = result["expected_size"]
+            print(f"📏 Expecting next packet to be {self.expected_next_packet_size} bytes")
+            
+            # Start raw data mode
+            current_level = self.level_manager.current_level.name if self.level_manager.current_level else None
+            self._raw_data_handler.start_raw_data(self.expected_next_packet_size, 
+                                                {'level': current_level})
             
         elif packet_type == "server_text":
             # Server message
@@ -990,6 +1253,16 @@ class RebornClient:
             filename = result["filename"]
             data = result["data"]
             
+            # Check if this is a GMAP chunk file (header only)
+            if filename.endswith('.nw') and len(data) == 9 and data.startswith(b'GLEVNW01'):
+                print(f"🗺️ GMAP chunk file received: {filename} - expecting BOARD text data")
+                self.expecting_text_board_data = True
+                
+                # Set the target level for the board collector
+                level_name = filename[:-3] if filename.endswith('.nw') else filename
+                if hasattr(self, '_board_collector'):
+                    self._board_collector.set_target_level(level_name)
+            
             # Handle through level manager
             self.level_manager.handle_file_data(filename, data)
             
@@ -1005,11 +1278,14 @@ class RebornClient:
             # Board packet in streaming protocol
             print(f"🎯 CLIENT: Received board packet!")
             board_data = result.get("board_data", b'')
+            is_complete = result.get("is_complete", False)
             print(f"   Board data size: {len(board_data)} bytes")
+            print(f"   Expected size: {self.expected_next_packet_size} bytes")
+            print(f"   Is complete: {is_complete}")
             print(f"   Current level: {self.level_manager.current_level.name if self.level_manager.current_level else 'None'}")
             
             if len(board_data) > 0:
-                if len(board_data) == 8192:
+                if is_complete and len(board_data) == 8192:
                     # Complete board data - apply immediately
                     print(f"📦 Complete board packet with {len(board_data)} bytes")
                     if self.level_manager.current_level:
@@ -1017,11 +1293,24 @@ class RebornClient:
                         print(f"✅ Applied board data to current level!")
                     else:
                         print(f"⚠️ No current level to apply board data to")
+                    
+                    # Reset expected size
+                    self.expected_next_packet_size = 0
                 else:
-                    # Partial board data - start streaming mode
-                    print(f"📦 Initial board packet with {len(board_data)} bytes")
-                    print(f"🔄 Board stream starting - expecting truncated hex chunks...")
-                    self.board_stream_active = True
+                    # Partial board data - check if we should expect more
+                    print(f"📦 Partial board packet with {len(board_data)} bytes")
+                    
+                    # If we know the expected size, start multi-packet assembly
+                    if self.expected_next_packet_size > len(board_data):
+                        print(f"🔄 Starting multi-packet board assembly (need {self.expected_next_packet_size} bytes)")
+                        self.partial_board_data = board_data
+                        self.expecting_board_continuation = True
+                    else:
+                        print(f"⚠️ Unexpected board data size mismatch")
+                        # Try to apply what we have
+                        if self.level_manager.current_level and len(board_data) >= 8192:
+                            self.level_manager.current_level.set_board_data(board_data[:8192])
+                            print(f"✅ Applied truncated board data to current level!")
                     if not hasattr(self, 'board_hex_buffer'):
                         self.board_hex_buffer = b''
             elif len(board_data) == 0:
@@ -1058,8 +1347,8 @@ class RebornClient:
             )
             
         elif packet_type == "level_link":
-            # Level link
-            self.level_manager.handle_level_link(result["data"])
+            # Level link - pass the parsed result dict
+            self.level_manager.handle_level_link(result)
         
         elif packet_type == "trigger_action":
             # Trigger action from server
@@ -1079,6 +1368,11 @@ class RebornClient:
                            action=action, 
                            params=params,
                            raw=result.get("raw", ""))
+        
+        elif packet_type == "board_data":
+            # This is actually PLO_NPCWEAPONDEL (ID 34), not board data
+            # Board data comes via PLO_BOARDPACKET (ID 101)
+            pass
         
         elif packet_type == "ghost_text":
             # Ghost mode text
@@ -1107,5 +1401,265 @@ class RebornClient:
         elif packet_type == "fullstop2":
             # Client freeze type 2
             self.events.emit(EventType.CLIENT_FREEZE, freeze_type="fullstop2")
+        
+        elif packet_type == "unknown_49":
+            # This is a GMAP name packet!
+            gmap_name = result.get('data', '')
+            if gmap_name.endswith('.gmap'):
+                print(f"📍 Detected GMAP: {gmap_name}")
+                self.level_manager.handle_level_name(gmap_name)
+        
+        # board_data_text is now handled by TextDataHandler, not through packet system
+    
+    # Extended packet handler registration
+    def _register_extended_handlers(self):
+        """Register handlers for new packet types"""
+        # Import from the new packet type modules
+        try:
+            from .protocol.packet_types.items import (
+                ServerItemAddPacket, ServerItemDeletePacket, ServerThrowCarriedPacket
+            )
+            from .protocol.packet_types.combat import (
+                ServerHurtPlayerPacket, ServerExplosionPacket, ServerHitObjectsPacket,
+                ServerPushAwayPacket
+            )
+            from .protocol.packet_types.npcs import (
+                ServerNPCPropsPacket, ServerNPCDeletePacket,
+                ServerNPCDelete2Packet, ServerNPCActionPacket, ServerNPCMovedPacket,
+                ServerTriggerActionPacket
+            )
+        except ImportError:
+            # Fall back to trying to import from packets module
+            from .protocol.packets import (
+                ServerItemAddPacket, ServerItemDeletePacket, ServerThrowCarriedPacket,
+                ServerHurtPlayerPacket, ServerExplosionPacket, ServerHitObjectsPacket,
+                ServerPushAwayPacket, ServerNPCPropsPacket, ServerNPCDeletePacket,
+                ServerNPCDelete2Packet, ServerNPCActionPacket, ServerNPCMovedPacket,
+                ServerTriggerActionPacket
+            )
+        
+        # Item handlers
+        self.packet_handler.handlers[ServerToPlayer.PLO_ITEMADD] = self._handle_item_add
+        self.packet_handler.handlers[ServerToPlayer.PLO_ITEMDEL] = self._handle_item_delete
+        self.packet_handler.handlers[ServerToPlayer.PLO_THROWCARRIED] = self._handle_throw_carried
+        
+        # Combat handlers
+        self.packet_handler.handlers[ServerToPlayer.PLO_HURTPLAYER] = self._handle_hurt_player
+        self.packet_handler.handlers[ServerToPlayer.PLO_EXPLOSION] = self._handle_explosion
+        self.packet_handler.handlers[ServerToPlayer.PLO_HITOBJECTS] = self._handle_hit_objects
+        self.packet_handler.handlers[ServerToPlayer.PLO_PUSHAWAY] = self._handle_push_away
+        
+        # NPC handlers
+        self.packet_handler.handlers[ServerToPlayer.PLO_NPCPROPS] = self._handle_npc_props
+        self.packet_handler.handlers[ServerToPlayer.PLO_NPCDEL] = self._handle_npc_delete
+        self.packet_handler.handlers[ServerToPlayer.PLO_NPCDEL2] = self._handle_npc_delete2
+        self.packet_handler.handlers[ServerToPlayer.PLO_NPCACTION] = self._handle_npc_action
+        self.packet_handler.handlers[ServerToPlayer.PLO_NPCMOVED] = self._handle_npc_moved
+        self.packet_handler.handlers[ServerToPlayer.PLO_TRIGGERACTION] = self._handle_trigger_action
+        
+        # Level handler
+        self.packet_handler.handlers[ServerToPlayer.PLO_SETACTIVELEVEL] = self._handle_set_active_level
+        
+    # Item packet handlers
+    def _handle_item_add(self, packet: 'ServerItemAddPacket'):
+        """Handle item spawn"""
+        level = self.local_player.level
+        try:
+            item_type = LevelItemType(packet.item_type)
+        except ValueError:
+            item_type = LevelItemType.GREENRUPEE
+            
+        self.item_manager.add_item(level, packet.x, packet.y, item_type, packet.item_id)
+        
+        self.events.emit(EventType.ITEM_SPAWNED, item={
+            'x': packet.x,
+            'y': packet.y,
+            'type': item_type,
+            'id': packet.item_id,
+            'level': level
+        })
+        
+    def _handle_item_delete(self, packet: 'ServerItemDeletePacket'):
+        """Handle item removal"""
+        level = self.local_player.level
+        item = self.item_manager.remove_item(level, packet.x, packet.y)
+        
+        if item:
+            self.events.emit(EventType.ITEM_REMOVED, item=item)
+            
+    def _handle_throw_carried(self, reader: 'PacketReader'):
+        """Handle thrown object"""
+        # TODO: Parse the actual packet format
+        # For now, just return a basic result to avoid errors
+        return {"type": "throw_carried"}
+                           
+    # Combat packet handlers
+    def _handle_hurt_player(self, reader: 'PacketReader'):
+        """Handle player damage"""
+        # Parse hurt player packet
+        # Format: target_id, attacker_id, damage/health
+        try:
+            # Read the packet data - format may vary by server version
+            # For now, just skip the data to avoid errors
+            remaining = reader.remaining()
+            if remaining > 0:
+                reader.read_remaining()  # Skip the rest
+                
+            # Return a basic result
+            return {"type": "hurt_player"}
+        except Exception as e:
+            print(f"Error parsing hurt player packet: {e}")
+            return {"type": "hurt_player"}
+                       
+    def _handle_explosion(self, reader: 'PacketReader'):
+        """Handle explosion"""
+        # TODO: Parse explosion packet format
+        return {"type": "explosion"}
+                       
+    def _handle_hit_objects(self, reader: 'PacketReader'):
+        """Handle hit confirmation"""
+        # TODO: Parse hit objects packet format
+        return {"type": "hit_objects"}
+                       
+    def _handle_push_away(self, reader: 'PacketReader'):
+        """Handle push effect"""
+        # TODO: Parse push away packet format
+        return {"type": "push_away"}
+            
+        self.events.emit(EventType.PLAYER_PUSHED,
+                       player_id=packet.player_id,
+                       dx=packet.dx,
+                       dy=packet.dy,
+                       force=packet.force)
+                       
+    # NPC packet handlers
+    def _handle_npc_props(self, reader: 'PacketReader'):
+        """Handle NPC properties - this needs custom parsing based on prop IDs"""
+        # Read NPC ID (2 bytes)
+        if reader.remaining() < 2:
+            return
+        
+        npc_id = reader.read_short()
+        
+        # Read the rest as raw data
+        raw_data = reader.read_remaining()
+        
+        # For now, just emit the raw data
+        self.events.emit(EventType.NPC_UPDATED,
+                       npc_id=npc_id,
+                       raw_data=raw_data)
+                       
+    def _handle_npc_delete(self, packet: 'ServerNPCDeletePacket'):
+        """Handle NPC deletion"""
+        npc = self.npc_manager.remove_npc(packet.npc_id)
+        if npc:
+            self.events.emit(EventType.NPC_REMOVED, npc=npc)
+            
+    def _handle_npc_delete2(self, packet: 'ServerNPCDelete2Packet'):
+        """Handle NPC deletion v2"""
+        npc = self.npc_manager.remove_npc(packet.npc_id)
+        if npc:
+            self.events.emit(EventType.NPC_REMOVED, npc=npc, level=packet.level)
+            
+    def _handle_npc_action(self, packet: 'ServerNPCActionPacket'):
+        """Handle NPC action"""
+        self.events.emit(EventType.NPC_ACTION,
+                       npc_id=packet.npc_id,
+                       action=packet.action,
+                       params=packet.params)
+                       
+    def _handle_npc_moved(self, packet: 'ServerNPCMovedPacket'):
+        """Handle NPC movement/hiding"""
+        if packet.hidden:
+            npc = self.npc_manager.get_npc(packet.npc_id)
+            if npc:
+                npc.visible = False
+        else:
+            self.npc_manager.update_npc_position(packet.npc_id, packet.x, packet.y)
+            
+        self.events.emit(EventType.NPC_MOVED,
+                       npc_id=packet.npc_id,
+                       x=packet.x,
+                       y=packet.y,
+                       hidden=packet.hidden)
+                       
+    def _handle_trigger_action(self, packet: 'ServerTriggerActionPacket'):
+        """Handle trigger action response"""
+        self.events.emit(EventType.TRIGGER_RESPONSE,
+                       action=packet.action,
+                       params=packet.params)
+                       
+    def _handle_set_active_level(self, reader: 'PacketReader'):
+        """Handle set active level packet - sets the active level for incoming packets"""
+        # Read the remaining data as the level name
+        level_name = reader.read_remaining().decode('latin-1', errors='ignore')
+        
+        # This sets which level receives updates for items, NPCs, board data, etc.
+        # IMPORTANT: This is different from PLO_LEVELNAME which sets the current level
+        # PLO_SETACTIVELEVEL tells us which level subsequent packets will modify
+        
+        if hasattr(self, 'level_manager'):
+            # Tell the level manager to set the active level for packet processing
+            self.level_manager.set_active_level_for_packets(level_name)
+        
+        # Check if debug_packets exists (it may not be initialized yet)
+        if hasattr(self, 'debug_packets') and self.debug_packets:
+            print(f"   📤 Handler result: set_active_level:{level_name}")
+        return None  # Don't return a string that will cause errors
+                       
+    # Extended API methods
+    def _on_board_complete(self, **kwargs):
+        """Handle complete board data from board collector"""
+        level_name = kwargs.get('level')
+        width = kwargs.get('width', 64)
+        height = kwargs.get('height', 64)
+        tiles = kwargs.get('tiles', [])
+        
+        if hasattr(self, 'level_manager'):
+            self.level_manager.handle_board_complete(level_name, width, height, tiles)
+            
+        # Reset the text board data flag
+        self.expecting_text_board_data = False
+        print(f"✅ Board collection complete for level: {level_name}")
+    
+    def pickup_item(self, x: float, y: float) -> bool:
+        """Pick up an item at position"""
+        return self.items.pickup_item(x, y)
+        
+    def drop_item(self, item_type: LevelItemType, x: Optional[float] = None, y: Optional[float] = None):
+        """Drop an item"""
+        self.items.drop_item(item_type, x, y)
+        
+    def open_chest(self, x: int, y: int) -> bool:
+        """Open a chest"""
+        return self.items.open_chest(x, y)
+        
+    def throw_carried(self, power: float = 1.0):
+        """Throw carried object"""
+        self.items.throw_carried(power)
+        
+    def hurt_player(self, player_id: int, damage: float = 0.5):
+        """Attack another player"""
+        self.combat.hurt_player(player_id, damage)
+        
+    def check_hit(self, x: float, y: float, width: float = 2.0, height: float = 2.0) -> List[int]:
+        """Check for hits in an area"""
+        return self.combat.check_hit(x, y, width, height)
+        
+    def create_explosion(self, x: float, y: float, power: float = 1.0, radius: float = 3.0):
+        """Create an explosion"""
+        self.combat.create_explosion(x, y, power, radius)
+        
+    def touch_npc(self, npc_id: int) -> bool:
+        """Touch an NPC"""
+        return self.npcs.touch_npc(npc_id)
+        
+    def create_npc(self, x: float, y: float, image: str = "", script: str = "") -> int:
+        """Create a new NPC"""
+        return self.npcs.create_npc(x, y, image, script)
+        
+    def trigger_action(self, action: str, params: str = ""):
+        """Send a trigger action"""
+        self.npcs.trigger_action(action, params)
         
         # Many more packet types to handle...

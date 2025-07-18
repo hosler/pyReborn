@@ -82,6 +82,43 @@ class PacketReader:
         if self.pos >= len(self.data):
             return 0
         return self.data[self.pos] - 32
+    
+    def read_remaining(self) -> bytes:
+        """Read all remaining bytes"""
+        if self.pos >= len(self.data):
+            return b''
+        remaining = self.data[self.pos:]
+        self.pos = len(self.data)
+        return remaining
+    
+    def skip(self, count: int):
+        """Skip forward by count bytes"""
+        self.pos += count
+        if self.pos > len(self.data):
+            self.pos = len(self.data)
+    
+    def read_bytes(self, count: int) -> bytes:
+        """Read raw bytes without decoding"""
+        if self.pos + count > len(self.data):
+            count = len(self.data) - self.pos
+        result = self.data[self.pos:self.pos + count]
+        self.pos += count
+        return result
+    
+    def read_gint(self) -> int:
+        """Read GInt (Graal integer format) - 3 bytes with +32 encoding"""
+        if self.pos + 3 > len(self.data):
+            return 0
+        
+        # Read 3 raw bytes (without -32 decoding)
+        val = [self.data[self.pos + i] for i in range(3)]
+        self.pos += 3
+        
+        # Subtract 32 from each byte (reverse the +32 encoding)
+        val = [b - 32 for b in val]
+        
+        # Reconstruct the value: (val[0] << 14) + (val[1] << 7) + val[2]
+        return (val[0] << 14) + (val[1] << 7) + val[2]
 
 
 class PacketHandler:
@@ -97,15 +134,18 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_OTHERPLPROPS] = self._handle_other_player_props
         self.handlers[ServerToPlayer.PLO_LEVELNAME] = self._handle_level_name
         self.handlers[ServerToPlayer.PLO_BOARDMODIFY] = self._handle_board_modify
+        self.handlers[ServerToPlayer.PLO_RAWDATA] = self._handle_rawdata
         self.handlers[ServerToPlayer.PLO_BOARDPACKET] = self._handle_board_packet
         print(f"🔧 Registered board packet handler for ID {ServerToPlayer.PLO_BOARDPACKET}")  # Debug
         self.handlers[ServerToPlayer.PLO_PLAYERWARP] = self._handle_player_warp
+        self.handlers[ServerToPlayer.PLO_DISCMESSAGE] = self._handle_disconnect_message
         self.handlers[ServerToPlayer.PLO_TOALL] = self._handle_toall
         self.handlers[ServerToPlayer.PLO_PRIVATEMESSAGE] = self._handle_private_message
         self.handlers[ServerToPlayer.PLO_ADDPLAYER] = self._handle_add_player
         self.handlers[ServerToPlayer.PLO_DELPLAYER] = self._handle_del_player
         self.handlers[ServerToPlayer.PLO_SIGNATURE] = self._handle_signature
         self.handlers[ServerToPlayer.PLO_SERVERTEXT] = self._handle_server_text
+        self.handlers[ServerToPlayer.PLO_WARPFAILED] = self._handle_warp_failed
         self.handlers[ServerToPlayer.PLO_FILE] = self._handle_file
         self.handlers[ServerToPlayer.PLO_LEVELBOARD] = self._handle_level_board
         self.handlers[ServerToPlayer.PLO_LEVELSIGN] = self._handle_level_sign
@@ -122,6 +162,8 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_NPCPROPS] = self._handle_npc_props
         self.handlers[ServerToPlayer.PLO_NPCDEL] = self._handle_npc_del
         self.handlers[ServerToPlayer.PLO_NPCDEL2] = self._handle_npc_del2
+        self.handlers[ServerToPlayer.PLO_NPCWEAPONADD] = self._handle_npc_weapon_add
+        self.handlers[ServerToPlayer.PLO_NPCWEAPONDEL] = self._handle_npc_weapon_del
         self.handlers[ServerToPlayer.PLO_BADDYPROPS] = self._handle_baddy_props
         self.handlers[ServerToPlayer.PLO_NPCACTION] = self._handle_npc_action
         self.handlers[ServerToPlayer.PLO_CLEARWEAPONS] = self._handle_clear_weapons
@@ -131,6 +173,21 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_NEWWORLDTIME] = self._handle_newworld_time
         self.handlers[ServerToPlayer.PLO_STAFFGUILDS] = self._handle_staff_guilds
         self.handlers[ServerToPlayer.PLO_TRIGGERACTION] = self._handle_trigger_action
+        # Unknown packet IDs that appear in logs
+        self.handlers[10] = self._handle_unknown_10
+        self.handlers[30] = self._handle_unknown_30
+        self.handlers[45] = self._handle_file_uptodate
+        self.handlers[33] = self._handle_unknown_33
+        # self.handlers[34] = PLO_NPCWEAPONDEL - not BOARD data!
+        self.handlers[41] = self._handle_unknown_41  # Large HTML packet
+        self.handlers[43] = self._handle_unknown_43
+        self.handlers[44] = self._handle_unknown_44
+        self.handlers[49] = self._handle_unknown_49
+        self.handlers[52] = self._handle_unknown_52  # TILESET packet
+        self.handlers[179] = self._handle_unknown_179
+        self.handlers[180] = self._handle_unknown_180
+        self.handlers[190] = self._handle_unknown_190
+        self.handlers[197] = self._handle_unknown_197
         self.handlers[65] = self._handle_rc_listrcs  # PLI_RC_LISTRCS
         
         # New GServer-V2 packet handlers
@@ -164,9 +221,13 @@ class PacketHandler:
             try:
                 result = self.handlers[packet_id](reader)
                 if result:
-                    print(f"   📤 Handler result: {result.get('type', 'unknown')}")
-                    if result.get('type') == 'board_packet':
-                        print(f"   🎯 BOARD PACKET: {len(result.get('board_data', b''))} bytes")
+                    # Handle both dict and string results
+                    if isinstance(result, dict):
+                        print(f"   📤 Handler result: {result.get('type', 'unknown')}")
+                        if result.get('type') == 'board_packet':
+                            print(f"   🎯 BOARD PACKET: {len(result.get('board_data', b''))} bytes")
+                    else:
+                        print(f"   📤 Handler result: {result}")
                 return result
             except Exception as e:
                 print(f"   ❌ Handler error: {e}")
@@ -237,6 +298,9 @@ class PacketHandler:
             elif prop in [PlayerProp.PLPROP_X2, PlayerProp.PLPROP_Y2, PlayerProp.PLPROP_Z2]:
                 # High precision coordinates (2 bytes)
                 value = reader.read_short()
+            elif prop in [PlayerProp.PLPROP_GMAPLEVELX, PlayerProp.PLPROP_GMAPLEVELY]:
+                # GMAP segment position (1 byte)
+                value = reader.read_byte()
             else:
                 # All other properties are single byte
                 value = reader.read_byte()
@@ -276,6 +340,19 @@ class PacketHandler:
             "tiles": tiles
         }
     
+    def _handle_rawdata(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_RAWDATA packet - specifies the size of the next packet"""
+        print(f"🎯 PLO_RAWDATA packet detected!")
+        
+        # Read the size as GInt (3 bytes)
+        expected_size = reader.read_gint()
+        print(f"   📏 Next packet size: {expected_size} bytes")
+        
+        return {
+            "type": "rawdata",
+            "expected_size": expected_size
+        }
+    
     def _handle_board_packet(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle full board data packet"""
         print(f"🎯 BOARD PACKET HANDLER TRIGGERED!")
@@ -283,30 +360,38 @@ class PacketHandler:
         print(f"   Position: {reader.pos}")
         print(f"   Remaining: {reader.remaining()}")
         
-        # Board packet is 8192 bytes (64x64 tiles, 2 bytes per tile)
+        # Board packet should be 8192 bytes (64x64 tiles, 2 bytes per tile)
+        # But it might be truncated and need continuation packets
         board_data = b''
         remaining = reader.remaining()
         
-        if remaining >= 8192:
-            print(f"   ✅ Reading 8192 bytes of board data")
-            # Read raw board data
-            board_data = reader.data[reader.pos:reader.pos+8192]
-            reader.pos += 8192
+        if remaining > 0:
+            print(f"   📦 Reading {remaining} bytes of board data")
+            # Read all available board data
+            board_data = reader.data[reader.pos:reader.pos+remaining]
+            reader.pos += remaining
             
             # Show first few tile IDs for debugging
             import struct
             first_tiles = []
             for i in range(min(10, len(board_data)//2)):
-                tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
-                first_tiles.append(tile_id)
-            print(f"   First 10 tile IDs: {first_tiles}")
+                if i*2+1 < len(board_data):
+                    tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
+                    first_tiles.append(tile_id)
+            print(f"   First tile IDs: {first_tiles}")
+            
+            if len(board_data) == 8192:
+                print(f"   ✅ Complete board data received")
+            else:
+                print(f"   ⚠️  Partial board data - expected 8192, got {len(board_data)}")
         else:
-            print(f"   ❌ Not enough data for board (need 8192, have {remaining})")
+            print(f"   ❌ No board data available")
         
         result = {
             "type": "board_packet",
             "board_data": board_data,
-            "size": len(board_data)
+            "size": len(board_data),
+            "is_complete": len(board_data) == 8192
         }
         print(f"   📤 Returning board packet result: {len(board_data)} bytes")
         return result
@@ -317,6 +402,12 @@ class PacketHandler:
         y = reader.read_byte() / 2.0
         level = reader.read_gstring()
         return {"type": "player_warp", "x": x, "y": y, "level": level}
+    
+    def _handle_disconnect_message(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle disconnect message"""
+        message = reader.read_gstring()
+        print(f"❌ DISCONNECT: {message}")
+        return {"type": "disconnect_message", "message": message}
     
     def _handle_toall(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle chat message (PLO_TOALL format: [player_id][length][message])"""
@@ -352,10 +443,98 @@ class PacketHandler:
         text = reader.read_gstring()
         return {"type": "server_text", "text": text}
     
+    def _handle_warp_failed(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle warp failed packet"""
+        # The packet contains the level name that failed
+        level_name = reader.read_gstring()
+        print(f"❌ WARP FAILED: Cannot warp to '{level_name}'")
+        return {"type": "warp_failed", "level_name": level_name}
+    
     def _handle_file(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle file data"""
-        filename = reader.read_string_with_length()
-        data = reader.data[reader.pos:]  # Rest is file data
+        import os
+        
+        # The format appears to be:
+        # [compressed length][compressed data that includes part of filename][rest of filename][file data]
+        
+        # First byte is length of compressed/obfuscated data
+        compressed_len = reader.read_byte()
+        
+        # The compressed data contains obfuscated filename info
+        compressed_data = b''
+        if compressed_len > 0:
+            compressed_data = reader.read_bytes(compressed_len)
+            print(f"📁 Compressed data ({compressed_len} bytes): {compressed_data.hex()}")
+            # Try to extract readable chars from compressed data
+            readable = ''.join(chr(b) if 32 <= b < 127 else '.' for b in compressed_data)
+            print(f"   As text: {readable}")
+        
+        # Now read the actual filename
+        # The filename continues after the compressed data
+        known_headers = [b'GLEVNW01', b'GRMAP001', b'GLVLNW01', b'GANI0001']
+        
+        filename = ""
+        
+        # The last byte of compressed data often contains the first character of the filename
+        if compressed_len > 0:
+            # The last byte seems to be the first character of the filename
+            last_byte = compressed_data[-1]
+            if 32 <= last_byte < 127:  # Printable ASCII
+                filename = chr(last_byte)
+        
+        # Continue reading the filename
+        while reader.has_more():
+            # Check if we're at a known header
+            current_pos = reader.pos
+            remaining = reader.data[current_pos:]
+            
+            header_found = False
+            for header in known_headers:
+                if remaining.startswith(header):
+                    header_found = True
+                    break
+            
+            if header_found:
+                break
+                
+            char = reader.read_raw_byte()
+            if char == 0:  # Null terminates
+                break
+            elif 32 <= char < 127:  # Printable ASCII
+                filename += chr(char)
+            else:
+                # Non-printable char might indicate end of filename
+                # Put it back and break
+                reader.pos -= 1
+                break
+        
+        # Clean up the filename - remove any trailing junk
+        filename = filename.rstrip('\r\n\x00')
+        
+        # The rest is file data
+        data = reader.read_remaining()
+        
+        print(f"📁 File packet: compressed_len={compressed_len}, filename='{filename}', data_size={len(data)}")
+        if len(data) > 0:
+            print(f"   Data starts with: {data[:min(32, len(data))].hex()}")
+            if len(data) > 32:
+                print(f"   Data preview: {repr(data[:100])}")
+        
+        # Save file to downloads directory for inspection
+        downloads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
+        
+        # Clean filename for filesystem
+        safe_filename = filename.replace('/', '_').replace('\\', '_')
+        file_path = os.path.join(downloads_dir, safe_filename)
+        
+        try:
+            with open(file_path, 'wb') as f:
+                f.write(data)
+            print(f"💾 Saved file to: {file_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to save file: {e}")
+        
         return {"type": "file", "filename": filename, "data": data}
     
     def _handle_level_board(self, reader: PacketReader) -> Dict[str, Any]:
@@ -372,16 +551,38 @@ class PacketHandler:
     
     def _handle_level_chest(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle level chest"""
-        x = reader.read_byte()
-        y = reader.read_byte()
+        # Chest coordinates are sent as pixel coordinates / 2
+        x_raw = reader.read_byte()
+        y_raw = reader.read_byte()
+        x = x_raw / 2.0
+        y = y_raw / 2.0
         item = reader.read_byte()
         sign_text = reader.read_gstring()
         return {"type": "level_chest", "x": x, "y": y, "item": item, "sign_text": sign_text}
     
     def _handle_level_link(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle level link"""
-        # Complex format - simplified
-        return {"type": "level_link", "data": reader.data[reader.pos:]}
+        # Level link format: x, y, width, height, new_x, new_y, level_name
+        x = reader.read_byte()
+        y = reader.read_byte()
+        width = reader.read_byte()
+        height = reader.read_byte()
+        new_x = reader.read_byte()
+        new_y = reader.read_byte()
+        
+        # The level name follows - appears to be null-terminated or gstring
+        level_name = reader.read_gstring()
+        
+        print(f"🔗 Level link: ({x},{y}) size {width}x{height} -> {level_name} at ({new_x/2},{new_y/2})")
+        
+        return {
+            "type": "level_link", 
+            "x": x, "y": y, 
+            "width": width, "height": height,
+            "new_x": new_x / 2.0, "new_y": new_y / 2.0,
+            "level_name": level_name,
+            "data": reader.data[reader.pos:]  # Keep raw data for compatibility
+        }
     
     def _handle_flag_set(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle flag set"""
@@ -443,6 +644,18 @@ class PacketHandler:
         level = reader.read_string_with_length()
         npc_id = reader.read_int()
         return {"type": "npc_del2", "level": level, "npc_id": npc_id}
+    
+    def _handle_npc_weapon_add(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle NPC weapon add"""
+        # Format: weapon name (gstring)
+        weapon_name = reader.read_gstring()
+        return {"type": "npc_weapon_add", "weapon": weapon_name}
+    
+    def _handle_npc_weapon_del(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle NPC weapon delete"""
+        # Format: weapon name (gstring)  
+        weapon_name = reader.read_gstring()
+        return {"type": "npc_weapon_del", "weapon": weapon_name}
     
     def _handle_baddy_props(self, reader: PacketReader) -> Dict[str, Any]:
         """Handle baddy properties"""
@@ -566,3 +779,67 @@ class PacketHandler:
         """Handle fullstop packet (PLO_FULLSTOP)"""
         # Sending this causes the entire client to not respond to normal input and hides the HUD
         return {"type": "fullstop"}
+    
+    def _handle_unknown_10(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 10"""
+        return {"type": "unknown_10", "data": reader.read_remaining()}
+    
+    def _handle_unknown_30(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_FILESENDFAILED (30) - File send failed"""
+        filename = reader.read_gstring()
+        print(f"❌ PLO_FILESENDFAILED: Failed to send file '{filename}'")
+        return {"type": "file_send_failed", "filename": filename}
+    
+    def _handle_file_uptodate(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_FILEUPTODATE (45) - File is already up to date"""
+        filename = reader.read_gstring()
+        print(f"✓ PLO_FILEUPTODATE: File '{filename}' is already up to date")
+        return {"type": "file_uptodate", "filename": filename}
+    
+    def _handle_unknown_33(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 33 - appears to be weapon/image related"""
+        data = reader.read_gstring()
+        return {"type": "unknown_33", "data": data}
+    
+    
+    def _handle_unknown_41(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 41 - appears to be HTML content"""
+        html_content = reader.read_gstring()
+        return {"type": "unknown_41", "html": html_content}
+    
+    def _handle_unknown_43(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 43"""
+        return {"type": "unknown_43", "data": reader.read_remaining()}
+    
+    def _handle_unknown_44(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 44"""
+        return {"type": "unknown_44", "data": reader.read_remaining()}
+    
+    def _handle_unknown_49(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 49 - appears to be level/gmap related"""
+        data = reader.read_gstring()
+        return {"type": "unknown_49", "data": data}
+    
+    def _handle_unknown_52(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 52 - TILESET command"""
+        tileset = reader.read_gstring()
+        return {"type": "tileset", "tileset": tileset}
+    
+    def _handle_unknown_179(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 179"""
+        data = reader.read_gstring()
+        return {"type": "unknown_179", "data": data}
+    
+    def _handle_unknown_180(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 180"""
+        data = reader.read_gstring()
+        return {"type": "unknown_180", "data": data}
+    
+    def _handle_unknown_190(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 190"""
+        return {"type": "unknown_190", "data": reader.read_remaining()}
+    
+    def _handle_unknown_197(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle unknown packet 197 - appears to be weapon/class data"""
+        data = reader.read_gstring()
+        return {"type": "unknown_197", "data": data}

@@ -85,11 +85,24 @@ class EventType(Enum):
     TRIGGER_ACTION = auto()
     GROUP_CHANGED = auto()
     LEVELGROUP_CHANGED = auto()
+    BOARD_DATA_TEXT = auto()
     GHOST_TEXT = auto()
     GHOST_ICON = auto()
     MINIMAP_UPDATE = auto()
     SERVER_WARP = auto()
     CLIENT_FREEZE = auto()
+    LEVEL_BOARD_COMPLETE = auto()  # Full board data assembled from text
+    
+    # Extended events for new features
+    ITEM_SPAWNED = auto()
+    OBJECT_THROWN = auto()
+    PLAYER_PUSHED = auto()
+    EXPLOSION = auto()
+    HIT_CONFIRMED = auto()
+    NPC_UPDATED = auto()
+    NPC_ACTION = auto()
+    NPC_MOVED = auto()
+    TRIGGER_RESPONSE = auto()
 
 
 class EventManager:
@@ -131,7 +144,18 @@ class EventManager:
         """
         # Handle both dict and kwargs
         if data is not None:
-            event_data = data
+            # Ensure data is a dict
+            if not isinstance(data, dict):
+                print(f"WARNING: emit() called with non-dict data for {event_type}: {type(data)}")
+                # Try to recover - if it's bytes, assume it's file data
+                if isinstance(data, bytes):
+                    # This is likely a file event - wrap it properly
+                    event_data = {"filename": "unknown", "data": data}
+                    print(f"  Recovered by wrapping bytes as file data")
+                else:
+                    event_data = {}
+            else:
+                event_data = data
         else:
             event_data = kwargs
             

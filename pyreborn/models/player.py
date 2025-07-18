@@ -15,9 +15,12 @@ class Player:
         self.nickname = ""
         
         # Position
-        self.x = 30.0
-        self.y = 30.0
+        self._x = 30.0
+        self._y = 30.0
+        self._x2 = None  # High precision X across entire gmap
+        self._y2 = None  # High precision Y across entire gmap
         self.z = 0.0
+        self.z2 = None  # High precision Z (height/layer)
         self.level = ""
         self.direction = Direction.DOWN
         
@@ -64,6 +67,70 @@ class Player:
         self.community_name = ""  # Alias/community name
         self.playerlist_category = 0  # Player list categorization
         self.group = ""  # Player group for group maps
+        
+        # GMAP properties
+        self.gmaplevelx = None  # X segment in gmap
+        self.gmaplevely = None  # Y segment in gmap
+    
+    @property
+    def x(self) -> float:
+        """Get local X coordinate (0-64 within segment)"""
+        return self._x
+        
+    @x.setter
+    def x(self, value: float):
+        """Set local X coordinate and update world coordinate if in GMAP"""
+        # No coordinate wrapping - each level is independent
+        self._x = value
+        # Update world coordinate if in GMAP mode
+        if self.gmaplevelx is not None:
+            self._x2 = self.gmaplevelx * 64 + self._x
+            
+    @property
+    def y(self) -> float:
+        """Get local Y coordinate (0-64 within segment)"""
+        return self._y
+        
+    @y.setter
+    def y(self, value: float):
+        """Set local Y coordinate and update world coordinate if in GMAP"""
+        # No coordinate wrapping - each level is independent
+        self._y = value
+        # Update world coordinate if in GMAP mode
+        if self.gmaplevely is not None:
+            self._y2 = self.gmaplevely * 64 + self._y
+            
+    @property
+    def x2(self) -> Optional[float]:
+        """Get world X coordinate (across entire GMAP)"""
+        return self._x2
+        
+    @x2.setter
+    def x2(self, value: Optional[float]):
+        """Set world X coordinate and update local coordinate"""
+        self._x2 = value
+        # Update local coordinate if world coordinate is set
+        if value is not None:
+            self._x = value % 64
+            # Update GMAP segment if not set
+            if self.gmaplevelx is None:
+                self.gmaplevelx = int(value // 64)
+                
+    @property
+    def y2(self) -> Optional[float]:
+        """Get world Y coordinate (across entire GMAP)"""
+        return self._y2
+        
+    @y2.setter
+    def y2(self, value: Optional[float]):
+        """Set world Y coordinate and update local coordinate"""
+        self._y2 = value
+        # Update local coordinate if world coordinate is set
+        if value is not None:
+            self._y = value % 64
+            # Update GMAP segment if not set
+            if self.gmaplevely is None:
+                self.gmaplevely = int(value // 64)
     
     @property
     def player_id(self) -> int:
@@ -80,20 +147,30 @@ class Player:
         if prop == PlayerProp.PLPROP_NICKNAME:
             self.nickname = value
         elif prop == PlayerProp.PLPROP_X:
+            old_x = self.x
             self.x = value / 2.0  # Convert from half-tiles
+            if abs(old_x - self.x) > 10:  # Large jump indicates warp
+                print(f"[WARP] Player {self.id} X: {old_x:.2f} -> {self.x:.2f} (server sent {value})")
         elif prop == PlayerProp.PLPROP_Y:
+            old_y = self.y
             self.y = value / 2.0
+            if abs(old_y - self.y) > 10:  # Large jump indicates warp
+                print(f"[WARP] Player {self.id} Y: {old_y:.2f} -> {self.y:.2f} (server sent {value})")
         elif prop == PlayerProp.PLPROP_Z:
             self.z = value
         elif prop == PlayerProp.PLPROP_X2:
-            # High precision X coordinate (pixels)
-            self.x = value / 16.0
+            # High precision X coordinate - server might send incorrect values, ignore for now
+            server_x2 = value / 2.0  # Convert from half-tiles to tiles
+            print(f"[SERVER X2] Player {self.id} server sent X2={value} ({server_x2:.2f} tiles) - ignoring")
+            # Don't update x2 from server in GMAP mode - client maintains it
         elif prop == PlayerProp.PLPROP_Y2:
-            # High precision Y coordinate (pixels)
-            self.y = value / 16.0
+            # High precision Y coordinate - server might send incorrect values, ignore for now  
+            server_y2 = value / 2.0  # Convert from half-tiles to tiles
+            print(f"[SERVER Y2] Player {self.id} server sent Y2={value} ({server_y2:.2f} tiles) - ignoring")
+            # Don't update y2 from server in GMAP mode - client maintains it
         elif prop == PlayerProp.PLPROP_Z2:
             # High precision Z coordinate
-            self.z = value
+            self.z2 = value
         elif prop == PlayerProp.PLPROP_SPRITE:
             self.direction = Direction(value % 4)
         elif prop == PlayerProp.PLPROP_CURPOWER:
@@ -149,6 +226,20 @@ class Player:
         elif prop == PlayerProp.PLPROP_COLORS:
             if isinstance(value, list) and len(value) >= 5:
                 self.colors = value[:5]
+        elif prop == PlayerProp.PLPROP_GMAPLEVELX:
+            old_gmaplevelx = self.gmaplevelx
+            self.gmaplevelx = value
+            # Update world coordinate if local coordinate is set
+            if old_gmaplevelx != value:
+                self._x2 = value * 64 + self.x
+                print(f"[GMAP] Player {self.id} GMAPLEVELX: {old_gmaplevelx} -> {value} (world x2={self._x2})")
+        elif prop == PlayerProp.PLPROP_GMAPLEVELY:
+            old_gmaplevely = self.gmaplevely
+            self.gmaplevely = value
+            # Update world coordinate if local coordinate is set
+            if old_gmaplevely != value:
+                self._y2 = value * 64 + self.y
+                print(f"[GMAP] Player {self.id} GMAPLEVELY: {old_gmaplevely} -> {value} (world y2={self._y2})")
         # Handle attributes (gattrib1-30, plattrib1-5)
         elif PlayerProp.PLPROP_GATTRIB1 <= prop <= PlayerProp.PLPROP_GATTRIB30:
             attr_num = prop - PlayerProp.PLPROP_GATTRIB1 + 1
