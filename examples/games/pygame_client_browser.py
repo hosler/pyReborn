@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Pygame Client - A visual client for PyReborn using Pygame
-Arrow keys to move, Tab to chat, Escape to quit
+Pygame Client with Server Browser - A visual client for PyReborn with server selection
 """
 
 import sys
@@ -11,45 +10,319 @@ import threading
 import time
 import queue
 import math
-from pyreborn import RebornClient
+from pyreborn import RebornClient, ServerInfo
 from pyreborn.protocol.enums import Direction
 from pyreborn.events import EventType
+
+# Import the original pygame_client
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from pygame_client import PygameClient, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE, BLACK, WHITE, GREEN, RED, BLUE, GRAY, UI_BG, UI_BORDER, UI_TEXT, UI_HIGHLIGHT, DARK_GREEN, YELLOW, PURPLE, CYAN, VIEWPORT_TILES_X, VIEWPORT_TILES_Y
+from classic_constants import ClassicConstants, ClassicItems, ItemValues
+from item_manager import ItemManager, DroppedItem
+from bush_handler import BushHandler
 from gani_parser import GaniManager
 from tile_defs import TileDefs
-from bush_handler import BushHandler
 
-# Constants
-SCREEN_WIDTH = 1024
-SCREEN_HEIGHT = 768
-TILE_SIZE = 16
-VIEWPORT_TILES_X = SCREEN_WIDTH // TILE_SIZE
-VIEWPORT_TILES_Y = SCREEN_HEIGHT // TILE_SIZE
+class ServerBrowserState:
+    """Server browser UI state"""
+    
+    def __init__(self, screen):
+        self.screen = screen
+        self.font = pygame.font.Font(None, 24)
+        self.title_font = pygame.font.Font(None, 36)
+        self.small_font = pygame.font.Font(None, 18)
+        
+        # Server list
+        self.servers = []
+        self.selected_index = 0
+        self.scroll_offset = 0
+        self.max_visible = 15
+        
+        # Server list state
+        self.loading = False
+        self.error_message = ""
+        
+        # Login info
+        self.username = ""
+        self.password = ""
+        self.username_active = True
+        self.password_active = False
+        
+    def connect_to_serverlist(self):
+        """Connect to server list and fetch servers"""
+        self.loading = True
+        self.error_message = ""
+        
+        try:
+            # Use PyReborn's static method to get server list
+            servers, status_info = RebornClient.get_server_list(self.username, self.password)
+            
+            if servers:
+                self.servers = servers
+                # Sort by player count
+                self.servers.sort(key=lambda s: s.players, reverse=True)
+            else:
+                self.error_message = status_info.get('error', 'No servers found')
+                
+        except Exception as e:
+            self.error_message = f"Error: {str(e)}"
+        
+        self.loading = False
+    
+    def handle_event(self, event):
+        """Handle input events"""
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Handle mouse clicks
+            mouse_x, mouse_y = event.pos
+            
+            # Check username field
+            username_rect = pygame.Rect(150, 98, 200, 28)
+            if username_rect.collidepoint(mouse_x, mouse_y):
+                self.username_active = True
+                self.password_active = False
+            
+            # Check password field  
+            password_rect = pygame.Rect(500, 98, 200, 28)
+            if password_rect.collidepoint(mouse_x, mouse_y):
+                self.username_active = False
+                self.password_active = True
+            
+            # Check fetch button
+            fetch_rect = pygame.Rect(750, 98, 100, 28)
+            if fetch_rect.collidepoint(mouse_x, mouse_y) and not self.loading:
+                if self.username and self.password:
+                    threading.Thread(target=self.connect_to_serverlist, daemon=True).start()
+            
+            # Check server list
+            if self.servers:
+                list_y = 190
+                for i in range(self.scroll_offset, min(self.scroll_offset + self.max_visible, len(self.servers))):
+                    y = list_y + 10 + (i - self.scroll_offset) * 25
+                    server_rect = pygame.Rect(55, y - 2, SCREEN_WIDTH - 110, 24)
+                    if server_rect.collidepoint(mouse_x, mouse_y):
+                        self.selected_index = i
+                        # Double-click to connect
+                        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                            current_time = pygame.time.get_ticks()
+                            if hasattr(self, 'last_click_time') and current_time - self.last_click_time < 500:
+                                return 'connect'
+                            self.last_click_time = current_time
+        
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                return 'quit'
+            
+            elif event.key == pygame.K_TAB:
+                # Switch between username and password fields
+                self.username_active = not self.username_active
+                self.password_active = not self.password_active
+            
+            elif event.key == pygame.K_RETURN:
+                # If we have servers and not loading, Enter should connect
+                if self.servers and not self.loading:
+                    # Connect to selected server
+                    return 'connect'
+                elif self.username and self.password and not self.servers:
+                    # Only fetch if we don't have servers yet
+                    threading.Thread(target=self.connect_to_serverlist, daemon=True).start()
+            
+            elif event.key == pygame.K_F5:
+                # F5 to refresh server list
+                if self.username and self.password and not self.loading:
+                    threading.Thread(target=self.connect_to_serverlist, daemon=True).start()
+            
+            elif event.key == pygame.K_UP and self.servers:
+                self.selected_index = max(0, self.selected_index - 1)
+                if self.selected_index < self.scroll_offset:
+                    self.scroll_offset = self.selected_index
+            
+            elif event.key == pygame.K_DOWN and self.servers:
+                self.selected_index = min(len(self.servers) - 1, self.selected_index + 1)
+                if self.selected_index >= self.scroll_offset + self.max_visible:
+                    self.scroll_offset = self.selected_index - self.max_visible + 1
+            
+            elif event.key == pygame.K_BACKSPACE:
+                if self.username_active and self.username:
+                    self.username = self.username[:-1]
+                elif self.password_active and self.password:
+                    self.password = self.password[:-1]
+            
+            else:
+                # Text input
+                if event.unicode and len(event.unicode) == 1:
+                    if self.username_active and len(self.username) < 20:
+                        self.username += event.unicode
+                    elif self.password_active and len(self.password) < 20:
+                        self.password += event.unicode
+        
+        return None
+    
+    def draw(self):
+        """Draw the server browser UI"""
+        self.screen.fill(UI_BG)
+        
+        # Title
+        title = self.title_font.render("PyReborn Server Browser", True, UI_TEXT)
+        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, 40))
+        self.screen.blit(title, title_rect)
+        
+        # Login section
+        login_y = 100
+        
+        # Username field
+        username_label = self.font.render("Username:", True, UI_TEXT)
+        self.screen.blit(username_label, (50, login_y))
+        
+        username_rect = pygame.Rect(150, login_y - 2, 200, 28)
+        pygame.draw.rect(self.screen, WHITE if self.username_active else GRAY, username_rect, 2)
+        username_text = self.font.render(self.username, True, UI_TEXT)
+        self.screen.blit(username_text, (155, login_y))
+        
+        # Password field
+        password_label = self.font.render("Password:", True, UI_TEXT)
+        self.screen.blit(password_label, (400, login_y))
+        
+        password_rect = pygame.Rect(500, login_y - 2, 200, 28)
+        pygame.draw.rect(self.screen, WHITE if self.password_active else GRAY, password_rect, 2)
+        password_text = self.font.render("*" * len(self.password), True, UI_TEXT)
+        self.screen.blit(password_text, (505, login_y))
+        
+        # Fetch button
+        fetch_rect = pygame.Rect(750, login_y - 2, 100, 28)
+        button_color = GRAY if self.loading else UI_HIGHLIGHT
+        pygame.draw.rect(self.screen, button_color, fetch_rect)
+        fetch_label = "Loading..." if self.loading else "Fetch (F5)"
+        fetch_text = self.font.render(fetch_label, True, WHITE)
+        fetch_text_rect = fetch_text.get_rect(center=fetch_rect.center)
+        self.screen.blit(fetch_text, fetch_text_rect)
+        
+        # Server list section
+        list_y = 160
+        
+        # Server list header
+        header_text = self.font.render("Available Servers:", True, UI_TEXT)
+        self.screen.blit(header_text, (50, list_y))
+        
+        # Loading/Error message
+        if self.loading:
+            loading_text = self.font.render("Loading servers...", True, GREEN)
+            self.screen.blit(loading_text, (300, list_y))
+        elif self.error_message:
+            error_text = self.font.render(self.error_message, True, RED)
+            self.screen.blit(error_text, (300, list_y))
+        
+        # Server list
+        list_y += 30
+        if self.servers:
+            # Draw server list box
+            list_rect = pygame.Rect(50, list_y, SCREEN_WIDTH - 100, 400)
+            pygame.draw.rect(self.screen, UI_BORDER, list_rect, 2)
+            
+            # Draw servers
+            for i in range(self.scroll_offset, min(self.scroll_offset + self.max_visible, len(self.servers))):
+                server = self.servers[i]
+                y = list_y + 10 + (i - self.scroll_offset) * 25
+                
+                # Highlight selected server
+                if i == self.selected_index:
+                    select_rect = pygame.Rect(55, y - 2, SCREEN_WIDTH - 110, 24)
+                    pygame.draw.rect(self.screen, UI_HIGHLIGHT, select_rect)
+                
+                # Server name
+                name_text = self.font.render(server.name[:40], True, WHITE if i == self.selected_index else UI_TEXT)
+                self.screen.blit(name_text, (60, y))
+                
+                # Player count
+                players_text = self.small_font.render(f"{server.player_count} players", True, GREEN)
+                self.screen.blit(players_text, (500, y + 2))
+                
+                # Server address
+                addr_text = self.small_font.render(f"{server.ip}:{server.port}", True, GRAY)
+                self.screen.blit(addr_text, (650, y + 2))
+        
+        # Instructions
+        inst_y = SCREEN_HEIGHT - 100
+        instructions = [
+            "Tab: Switch fields | Enter: Connect | F5: Refresh | Up/Down: Select | Double-click: Connect | Esc: Quit"
+        ]
+        for i, instruction in enumerate(instructions):
+            inst_text = self.small_font.render(instruction, True, GRAY)
+            inst_rect = inst_text.get_rect(center=(SCREEN_WIDTH // 2, inst_y + i * 20))
+            self.screen.blit(inst_text, inst_rect)
+    
+    def get_selected_server(self):
+        """Get the currently selected server"""
+        if self.servers and 0 <= self.selected_index < len(self.servers):
+            return self.servers[self.selected_index]
+        return None
 
-# Colors
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-GREEN = (0, 255, 0)
-RED = (255, 0, 0)
-BLUE = (0, 0, 255)
-GRAY = (128, 128, 128)
-DARK_GREEN = (0, 128, 0)
-YELLOW = (255, 255, 0)
-PURPLE = (128, 0, 128)
-CYAN = (0, 255, 255)
 
-# UI Colors
-UI_BG = (20, 20, 30)
-UI_BORDER = (60, 60, 80)
-UI_TEXT = (200, 200, 220)
-UI_HIGHLIGHT = (100, 100, 150)
-
-class PygameClient:
+class PygameClientWithBrowser(PygameClient):
+    """Extended pygame client with server browser"""
+    
     def __init__(self):
-        # Initialize Pygame
+        # Initialize parent but don't create client yet
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("PyReborn Pygame Client")
+        pygame.display.set_caption("PyReborn Client")
         self.clock = pygame.time.Clock()
+        
+        # Don't initialize client until server is selected
+        self.client = None
+        self.connected = False
+        self.running = True
+        
+        # Server browser
+        self.server_browser = ServerBrowserState(self.screen)
+        self.state = 'browser'  # 'browser' or 'game'
+        
+        # Store login credentials
+        self.username = ""
+        self.password = ""
+    
+    def connect_to_server(self, host, port, username, password):
+        """Connect to a specific server"""
+        # Create client for the selected server
+        self.client = RebornClient(host, port)
+        
+        # Initialize the rest of the game state
+        self._init_game_state()
+        
+        # Connect and login
+        if not self.client.connect():
+            return False
+            
+        if not self.client.login(username, password):
+            self.client.disconnect()
+            return False
+            
+        self.connected = True
+        self.client.set_nickname("PygamePlayer")
+        
+        # Reduce packet send rate for smoother gameplay
+        self.client.set_packet_send_rate(0.02)
+        
+        # Subscribe to events
+        self._setup_event_handlers()
+        
+        # Set initial idle animation
+        self.client.set_gani("idle")
+        
+        # Center camera on player
+        self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
+        self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
+        
+        # Start network thread
+        self.network_thread = threading.Thread(target=self._network_loop, daemon=True)
+        self.network_thread.start()
+        
+        return True
+    
+    def _init_game_state(self):
+        """Initialize game-specific state (from parent class)"""
+        # This is all the initialization from the parent __init__ after client creation
+        # We'll import necessary modules here
+        
         # Fonts
         self.font_large = pygame.font.Font(None, 36)
         self.font_medium = pygame.font.Font(None, 24)
@@ -71,14 +344,6 @@ class PygameClient:
                 print(f"   Tileset size: {self.tileset.get_size()}")
             else:
                 print(f"⚠️  WARNING: Tileset not found at {tileset_path}")
-                print(f"   Current directory: {os.getcwd()}")
-                print(f"   Script directory: {os.path.dirname(__file__)}")
-                # Check if assets directory exists
-                assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-                if os.path.exists(assets_dir):
-                    print(f"   Assets directory exists, contents: {os.listdir(assets_dir)[:5]}...")
-                else:
-                    print(f"   Assets directory does not exist!")
         except Exception as e:
             print(f"❌ Failed to load tileset: {e}")
             
@@ -90,6 +355,13 @@ class PygameClient:
         
         # Initialize bush handler
         self.bush_handler = BushHandler()
+        
+        # Initialize item manager
+        from item_manager import ItemManager
+        self.item_manager = ItemManager()
+        
+        # Track opened chests
+        self.opened_chests = set()  # Set of (x, y) tuples
         
         # Sound system
         pygame.mixer.init()
@@ -120,11 +392,6 @@ class PygameClient:
         # Keep sprite cache for performance
         self.sprite_cache = {}
         
-        # Client
-        self.client = RebornClient("localhost", 14900)
-        self.connected = False
-        self.running = True
-        
         # Camera
         self.camera_x = 0
         self.camera_y = 0
@@ -146,10 +413,12 @@ class PygameClient:
         
         # Movement
         self.move_speed = 0.5  # Half tile per move
+        self.is_swimming = False  # Track if player is in water
         self.last_move_time = 0
         self.move_cooldown = 0.02  # 20ms between moves (smoother movement)
         self.is_moving = False
         self.last_direction = Direction.DOWN
+        self.step_count = 0  # For alternating step sounds
         
         # Animation
         self.animation_time = 0
@@ -175,19 +444,21 @@ class PygameClient:
         # Performance tracking
         self.fps_history = []
         self.fps_sample_size = 60
-        
-        # Setup event handlers
-        self._setup_events()
-        
-    def _setup_events(self):
-        """Setup PyReborn event handlers"""
+    
+    def _setup_event_handlers(self):
+        """Set up event handlers for network events"""
         self.client.events.subscribe(EventType.PLAYER_ADDED, self._on_player_added)
         self.client.events.subscribe(EventType.PLAYER_REMOVED, self._on_player_left)
         self.client.events.subscribe(EventType.OTHER_PLAYER_UPDATE, self._on_player_moved)
         self.client.events.subscribe(EventType.PLAYER_PROPS_UPDATE, self._on_player_props_update)
         self.client.events.subscribe(EventType.CHAT_MESSAGE, self._on_player_chat)
         self.client.events.subscribe(EventType.LEVEL_ENTERED, self._on_level_changed)
-        
+    
+    def _network_loop(self):
+        """Network loop to handle client events"""
+        while self.running and self.connected:
+            time.sleep(0.01)
+    
     def _on_player_added(self, **kwargs):
         """Handle player added (when we receive info about existing players)"""
         self.event_queue.put(('player_added', kwargs))
@@ -211,31 +482,64 @@ class PygameClient:
     def _on_level_changed(self, **kwargs):
         """Handle level change"""
         self.event_queue.put(('level_changed', kwargs))
-        
-    def connect_and_login(self, username, password):
-        """Connect to server and login"""
-        if not self.client.connect():
-            return False
+    
+    def run(self):
+        """Main game loop"""
+        while self.running:
+            if self.state == 'browser':
+                # Handle browser events
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+                    else:
+                        result = self.server_browser.handle_event(event)
+                        if result == 'quit':
+                            self.running = False
+                        elif result == 'connect':
+                            # Get selected server
+                            server = self.server_browser.get_selected_server()
+                            if server:
+                                self.username = self.server_browser.username
+                                self.password = self.server_browser.password
+                                
+                                print(f"Connecting to {server.name} at {server.ip}:{server.port}...")
+                                if self.connect_to_server(server.ip, server.port, self.username, self.password):
+                                    print("Connected successfully!")
+                                    self.state = 'game'
+                                    self.current_level = self.client.level_manager.get_current_level()
+                                else:
+                                    print("Failed to connect!")
+                                    self.server_browser.error_message = "Failed to connect to server"
+                
+                # Draw browser
+                self.server_browser.draw()
+                
+            elif self.state == 'game':
+                # Run the actual game
+                if self.connected and self.client.connected:
+                    # We need to implement these methods since we're not properly inheriting
+                    self.handle_events()
+                    self.process_game_events()
+                    self.update()
+                    self.draw()
+                else:
+                    # Disconnected, go back to browser
+                    self.state = 'browser'
+                    self.server_browser.error_message = "Disconnected from server"
+                    if self.client:
+                        self.client.disconnect()
+                    self.client = None
+                    self.connected = False
             
-        if not self.client.login(username, password):
+            # Update display
+            pygame.display.flip()
+            self.clock.tick(60)
+        
+        # Cleanup
+        if self.client and self.connected:
             self.client.disconnect()
-            return False
-            
-        self.connected = True
-        self.client.set_nickname("PygamePlayer")
-        
-        # Reduce packet send rate for smoother gameplay
-        self.client.set_packet_send_rate(0.02)  # 20ms between packets
-        
-        # Set initial idle animation
-        self.client.set_gani("idle")
-        
-        # Center camera on player
-        self.camera_x = self.client.local_player.x - VIEWPORT_TILES_X // 2
-        self.camera_y = self.client.local_player.y - VIEWPORT_TILES_Y // 2
-        
-        return True
-        
+        pygame.quit()
+    
     def add_message(self, text: str, color=WHITE):
         """Add a system message"""
         self.messages.append({
@@ -243,6 +547,241 @@ class PygameClient:
             'color': color,
             'time': time.time()
         })
+        
+    def _handle_item_pickup(self, item):
+        """Handle picking up an item"""
+        player = self.client.local_player
+        
+        if item.item_type == 'heart':
+            # Heal the player
+            old_hearts = player.hearts
+            player.hearts = min(player.hearts + item.value, player.max_hearts)
+            if player.hearts > old_hearts:
+                self.add_message(f"+{item.value} Heart!", (255, 100, 100))
+                # TODO: Send heart update to server
+                
+        elif item.item_type == 'rupee':
+            player.rupees += int(item.value)
+            color = GREEN if item.value == 1 else CYAN if item.value == 5 else YELLOW
+            self.add_message(f"+{int(item.value)} Rupee{'s' if item.value > 1 else ''}!", color)
+            # TODO: Send rupee update to server
+            
+        elif item.item_type == 'bomb':
+            player.bombs += int(item.value)
+            self.add_message(f"+{int(item.value)} Bomb!", (128, 64, 0))
+            # TODO: Send bomb update to server
+            
+        elif item.item_type == 'arrow':
+            player.arrows += int(item.value)
+            self.add_message(f"+{int(item.value)} Arrows!", (150, 75, 0))
+            # TODO: Send arrow update to server
+            
+        elif item.item_type == 'key':
+            # Keys are typically handled by server
+            self.add_message("Got a key!", YELLOW)
+            
+        elif item.item_type == 'heart_container':
+            player.max_hearts += 1
+            player.hearts = player.max_hearts  # Full heal
+            self.add_message("Heart Container! Max hearts increased!", (255, 0, 255))
+            # TODO: Send max heart update to server
+            
+        # Play pickup sound based on item type
+        if item.item_type == 'heart':
+            self.play_classic_sound('heart')
+        elif item.item_type == 'rupee':
+            self.play_classic_sound('rupee')
+        elif item.item_type == 'bomb':
+            self.play_classic_sound('bomb')
+        elif item.item_type == 'arrow':
+            self.play_classic_sound('arrow')
+        elif item.item_type == 'key':
+            self.play_classic_sound('key')
+        elif item.item_type == 'heart_container':
+            self.play_classic_sound('heart_container')
+        else:
+            self.play_classic_sound('pickup')
+        
+    def _check_sword_hit(self):
+        """Check what the sword hits when swinging"""
+        if not self.current_level:
+            return
+            
+        # Calculate sword hit area based on direction
+        player_x = self.client.local_player.x
+        player_y = self.client.local_player.y
+        
+        # Sword reaches 1 tile in front
+        hit_positions = []
+        if self.last_direction == Direction.UP:
+            hit_positions = [(player_x, player_y - 1), (player_x + 1, player_y - 1)]
+        elif self.last_direction == Direction.DOWN:
+            hit_positions = [(player_x, player_y + 1), (player_x + 1, player_y + 1)]
+        elif self.last_direction == Direction.LEFT:
+            hit_positions = [(player_x - 1, player_y), (player_x - 1, player_y + 1)]
+        elif self.last_direction == Direction.RIGHT:
+            hit_positions = [(player_x + 1, player_y), (player_x + 1, player_y + 1)]
+            
+        # Check each position
+        for hit_x, hit_y in hit_positions:
+            tile_x = int(hit_x)
+            tile_y = int(hit_y)
+            
+            if 0 <= tile_x < 64 and 0 <= tile_y < 64:
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                
+                # Check if it's grass or bush
+                if self.tile_defs.is_cuttable(tile_id):
+                    # Cut the grass/bush - replace with normal ground
+                    self.current_level.set_board_tile_id(tile_x, tile_y, 0)  # Replace with empty
+                    
+                    # Play appropriate cutting sound
+                    if self.tile_defs.is_bush(tile_id):
+                        # Bush cutting - use a different sound
+                        self.play_classic_sound('bomb')  # Use bomb sound for bush destruction
+                        self.add_message("Destroyed bush!", YELLOW)
+                    else:
+                        # Grass cutting
+                        self.play_classic_sound('grass_cut')
+                    
+                    # Drop a random item maybe
+                    dropped = self.item_manager.drop_random_item(tile_x, tile_y)
+                    if dropped:
+                        self.add_message("Found something!", GREEN)
+                        self.play_classic_sound('secret', 0.5)  # Quieter secret sound
+                        
+                    # Add respawn timer for grass
+                    self.item_manager.add_respawn_timer(tile_x, tile_y, ClassicConstants.GRASS_RESPAWN_TIME)
+                    
+                    # TODO: Send tile update to server
+        
+        # Check for chest hits
+        for chest in self.current_level.chests:
+            if (chest.x, chest.y) in self.opened_chests:
+                continue
+                
+            # Check if sword hits the 2x2 chest area
+            chest_positions = [
+                (chest.x, chest.y), (chest.x + 1, chest.y),
+                (chest.x, chest.y + 1), (chest.x + 1, chest.y + 1)
+            ]
+            
+            for cx, cy in chest_positions:
+                if (cx, cy) in [(int(x), int(y)) for x, y in hit_positions]:
+                    # Open the chest!
+                    self._open_chest(chest)
+                    break
+                    
+    def _open_chest(self, chest):
+        """Open a chest and spawn its contents"""
+        # Mark as opened
+        self.opened_chests.add((chest.x, chest.y))
+        
+        # Play chest opening sound
+        self.play_classic_sound('chest_open')
+        
+        # Determine what's in the chest based on item ID
+        item_type = None
+        if chest.item in [1, 2, 3]:  # Hearts
+            item_type = 'heart'
+        elif chest.item in [4, 5, 6]:  # Rupees
+            item_type = 'rupee'
+        elif chest.item in [7, 8]:  # Bombs
+            item_type = 'bomb'
+        elif chest.item in [9, 10]:  # Arrows
+            item_type = 'arrow'
+        elif chest.item in [11, 12]:  # Keys
+            item_type = 'key'
+        elif chest.item >= 20:  # Special items - heart container
+            item_type = 'heart_container'
+        else:
+            # Default to rupees
+            item_type = 'rupee'
+            
+        # Drop the item at chest location
+        if item_type:
+            dropped = self.item_manager.drop_item(chest.x + 0.5, chest.y + 0.5, item_type)
+            if dropped:
+                self.add_message("Opened chest!", YELLOW)
+                # Play special sound for rare items
+                if item_type == 'heart_container':
+                    self.play_classic_sound('secret')
+                
+        # Show sign text if any
+        if hasattr(chest, 'sign_text') and chest.sign_text:
+            self.add_message(chest.sign_text, WHITE)
+            self.play_classic_sound('text', 0.5)
+            
+        # TODO: Send chest opened message to server
+        
+    def _check_water_status(self):
+        """Check if player is in water and update swimming status"""
+        if not self.current_level:
+            return
+            
+        player_x = self.client.local_player.x
+        player_y = self.client.local_player.y
+        
+        # Check the tiles at player's feet
+        check_points = [
+            (player_x + 0.2, player_y + 0.8),  # Bottom-left
+            (player_x + 0.8, player_y + 0.8),  # Bottom-right
+            (player_x + 0.5, player_y + 0.9),  # Bottom center
+        ]
+        
+        in_water = False
+        for check_x, check_y in check_points:
+            tile_x = int(check_x)
+            tile_y = int(check_y)
+            
+            if 0 <= tile_x < 64 and 0 <= tile_y < 64:
+                tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+                if self.tile_defs.is_water(tile_id):
+                    in_water = True
+                    break
+                    
+        # Update swimming status
+        if in_water != self.is_swimming:
+            self.is_swimming = in_water
+            if in_water:
+                self.add_message("Swimming", BLUE)
+                self.play_classic_sound('swim', 0.6)
+                # TODO: Change to swimming animation/sprite
+                
+    def _check_for_sign(self, x: float, y: float):
+        """Check if there's a sign at the given position"""
+        if not self.current_level:
+            return None
+            
+        tile_x = int(x)
+        tile_y = int(y)
+        
+        # Check level signs
+        for sign in self.current_level.signs:
+            if sign.x == tile_x and sign.y == tile_y:
+                return sign
+                
+        # Check if it's a sign tile type
+        if 0 <= tile_x < 64 and 0 <= tile_y < 64:
+            tile_id = self.current_level.get_board_tile_id(tile_x, tile_y)
+            if self.tile_defs.get_tile_type(tile_id) == self.tile_defs.SIGN_POST:
+                # Create a generic sign
+                from pyreborn.models.level import Sign
+                return Sign(tile_x, tile_y, "This sign is blank.")
+                
+        return None
+        
+    def _read_sign(self, sign):
+        """Display sign text"""
+        if sign and hasattr(sign, 'text') and sign.text:
+            # Play text sound
+            self.play_classic_sound('text', 0.6)
+            # Split text into multiple lines if needed
+            lines = sign.text.split('\\n')
+            for line in lines:
+                self.add_message(line, WHITE)
+        else:
+            self.add_message("The sign is blank.", GRAY)
         
     def handle_events(self):
         """Handle pygame events"""
@@ -294,6 +833,8 @@ class PygameClient:
                             self.sword_start_time = time.time()
                             # Play sound for first frame
                             self.play_gani_sounds('sword', 0)
+                            # Check for grass cutting
+                            self._check_sword_hit()
                     elif event.key == pygame.K_a:
                         # Grab/pull/throw
                         if self.bush_handler.carrying_bush:
@@ -307,6 +848,8 @@ class PygameClient:
                             self.animation_frame = 0
                             self.throwing = True  # Start throw pause
                             self.throw_start_time = time.time()
+                            # Play throw sound
+                            self.play_classic_sound('bush_throw')
                             # Clear carry sprite and notify server about throwing
                             self.set_carry_sprite("")
                             self.throw_carried()
@@ -326,14 +869,18 @@ class PygameClient:
                             base_x = self.client.local_player.x + 0.5  # Center of tile
                             base_y = self.client.local_player.y + 0.5  # Center of tile
                             
-                            # Extend check position in the facing direction
-                            check_x = base_x + dx * 0.8
-                            check_y = base_y + dy * 0.8
-                            
-                            # Check if there's a grabbable tile in front
-                            grabbable = self.bush_handler.check_grabbable_at_position(
-                                self.current_level, self.tile_defs, check_x, check_y
-                            )
+                            # Check multiple distances to detect objects we're touching or near
+                            grabbable = None
+                            for distance in [0.5, 0.8, 1.0]:  # Check closer and farther
+                                check_x = base_x + dx * distance
+                                check_y = base_y + dy * distance
+                                
+                                # Check if there's a grabbable tile at this position
+                                grabbable = self.bush_handler.check_grabbable_at_position(
+                                    self.current_level, self.tile_defs, check_x, check_y
+                                )
+                                if grabbable:
+                                    break  # Found something, stop searching
                             
                             if grabbable:
                                 self.grabbing = True
@@ -350,7 +897,12 @@ class PygameClient:
                                 else:
                                     self.add_message("Grabbing object - pull with opposite arrow!", YELLOW)
                             else:
-                                self.add_message("Nothing to grab here", RED)
+                                # Check for signs to read
+                                sign = self._check_for_sign(check_x, check_y)
+                                if sign:
+                                    self._read_sign(sign)
+                                else:
+                                    self.add_message("Nothing to grab here", RED)
                     elif event.key == pygame.K_F3:
                         # Toggle tile debug
                         self.debug_tiles = not self.debug_tiles
@@ -375,6 +927,8 @@ class PygameClient:
                             self.replace_bush_tiles(tile_x, tile_y)
                             self.client.set_gani("lift")  # Lift animation
                             self.animation_frame = 0
+                            # Play bush lift sound
+                            self.play_classic_sound('bush_lift')
                             # Notify server we're carrying a bush
                             self.set_carry_sprite("bush")
                     self.grabbing = False
@@ -419,7 +973,7 @@ class PygameClient:
                 elif event_type == 'player_left':
                     player = event_data['player']
                     if player.id in self.players:
-                        self.add_message(f"{self.players[player.id].name} left", CYAN)
+                        self.add_message(f"{self.players[player.id].nickname} left", CYAN)
                     self.players.pop(player.id, None)
                     self.player_animations.pop(player.id, None)
                     self.player_predictions.pop(player.id, None)
@@ -538,20 +1092,26 @@ class PygameClient:
         if current_time - self.last_move_time < self.move_cooldown:
             return
             
+        # Check if player is in water
+        self._check_water_status()
+        
+        # Adjust speed if swimming
+        current_speed = ClassicConstants.SWIM_SPEED if self.is_swimming else self.move_speed
+        
         dx, dy = 0, 0
         direction = None
         
         if pygame.K_LEFT in self.keys_pressed:
-            dx -= self.move_speed
+            dx -= current_speed
             direction = Direction.LEFT
         if pygame.K_RIGHT in self.keys_pressed:
-            dx += self.move_speed
+            dx += current_speed
             direction = Direction.RIGHT
         if pygame.K_UP in self.keys_pressed:
-            dy -= self.move_speed
+            dy -= current_speed
             direction = Direction.UP
         if pygame.K_DOWN in self.keys_pressed:
-            dy += self.move_speed
+            dy += current_speed
             direction = Direction.DOWN
             
         # Normal movement (not grabbing)
@@ -571,29 +1131,43 @@ class PygameClient:
                 self.last_move_time = current_time
                 self.last_direction = direction
                 
+                # Play walking sound (alternating steps)
+                if not hasattr(self, 'step_count'):
+                    self.step_count = 0
+                self.step_count += 1
+                if self.step_count % 2 == 0:  # Play sound every other step
+                    volume = 0.3 if self.is_swimming else 0.4
+                    self.play_classic_sound('step', volume)
+                
                 # Clear pushing state when we can move
                 if self.pushing:
                     self.pushing = False
                     self.blocked_direction = None
+                    # Need to set walking animation after clearing push
+                    if self.bush_handler.carrying_bush:
+                        self.client.set_gani("carry")
+                    else:
+                        self.client.set_gani("walk")
             else:
                 # Blocked! Check for pushing
                 if direction is not None:
                     self.last_direction = direction
-                    # Update direction by sending a movement packet with current position
-                    self.client.move_to(self.client.local_player.x, self.client.local_player.y, direction)
                     
                     # Start or continue pushing
                     if not self.pushing:
                         self.pushing = True
                         self.push_start_time = current_time
                         self.blocked_direction = direction
+                        # Send direction update only when first blocked
+                        self.client.move_to(self.client.local_player.x, self.client.local_player.y, direction)
                     elif self.blocked_direction == direction and current_time - self.push_start_time > 0.5:
                         # After 0.5 seconds of being blocked, show push animation
                         if self.client.local_player.gani != "push":
                             self.client.set_gani("push")
+                        # Don't send move commands while in push animation
             
-            # Set walking animation if not already moving
-            if not self.is_moving:
+            # Set walking animation if not already moving AND not pushing
+            if not self.is_moving and not self.pushing:
                 self.on_chair = False  # Clear chair state when starting to move
                 # Use carry animation if carrying a bush
                 if self.bush_handler.carrying_bush:
@@ -606,7 +1180,12 @@ class PygameClient:
             if self.is_moving:
                 self.is_moving = False
                 self.animation_frame = 0  # Reset animation frame
-                # Don't change animation here - let check_chair_status handle it
+                # Set idle animation immediately when stopped
+                if not self.on_chair and not self.grabbing:
+                    if self.bush_handler.carrying_bush:
+                        self.client.set_gani("carry")
+                    else:
+                        self.client.set_gani("idle")
                 
             # Clear pushing state when no movement
             if self.pushing:
@@ -750,6 +1329,7 @@ class PygameClient:
                 
                 if tile_type == self.tile_defs.CHAIR:
                     on_chair_tile = True
+                    print(f"Found chair tile at ({tile_x}, {tile_y}), tile_id={tile_id}, type={tile_type}")
                     break
         
         # Update chair state based on whether we found a chair tile
@@ -763,7 +1343,7 @@ class PygameClient:
                 self.on_chair = False
                 self.animation_frame = 0
             # Always set appropriate idle animation when not on chair and not moving
-            if not self.is_moving and not self.grabbing:
+            if not self.is_moving and not self.grabbing and not self.pushing:
                 if self.bush_handler.carrying_bush:
                     self.client.set_gani("carry")
                 else:
@@ -808,6 +1388,9 @@ class PygameClient:
                 if hasattr(self.current_level, 'board_tiles_64x64'):
                     self.current_level.board_tiles_64x64[idx] = new_tile_id
                     
+        # Add respawn timer for the bush
+        self.item_manager.add_respawn_timer(base_x, base_y, ClassicConstants.BUSH_RESPAWN_TIME)
+                    
     def set_carry_sprite(self, sprite_name: str):
         """Set the carry sprite (what player is holding)"""
         # This would normally update the carry sprite on the server
@@ -851,246 +1434,149 @@ class PygameClient:
             
         return None
         
-    def draw_carried_object(self, screen_x: float, screen_y: float, carry_sprite: str):
-        """Draw a carried object above a player
+    def update(self):
+        """Update game state"""
+        # Handle movement
+        self.handle_movement()
         
-        Args:
-            screen_x: Screen X position of player
-            screen_y: Screen Y position of player
-            carry_sprite: Name of carried object (e.g. "bush", "pot", "bomb")
-        """
-        if carry_sprite == "bush":
-            # Draw all 4 bush tiles (2,3,18,19) as a 2x2 block above player
-            tiles = [2, 3, 18, 19]
-            offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        elif carry_sprite == "pot":
-            # Example: pot could be a different set of tiles
-            tiles = [128]  # Single tile for pot
-            offsets = [(0, 0)]
-        elif carry_sprite == "bomb":
-            # Example: bomb sprite
-            tiles = [130]
-            offsets = [(0, 0)]
-        else:
-            # Unknown carry sprite, skip
-            return
-            
-        # Draw the tiles
-        for tile_id, (dx, dy) in zip(tiles, offsets):
-            surface = self.get_tile_surface(tile_id)
-            if surface:
-                # Position object above player's head, centered
-                obj_x = screen_x + (dx * TILE_SIZE) - (TILE_SIZE // 2)  # Center horizontally
-                obj_y = screen_y - (2 * TILE_SIZE) + (dy * TILE_SIZE)  # Above head
-                self.screen.blit(surface, (obj_x, obj_y))
+        # Update animation
+        current_time = time.time()
         
-    def get_player_sprites_with_positions(self, direction, gani="idle", frame=0):
-        """Get sprites and their positions for a player based on GANI data
-        
-        Returns list of (surface, x_offset, y_offset) tuples
-        """
-        # Map directions
-        dir_map = {
-            Direction.UP: 'up',
-            Direction.LEFT: 'left',
-            Direction.DOWN: 'down',
-            Direction.RIGHT: 'right'
-        }
-        dir_name = dir_map.get(direction, 'down')
-        
-        # Load the GANI file
-        gani_file = self.gani_manager.load_gani(gani)
-        if not gani_file:
-            return []
-            
-        # Get sprite placements for this frame and direction
-        # For single-frame animations like idle, always use frame 0
-        actual_frame = 0 if gani == "idle" else frame
-        sprite_placements = gani_file.get_frame_sprites(actual_frame, dir_name)
-        
-        
-        # Convert sprite IDs to surfaces with positions
-        result = []
-        for sprite_id, x_offset, y_offset in sprite_placements:
-            # Get the sprite surface
-            cache_key = f"{gani}_{sprite_id}"
-            surface = None
-            
-            if cache_key in self.sprite_cache:
-                surface = self.sprite_cache[cache_key]
+        # Check for short throw pause (0.2 seconds)
+        if self.throwing and current_time - self.throw_start_time > 0.2:
+            self.throwing = False
+            self.sword_animating = False
+            # Check if movement keys are still pressed
+            movement_keys = {pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT}
+            if any(key in self.keys_pressed for key in movement_keys):
+                self.client.set_gani("walk")
+                self.is_moving = True
             else:
-                surface = self.gani_manager.get_sprite_surface(gani, sprite_id)
-                if surface:
-                    self.sprite_cache[cache_key] = surface
-                    
-            if surface:
-                result.append((surface, x_offset, y_offset))
+                self.client.set_gani("idle")
+                self.is_moving = False
+            self.animation_frame = 0
+        
+        # Sword animation runs at half speed
+        anim_speed = self.animation_speed * 2 if self.sword_animating else self.animation_speed
+        
+        if current_time - self.animation_time > anim_speed:
+            self.animation_time = current_time
+            
+            # Handle sword animation (play once)
+            if self.sword_animating:
+                old_frame = self.animation_frame
+                self.animation_frame = self.animation_frame + 1
                 
-        return result
-    
-    def get_player_sprites(self, direction, gani="idle", frame=0):
-        """Get body, head, and sword sprites for a player based on direction and animation
-        
-        Returns tuple of (body_surface, head_surface, sword_surface)
-        """
-        # Map directions to sprite IDs
-        dir_map = {
-            Direction.UP: 0,
-            Direction.LEFT: 1,
-            Direction.DOWN: 2,
-            Direction.RIGHT: 3
-        }
-        
-        dir_idx = dir_map.get(direction, 2)  # Default to down
-        
-        # Load the appropriate GANI
-        gani_file = self.gani_manager.load_gani(gani)
-        if not gani_file:
-            return None, None, None
-        
-        # Calculate sprite IDs based on animation and frame
-        body_sprite_id = None
-        head_sprite_id = None
-        sword_sprite_id = None
-        
-        if gani == "idle":
-            # Idle sprites
-            body_sprite_id = 200 + dir_idx  # 200=up, 201=left, 202=down, 203=right
-            head_sprite_id = 100 + dir_idx  # 100=up, 101=left, 102=down, 103=right
-            
-        elif gani == "walk":
-            # Walking animation (5 frames)
-            walk_frame = frame % 5
-            body_sprite_id = 204 + (walk_frame * 4) + dir_idx
-            head_sprite_id = 100 + dir_idx  # Head stays same
-            
-        elif gani == "sword":
-            # Sword animation (4 frames)
-            sword_frame = frame % 4
-            body_sprite_id = 224 + (sword_frame * 4) + dir_idx
-            head_sprite_id = 100 + dir_idx
-            
-            # Get sword sprite from GANI data
-            if direction == Direction.UP:
-                sword_sprite_id = [22, 34, 33, 22][sword_frame]
-            elif direction == Direction.DOWN:
-                sword_sprite_id = [23, 20, 21, 23][sword_frame]
-            elif direction == Direction.LEFT:
-                sword_sprite_id = [35, 32, 30, 35][sword_frame]
-            elif direction == Direction.RIGHT:
-                sword_sprite_id = [27, 26, 25, 27][sword_frame]
+                # Play sound for new frame
+                if self.animation_frame != old_frame:
+                    self.play_gani_sounds('sword', self.animation_frame)
                 
-        elif gani == "grab":
-            # Grab animation
-            body_sprite_id = 240 + dir_idx
-            head_sprite_id = 100 + dir_idx
-            
-        elif gani == "pull":
-            # Pull animation
-            if direction == Direction.UP:
-                pull_frame = frame % 3
-                body_sprite_id = 252 + (pull_frame * 32)  # Special case for up
+                if self.animation_frame >= 4:  # Sword has 4 frames
+                    self.sword_animating = False
+                    # Check if this was a throw animation
+                    if self.throwing:
+                        self.throwing = False
+                        # After throw, always return to idle
+                        self.client.set_gani("idle")
+                    else:
+                        # Check if we should return to walking
+                        if self.is_moving:
+                            if self.bush_handler.carrying_bush:
+                                self.client.set_gani("carry")
+                            else:
+                                self.client.set_gani("walk")
+                        else:
+                            if self.bush_handler.carrying_bush:
+                                self.client.set_gani("carry")
+                            else:
+                                self.client.set_gani("idle")
+                    self.animation_frame = 0
             else:
-                body_sprite_id = 253 + (dir_idx - 1)  # 253=left, 254=down, 255=right
-            head_sprite_id = 104 + dir_idx  # Special pulling heads
+                # Loop other animations based on their frame count
+                gani = self.client.local_player.gani
+                max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
+                old_frame = self.animation_frame
+                self.animation_frame = (self.animation_frame + 1) % max_frames
+                
+                # Play sound if frame changed
+                if self.animation_frame != old_frame and gani:
+                    self.play_gani_sounds(gani, self.animation_frame)
+                
+        # Update other players' animations
+        for player_id, anim_state in list(self.player_animations.items()):
+            player = self.players.get(player_id)
+            if not player:
+                continue
+                
+            # Use faster animation speed for walking
+            player_anim_speed = 0.02 if player.gani == 'walk' else anim_speed
             
-        elif gani == "carry":
-            # Carry animation with walking frames
-            # Based on sit.gani: carrying sprites are 264-275 (3 frames)
-            carry_frame = frame % 3  # 3 frames of walking
-            base_sprite = 264 + (carry_frame * 4)  # Each frame has 4 directions
-            body_sprite_id = base_sprite + dir_idx
-            head_sprite_id = 100 + dir_idx
+            if current_time - anim_state['last_update'] > player_anim_speed:
+                anim_state['last_update'] = current_time
+                gani = player.gani or 'idle'
+                
+                # Update stored gani if it changed
+                if anim_state.get('gani') != gani:
+                    anim_state['gani'] = gani
+                    anim_state['frame'] = 0
+                else:
+                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
+                    anim_state['frame'] = (anim_state['frame'] + 1) % max_frames
+        
+        # Update thrown bushes
+        self.bush_handler.update_thrown_bushes(self.current_level, self.tile_defs, current_time)
+        self.bush_handler.update_explosions(current_time)
+        
+        # Update items and check pickups
+        self.item_manager.update(current_time)
+        picked_up_items = self.item_manager.check_pickup(
+            self.client.local_player.x, 
+            self.client.local_player.y
+        )
+        
+        # Process pickups
+        for item in picked_up_items:
+            self._handle_item_pickup(item)
             
-        elif gani == "lift":
-            # Lift animation - same as carry for now
-            body_sprite_id = 256 + dir_idx  # 256=up, 257=left, 258=down, 259=right
-            head_sprite_id = 100 + dir_idx
-            
-        elif gani == "sit":
-            # Sitting animation uses specific sprites from sit.gani
-            # Based on the sit.gani file: 256=up, 281=left, 279=down, 283=right
-            sit_bodies = {0: 256, 1: 281, 2: 279, 3: 283}
-            body_sprite_id = sit_bodies.get(dir_idx, 279)
-            head_sprite_id = 100 + dir_idx
+        # Check for bush respawns
+        if self.current_level:
+            tiles_2d = self.current_level.get_board_tiles_2d()
+            for y in range(0, 64, 2):  # Check every 2x2 area
+                for x in range(0, 64, 2):
+                    # Check if this position can respawn and was a bush location
+                    if self.item_manager.can_respawn_at(x, y):
+                        # Check if it's currently empty (replacement tiles)
+                        if (x < 63 and y < 63 and 
+                            tiles_2d[y][x] == 677 and tiles_2d[y][x+1] == 678 and
+                            tiles_2d[y+1][x] == 693 and tiles_2d[y+1][x+1] == 694):
+                            # Respawn the bush!
+                            tiles_2d[y][x] = 2
+                            tiles_2d[y][x+1] = 3
+                            tiles_2d[y+1][x] = 18
+                            tiles_2d[y+1][x+1] = 19
+                            # Update flat array too
+                            for dy in range(2):
+                                for dx in range(2):
+                                    idx = (y + dy) * 64 + (x + dx)
+                                    if hasattr(self.current_level, 'board_tiles_64x64'):
+                                        bush_tile = [2, 3, 18, 19][dy * 2 + dx]
+                                        self.current_level.board_tiles_64x64[idx] = bush_tile
         
-        # Get surfaces from GANI manager
-        body_surface = None
-        head_surface = None
-        sword_surface = None
+    def draw(self):
+        """Draw the game"""
+        self.screen.fill(BLACK)
+        self._draw_level()
+        self._draw_grab_indicators()
+        self._draw_thrown_bushes()
+        self._draw_players()
+        self._draw_collision_debug()  # Debug collision box
+        self._draw_ui()
         
-        if body_sprite_id is not None:
-            cache_key = f"{gani}_body_{body_sprite_id}"
-            if cache_key in self.sprite_cache:
-                body_surface = self.sprite_cache[cache_key]
-            else:
-                body_surface = self.gani_manager.get_sprite_surface(gani, body_sprite_id)
-                if body_surface:
-                    self.sprite_cache[cache_key] = body_surface
-        
-        if head_sprite_id is not None:
-            cache_key = f"{gani}_head_{head_sprite_id}"
-            if cache_key in self.sprite_cache:
-                head_surface = self.sprite_cache[cache_key]
-            else:
-                head_surface = self.gani_manager.get_sprite_surface(gani, head_sprite_id)
-                if head_surface:
-                    self.sprite_cache[cache_key] = head_surface
-                    
-        if sword_sprite_id is not None:
-            cache_key = f"{gani}_sword_{sword_sprite_id}"
-            if cache_key in self.sprite_cache:
-                sword_surface = self.sprite_cache[cache_key]
-            else:
-                sword_surface = self.gani_manager.get_sprite_surface('sword', sword_sprite_id)
-                if sword_surface:
-                    self.sprite_cache[cache_key] = sword_surface
-        
-        return body_surface, head_surface, sword_surface
-        
-    def load_sound(self, filename):
-        """Load a sound file into cache"""
-        if filename in self.sound_cache:
-            return self.sound_cache[filename]
-            
-        # Try different paths
-        sound_paths = [
-            os.path.join(os.path.dirname(__file__), "assets", "sounds", filename),
-            os.path.join(os.path.dirname(__file__), "assets", "levels", "sounds", filename),
-            os.path.join(os.path.dirname(__file__), "assets", filename),
-        ]
-        
-        for path in sound_paths:
-            if os.path.exists(path):
-                try:
-                    sound = pygame.mixer.Sound(path)
-                    self.sound_cache[filename] = sound
-                    return sound
-                except Exception as e:
-                    print(f"Failed to load sound {filename}: {e}")
-                    
-        return None
-        
-    def play_gani_sounds(self, gani_name, frame):
-        """Play sounds for a specific GANI frame"""
-        gani = self.gani_manager.load_gani(gani_name)
-        if not gani or frame >= len(gani.animation_frames):
-            return
-            
-        anim_frame = gani.animation_frames[frame]
-        if anim_frame.sound:
-            sound_file, volume, channel = anim_frame.sound
-            sound = self.load_sound(sound_file)
-            if sound and channel in self.sound_channels:
-                sound.set_volume(min(1.0, volume))  # Cap at 1.0
-                self.sound_channels[channel].play(sound)
-            
-    def draw_level(self):
+    def _draw_level(self):
         """Draw the current level"""
         if not self.current_level:
             # Draw a message if no level is loaded
-            font = pygame.font.Font(None, 36)
-            text = font.render("Waiting for level data...", True, WHITE)
+            text = self.font_large.render("Waiting for level data...", True, WHITE)
             text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
             self.screen.blit(text, text_rect)
             return
@@ -1147,8 +1633,95 @@ class PygameClient:
                         
                     pygame.draw.rect(self.screen, color, 
                                    (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+        
+        # Draw chests
+        for chest in self.current_level.chests:
+            # Skip opened chests
+            if (chest.x, chest.y) in self.opened_chests:
+                continue
+                
+            # Check if chest is in view (chests are 2x2, so check wider area)
+            if (start_x - 1 <= chest.x <= end_x and start_y - 1 <= chest.y <= end_y):
+                screen_x = (chest.x - self.camera_x) * TILE_SIZE
+                screen_y = (chest.y - self.camera_y) * TILE_SIZE
+                
+                # In classic Graal, chests use specific tile IDs
+                # Brown chest: 640-643, Blue chest: 644-647, etc.
+                # The item type determines which chest graphic to use
+                # For now, use brown chest (most common)
+                base_tile = 640  # Classic brown chest base
+                
+                # Chest is 2x2 tiles
+                chest_tiles = [base_tile, base_tile + 1, base_tile + 16, base_tile + 17]
+                chest_offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                
+                # Draw the 2x2 chest
+                for tile_id, (dx, dy) in zip(chest_tiles, chest_offsets):
+                    tile_surface = self.get_tile_surface(tile_id)
+                    if tile_surface:
+                        self.screen.blit(tile_surface, (screen_x + dx * TILE_SIZE, screen_y + dy * TILE_SIZE))
+                    else:
+                        # Fallback: draw as brown rectangles with border
+                        color = (139, 90, 43) if (dx + dy) % 2 == 0 else (160, 82, 45)  # SaddleBrown
+                        pygame.draw.rect(self.screen, color,
+                                       (screen_x + dx * TILE_SIZE, screen_y + dy * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                        pygame.draw.rect(self.screen, (101, 67, 33),  # Dark brown border
+                                       (screen_x + dx * TILE_SIZE, screen_y + dy * TILE_SIZE, TILE_SIZE, TILE_SIZE), 2)
+        
+        # Draw NPCs
+        if hasattr(self.current_level, 'npcs'):
+            for npc_id, npc in self.current_level.npcs.items():
+                # Check if NPC is in view
+                if (start_x <= int(npc.x) <= end_x and start_y <= int(npc.y) <= end_y):
+                    screen_x = (npc.x - self.camera_x) * TILE_SIZE
+                    screen_y = (npc.y - self.camera_y) * TILE_SIZE
+                    
+                    # For now, draw NPCs as colored circles with their image name
+                    npc_color = (255, 128, 0)  # Orange for NPCs
+                    pygame.draw.circle(self.screen, npc_color, 
+                                     (int(screen_x + TILE_SIZE/2), int(screen_y + TILE_SIZE/2)), 
+                                     TILE_SIZE//2)
+                    
+                    # Draw NPC nickname if available
+                    if hasattr(npc, 'nickname') and npc.nickname:
+                        name_text = self.font_tiny.render(npc.nickname, True, WHITE)
+                        name_rect = name_text.get_rect(center=(screen_x + TILE_SIZE/2, screen_y - 10))
+                        self.screen.blit(name_text, name_rect)
+        
+        # Draw dropped items with floating animation
+        current_time = time.time()
+        for item in self.item_manager.dropped_items:
+            # Check if item is in view
+            if (start_x - 1 <= int(item.x) <= end_x and start_y - 1 <= int(item.y) <= end_y):
+                screen_x = (item.x - self.camera_x) * TILE_SIZE
+                screen_y = (item.y - self.camera_y) * TILE_SIZE
+                
+                # Apply floating animation
+                if not item.picked_up:
+                    float_offset = item.get_float_offset(current_time) * TILE_SIZE
+                    screen_y += float_offset
+                else:
+                    # Pickup animation - rise and fade
+                    pickup_elapsed = current_time - item.pickup_time
+                    rise_offset = pickup_elapsed * ClassicConstants.PICKUP_RISE_SPEED * TILE_SIZE
+                    screen_y -= rise_offset
+                    
+                # Draw 2x2 item tiles
+                offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                for i, (dx, dy) in enumerate(offsets):
+                    if i < len(item.tile_ids):
+                        tile_surface = self.get_tile_surface(item.tile_ids[i])
+                        if tile_surface:
+                            # Apply fade during pickup
+                            if item.picked_up:
+                                pickup_elapsed = current_time - item.pickup_time
+                                alpha = int(255 * (1 - pickup_elapsed / ClassicConstants.PICKUP_DURATION))
+                                tile_surface = tile_surface.copy()
+                                tile_surface.set_alpha(alpha)
+                            
+                            self.screen.blit(tile_surface, (screen_x + dx * TILE_SIZE, screen_y + dy * TILE_SIZE))
                                    
-    def draw_grab_indicators(self):
+    def _draw_grab_indicators(self):
         """Draw indicators for grabbable tiles when holding grab key"""
         if pygame.K_a in self.keys_pressed and not self.bush_handler.carrying_bush:
             # Calculate position in front of player
@@ -1201,7 +1774,7 @@ class PygameClient:
                 text_rect = grab_text.get_rect(center=(screen_x + TILE_SIZE//2, screen_y - 10))
                 self.screen.blit(grab_text, text_rect)
     
-    def draw_thrown_bushes(self):
+    def _draw_thrown_bushes(self):
         """Draw thrown bushes and explosions"""
         current_time = time.time()
         
@@ -1233,25 +1806,33 @@ class PygameClient:
                 screen_x = (exp_x - self.camera_x) * TILE_SIZE
                 screen_y = (exp_y - self.camera_y) * TILE_SIZE
                 
-                # Leaf explosion effect - draw green particles
-                num_leaves = 8
-                for i in range(num_leaves):
-                    angle = (i / num_leaves) * 2 * 3.14159
-                    distance = age * TILE_SIZE * 3  # Leaves spread out
-                    leaf_x = screen_x + TILE_SIZE/2 + math.cos(angle) * distance
-                    leaf_y = screen_y + TILE_SIZE/2 + math.sin(angle) * distance
+                # Bush fragment explosion - use actual bush tiles as fragments
+                num_fragments = 6
+                # Use different bush tiles as fragments (grass/leaf tiles)
+                fragment_tiles = [2, 3, 18, 19, 2, 3]  # Repeat some for variety
+                
+                for i in range(num_fragments):
+                    angle = (i / num_fragments) * 2 * 3.14159
+                    distance = age * TILE_SIZE * 2.5  # Fragments spread out
+                    frag_x = screen_x + TILE_SIZE/2 + math.cos(angle) * distance
+                    frag_y = screen_y + TILE_SIZE/2 + math.sin(angle) * distance - (age * TILE_SIZE * 2)  # Add upward motion
                     
-                    # Leaf size and alpha based on age
-                    leaf_size = int(TILE_SIZE/4 * (1 - age * 1.5))
+                    # Fragment size and alpha based on age
+                    scale_factor = max(0.1, 0.5 * (1 - age * 2))
                     alpha = int(255 * (1 - age * 2))
                     
-                    if leaf_size > 0 and alpha > 0:
-                        # Create a green leaf surface
-                        surf = pygame.Surface((leaf_size*2, leaf_size*2), pygame.SRCALPHA)
-                        leaf_color = (0, 150 + i*10, 0, alpha)  # Varying green shades
-                        pygame.draw.circle(surf, leaf_color, (leaf_size, leaf_size), leaf_size)
-                        self.screen.blit(surf, (leaf_x - leaf_size, leaf_y - leaf_size))
-    def draw_collision_debug(self):
+                    if scale_factor > 0 and alpha > 0:
+                        # Get the tile surface
+                        tile_surface = self.get_tile_surface(fragment_tiles[i])
+                        if tile_surface:
+                            # Scale down the fragment
+                            frag_size = int(TILE_SIZE * scale_factor)
+                            if frag_size > 0:
+                                scaled_fragment = pygame.transform.scale(tile_surface, (frag_size, frag_size))
+                                scaled_fragment.set_alpha(alpha)
+                                self.screen.blit(scaled_fragment, (frag_x - frag_size/2, frag_y - frag_size/2))
+    
+    def _draw_collision_debug(self):
         """Draw collision box for debugging"""
         if not self.debug_collision or not self.client.local_player:
             return
@@ -1295,7 +1876,7 @@ class PygameClient:
         config_text = self.font_small.render(f"Offset: ({x_offset:.1f}, {y_offset:.1f})", True, WHITE)
         self.screen.blit(config_text, (10, 140))
                                
-    def draw_players(self):
+    def _draw_players(self):
         """Draw all players"""
         # Draw other players
         for player_id, player in self.players.items():
@@ -1455,9 +2036,10 @@ class PygameClient:
             for tile_id, (dx, dy) in zip(bush_tiles, bush_offsets):
                 bush_surface = self.get_tile_surface(tile_id)
                 if bush_surface:
-                    # Position bush above player's head, centered
-                    bush_x = screen_x + (dx * TILE_SIZE) - (TILE_SIZE // 2)  # Center horizontally
-                    bush_y = screen_y - (2 * TILE_SIZE) + (dy * TILE_SIZE)  # Above head with gap
+                    # Position bush above player's head, properly centered
+                    # Bush is 2x2 tiles, so center it by offsetting by half a tile
+                    bush_x = screen_x + (dx * TILE_SIZE)  # No extra offset needed
+                    bush_y = screen_y - (TILE_SIZE * 1.5) + (dy * TILE_SIZE)  # Above head, closer
                     self.screen.blit(bush_surface, (bush_x, bush_y))
                          
         # Draw local player name
@@ -1472,7 +2054,7 @@ class PygameClient:
             pygame.draw.rect(self.screen, BLACK, chat_rect.inflate(4, 2))
             self.screen.blit(chat_text, chat_rect)
             
-    def draw_ui(self):
+    def _draw_ui(self):
         """Draw UI elements"""
         # Draw messages
         self._draw_messages()
@@ -1696,7 +2278,7 @@ class PygameClient:
         y += 20
         
         # Other players
-        for player in sorted(self.players.values(), key=lambda p: p.name)[:14]:
+        for player in sorted(self.players.values(), key=lambda p: p.nickname)[:14]:
             name = f"• {getattr(player, 'nickname', f'Player{player.id}')}"
             text = self.font_small.render(name, True, UI_TEXT)
             self.screen.blit(text, (20, y))
@@ -1704,311 +2286,338 @@ class PygameClient:
             
     def _draw_status_bar(self):
         """Draw bottom status bar"""
+        # Draw Classic Graal stats bar at top
+        player = self.client.local_player
+        stats_y = 5
+        stats_x = 10
+        
+        # Hearts
+        heart_text = f"Hearts: {player.hearts:.1f}/{player.max_hearts}"
+        hearts_surface = self.font_medium.render(heart_text, True, (255, 100, 100))
+        self.screen.blit(hearts_surface, (stats_x, stats_y))
+        stats_x += 150
+        
+        # Rupees
+        rupee_text = f"Rupees: {player.rupees}"
+        rupee_surface = self.font_medium.render(rupee_text, True, GREEN)
+        self.screen.blit(rupee_surface, (stats_x, stats_y))
+        stats_x += 120
+        
+        # Bombs
+        bomb_text = f"Bombs: {player.bombs}"
+        bomb_surface = self.font_medium.render(bomb_text, True, (128, 64, 0))
+        self.screen.blit(bomb_surface, (stats_x, stats_y))
+        stats_x += 100
+        
+        # Arrows
+        arrow_text = f"Arrows: {player.arrows}"
+        arrow_surface = self.font_medium.render(arrow_text, True, (150, 75, 0))
+        self.screen.blit(arrow_surface, (stats_x, stats_y))
+        
+        # Swimming indicator
+        if self.is_swimming:
+            swim_text = self.font_medium.render("SWIMMING", True, CYAN)
+            swim_rect = swim_text.get_rect(right=SCREEN_WIDTH - 10, top=5)
+            self.screen.blit(swim_text, swim_rect)
+        
+        # Bottom help text
         if not self.chat_mode:
             help_text = self.font_tiny.render(
-                "Arrow/WASD: Move | Space/S: Attack | A: Grab | Tab: Chat | F1: Debug | F2: Collision | M: Map | P: Players | Esc: Quit",
+                "Arrow/WASD: Move | Space/S: Attack | A: Grab/Read | Tab: Chat | F1: Debug | F2: Collision | M: Map | P: Players | Esc: Quit",
                 True, GRAY
             )
             self.screen.blit(help_text, (10, SCREEN_HEIGHT - 20))
             
-    def run(self):
-        """Main game loop"""
-        # Get initial level
-        self.current_level = self.client.level_manager.get_current_level()
+    def load_sound(self, filename):
+        """Load a sound file into cache"""
+        if filename in self.sound_cache:
+            return self.sound_cache[filename]
+            
+        # Try different paths
+        sound_paths = [
+            os.path.join(os.path.dirname(__file__), "assets", "sounds", filename),
+            os.path.join(os.path.dirname(__file__), "assets", "levels", "sounds", filename),
+            os.path.join(os.path.dirname(__file__), "assets", filename),
+        ]
         
-        while self.running and self.connected and self.client.connected:
-            # Handle events
-            self.handle_events()
-            self.process_game_events()
+        for path in sound_paths:
+            if os.path.exists(path):
+                try:
+                    sound = pygame.mixer.Sound(path)
+                    self.sound_cache[filename] = sound
+                    return sound
+                except Exception as e:
+                    print(f"Failed to load sound {filename}: {e}")
+                    
+        return None
+        
+    def play_gani_sounds(self, gani_name, frame):
+        """Play sounds for a specific GANI frame"""
+        gani = self.gani_manager.load_gani(gani_name)
+        if not gani or frame >= len(gani.animation_frames):
+            return
             
-            # Update
-            self.handle_movement()
-            
-            # Update animation
-            current_time = time.time()
-            
-            # Check for short throw pause (0.2 seconds)
-            if self.throwing and current_time - self.throw_start_time > 0.2:
-                self.throwing = False
-                self.sword_animating = False
-                # Check if movement keys are still pressed
-                movement_keys = {pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT}
-                if any(key in self.keys_pressed for key in movement_keys):
-                    self.client.set_gani("walk")
-                    self.is_moving = True
-                else:
-                    self.client.set_gani("idle")
-                    self.is_moving = False
-                self.animation_frame = 0
-            
-            # Sword animation runs at half speed
-            anim_speed = self.animation_speed * 2 if self.sword_animating else self.animation_speed
-            
-            if current_time - self.animation_time > anim_speed:
-                self.animation_time = current_time
+        anim_frame = gani.animation_frames[frame]
+        if anim_frame.sound:
+            sound_file, volume, channel = anim_frame.sound
+            sound = self.load_sound(sound_file)
+            if sound and channel in self.sound_channels:
+                sound.set_volume(min(1.0, volume))  # Cap at 1.0
+                self.sound_channels[channel].play(sound)
                 
-                # Handle sword animation (play once)
-                if self.sword_animating:
-                    old_frame = self.animation_frame
-                    self.animation_frame = self.animation_frame + 1
-                    
-                    # Play sound for new frame
-                    if self.animation_frame != old_frame:
-                        self.play_gani_sounds('sword', self.animation_frame)
-                    
-                    if self.animation_frame >= 4:  # Sword has 4 frames
-                        self.sword_animating = False
-                        # Check if this was a throw animation
-                        if self.throwing:
-                            self.throwing = False
-                            # After throw, always return to idle
-                            self.client.set_gani("idle")
-                        else:
-                            # Check if we should return to walking
-                            if self.is_moving:
-                                if self.bush_handler.carrying_bush:
-                                    self.client.set_gani("carry")
-                                else:
-                                    self.client.set_gani("walk")
-                            else:
-                                if self.bush_handler.carrying_bush:
-                                    self.client.set_gani("carry")
-                                else:
-                                    self.client.set_gani("idle")
-                        self.animation_frame = 0
-                else:
-                    # Loop other animations based on their frame count
-                    gani = self.client.local_player.gani
-                    max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
-                    old_frame = self.animation_frame
-                    self.animation_frame = (self.animation_frame + 1) % max_frames
-                    
-                    # Play sound if frame changed
-                    if self.animation_frame != old_frame and gani:
-                        self.play_gani_sounds(gani, self.animation_frame)
-                    
-            # Update other players' animations
-            for player_id, anim_state in list(self.player_animations.items()):
-                player = self.players.get(player_id)
-                if not player:
-                    continue
-                    
-                # Use faster animation speed for walking
-                player_anim_speed = 0.02 if player.gani == 'walk' else anim_speed
+    def play_classic_sound(self, sound_name: str, volume: float = 0.7):
+        """Play a Classic Graal sound effect
+        
+        Args:
+            sound_name: Name of the sound (without .wav extension)
+            volume: Volume from 0.0 to 1.0
+        """
+        # Map sound names to Classic Graal sound files
+        sound_map = {
+            'pickup': 'item.wav',
+            'heart': 'heart.wav',
+            'rupee': 'rupee.wav',
+            'bomb': 'bomb.wav',
+            'arrow': 'arrow.wav',
+            'key': 'get_key.wav',
+            'heart_container': 'fanfare.wav',
+            'sword': 'sword.wav',
+            'sword_hit': 'hit.wav',
+            'hurt': 'hurt.wav',
+            'die': 'die.wav',
+            'grass_cut': 'grass.wav',
+            'chest_open': 'chest.wav',
+            'bush_lift': 'pickup2.wav',
+            'bush_throw': 'throw.wav',
+            'swim': 'swim.wav',
+            'step': 'step.wav',
+            'text': 'text.wav',
+            'secret': 'secret.wav'
+        }
+        
+        # Get the actual filename
+        filename = sound_map.get(sound_name, f"{sound_name}.wav")
+        
+        # Load and play the sound
+        sound = self.load_sound(filename)
+        if sound:
+            # Find a free channel
+            for channel_id, channel in self.sound_channels.items():
+                if not channel.get_busy():
+                    sound.set_volume(volume)
+                    channel.play(sound)
+                    break
                 
-                if current_time - anim_state['last_update'] > player_anim_speed:
-                    anim_state['last_update'] = current_time
-                    gani = player.gani or 'idle'
+    def draw_carried_object(self, screen_x: float, screen_y: float, carry_sprite: str):
+        """Draw a carried object above a player
+        
+        Args:
+            screen_x: Screen X position of player
+            screen_y: Screen Y position of player
+            carry_sprite: Name of carried object (e.g. "bush", "pot", "bomb")
+        """
+        if carry_sprite == "bush":
+            # Draw all 4 bush tiles (2,3,18,19) as a 2x2 block above player
+            tiles = [2, 3, 18, 19]
+            offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        elif carry_sprite == "pot":
+            # Example: pot could be a different set of tiles
+            tiles = [128]  # Single tile for pot
+            offsets = [(0, 0)]
+        elif carry_sprite == "bomb":
+            # Example: bomb sprite
+            tiles = [130]
+            offsets = [(0, 0)]
+        else:
+            # Unknown carry sprite, skip
+            return
+            
+        # Draw the tiles
+        for tile_id, (dx, dy) in zip(tiles, offsets):
+            surface = self.get_tile_surface(tile_id)
+            if surface:
+                # Position object above player's head, properly centered
+                obj_x = screen_x + (dx * TILE_SIZE)  # Position relative to player
+                obj_y = screen_y - (TILE_SIZE * 1.5) + (dy * TILE_SIZE)  # Above head
+                self.screen.blit(surface, (obj_x, obj_y))
+        
+    def get_player_sprites_with_positions(self, direction, gani="idle", frame=0):
+        """Get sprites and their positions for a player based on GANI data
+        
+        Returns list of (surface, x_offset, y_offset) tuples
+        """
+        # Map directions
+        dir_map = {
+            Direction.UP: 'up',
+            Direction.LEFT: 'left',
+            Direction.DOWN: 'down',
+            Direction.RIGHT: 'right'
+        }
+        dir_name = dir_map.get(direction, 'down')
+        
+        # Load the GANI file
+        gani_file = self.gani_manager.load_gani(gani)
+        if not gani_file:
+            return []
+            
+        # Get sprite placements for this frame and direction
+        # For single-frame animations like idle, always use frame 0
+        actual_frame = 0 if gani == "idle" else frame
+        sprite_placements = gani_file.get_frame_sprites(actual_frame, dir_name)
+        
+        
+        # Convert sprite IDs to surfaces with positions
+        result = []
+        for sprite_id, x_offset, y_offset in sprite_placements:
+            # Get the sprite surface
+            cache_key = f"{gani}_{sprite_id}"
+            surface = None
+            
+            if cache_key in self.sprite_cache:
+                surface = self.sprite_cache[cache_key]
+            else:
+                surface = self.gani_manager.get_sprite_surface(gani, sprite_id)
+                if surface:
+                    self.sprite_cache[cache_key] = surface
                     
-                    # Update stored gani if it changed
-                    if anim_state.get('gani') != gani:
-                        anim_state['gani'] = gani
-                        anim_state['frame'] = 0
-                    else:
-                        max_frames = {'idle': 1, 'walk': 8, 'grab': 1, 'pull': 1, 'sword': 4, 'carry': 3, 'sit': 1, 'lift': 1, 'push': 1}.get(gani, 1)
-                        anim_state['frame'] = (anim_state['frame'] + 1) % max_frames
+            if surface:
+                result.append((surface, x_offset, y_offset))
+                
+        return result
+    
+    def get_player_sprites(self, direction, gani="idle", frame=0):
+        """Get body, head, and sword sprites for a player based on direction and animation
+        
+        Returns tuple of (body_surface, head_surface, sword_surface)
+        """
+        # Map directions to sprite IDs
+        dir_map = {
+            Direction.UP: 0,
+            Direction.LEFT: 1,
+            Direction.DOWN: 2,
+            Direction.RIGHT: 3
+        }
+        
+        dir_idx = dir_map.get(direction, 2)  # Default to down
+        
+        # Load the appropriate GANI
+        gani_file = self.gani_manager.load_gani(gani)
+        if not gani_file:
+            return None, None, None
+        
+        # Calculate sprite IDs based on animation and frame
+        body_sprite_id = None
+        head_sprite_id = None
+        sword_sprite_id = None
+        
+        if gani == "idle":
+            # Idle sprites
+            body_sprite_id = 200 + dir_idx  # 200=up, 201=left, 202=down, 203=right
+            head_sprite_id = 100 + dir_idx  # 100=up, 101=left, 102=down, 103=right
             
-            # Update thrown bushes
-            self.bush_handler.update_thrown_bushes(self.current_level, self.tile_defs, current_time)
-            self.bush_handler.update_explosions(current_time)
+        elif gani == "walk":
+            # Walking animation (5 frames)
+            walk_frame = frame % 5
+            body_sprite_id = 204 + (walk_frame * 4) + dir_idx
+            head_sprite_id = 100 + dir_idx  # Head stays same
             
-            # Draw
-            self.screen.fill(BLACK)
-            self.draw_level()
-            self.draw_grab_indicators()
-            self.draw_thrown_bushes()
-            self.draw_players()
-            self.draw_collision_debug()  # Debug collision box
-            self.draw_ui()
+        elif gani == "sword":
+            # Sword animation (4 frames)
+            sword_frame = frame % 4
+            body_sprite_id = 224 + (sword_frame * 4) + dir_idx
+            head_sprite_id = 100 + dir_idx
             
-            # Update display
-            pygame.display.flip()
-            self.clock.tick(60)  # 60 FPS
+            # Get sword sprite from GANI data
+            if direction == Direction.UP:
+                sword_sprite_id = [22, 34, 33, 22][sword_frame]
+            elif direction == Direction.DOWN:
+                sword_sprite_id = [23, 20, 21, 23][sword_frame]
+            elif direction == Direction.LEFT:
+                sword_sprite_id = [35, 32, 30, 35][sword_frame]
+            elif direction == Direction.RIGHT:
+                sword_sprite_id = [27, 26, 25, 27][sword_frame]
+                
+        elif gani == "grab":
+            # Grab animation
+            body_sprite_id = 240 + dir_idx
+            head_sprite_id = 100 + dir_idx
             
-        # Cleanup
-        self.client.disconnect()
-        pygame.quit()
+        elif gani == "pull":
+            # Pull animation
+            if direction == Direction.UP:
+                pull_frame = frame % 3
+                body_sprite_id = 252 + (pull_frame * 32)  # Special case for up
+            else:
+                body_sprite_id = 253 + (dir_idx - 1)  # 253=left, 254=down, 255=right
+            head_sprite_id = 104 + dir_idx  # Special pulling heads
+            
+        elif gani == "carry":
+            # Carry animation with walking frames
+            # Based on sit.gani: carrying sprites are 264-275 (3 frames)
+            carry_frame = frame % 3  # 3 frames of walking
+            base_sprite = 264 + (carry_frame * 4)  # Each frame has 4 directions
+            body_sprite_id = base_sprite + dir_idx
+            head_sprite_id = 100 + dir_idx
+            
+        elif gani == "lift":
+            # Lift animation - same as carry for now
+            body_sprite_id = 256 + dir_idx  # 256=up, 257=left, 258=down, 259=right
+            head_sprite_id = 100 + dir_idx
+            
+        elif gani == "sit":
+            # Sitting animation uses specific sprites from sit.gani
+            # Based on the sit.gani file: 256=up, 281=left, 279=down, 283=right
+            sit_bodies = {0: 256, 1: 281, 2: 279, 3: 283}
+            body_sprite_id = sit_bodies.get(dir_idx, 279)
+            head_sprite_id = 100 + dir_idx
+        
+        # Get surfaces from GANI manager
+        body_surface = None
+        head_surface = None
+        sword_surface = None
+        
+        if body_sprite_id is not None:
+            cache_key = f"{gani}_body_{body_sprite_id}"
+            if cache_key in self.sprite_cache:
+                body_surface = self.sprite_cache[cache_key]
+            else:
+                body_surface = self.gani_manager.get_sprite_surface(gani, body_sprite_id)
+                if body_surface:
+                    self.sprite_cache[cache_key] = body_surface
+        
+        if head_sprite_id is not None:
+            cache_key = f"{gani}_head_{head_sprite_id}"
+            if cache_key in self.sprite_cache:
+                head_surface = self.sprite_cache[cache_key]
+            else:
+                head_surface = self.gani_manager.get_sprite_surface(gani, head_sprite_id)
+                if head_surface:
+                    self.sprite_cache[cache_key] = head_surface
+                    
+        if sword_sprite_id is not None:
+            cache_key = f"{gani}_sword_{sword_sprite_id}"
+            if cache_key in self.sprite_cache:
+                sword_surface = self.sprite_cache[cache_key]
+            else:
+                sword_surface = self.gani_manager.get_sprite_surface('sword', sword_sprite_id)
+                if sword_surface:
+                    self.sprite_cache[cache_key] = sword_surface
+        
+        return body_surface, head_surface, sword_surface
 
-def show_login_gui():
-    """Show GUI login dialog with default values"""
-    pygame.init()
-    screen = pygame.display.set_mode((400, 300))
-    pygame.display.set_caption("PyReborn Login")
-    font = pygame.font.Font(None, 24)
-    small_font = pygame.font.Font(None, 18)
-    clock = pygame.time.Clock()
-    
-    # Input fields
-    username_input = "hosler"  # Default username
-    password_input = "1234"    # Default password
-    host_input = "localhost"
-    port_input = "14900"
-    
-    active_field = 0  # 0=username, 1=password, 2=host, 3=port
-    fields = ["username", "password", "host", "port"]
-    
-    running = True
-    result = None
-    
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-                result = None
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_RETURN:
-                    # Submit login
-                    try:
-                        port = int(port_input)
-                        result = (username_input, password_input, host_input, port)
-                        running = False
-                    except ValueError:
-                        pass  # Invalid port, ignore
-                elif event.key == pygame.K_TAB:
-                    # Switch field
-                    active_field = (active_field + 1) % 4
-                elif event.key == pygame.K_ESCAPE:
-                    running = False
-                    result = None
-                elif event.key == pygame.K_BACKSPACE:
-                    # Remove character
-                    if active_field == 0 and username_input:
-                        username_input = username_input[:-1]
-                    elif active_field == 1 and password_input:
-                        password_input = password_input[:-1]
-                    elif active_field == 2 and host_input:
-                        host_input = host_input[:-1]
-                    elif active_field == 3 and port_input:
-                        port_input = port_input[:-1]
-                else:
-                    # Add character
-                    if event.unicode and len(event.unicode) == 1:
-                        char = event.unicode
-                        if active_field == 0 and len(username_input) < 20:
-                            username_input += char
-                        elif active_field == 1 and len(password_input) < 20:
-                            password_input += char
-                        elif active_field == 2 and len(host_input) < 30:
-                            host_input += char
-                        elif active_field == 3 and len(port_input) < 6 and char.isdigit():
-                            port_input += char
-        
-        # Draw
-        screen.fill((20, 20, 30))
-        
-        # Title
-        title = font.render("PyReborn Login", True, (255, 255, 255))
-        screen.blit(title, (150, 20))
-        
-        # Fields
-        field_y = 80
-        field_height = 40
-        
-        field_data = [
-            ("Username:", username_input),
-            ("Password:", "*" * len(password_input)),
-            ("Host:", host_input),
-            ("Port:", port_input)
-        ]
-        
-        for i, (label, value) in enumerate(field_data):
-            y = field_y + i * field_height
-            
-            # Label
-            label_surface = small_font.render(label, True, (200, 200, 200))
-            screen.blit(label_surface, (20, y))
-            
-            # Input box
-            box_color = (100, 100, 150) if i == active_field else (60, 60, 80)
-            border_color = (150, 150, 200) if i == active_field else (100, 100, 120)
-            input_rect = pygame.Rect(120, y - 2, 250, 25)
-            pygame.draw.rect(screen, box_color, input_rect)
-            pygame.draw.rect(screen, border_color, input_rect, 2)
-            
-            # Input text
-            text_surface = small_font.render(value, True, (255, 255, 255))
-            screen.blit(text_surface, (125, y))
-        
-        # Instructions
-        instructions = [
-            "Tab: Switch field",
-            "Enter: Connect",
-            "Esc: Cancel"
-        ]
-        
-        for i, instruction in enumerate(instructions):
-            text = small_font.render(instruction, True, (150, 150, 150))
-            screen.blit(text, (20, 240 + i * 15))
-        
-        pygame.display.flip()
-        clock.tick(60)
-    
-    pygame.quit()
-    return result
 
 def main():
     """Main entry point"""
-    print("PyReborn Pygame Client")
-    print("=====================")
+    print("PyReborn Pygame Client with Server Browser")
+    print("==========================================")
     print()
     
-    # Check for command line override (for backwards compatibility)
-    if len(sys.argv) >= 3:
-        username = sys.argv[1]
-        password = sys.argv[2]
-        host = "localhost"
-        port = 14900
-        print(f"Using credentials from command line: {username}")
-        
-        # Create client
-        game = PygameClient()
-        game.client.host = host
-        game.client.port = port
-        
-        print(f"\nConnecting to {host}:{port}...")
-        if not game.connect_and_login(username, password):
-            print("Failed to connect or login!")
-            return 1
-    else:
-        # Show GUI login
-        login_result = show_login_gui()
-        if not login_result:
-            print("Login cancelled")
-            return 0
-        
-        username, password, host, port = login_result
-        
-        # Create client
-        game = PygameClient()
-        game.client.host = host
-        game.client.port = port
-        
-        print(f"Connecting to {host}:{port} as {username}...")
-        if not game.connect_and_login(username, password):
-            print("Failed to connect or login!")
-            return 1
-        
-    print("Connected! Starting game...")
-    print("\nControls:")
-    print("- Arrow keys/WASD: Move")
-    print("- Space/S: Attack")
-    print("- A: Grab/Pull/Throw")
-    print("- Tab: Chat")
-    print("- F1: Toggle debug info")
-    print("- F2: Toggle collision debug")
-    print("- M: Toggle minimap")
-    print("- P: Toggle player list")
-    print("- Escape: Quit")
-    print()
-    
-    # Wait for initial data
-    time.sleep(2)
-    
-    # Run game
+    # Create and run client
+    game = PygameClientWithBrowser()
     game.run()
     
-    print("\nThanks for playing!")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
