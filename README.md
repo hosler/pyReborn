@@ -1,6 +1,6 @@
 # PyReborn
 
-A pure Python client library for connecting to Reborn servers. PyReborn provides a complete implementation of the Reborn protocol, allowing you to create bots, automation tools, and custom clients.
+A pure Python client library for connecting to Reborn servers. PyReborn provides a complete implementation of the Reborn protocol with a modern v2 architecture, allowing you to create bots, automation tools, and custom clients.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -11,11 +11,12 @@ A pure Python client library for connecting to Reborn servers. PyReborn provides
 - 🚀 **Pure Python** - No external dependencies, just standard library
 - 🔐 **Full Protocol Support** - Complete implementation including ENCRYPT_GEN_5 encryption
 - 🎮 **Event-Driven Architecture** - React to game events with simple callbacks
-- 🧩 **Modular Design** - Easy to extend and customize
+- 🧩 **Modern v2 Architecture** - Clean, maintainable codebase with proper packet handling
 - 📦 **Type Hints** - Full type annotation support
 - 🎯 **High-Level API** - Simple methods for movement, chat, and game actions
-- 🗺️ **Level Management** - Parse and interact with game levels
+- 🗺️ **Level Management** - Parse and interact with game levels including GMAP support
 - 🤖 **Bot-Friendly** - Designed specifically for creating game bots
+- 📁 **File Transfer** - Download and process tilesets and other game assets
 
 ## Installation
 

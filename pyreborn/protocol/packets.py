@@ -2,8 +2,11 @@
 Packet structure definitions and builders
 """
 
+import logging
 from typing import List, Union, Optional
 from ..protocol.enums import PlayerToServer, ServerToPlayer, PlayerProp
+
+logger = logging.getLogger(__name__)
 
 
 class PacketReader:
@@ -115,6 +118,24 @@ class PacketBuilder:
         self.add_byte((value >> 8) & 0xFF)
         return self
     
+    def add_gshort(self, value: int) -> 'PacketBuilder':
+        """Add a Graal short (special encoding: (b1 << 7) + b2 + 0x1020)"""
+        # Limit to max value
+        if value > 28767:
+            value = 28767
+            
+        # Add the 0x1020 offset that server will subtract
+        encoded = value + 0x1020  # 0x1020 = 4128
+        
+        # Split into bytes
+        b1 = (encoded >> 7) & 0xFF
+        b2 = encoded & 0x7F
+        
+        # Write raw bytes
+        self.add_raw_byte(b1)
+        self.add_raw_byte(b2)
+        return self
+    
     def add_int(self, value: int) -> 'PacketBuilder':
         """Add a 4-byte value"""
         for i in range(4):
@@ -145,6 +166,12 @@ class RebornPacket:
     def to_bytes(self) -> bytes:
         """Convert packet to bytes for sending"""
         raise NotImplementedError
+        
+    def get_id(self) -> int:
+        """Get packet ID"""
+        if self.packet_id is None:
+            return 0  # Login has no ID
+        return self.packet_id.value if hasattr(self.packet_id, 'value') else self.packet_id
 
 
 class PlayerPropsPacket(RebornPacket):
@@ -178,6 +205,23 @@ class PlayerPropsPacket(RebornPacket):
             elif prop in [PlayerProp.PLPROP_GMAPLEVELX, PlayerProp.PLPROP_GMAPLEVELY]:
                 # GMAP level coordinates are sent as single bytes
                 builder.add_byte(max(0, min(255, int(value))))
+            elif prop in [PlayerProp.PLPROP_X2, PlayerProp.PLPROP_Y2, PlayerProp.PLPROP_Z2]:
+                # High precision coordinates (2 bytes with special encoding)
+                # Server encoding: (abs(pixels) << 1) | (negative ? 1 : 0)
+                pixel_value = int(value)
+                abs_value = abs(pixel_value)
+                is_negative = pixel_value < 0
+                encoded_value = (abs_value << 1) | (1 if is_negative else 0)
+                
+                # Debug logging for X2/Y2 encoding
+                if prop in [PlayerProp.PLPROP_X2, PlayerProp.PLPROP_Y2]:
+                    prop_name = "X2" if prop == PlayerProp.PLPROP_X2 else "Y2"
+                    logger.info(f"[{prop_name}_ENCODE] Input: {value}, Pixels: {pixel_value}, Abs: {abs_value}, Negative: {is_negative}")
+                    logger.info(f"[{prop_name}_ENCODE] Encoded: {encoded_value} (binary: {bin(encoded_value)})")
+                    logger.info(f"[{prop_name}_ENCODE] As bytes: {encoded_value.to_bytes(2, 'big').hex()}")
+                    logger.info(f"[{prop_name}_ENCODE] Will be sent as GShort: {encoded_value} + 0x1020 = {encoded_value + 0x1020}")
+                
+                builder.add_gshort(encoded_value)
             elif prop == PlayerProp.PLPROP_HEADGIF:
                 # Head image uses length + 100
                 builder.add_byte(len(str(value)) + 100)
@@ -220,10 +264,12 @@ class LoginPacket(RebornPacket):
         # Use provided config or default
         config = self.version_config or get_default_version()
         
+        logger.debug(f"LoginPacket: account={self.account}, enc_key={self.encryption_key}")
+        
         packet = bytearray()
         
         # Client type byte
-        packet.append(config.client_type.value + 32)
+        packet.append((config.client_type.value + 32) & 0xFF)
         
         # Encryption key
         packet.append((self.encryption_key + 32) & 0xFF)
@@ -235,14 +281,14 @@ class LoginPacket(RebornPacket):
         packet.extend(version_bytes)
         
         # Account and password
-        packet.append(len(self.account) + 32)
+        packet.append((len(self.account) + 32) & 0xFF)
         packet.extend(self.account.encode('ascii'))
-        packet.append(len(self.password) + 32)
+        packet.append((len(self.password) + 32) & 0xFF)
         packet.extend(self.password.encode('ascii'))
         
         # Build string (if version sends it)
         if config.sends_build and config.build_string:
-            packet.append(len(config.build_string) + 32)
+            packet.append((len(config.build_string) + 32) & 0xFF)
             packet.extend(config.build_string.encode('ascii'))
         
         # Client info/identity string
@@ -253,12 +299,18 @@ class LoginPacket(RebornPacket):
             packet.extend(b'PC,,,,,PyReborn')
         
         # Debug: Log what we're sending
-        print(f"DEBUG: Login packet for version {config.name}:")
-        print(f"  Client type: {config.client_type.value} (+32 = {config.client_type.value + 32})")
-        print(f"  Version string: {config.protocol_string} (hex: {version_bytes.hex()})")
-        print(f"  Full packet ({len(packet)} bytes): {packet[:30].hex()}...")
+        logger.debug(f"Login packet for version {config.name}:")
+        logger.debug(f"  Client type: {config.client_type.value} (+32 = {config.client_type.value + 32})")
+        logger.debug(f"  Version string: {config.protocol_string} (hex: {version_bytes.hex()})")
         
-        return bytes(packet)
+        try:
+            result = bytes(packet)
+            logger.debug(f"  Full packet ({len(result)} bytes): {result[:30].hex()}...")
+            return result
+        except ValueError as e:
+            logger.error(f"Failed to create login packet: {e}")
+            logger.error(f"Packet values: {list(packet)}")
+            raise
 
 
 class ToAllPacket(RebornPacket):

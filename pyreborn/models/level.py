@@ -109,7 +109,8 @@ class Level:
     
     def get_tile_id(self, x: int, y: int) -> int:
         """Get raw tile ID at position (using level dimensions)"""
-        if 0 <= x < self.width and 0 <= y < self.height:
+        if (0 <= x < self.width and 0 <= y < self.height and 
+            self.tiles and len(self.tiles) > y and len(self.tiles[y]) > x):
             return self.tiles[y][x]
         return 0
     
@@ -118,7 +119,12 @@ class Level:
         if 0 <= x < 64 and 0 <= y < 64:
             idx = y * 64 + x
             if hasattr(self, 'board_tiles_64x64') and idx < len(self.board_tiles_64x64):
-                return self.board_tiles_64x64[idx]
+                tile_value = self.board_tiles_64x64[idx]
+                # Ensure we return an int
+                if isinstance(tile_value, list):
+                    # If it's a list, take the first element
+                    return tile_value[0] if tile_value else 0
+                return tile_value
         return 0
     
     def get_board_tiles_array(self) -> List[int]:
@@ -214,6 +220,7 @@ class Level:
         return (tileset_x * tile_size, tileset_y * tile_size)
     
     
+    
     def __repr__(self):
         return f"Level(name='{self.name}', size={self.width}x{self.height}, players={len(self.players)}, npcs={len(self.npcs)})"
 
@@ -222,14 +229,14 @@ class LevelLink:
     """Represents a link between levels"""
     
     def __init__(self, x: int, y: int, width: int, height: int, 
-                 dest_level: str, dest_x: float, dest_y: float):
+                 dest_level: str, dest_x: Optional[float], dest_y: Optional[float]):
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.dest_level = dest_level
-        self.dest_x = dest_x
-        self.dest_y = dest_y
+        self.dest_x = dest_x  # None means use player's current position
+        self.dest_y = dest_y  # None means use player's current position
     
     def contains(self, x: float, y: float) -> bool:
         """Check if position is within link area"""

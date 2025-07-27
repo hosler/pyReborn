@@ -1,0 +1,1648 @@
+"""
+Renderer Module - Handles all game rendering for Classic Graal
+"""
+
+import pygame
+import math
+import time
+import logging
+from typing import Dict, List, Tuple, Optional, Any
+from pyreborn.protocol.enums import Direction
+from pyreborn.models.level import Level
+from pyreborn.models.player import Player
+
+logger = logging.getLogger(__name__)
+
+from game.constants import ClassicItems
+from managers.item import DroppedItem
+from systems.bush import BushHandler
+from parsers.gani import GaniManager
+from parsers.tiledefs import TileDefs
+from .renderer_debug import draw_gmap_grid_overlay
+
+# Constants
+TILE_SIZE = 16
+# Match the actual screen size from game/client.py
+SCREEN_WIDTH = 1024
+SCREEN_HEIGHT = 768
+VIEWPORT_TILES_X = SCREEN_WIDTH // TILE_SIZE  # 64 tiles
+VIEWPORT_TILES_Y = SCREEN_HEIGHT // TILE_SIZE  # 48 tiles
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+GRAY = (128, 128, 128)
+DARK_GREEN = (0, 128, 0)
+BROWN = (139, 69, 19)
+ORANGE = (255, 165, 0)
+PURPLE = (128, 0, 128)
+CYAN = (0, 255, 255)
+
+
+class GameRenderer:
+    """Handles all rendering for the game"""
+    
+    def __init__(self, screen: pygame.Surface, gani_manager: GaniManager, tile_defs: TileDefs):
+        """Initialize the renderer
+        
+        Args:
+            screen: Pygame screen surface
+            gani_manager: GANI animation manager
+            tile_defs: Tile definitions
+        """
+        self.screen = screen
+        self.gani_manager = gani_manager
+        self.tile_defs = tile_defs
+        
+        # Tile cache
+        self.tile_cache: Dict[int, pygame.Surface] = {}
+        self.sprite_cache: Dict[str, pygame.Surface] = {}
+        
+        # Camera position
+        self.camera_x = 0
+        self.camera_y = 0
+        
+        # Debug flags
+        self.debug_collision = False
+        self.debug_tiles = False
+        self.show_gmap_grid = False  # Toggle for GMAP grid overlay
+        
+        # Bird's eye view mode
+        self.birds_eye_mode = False
+        self.birds_eye_transition = 0.0  # 0.0 = normal view, 1.0 = full birds eye
+        self.birds_eye_target = 0.0
+        self.birds_eye_speed = 3.0  # Transition speed
+        self.birds_eye_zoom = 0.1  # 10% scale when fully zoomed out
+        self.birds_eye_grid_size = (15, 12)  # How many levels to show
+        self.level_miniatures = {}  # Cache of rendered miniatures
+        
+        # Fonts
+        self.font_large = pygame.font.Font(None, 36)
+        self.font_medium = pygame.font.Font(None, 24)
+        self.font_small = pygame.font.Font(None, 18)
+        self.font_tiny = pygame.font.Font(None, 14)
+        
+        # Load tileset
+        self._load_tileset()
+        
+        # Load sprites
+        self._load_sprites()
+        
+        # Set sprites image in GANI manager if loaded
+        if hasattr(self, 'sprites_image') and self.sprites_image:
+            self.gani_manager.sprites_image = self.sprites_image
+        
+    def _load_tileset(self):
+        """Load the tileset image"""
+        import os
+        # Get the classic_reborn directory (parent of core/)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # First check tileset cache
+        cache_dir = os.path.join(base_dir, "tileset_cache")
+        tileset_loaded = False
+        
+        if os.path.exists(cache_dir):
+            # Look for any cached tileset (prefer pics1.png)
+            for filename in ['pics1.png', 'dustynewpics1.png', 'newpics1.png']:
+                cache_path = os.path.join(cache_dir, filename)
+                if os.path.exists(cache_path):
+                    try:
+                        self.tileset = pygame.image.load(cache_path).convert_alpha()
+                        logger.info(f"Loaded cached tileset from {cache_path}")
+                        tileset_loaded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to load cached tileset {filename}: {e}")
+                        # Try to remove corrupted file
+                        if "bad adaptive filter value" in str(e):
+                            try:
+                                os.remove(cache_path)
+                                logger.info(f"Removed corrupted tileset: {cache_path}")
+                            except:
+                                pass
+        
+        # Fall back to assets directory
+        if not tileset_loaded:
+            try:
+                tileset_path = os.path.join(base_dir, "assets", "pics1.png")
+                self.tileset = pygame.image.load(tileset_path).convert_alpha()
+                logger.info(f"Loaded tileset from {tileset_path}")
+            except Exception as e:
+                logger.error(f"Failed to load tileset: {e}")
+                self.tileset = None
+                
+    def _load_sprites(self):
+        """Load the player sprites image"""
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        try:
+            sprites_path = os.path.join(base_dir, "assets", "sprites.png")
+            self.sprites_image = pygame.image.load(sprites_path).convert_alpha()
+            logger.info(f"Loaded sprites from {sprites_path}")
+            logger.info(f"Sprites size: {self.sprites_image.get_size()}")
+        except Exception as e:
+            logger.error(f"Failed to load sprites: {e}")
+            self.sprites_image = None
+            
+    def _get_classic_player_sprites(self, direction: Direction, gani: str, frame: int) -> List[Tuple[pygame.Surface, int, int]]:
+        """Get classic player sprites from sprites.png"""
+        # Classic Graal sprite layout:
+        # Each player sprite is 24x24 pixels
+        # Body sprites start at row 0
+        # Head sprites start at row 8
+        
+        sprites = []
+        
+        # Direction mapping for classic sprites
+        dir_index = {
+            Direction.UP: 0,
+            Direction.LEFT: 1,
+            Direction.DOWN: 2,
+            Direction.RIGHT: 3
+        }.get(direction, 2)  # Default to down
+        
+        # Animation frame mapping
+        if gani == 'idle':
+            body_frame = 0
+        elif gani == 'walk':
+            body_frame = frame % 3  # Walk has 3 frames
+        else:
+            body_frame = 0
+            
+        # Extract body sprite (24x24)
+        body_x = body_frame * 24
+        body_y = dir_index * 24
+        
+        if body_x < self.sprites_image.get_width() and body_y < self.sprites_image.get_height():
+            body_surface = pygame.Surface((24, 24), pygame.SRCALPHA)
+            body_surface.blit(self.sprites_image, (0, 0), (body_x, body_y, 24, 24))
+            sprites.append((body_surface, -4, -8))  # Offset to center
+            
+        # Extract head sprite (24x24) - starts at row 8
+        head_x = 0  # Heads don't animate
+        head_y = (8 + dir_index) * 24
+        
+        if head_x < self.sprites_image.get_width() and head_y < self.sprites_image.get_height():
+            head_surface = pygame.Surface((24, 24), pygame.SRCALPHA)
+            head_surface.blit(self.sprites_image, (0, 0), (head_x, head_y, 24, 24))
+            sprites.append((head_surface, -4, -16))  # Head goes above body
+            
+        return sprites
+            
+    def load_tileset_from_data(self, image_data: bytes, filename: str = "server_tileset"):
+        """Load tileset from server-provided image data
+        
+        Args:
+            image_data: Raw image data (PNG format)
+            filename: Name of the tileset for logging
+        """
+        try:
+            import io
+            # Create a BytesIO object from the image data
+            image_stream = io.BytesIO(image_data)
+            
+            # Load the image from the stream
+            new_tileset = pygame.image.load(image_stream).convert_alpha()
+            
+            # Replace the current tileset
+            self.tileset = new_tileset
+            logger.info(f"Hot-loaded tileset from server: {filename} ({len(image_data)} bytes)")
+            
+            # Get tileset dimensions for debugging
+            if self.tileset:
+                width, height = self.tileset.get_size()
+                logger.info(f"Tileset dimensions: {width}x{height}")
+                
+        except Exception as e:
+            logger.error(f"Failed to hot-load tileset {filename}: {e}")
+            
+            # Fallback: Try to load from local assets if available
+            import os
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            local_path = os.path.join(base_dir, "assets", filename)
+            if os.path.exists(local_path):
+                logger.info(f"Falling back to local tileset: {local_path}")
+                try:
+                    self.tileset = pygame.image.load(local_path).convert_alpha()
+                    logger.info(f"Successfully loaded local tileset: {filename}")
+                except Exception as e2:
+                    logger.error(f"Failed to load local tileset: {e2}")
+            else:
+                logger.warning(f"No local fallback available for {filename}")
+            
+    def update_camera(self, player_x: float, player_y: float, is_gmap: bool = False, 
+                     gmaplevelx: int = 0, gmaplevely: int = 0):
+        """Update camera position to follow player
+        
+        Args:
+            player_x: Player X position in tiles (local coords 0-64, or world coords in GMAP)
+            player_y: Player Y position in tiles (local coords 0-64, or world coords in GMAP)
+            is_gmap: Whether we're in GMAP mode (uses world coordinates)
+            gmaplevelx: Current GMAP segment X coordinate (unused when world coords)
+            gmaplevely: Current GMAP segment Y coordinate (unused when world coords)
+        """
+        # In GMAP mode, player coordinates are already in world space
+        # In single level mode, player coordinates are local (0-64)
+        
+        # Center camera on player position
+        # Remove sprite offsets - the player position should already be correct
+        self.camera_x = player_x - (VIEWPORT_TILES_X / 2.0)
+        self.camera_y = player_y - (VIEWPORT_TILES_Y / 2.0)
+        
+        # In single-level mode, handle viewport larger than level
+        if not is_gmap:
+            # Don't clamp if viewport is larger than level - allow negative camera positions
+            # This centers the level in the viewport while still following the player
+            if VIEWPORT_TILES_X < 64:
+                # Only clamp if viewport is smaller than level
+                self.camera_x = max(0, min(self.camera_x, 64 - VIEWPORT_TILES_X))
+                
+            if VIEWPORT_TILES_Y < 64:
+                # Only clamp if viewport is smaller than level  
+                self.camera_y = max(0, min(self.camera_y, 64 - VIEWPORT_TILES_Y))
+        
+        # Debug camera position
+        if not hasattr(self, '_last_camera_debug') or time.time() - self._last_camera_debug > 2:
+            mode = "GMAP" if is_gmap else "Single"
+            logger.debug(f"{mode} mode - Player at ({player_x:.2f}, {player_y:.2f}), Camera at ({self.camera_x:.2f}, {self.camera_y:.2f})")
+            self._last_camera_debug = time.time()
+        
+        # Always ensure camera is initialized with valid values
+        if self.camera_x == 0 and self.camera_y == 0 and (player_x != (VIEWPORT_TILES_X // 2) or player_y != (VIEWPORT_TILES_Y // 2)):
+            logger.debug(f"WARNING: Camera at (0,0) but player not at center - possible initialization issue")
+        
+    def get_tile_surface(self, tile_id: int) -> Optional[pygame.Surface]:
+        """Get a tile surface from the tileset
+        
+        Args:
+            tile_id: Tile ID to get
+            
+        Returns:
+            Tile surface or None if not available
+        """
+        if tile_id in self.tile_cache:
+            return self.tile_cache[tile_id]
+            
+        if not self.tileset:
+            if not hasattr(self, '_logged_no_tileset'):
+                logger.error(f"No tileset loaded!")
+                self._logged_no_tileset = True
+            return None
+            
+        # Apply Reborn's tile coordinate conversion
+        tx = (tile_id // 512) * 16 + (tile_id % 16)
+        ty = (tile_id // 16) % 32
+        
+        tile_x = tx * TILE_SIZE
+        tile_y = ty * TILE_SIZE
+        
+        # Check bounds
+        if tile_x >= self.tileset.get_width() or tile_y >= self.tileset.get_height():
+            return None
+            
+        # Extract tile
+        try:
+            tile_surface = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            tile_surface.blit(self.tileset, (0, 0), 
+                            (tile_x, tile_y, TILE_SIZE, TILE_SIZE))
+            self.tile_cache[tile_id] = tile_surface
+            return tile_surface
+        except:
+            return None
+            
+    def draw_level(self, level: Level, opened_chests: set, respawn_timers: dict):
+        """Draw the level tiles
+        
+        Args:
+            level: Level to draw
+            opened_chests: Set of opened chest positions
+            respawn_timers: Dict of positions with respawn timers
+        """
+        if not level:
+            logger.error("draw_level called with None level!")
+            # Draw test pattern when no level
+            for x in range(0, SCREEN_WIDTH, 50):
+                for y in range(0, SCREEN_HEIGHT, 50):
+                    color = ((x // 50) % 2 + (y // 50) % 2) % 2
+                    color = (255, 0, 0) if color else (0, 255, 0)
+                    pygame.draw.rect(self.screen, color, (x, y, 50, 50))
+            return
+            
+        # Debug: Check level data
+        if not hasattr(self, '_last_level_debug') or time.time() - self._last_level_debug > 2:
+            logger.info(f"Drawing level: {level.name}")
+            if hasattr(level, 'board_tiles_64x64') and level.board_tiles_64x64:
+                # board_tiles_64x64 is a flat array, not 2D
+                logger.info(f"Level has board_tiles_64x64: {len(level.board_tiles_64x64)} tiles (64x64)")
+            else:
+                logger.error(f"Level {level.name} has no board_tiles_64x64!")
+            logger.info(f"Tileset loaded: {self.tileset is not None}")
+            logger.info(f"Camera position: ({self.camera_x:.1f}, {self.camera_y:.1f})")
+            self._last_level_debug = time.time()
+        
+        # Draw debug grid to visualize viewport
+        self._draw_debug_grid()
+        
+        # Draw at offset (0, 0) - for single level mode
+        self._draw_level_at_offset(level, 0, 0, opened_chests, respawn_timers)
+    
+    def draw_gmap_levels(self, current_level: Level, gmap_handler, gmap_name: str, 
+                        opened_chests: set, respawn_timers: dict):
+        """Draw multiple GMAP levels seamlessly using adjacency map
+        
+        Args:
+            current_level: The level the player is currently in
+            gmap_handler: GmapHandler instance with adjacency map
+            gmap_name: Name of the current GMAP
+            opened_chests: Set of opened chest positions
+            respawn_timers: Dict of positions with respawn timers
+        """
+        # Debug: Track render calls
+        if not hasattr(self, '_render_count'):
+            self._render_count = 0
+        self._render_count += 1
+        
+        # Log render info periodically for debugging
+        if self._render_count % 60 == 0:  # Log every second at 60fps
+            logger.debug(f"Render call #{self._render_count}, current_level={current_level.name if current_level else 'None'}")
+            logger.debug(f"Camera at ({self.camera_x:.2f}, {self.camera_y:.2f})")
+        
+        if not current_level:
+            logger.debug(f"WARNING: No current level set! (call #{self._render_count})")
+            # If we have any loaded levels, try to use one
+            if gmap_handler and gmap_handler.level_objects:
+                # Try to use the current level from gmap handler
+                if gmap_handler.current_level_name and gmap_handler.current_level_name in gmap_handler.level_objects:
+                    current_level = gmap_handler.level_objects[gmap_handler.current_level_name]
+                    logger.debug(f"Using level from gmap handler: {current_level.name}")
+                else:
+                    # Use any loaded level as fallback
+                    first_level_name = next(iter(gmap_handler.level_objects.keys()))
+                    current_level = gmap_handler.level_objects[first_level_name]
+                    logger.debug(f"Using first available level: {current_level.name}")
+            else:
+                logger.error(f"No levels available to render! Screen will be black.")
+                return
+            
+        # If no gmap handler, fall back to single level drawing
+        if not gmap_handler or not gmap_handler.level_adjacency:
+            logger.debug(f"No adjacency map, falling back to single level")
+            self.draw_level(current_level, opened_chests, respawn_timers)
+            return
+            
+        # Get current level position from GMAP data
+        level_name = current_level.name
+        current_col = current_row = 0
+        
+        try:
+            # Get position from GMAP data
+            if hasattr(gmap_handler, 'connection_gmap_data') and gmap_handler.connection_gmap_data:
+                for gmap_key, gmap_info in gmap_handler.connection_gmap_data.items():
+                    level_map = gmap_info.get('level_map', {})
+                    if level_name in level_map:
+                        current_col, current_row = level_map[level_name]
+                        break
+            else:
+                # No GMAP data - fallback to single level drawing
+                self.draw_level(current_level, opened_chests, respawn_timers)
+                return
+            
+            # Debug output for GMAP rendering (reduced spam)
+            if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 3:
+                logger.debug(f"Current segment: {level_name} -> col={current_col}, row={current_row}")
+                logger.debug(f"Available levels: {list(gmap_handler.level_adjacency.keys())}")
+                logger.debug(f"Camera: ({self.camera_x}, {self.camera_y})")
+                self._last_debug_time = time.time()
+            
+            segments_rendered = 0
+            
+            # In GMAP mode, camera is in local coordinates (0-64)
+            # We need to convert to world coordinates for rendering
+            world_camera_x = self.camera_x + current_col * 64
+            world_camera_y = self.camera_y + current_row * 64
+            
+            # Temporarily set camera to world coordinates for rendering
+            orig_camera_x = self.camera_x
+            orig_camera_y = self.camera_y
+            self.camera_x = world_camera_x
+            self.camera_y = world_camera_y
+            
+            # Draw current level at its world position
+            self._draw_level_at_offset(current_level, current_col * 64, current_row * 64, 
+                                     opened_chests, respawn_timers)
+            segments_rendered += 1
+        
+            if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 3:
+                logger.debug(f"Drawing current level {level_name} at center position ({current_col * 64}, {current_row * 64})")
+                logger.debug(f"Level objects available: {list(gmap_handler.level_objects.keys())}")
+            
+            # Show sample tiles from current level being rendered
+            sample_tiles = []
+            for y in range(0, min(3, 64)):
+                for x in range(0, min(3, 64)):
+                    tile_id = current_level.get_board_tile_id(x, y)
+                    if tile_id != 0:
+                        sample_tiles.append(f"{tile_id}")
+                    if len(sample_tiles) >= 5:
+                        break
+                if len(sample_tiles) >= 5:
+                    break
+            logger.debug(f"CENTER LEVEL {level_name} sample tiles: {sample_tiles}")
+        
+            # Draw adjacent levels using adjacency map
+            if level_name in gmap_handler.level_adjacency:
+                adjacent_levels = gmap_handler.level_adjacency[level_name]
+            
+            # Map directions to offsets
+            direction_offsets = {
+                        'north': (0, -1),
+                        'south': (0, 1),
+                        'east': (1, 0),
+                        'west': (-1, 0),
+                        'northeast': (1, -1),
+                        'northwest': (-1, -1),
+                        'southeast': (1, 1),
+                        'southwest': (-1, 1)
+                    }
+
+            for direction, adj_level_name in adjacent_levels.items():
+                if adj_level_name in gmap_handler.level_objects:
+                    level = gmap_handler.level_objects[adj_level_name]
+
+                    # Use the direction from adjacency map instead of calculating from coordinates
+                    if direction in direction_offsets:
+                        dir_x, dir_y = direction_offsets[direction]
+
+                        # Parse adjacent level coordinates
+                        adj_segment_info = gmap_handler.parse_segment_name(adj_level_name)
+                        if adj_segment_info:
+                            adj_base, adj_col, adj_row = adj_segment_info
+                            # Calculate world position of adjacent level
+                            adj_world_x = adj_col * 64
+                            adj_world_y = adj_row * 64
+                        else:
+                            # Fallback: use relative offset from current
+                            adj_world_x = (current_col + dir_x) * 64
+                            adj_world_y = (current_row + dir_y) * 64
+                            adj_col, adj_row = current_col + dir_x, current_row + dir_y
+
+                        if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 3:
+                            logger.debug(f"Drawing {adj_level_name} ({direction}) at world position ({adj_world_x}, {adj_world_y})")
+                            logger.debug(f"  - Adjacent level: col={adj_col}, row={adj_row}")
+                            logger.debug(f"  - Current level: col={current_col}, row={current_row}")
+                            logger.debug(f"  - Direction offset: ({dir_x}, {dir_y})")
+                            logger.debug(f"  - Camera position: ({self.camera_x}, {self.camera_y})")
+
+                            # Show sample tiles from adjacent level
+                            sample_tiles = []
+                            for y in range(0, min(3, 64)):
+                                for x in range(0, min(3, 64)):
+                                    tile_id = level.get_board_tile_id(x, y)
+                                    if tile_id != 0:
+                                        sample_tiles.append(f"{tile_id}")
+                                    if len(sample_tiles) >= 5:
+                                        break
+                                if len(sample_tiles) >= 5:
+                                    break
+                            logger.debug(f"{direction.upper()} LEVEL {adj_level_name} sample tiles: {sample_tiles}")
+
+                            # Special debug for west direction
+                            if direction == 'west':
+                                logger.debug(f"[WEST DEBUG] Renderer is now using DIRECTION-BASED positioning")
+                                logger.debug(f"[WEST DEBUG] Direction 'west' maps to offset (-1, 0)")
+                                logger.debug(f"[WEST DEBUG] This should place {adj_level_name} to the LEFT of {level_name}")
+                                logger.debug(f"[WEST DEBUG] Visual west level: {adj_level_name} at world pos ({adj_world_x}, {adj_world_y})")
+
+                        self._draw_level_at_offset(level, adj_world_x, adj_world_y,
+                                                 opened_chests, respawn_timers)
+                        segments_rendered += 1
+
+                # Restore camera to local coordinates
+                self.camera_x = orig_camera_x
+                self.camera_y = orig_camera_y
+                
+                if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 3:
+                    logger.debug(f"Rendered {segments_rendered} segments")
+                        
+        except Exception as e:
+            logger.error(f"Error parsing GMAP position: {e}")
+            # Fallback to single level
+            self.draw_level(current_level, opened_chests, respawn_timers)
+            
+        # Draw debug grid overlay if enabled
+        if self.show_gmap_grid and gmap_handler:
+            # Store references needed by debug overlay
+            self.gmap_handler = gmap_handler
+            self.game_state = getattr(self, 'game_state', None)
+            draw_gmap_grid_overlay(self, self.screen)
+    
+    def _draw_level_at_offset(self, level: Level, world_offset_x: int, world_offset_y: int,
+                             opened_chests: set, respawn_timers: dict):
+        """Draw a level at a specific world offset
+        
+        Args:
+            level: Level to draw
+            world_offset_x: X offset in world tiles
+            world_offset_y: Y offset in world tiles
+            opened_chests: Set of opened chest positions
+            respawn_timers: Dict of positions with respawn timers
+        """
+        # Get view bounds in world coordinates
+        # Use floor for start to ensure we include partially visible tiles
+        view_start_x = int(self.camera_x)  # Floor
+        view_start_y = int(self.camera_y)  # Floor
+        # Add extra tiles to ensure we render enough
+        view_end_x = view_start_x + VIEWPORT_TILES_X + 2
+        view_end_y = view_start_y + VIEWPORT_TILES_Y + 2
+        
+        # Calculate which part of this level is visible
+        level_start_x = max(0, view_start_x - world_offset_x)
+        level_start_y = max(0, view_start_y - world_offset_y)
+        level_end_x = min(64, view_end_x - world_offset_x)
+        level_end_y = min(64, view_end_y - world_offset_y)
+        
+        # Skip if level is completely out of view
+        if level_start_x >= level_end_x or level_start_y >= level_end_y:
+            return
+            
+        current_time = time.time()
+        tiles_drawn = 0
+        
+            
+        # Draw tiles
+        for y in range(level_start_y, level_end_y):
+            for x in range(level_start_x, level_end_x):
+                tile_id = level.get_board_tile_id(x, y)
+                
+                # Check if this position has a respawn timer (grass/bush)
+                world_x = x + world_offset_x
+                world_y = y + world_offset_y
+                if (world_x, world_y) in respawn_timers:
+                    continue  # Skip drawing, it's been cut/removed
+                
+                # Draw the tile
+                surface = self.get_tile_surface(tile_id)
+                if surface:
+                    screen_x = (world_x - self.camera_x) * TILE_SIZE
+                    screen_y = (world_y - self.camera_y) * TILE_SIZE
+                    self.screen.blit(surface, (screen_x, screen_y))
+                    tiles_drawn += 1
+                elif tile_id != 0:  # Don't log for empty tiles
+                    if not hasattr(self, '_logged_missing_tiles'):
+                        self._logged_missing_tiles = set()
+                    if tile_id not in self._logged_missing_tiles:
+                        logger.warning(f"No surface for tile ID {tile_id} at ({x},{y})")
+                        self._logged_missing_tiles.add(tile_id)
+                        # Debug tile conversion
+                        tx = (tile_id // 512) * 16 + (tile_id % 16)
+                        ty = (tile_id // 16) % 32
+                        logger.warning(f"  Tile {tile_id} -> tileset coords ({tx},{ty})")
+                        if self.tileset:
+                            logger.warning(f"  Tileset size: {self.tileset.get_width()}x{self.tileset.get_height()}")
+                            logger.warning(f"  Tile pixel coords: ({tx*16},{ty*16})")
+                            if tx*16 >= self.tileset.get_width() or ty*16 >= self.tileset.get_height():
+                                logger.warning(f"  OUT OF BOUNDS!")
+                    
+        # Draw chests
+        for chest in level.chests:
+            world_chest_x = chest.x + world_offset_x
+            world_chest_y = chest.y + world_offset_y
+            
+            if (world_chest_x, world_chest_y) in opened_chests:
+                continue  # Skip opened chests
+                
+            # Check if chest is in view (accounting for 2x2 size)
+            if (world_chest_x < view_start_x - 1 or world_chest_x >= view_end_x or 
+                world_chest_y < view_start_y - 1 or world_chest_y >= view_end_y):
+                continue
+                
+            # Get chest tiles based on item
+            base_tile = self._get_chest_base_tile(chest.item)
+            chest_tiles = [base_tile, base_tile + 1, base_tile + 16, base_tile + 17]
+            
+            # Draw 2x2 chest
+            for i, tile_id in enumerate(chest_tiles):
+                dx = i % 2
+                dy = i // 2
+                surface = self.get_tile_surface(tile_id)
+                if surface:
+                    screen_x = (world_chest_x + dx - self.camera_x) * TILE_SIZE
+                    screen_y = (world_chest_y + dy - self.camera_y) * TILE_SIZE
+                    self.screen.blit(surface, (screen_x, screen_y))
+                    
+        # Only log occasionally to reduce spam
+        if not hasattr(self, '_last_tiles_debug') or time.time() - self._last_tiles_debug > 2:
+            logger.info(f"Drew {tiles_drawn} tiles for level {level.name}")
+            logger.info(f"Camera: ({self.camera_x:.2f}, {self.camera_y:.2f})")
+            logger.info(f"View bounds: ({view_start_x}, {view_start_y}) to ({view_end_x}, {view_end_y})")
+            logger.info(f"Level section: ({level_start_x}, {level_start_y}) to ({level_end_x}, {level_end_y})")
+            # Sample a few tiles to show what's being rendered
+            if tiles_drawn > 0:
+                sample_tiles = []
+                for y in range(level_start_y, min(level_start_y + 3, level_end_y)):
+                    for x in range(level_start_x, min(level_start_x + 3, level_end_x)):
+                        tile_id = level.get_board_tile_id(x, y)
+                        if tile_id != 0:
+                            sample_tiles.append(f"({x},{y})={tile_id}")
+                        if len(sample_tiles) >= 5:
+                            break
+                    if len(sample_tiles) >= 5:
+                        break
+                logger.info(f"Sample tiles: {', '.join(sample_tiles)}")
+            else:
+                logger.warning(f"No tiles were drawn! Check camera position and level bounds")
+                logger.debug(f"Sample tiles from {level.name}: {sample_tiles}")
+            self._last_tiles_debug = time.time()
+                    
+        # Draw NPCs
+        for npc in level.npcs:
+            world_npc_x = npc.x + world_offset_x
+            world_npc_y = npc.y + world_offset_y
+            
+            if (world_npc_x < view_start_x or world_npc_x >= view_end_x or 
+                world_npc_y < view_start_y or world_npc_y >= view_end_y):
+                continue
+                
+            # For now, draw NPCs as colored circles
+            screen_x = (world_npc_x - self.camera_x) * TILE_SIZE + TILE_SIZE // 2
+            screen_y = (world_npc_y - self.camera_y) * TILE_SIZE + TILE_SIZE // 2
+            pygame.draw.circle(self.screen, ORANGE, (int(screen_x), int(screen_y)), TILE_SIZE // 2)
+            
+    def _get_chest_base_tile(self, chest_item: int) -> int:
+        """Get the base tile ID for a chest based on its item"""
+        if chest_item >= 20:
+            return ClassicItems.CHEST_RED
+        elif chest_item >= 10:
+            return ClassicItems.CHEST_BLUE
+        elif chest_item >= 5:
+            return ClassicItems.CHEST_GREEN
+        else:
+            return ClassicItems.CHEST_BROWN
+            
+    def draw_items(self, items: List[DroppedItem]):
+        """Draw dropped items with floating animation
+        
+        Args:
+            items: List of dropped items
+        """
+        current_time = time.time()
+        
+        for item in items:
+            # Skip if out of view
+            if (item.x < self.camera_x - 1 or item.x >= self.camera_x + VIEWPORT_TILES_X + 1 or
+                item.y < self.camera_y - 1 or item.y >= self.camera_y + VIEWPORT_TILES_Y + 1):
+                continue
+                
+            # Calculate screen position
+            screen_x = (item.x - self.camera_x) * TILE_SIZE
+            screen_y = (item.y - self.camera_y) * TILE_SIZE
+            
+            # Apply floating animation
+            if not item.picked_up:
+                float_offset = item.get_float_offset(current_time)
+                screen_y += float_offset * TILE_SIZE
+            else:
+                # Rise up when picked up
+                pickup_progress = (current_time - item.pickup_time) / 1.0
+                screen_y -= pickup_progress * TILE_SIZE * 2
+                
+                # Fade out
+                alpha = int(255 * (1.0 - pickup_progress))
+                
+            # Draw 2x2 item tiles
+            for i, tile_id in enumerate(item.tile_ids):
+                dx = (i % 2) * TILE_SIZE
+                dy = (i // 2) * TILE_SIZE
+                
+                surface = self.get_tile_surface(tile_id)
+                if surface:
+                    if item.picked_up:
+                        # Apply fade
+                        faded = surface.copy()
+                        faded.set_alpha(alpha)
+                        self.screen.blit(faded, (screen_x + dx, screen_y + dy))
+                    else:
+                        self.screen.blit(surface, (screen_x + dx, screen_y + dy))
+                        
+    def draw_player(self, player: Player, animation_frame: int, gani_name: str, 
+                   carry_sprite: str = "", is_local: bool = False, 
+                   gmaplevelx: int = None, gmaplevely: int = None):
+        """Draw a player with their current animation
+        
+        Args:
+            player: Player to draw
+            animation_frame: Current animation frame
+            gani_name: GANI animation name
+            carry_sprite: Carried object sprite name
+            is_local: Whether this is the local player
+            gmaplevelx: GMAP segment X coordinate (for world positioning)
+            gmaplevely: GMAP segment Y coordinate (for world positioning)
+        """
+        # Debug logging
+        if is_local and not hasattr(self, '_logged_local_player'):
+            logger.info(f"Drawing local player at ({player.x}, {player.y})")
+            logger.info(f"Camera at ({self.camera_x}, {self.camera_y})")
+            logger.info(f"GANI: {gani_name}, Frame: {animation_frame}")
+            self._logged_local_player = True
+        # Calculate player position
+        if is_local:
+            # Local player uses local coordinates (camera is already relative to local player)
+            player_x = player.x
+            player_y = player.y
+        else:
+            # Other players need world coordinates if in GMAP
+            if gmaplevelx is not None and gmaplevely is not None:
+                # Use x2/y2 if available for other players
+                if hasattr(player, 'x2') and hasattr(player, 'y2') and player.x2 is not None and player.y2 is not None:
+                    player_x = player.x2
+                    player_y = player.y2
+                else:
+                    # Fallback to calculated world position
+                    player_x = player.gmaplevelx * 64 + player.x if player.gmaplevelx is not None else player.x
+                    player_y = player.gmaplevely * 64 + player.y if player.gmaplevely is not None else player.y
+            else:
+                # Single level mode
+                player_x = player.x
+                player_y = player.y
+        
+        # Calculate screen position - keep floating point for smoother movement
+        screen_x = int((player_x - self.camera_x) * TILE_SIZE)
+        screen_y = int((player_y - self.camera_y) * TILE_SIZE)
+        
+        # Debug screen position for local player (only log once)
+        if is_local and not hasattr(self, '_logged_screen_pos'):
+            logger.info(f"Local player world position: ({player_x}, {player_y})")
+            logger.info(f"Camera position: ({self.camera_x}, {self.camera_y})")
+            logger.info(f"Local player screen position: ({screen_x}, {screen_y})")
+            logger.info(f"Expected center: ({VIEWPORT_TILES_X * TILE_SIZE // 2}, {VIEWPORT_TILES_Y * TILE_SIZE // 2})")
+            logger.info(f"Actual screen size: {self.screen.get_width()}x{self.screen.get_height()}")
+            logger.info(f"Expected screen size: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
+            self._logged_screen_pos = True
+        
+        # Get sprites for current animation
+        sprites = self._get_player_sprites(player.direction, gani_name, animation_frame)
+        
+        # Debug sprite loading
+        if is_local and not hasattr(self, '_logged_sprites'):
+            logger.info(f"Sprites loaded: {len(sprites) if sprites else 0}")
+            if hasattr(self.gani_manager, 'sprites_image'):
+                logger.info(f"GANI manager has sprites_image: {self.gani_manager.sprites_image is not None}")
+            self._logged_sprites = True
+        
+        # Draw each sprite layer
+        if sprites:
+            for surface, x_offset, y_offset in sprites:
+                self.screen.blit(surface, (screen_x + x_offset, screen_y + y_offset))
+        else:
+            # Fallback: Draw a simple colored circle to represent the player
+            player_color = (0, 255, 0) if is_local else (255, 0, 0)  # Green for local, red for others
+            # Draw larger circle for better visibility
+            pygame.draw.circle(self.screen, player_color, 
+                             (screen_x + TILE_SIZE // 2, screen_y + TILE_SIZE // 2), 
+                             TILE_SIZE // 2 + 4, 0)
+            # Draw smaller inner circle
+            pygame.draw.circle(self.screen, (255, 255, 255), 
+                             (screen_x + TILE_SIZE // 2, screen_y + TILE_SIZE // 2), 
+                             TILE_SIZE // 4, 0)
+            # Draw direction indicator
+            center_x = screen_x + TILE_SIZE // 2
+            center_y = screen_y + TILE_SIZE // 2
+            if player.direction == Direction.UP:
+                pygame.draw.line(self.screen, (255, 255, 255), (center_x, center_y), (center_x, screen_y), 2)
+            elif player.direction == Direction.DOWN:
+                pygame.draw.line(self.screen, (255, 255, 255), (center_x, center_y), (center_x, screen_y + TILE_SIZE), 2)
+            elif player.direction == Direction.LEFT:
+                pygame.draw.line(self.screen, (255, 255, 255), (center_x, center_y), (screen_x, center_y), 2)
+            elif player.direction == Direction.RIGHT:
+                pygame.draw.line(self.screen, (255, 255, 255), (center_x, center_y), (screen_x + TILE_SIZE, center_y), 2)
+        
+        # Draw player name
+        if not is_local:
+            name_text = self.font_tiny.render(player.nickname, True, WHITE)
+            name_rect = name_text.get_rect(centerx=screen_x + TILE_SIZE, 
+                                          bottom=screen_y - 2)
+            self.screen.blit(name_text, name_rect)
+            
+        # Draw chat bubble
+        if player.chat:
+            self._draw_chat_bubble(screen_x, screen_y, player.chat)
+                
+    def _draw_debug_grid(self):
+        """Draw debug grid and viewport info"""
+        # Draw grid lines every 10 tiles
+        grid_color = (60, 60, 60)
+        for x in range(0, VIEWPORT_TILES_X + 1, 10):
+            pygame.draw.line(self.screen, grid_color, (x * TILE_SIZE, 0), (x * TILE_SIZE, SCREEN_HEIGHT), 1)
+        for y in range(0, VIEWPORT_TILES_Y + 1, 10):
+            pygame.draw.line(self.screen, grid_color, (0, y * TILE_SIZE), (SCREEN_WIDTH, y * TILE_SIZE), 1)
+        
+        # Draw viewport center
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        pygame.draw.line(self.screen, (255, 255, 0), (center_x - 40, center_y), (center_x + 40, center_y), 3)
+        pygame.draw.line(self.screen, (255, 255, 0), (center_x, center_y - 40), (center_x, center_y + 40), 3)
+        pygame.draw.circle(self.screen, (255, 255, 0), (center_x, center_y), 10, 2)
+        
+        # Draw camera info
+        font = self.font_small
+        cam_text = font.render(f"Camera: ({self.camera_x:.1f}, {self.camera_y:.1f})", True, (255, 255, 0))
+        self.screen.blit(cam_text, (10, SCREEN_HEIGHT - 30))
+        
+        # Draw large test circle in center
+        pygame.draw.circle(self.screen, (255, 0, 255), (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2), 100, 5)
+        test_text = font.render("CENTER OF SCREEN", True, (255, 255, 255))
+        test_rect = test_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+        self.screen.blit(test_text, test_rect)
+            
+    def _get_player_sprites(self, direction: Direction, gani: str, frame: int) -> List[Tuple[pygame.Surface, int, int]]:
+        """Get sprites and positions for a player animation"""
+        dir_map = {
+            Direction.UP: 'up',
+            Direction.LEFT: 'left',
+            Direction.DOWN: 'down',
+            Direction.RIGHT: 'right'
+        }
+        dir_name = dir_map.get(direction, 'down')
+        
+        # Load GANI file
+        gani_file = self.gani_manager.load_gani(gani)
+        if not gani_file:
+            if not hasattr(self, '_logged_no_gani'):
+                logger.warning(f"Could not load GANI file: {gani}")
+                self._logged_no_gani = True
+            return []
+            
+        # Get sprite placements
+        # Single frame animations should always use frame 0
+        single_frame_ganis = ['idle', 'push', 'pull', 'grab', 'sit', 'lift']
+        actual_frame = 0 if gani in single_frame_ganis else frame
+        sprite_placements = gani_file.get_frame_sprites(actual_frame, dir_name)
+        
+        # Debug sprite placements
+        if not hasattr(self, '_logged_placements'):
+            logger.info(f"GANI {gani} frame {actual_frame} dir {dir_name}: {len(sprite_placements)} sprites")
+            if sprite_placements:
+                logger.info(f"First sprite: ID={sprite_placements[0][0]}, offset=({sprite_placements[0][1]}, {sprite_placements[0][2]})")
+            self._logged_placements = True
+        
+        # Convert to surfaces
+        result = []
+        for sprite_id, x_offset, y_offset in sprite_placements:
+            cache_key = f"{gani}_{sprite_id}"
+            surface = None
+            
+            if cache_key in self.sprite_cache:
+                surface = self.sprite_cache[cache_key]
+            else:
+                surface = self.gani_manager.get_sprite_surface(gani, sprite_id)
+                if surface:
+                    self.sprite_cache[cache_key] = surface
+                    
+            if surface:
+                result.append((surface, x_offset, y_offset))
+                
+        return result
+        
+    def _draw_carried_object(self, screen_x: float, screen_y: float, carry_sprite: str):
+        """Draw object carried above player's head"""
+        if carry_sprite == "bush":
+            tiles = [2, 3, 18, 19]
+            offsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        else:
+            return
+            
+        for tile_id, (dx, dy) in zip(tiles, offsets):
+            surface = self.get_tile_surface(tile_id)
+            if surface:
+                obj_x = screen_x + (dx * TILE_SIZE)
+                obj_y = screen_y - (TILE_SIZE * 1.5) + (dy * TILE_SIZE)
+                self.screen.blit(surface, (obj_x, obj_y))
+                
+    def _draw_chat_bubble(self, x: float, y: float, text: str):
+        """Draw a chat bubble above a player"""
+        # Create text surface
+        chat_surface = self.font_small.render(text, True, BLACK)
+        
+        # Create bubble
+        padding = 6
+        bubble_width = chat_surface.get_width() + padding * 2
+        bubble_height = chat_surface.get_height() + padding * 2
+        
+        bubble_x = int(x + TILE_SIZE - bubble_width // 2)
+        bubble_y = int(y - bubble_height - 10)
+        
+        # Draw bubble background
+        bubble_rect = pygame.Rect(bubble_x, bubble_y, bubble_width, bubble_height)
+        pygame.draw.rect(self.screen, WHITE, bubble_rect)
+        pygame.draw.rect(self.screen, BLACK, bubble_rect, 2)
+        
+        # Draw tail
+        tail_points = [
+            (bubble_x + bubble_width // 2 - 5, bubble_y + bubble_height),
+            (bubble_x + bubble_width // 2 + 5, bubble_y + bubble_height),
+            (bubble_x + bubble_width // 2, bubble_y + bubble_height + 5)
+        ]
+        pygame.draw.polygon(self.screen, WHITE, tail_points)
+        pygame.draw.lines(self.screen, BLACK, False, tail_points, 2)
+        
+        # Draw text
+        self.screen.blit(chat_surface, (bubble_x + padding, bubble_y + padding))
+        
+    def draw_collision_debug(self, level: Level, local_player=None):
+        """Draw collision debug overlay and player collision box"""
+        if not self.debug_collision:
+            return
+            
+        # Draw blocking tiles overlay
+        if level:
+            start_x = int(self.camera_x)
+            start_y = int(self.camera_y) 
+            end_x = min(start_x + VIEWPORT_TILES_X + 1, 64)
+            end_y = min(start_y + VIEWPORT_TILES_Y + 1, 64)
+            
+            for y in range(start_y, end_y):
+                for x in range(start_x, end_x):
+                    tile_id = level.get_board_tile_id(x, y)
+                    
+                    if self.tile_defs.is_blocking(tile_id):
+                        screen_x = (x - self.camera_x) * TILE_SIZE
+                        screen_y = (y - self.camera_y) * TILE_SIZE
+                        
+                        # Draw red overlay
+                        overlay = pygame.Surface((TILE_SIZE, TILE_SIZE))
+                        overlay.set_alpha(100)
+                        overlay.fill(RED)
+                        self.screen.blit(overlay, (screen_x, screen_y))
+                        
+        # Draw player collision box
+        if local_player:
+            self.draw_player_collision_box(local_player)
+                    
+    def draw_player_collision_box(self, player):
+        """Draw the player's collision box for debugging"""
+        # Use EXACT same values from physics.py can_move_to()
+        x_offset = 1.0  # 1 tile right
+        y_offset = 1.0  # 1 tile down (base offset)
+        
+        # Shadow/collision box dimensions (from physics.py)
+        shadow_width = 1.2
+        shadow_height = 1.6  # Taller box for all directions (was 0.6, now 1.6)
+        shadow_x_start = 0.1  # slight offset within the shadow
+        
+        # Direction-specific adjustments (matching physics.py)
+        if player.direction == Direction.LEFT:
+            x_offset -= 3.0 / 16.0  # 3 pixels left (3/16 of a tile)
+        
+        # Calculate screen position
+        screen_x = (player.x - self.camera_x) * TILE_SIZE
+        screen_y = (player.y - self.camera_y) * TILE_SIZE
+        
+        # Draw collision box in red - using exact physics calculations
+        collision_rect = pygame.Rect(
+            int(screen_x + (x_offset + shadow_x_start) * TILE_SIZE),
+            int(screen_y + y_offset * TILE_SIZE),
+            int(shadow_width * TILE_SIZE),
+            int(shadow_height * TILE_SIZE)
+        )
+        pygame.draw.rect(self.screen, RED, collision_rect, 2)
+        
+        # Draw all collision check points from physics.py (with direction-adjusted y_offset)
+        check_points = [
+            (player.x + x_offset + shadow_x_start, player.y + y_offset),                    # Top-left
+            (player.x + x_offset + shadow_x_start + shadow_width, player.y + y_offset),     # Top-right
+            (player.x + x_offset + shadow_x_start, player.y + y_offset + shadow_height),    # Bottom-left
+            (player.x + x_offset + shadow_x_start + shadow_width, player.y + y_offset + shadow_height), # Bottom-right
+            (player.x + x_offset + 0.5, player.y + y_offset + shadow_height/2),             # Center
+        ]
+        
+        # Draw each collision check point
+        for i, (px, py) in enumerate(check_points):
+            point_x = int((px - self.camera_x) * TILE_SIZE)
+            point_y = int((py - self.camera_y) * TILE_SIZE)
+            color = YELLOW if i == 4 else GREEN  # Center in yellow, corners in green
+            pygame.draw.circle(self.screen, color, (point_x, point_y), 3)
+        
+        # Draw direction indicator
+        dir_name = player.direction.name if hasattr(player.direction, 'name') else str(player.direction)
+        direction_text = self.font_small.render(f"Dir: {dir_name}", True, WHITE)
+        self.screen.blit(direction_text, (10, 120))
+        
+        # Draw position info
+        pos_text = self.font_small.render(f"Pos: ({player.x:.1f}, {player.y:.1f})", True, WHITE)
+        self.screen.blit(pos_text, (10, 140))
+                    
+    def draw_thrown_bushes(self, bush_handler):
+        """Draw thrown bushes
+        
+        Args:
+            bush_handler: BushHandler instance with thrown bushes
+        """
+        for bush in bush_handler.thrown_bushes:
+            # Skip if out of view
+            if (bush.x < self.camera_x - 2 or bush.x >= self.camera_x + VIEWPORT_TILES_X + 2 or
+                bush.y < self.camera_y - 2 or bush.y >= self.camera_y + VIEWPORT_TILES_Y + 2):
+                continue
+                
+            # Calculate screen position
+            screen_x = (bush.x - self.camera_x) * TILE_SIZE
+            screen_y = (bush.y - self.camera_y) * TILE_SIZE
+            
+            # Draw 2x2 bush tiles
+            bush_tiles = [2, 3, 18, 19]
+            for i, tile_id in enumerate(bush_tiles):
+                dx = (i % 2) * TILE_SIZE
+                dy = (i // 2) * TILE_SIZE
+                
+                surface = self.get_tile_surface(tile_id)
+                if surface:
+                    self.screen.blit(surface, (screen_x + dx, screen_y + dy))
+                    
+    def clear_cache(self):
+        """Clear all rendering caches"""
+        logger.info("Clearing tile cache and sprite cache...")
+        self.tile_cache.clear()
+        self.sprite_cache.clear()
+        logger.info(f"Cleared {len(self.tile_cache)} tile cache entries")
+        logger.info(f"Cleared {len(self.sprite_cache)} sprite cache entries")
+                    
+    def clear(self):
+        """Clear the screen"""
+        self.screen.fill(BLACK)
+    
+    def toggle_birds_eye_view(self):
+        """Toggle bird's eye view mode"""
+        self.birds_eye_mode = not self.birds_eye_mode
+        self.birds_eye_target = 1.0 if self.birds_eye_mode else 0.0
+        # Bird's eye view toggled
+    
+    def update_birds_eye_transition(self, dt: float):
+        """Update the bird's eye view transition
+        
+        Args:
+            dt: Delta time in seconds
+        """
+        if self.birds_eye_transition != self.birds_eye_target:
+            # Smooth transition
+            diff = self.birds_eye_target - self.birds_eye_transition
+            change = self.birds_eye_speed * dt
+            
+            if abs(diff) < change:
+                self.birds_eye_transition = self.birds_eye_target
+            else:
+                self.birds_eye_transition += change if diff > 0 else -change
+    
+    def render_level_miniature(self, level: Level, size: int) -> pygame.Surface:
+        """Render a level as a miniature for bird's eye view
+        
+        Args:
+            level: Level to render
+            size: Size of the miniature in pixels
+            
+        Returns:
+            Rendered miniature surface
+        """
+        # Check cache first
+        cache_key = f"{level.name}_{size}"
+        if cache_key in self.level_miniatures:
+            return self.level_miniatures[cache_key]
+        
+        # Create surface
+        surface = pygame.Surface((size, size))
+        surface.fill(BLACK)
+        
+        if not level or not hasattr(level, 'board_tiles_64x64') or not level.board_tiles_64x64:
+            return surface
+        
+        # Calculate scale
+        scale = size / 1024.0  # 64 tiles * 16 pixels
+        
+        # Sample rate based on scale
+        sample_rate = max(1, int(1 / (scale * 2))) if scale < 0.2 else 1
+        
+        if self.tileset and scale > 0:
+            tile_size_scaled = max(1, int(16 * scale * sample_rate))
+            
+            for y in range(0, 64, sample_rate):
+                for x in range(0, 64, sample_rate):
+                    tile_id = level.get_board_tile_id(x, y)
+                    if tile_id > 0:
+                        surface_tile = self.get_tile_surface(tile_id)
+                        if surface_tile:
+                            try:
+                                # Scale and draw
+                                if tile_size_scaled > 0:
+                                    scaled_tile = pygame.transform.scale(surface_tile, 
+                                                                       (tile_size_scaled, tile_size_scaled))
+                                    dest_x = int(x * 16 * scale)
+                                    dest_y = int(y * 16 * scale)
+                                    surface.blit(scaled_tile, (dest_x, dest_y))
+                            except:
+                                # Fallback to color
+                                color = self._get_tile_color(tile_id)
+                                rect_x = int(x * 16 * scale)
+                                rect_y = int(y * 16 * scale)
+                                pygame.draw.rect(surface, color, 
+                                               (rect_x, rect_y, tile_size_scaled, tile_size_scaled))
+        else:
+            # No tileset - use colors
+            tile_size = size / 64
+            for y in range(0, 64, sample_rate):
+                for x in range(0, 64, sample_rate):
+                    tile_id = level.get_board_tile_id(x, y)
+                    if tile_id > 0:
+                        color = self._get_tile_color(tile_id)
+                        rect_x = int(x * tile_size)
+                        rect_y = int(y * tile_size)
+                        rect_size = max(1, int(sample_rate * tile_size))
+                        pygame.draw.rect(surface, color, (rect_x, rect_y, rect_size, rect_size))
+        
+        # Cache the miniature
+        self.level_miniatures[cache_key] = surface
+        return surface
+    
+    def _get_tile_color(self, tile_id: int) -> Tuple[int, int, int]:
+        """Get color for a tile ID (for fallback rendering)"""
+        if tile_id == 0:
+            return (0, 80, 0)  # Dark green (grass)
+        elif tile_id < 200:
+            return (0, 80, 0)  # Dark green
+        elif tile_id < 400:
+            return (0, 0, 120)  # Dark blue
+        elif tile_id < 600:
+            return (90, 45, 0)  # Brown
+        elif tile_id < 800:
+            return (128, 128, 128)  # Gray
+        else:
+            return (50, 50, 50)  # Dark gray
+    
+    def draw_birds_eye_view(self, current_level: Level, gmap_handler, gmap_name: str,
+                           local_player=None, opened_chests: set = None):
+        """Draw the bird's eye view of the GMAP
+        
+        Args:
+            current_level: Current level
+            gmap_handler: GMAP handler with level data
+            gmap_name: Name of the GMAP
+            local_player: Local player (optional)
+            opened_chests: Set of opened chests (optional)
+        """
+        if not gmap_handler or self.birds_eye_transition <= 0:
+            return
+        
+        # Debug: Log gmap_handler state (disabled)
+        # if not hasattr(self, '_gmap_debug_logged'):
+        #     self._gmap_debug_logged = True
+        
+        # Get actual GMAP dimensions from handler, with fallback to default
+        if hasattr(gmap_handler, 'gmap_width') and hasattr(gmap_handler, 'gmap_height'):
+            grid_cols = min(gmap_handler.gmap_width, 20)  # Cap for screen space
+            grid_rows = min(gmap_handler.gmap_height, 15)  # Cap for screen space
+            logger.info(f"Using GMAP dimensions: {gmap_handler.gmap_width}x{gmap_handler.gmap_height} (showing {grid_cols}x{grid_rows})")
+        else:
+            grid_cols, grid_rows = self.birds_eye_grid_size
+            logger.info(f"Using default grid size: {grid_cols}x{grid_rows}")
+        
+        margin = 50
+        
+        # Calculate cell size based on transition - ensure integer values
+        normal_cell_size = 100
+        zoomed_cell_size = min((SCREEN_WIDTH - 2*margin) // grid_cols,
+                              (SCREEN_HEIGHT - 2*margin) // grid_rows)
+        cell_size = int(normal_cell_size + (zoomed_cell_size - normal_cell_size) * self.birds_eye_transition)
+        
+        # Ensure cell_size is at least minimum for visibility
+        cell_size = max(cell_size, 40)
+        
+        # Calculate miniature size with consistent padding
+        padding = 6
+        miniature_size = max(cell_size - padding, 10)  # Minimum 10px miniature
+        
+        # Calculate grid position (centered) with integer precision
+        grid_width = grid_cols * cell_size
+        grid_height = grid_rows * cell_size
+        grid_x = (SCREEN_WIDTH - grid_width) // 2
+        grid_y = max(50, (SCREEN_HEIGHT - grid_height) // 2)  # Leave room for title
+        
+        # Apply transition effect - fade and scale
+        if self.birds_eye_transition < 1.0:
+            # Create a surface for the bird's eye view
+            birds_eye_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            birds_eye_surface.fill(BLACK)
+        else:
+            birds_eye_surface = self.screen
+        
+        # Get player grid position from GMAP data
+        player_col = -1
+        player_row = -1
+        if current_level and hasattr(gmap_handler, 'connection_gmap_data') and gmap_handler.connection_gmap_data:
+            gmap_key = f"{gmap_name}.gmap"
+            if gmap_key in gmap_handler.connection_gmap_data:
+                level_map = gmap_handler.connection_gmap_data[gmap_key].get('level_map', {})
+                if current_level.name in level_map:
+                    player_col, player_row = level_map[current_level.name]
+                    
+        # No fallback - only use GMAP data
+                    
+        # Log player position for debugging
+        if player_col >= 0 and player_row >= 0:
+            logger.info(f"Player at grid position: {chr(ord('a')+player_col)}{player_row} (col={player_col}, row={player_row})")
+        
+        # Calculate visible area centered on player
+        # Make sure we don't go negative
+        start_col = max(0, player_col - grid_cols // 2)
+        start_row = max(0, player_row - grid_rows // 2)
+        
+        # Also ensure we don't go past the edge of the actual map
+        if hasattr(gmap_handler, 'gmap_width') and hasattr(gmap_handler, 'gmap_height'):
+            max_start_col = max(0, gmap_handler.gmap_width - grid_cols)
+            max_start_row = max(0, gmap_handler.gmap_height - grid_rows)
+            start_col = min(start_col, max_start_col)
+            start_row = min(start_row, max_start_row)
+            logger.info(f"Grid bounds: start ({start_col}, {start_row}), map size ({gmap_handler.gmap_width}, {gmap_handler.gmap_height})")
+        
+        # Draw grid - ensure proper alignment with corrected coordinate system
+        for row in range(grid_rows):
+            for col in range(grid_cols):
+                actual_col = start_col + col
+                actual_row = start_row + row
+                
+                # Calculate position with no fractional pixels
+                x = int(grid_x + col * cell_size)
+                y = int(grid_y + row * cell_size)
+                
+                # Get segment name from PyReborn's GMAP data if available
+                segment_name = None
+                if hasattr(gmap_handler, 'connection_gmap_data') and gmap_handler.connection_gmap_data:
+                    gmap_key = f"{gmap_name}.gmap"
+                    if gmap_key in gmap_handler.connection_gmap_data:
+                        position_map = gmap_handler.connection_gmap_data[gmap_key].get('position_map', {})
+                        segment_name = position_map.get((actual_col, actual_row))
+                
+                # Fallback to old naming convention if needed
+                if not segment_name:
+                    if actual_col < 26:
+                        segment_name = f"{gmap_name}-{chr(ord('a')+actual_col)}{actual_row}.nw"
+                    else:
+                        segment_name = f"{gmap_name}-{actual_col}_{actual_row}.nw"
+                
+                # Check if this level exists in the actual GMAP data
+                level_exists_in_gmap = False
+                if hasattr(gmap_handler, 'connection_gmap_data') and gmap_handler.connection_gmap_data:
+                    for gmap_key, gmap_info in gmap_handler.connection_gmap_data.items():
+                        level_map = gmap_info.get('level_map', {})
+                        if segment_name in level_map:
+                            level_exists_in_gmap = True
+                            break
+                
+                # Check if this is the current level
+                is_current = (actual_col == player_col and actual_row == player_row)
+                
+                # Draw cell background - different colors based on level status
+                if level_exists_in_gmap:
+                    if segment_name in gmap_handler.level_objects:
+                        bg_color = (40, 40, 40)  # Dark gray for loaded levels
+                    else:
+                        bg_color = (20, 20, 50)  # Dark blue for unloaded but existing levels
+                else:
+                    bg_color = (20, 20, 20)  # Black for non-existent levels
+                
+                pygame.draw.rect(birds_eye_surface, bg_color, (x, y, cell_size, cell_size))
+                
+                # Draw cell border
+                border_color = YELLOW if is_current else GRAY
+                border_width = 3 if is_current else 1
+                pygame.draw.rect(birds_eye_surface, border_color, 
+                               (x, y, cell_size, cell_size), border_width)
+                
+                # Draw miniature if level is loaded
+                if segment_name in gmap_handler.level_objects:
+                    level = gmap_handler.level_objects[segment_name]
+                    # Debug: Log when we try to render a miniature (disabled)
+                    # if not hasattr(self, '_miniature_log_shown'):
+                    #     self._miniature_log_shown = True
+                    miniature = self.render_level_miniature(level, miniature_size)
+                    # Center the miniature in the cell
+                    miniature_x = x + (cell_size - miniature_size) // 2
+                    miniature_y = y + (cell_size - miniature_size) // 2
+                    birds_eye_surface.blit(miniature, (miniature_x, miniature_y))
+                    
+                    # Draw player position if current level
+                    if is_current and local_player:
+                        # Account for centered miniature
+                        miniature_x = x + (cell_size - miniature_size) // 2
+                        miniature_y = y + (cell_size - miniature_size) // 2
+                        player_x = miniature_x + (local_player.x / 64) * miniature_size
+                        player_y = miniature_y + (local_player.y / 64) * miniature_size
+                        pygame.draw.circle(birds_eye_surface, RED, 
+                                         (int(player_x), int(player_y)), 
+                                         max(2, miniature_size // 30))
+                # If level not loaded, the background is already drawn
+                
+                # Draw coordinate label - show both calculated and segment names for debugging
+                if cell_size > 30:
+                    coord_text = f"{chr(ord('a')+actual_col) if actual_col < 26 else str(actual_col)}{actual_row}"
+                    text = self.font_tiny.render(coord_text, True, WHITE)
+                    birds_eye_surface.blit(text, (x + 2, y + 2))
+                    
+                    # Show status indicators
+                    if level_exists_in_gmap:
+                        if segment_name in gmap_handler.level_objects:
+                            # Green checkmark for loaded
+                            loaded_text = self.font_tiny.render("✓", True, GREEN)
+                            birds_eye_surface.blit(loaded_text, (x + cell_size - 12, y + 2))
+                        else:
+                            # Blue dot for exists but not loaded
+                            pygame.draw.circle(birds_eye_surface, BLUE, (x + cell_size - 8, y + 8), 2)
+                    # No indicator for non-existent levels
+        
+        # Draw title with grid info
+        player_coord = f"{chr(ord('a')+player_col)}{player_row}" if player_col >= 0 else "unknown"
+        title = f"Bird's Eye View - {gmap_name} - Player: {player_coord} - Showing: {start_col}-{start_col+grid_cols-1}, {start_row}-{start_row+grid_rows-1}"
+        text = self.font_medium.render(title, True, WHITE)
+        text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, 15))
+        birds_eye_surface.blit(text, text_rect)
+        
+        # Draw grid info
+        # Count levels that belong to this GMAP
+        loaded_count = 0
+        if hasattr(gmap_handler, 'connection_gmap_data') and gmap_handler.connection_gmap_data:
+            gmap_key = f"{gmap_name}.gmap"
+            if gmap_key in gmap_handler.connection_gmap_data:
+                level_map = gmap_handler.connection_gmap_data[gmap_key].get('level_map', {})
+                for level_name in level_map:
+                    if level_name in gmap_handler.level_objects:
+                        loaded_count += 1
+        info_text = f"Loaded: {loaded_count} levels | Cell: {cell_size}px | Miniature: {miniature_size}px"
+        info = self.font_small.render(info_text, True, WHITE)
+        info_rect = info.get_rect(center=(SCREEN_WIDTH // 2, 32))
+        birds_eye_surface.blit(info, info_rect)
+        
+        # If transitioning, blend with alpha
+        if self.birds_eye_transition < 1.0:
+            birds_eye_surface.set_alpha(int(255 * self.birds_eye_transition))
+            self.screen.blit(birds_eye_surface, (0, 0))
+    
+    def draw_unified_gmap_view(self, current_level: Level, gmap_handler, gmap_name: str, 
+                              opened_chests: set, respawn_timers: dict, local_player=None, client=None):
+        """Unified GMAP rendering that can smoothly transition from normal view to bird's eye view
+        
+        This replaces both draw_gmap_levels() and draw_birds_eye_view() with a single
+        unified system based on zoom level:
+        - zoom_level = 1.0: Normal close-up view (like old draw_gmap_levels)
+        - zoom_level = 0.1: Bird's eye view (like old draw_birds_eye_view)
+        - zoom_level = 0.1-1.0: Smooth transition between views
+        
+        Args:
+            current_level: Current level
+            gmap_handler: GMAP handler with level data
+            gmap_name: Name of the GMAP
+            opened_chests: Set of opened chests
+            respawn_timers: Dict of respawn timers
+            local_player: Local player (optional)
+        """
+        if not current_level or not gmap_handler:
+            return
+            
+        # Calculate zoom level based on bird's eye transition
+        # birds_eye_transition: 0.0 = normal view, 1.0 = full bird's eye
+        zoom_level = 1.0 - (self.birds_eye_transition * 0.9)  # Range: 1.0 to 0.1
+        
+        # Get GMAP dimensions
+        if hasattr(gmap_handler, 'gmap_width') and hasattr(gmap_handler, 'gmap_height'):
+            gmap_width = gmap_handler.gmap_width
+            gmap_height = gmap_handler.gmap_height
+        else:
+            gmap_width = gmap_height = 1
+            
+        # Calculate how many levels to show based on zoom
+        if zoom_level >= 0.8:
+            # Normal view: Show 3x3 grid around player
+            visible_cols = visible_rows = 3
+        elif zoom_level >= 0.5:
+            # Medium zoom: Show 5x5 grid
+            visible_cols = visible_rows = 5
+        else:
+            # Bird's eye: Show entire GMAP (capped at reasonable size)
+            visible_cols = min(gmap_width, 15)
+            visible_rows = min(gmap_height, 12)
+            
+        # Calculate tile size based on zoom level
+        if zoom_level >= 0.8:
+            # Normal view: 16x16 pixel tiles
+            tile_size = int(16 * zoom_level)  # 16px at zoom=1.0, 12.8px at zoom=0.8
+        else:
+            # Bird's eye: Calculate based on screen space
+            available_width = SCREEN_WIDTH - 100  # Leave margin
+            available_height = SCREEN_HEIGHT - 100
+            
+            tile_size_by_width = available_width // (visible_cols * 64)  # 64 tiles per level
+            tile_size_by_height = available_height // (visible_rows * 64)
+            tile_size = max(1, min(tile_size_by_width, tile_size_by_height))
+            
+        # Find current level position in GMAP
+        current_col = current_row = 0
+        
+        # Try to get position from PyReborn GMAP data first
+        if client and hasattr(client, 'level_manager') and gmap_name in client.level_manager.gmap_data:
+            gmap_parser = client.level_manager.gmap_data[gmap_name]
+            
+            # Search through all positions to find current level
+            for row in range(gmap_parser.height):
+                for col in range(gmap_parser.width):
+                    segment_name = gmap_parser.get_segment_at(col, row)
+                    if segment_name == current_level.name:
+                        current_col, current_row = col, row
+                        logger.debug(f"Found {current_level.name} at position ({current_col}, {current_row}) from PyReborn GMAP data")
+                        break
+                else:
+                    continue  # Continue outer loop
+                break  # Break outer loop if found
+        
+        # No fallback - only use GMAP data
+                
+        # Calculate which levels to show
+        if zoom_level >= 0.8:
+            # Normal view: Center on current level
+            start_col = max(0, current_col - visible_cols // 2)
+            start_row = max(0, current_row - visible_rows // 2)
+        else:
+            # Bird's eye: Show from top-left
+            start_col = start_row = 0
+            
+        # Debug logging
+        if not hasattr(self, '_unified_debug_logged') or (hasattr(self, '_last_zoom') and self._last_zoom != zoom_level):
+            logger.info(f"[UNIFIED] Drawing {visible_cols}x{visible_rows} levels at zoom {zoom_level}")
+            logger.info(f"[UNIFIED] Tile size: {tile_size}px")
+            logger.info(f"[UNIFIED] Current position: ({current_col}, {current_row})")
+            logger.info(f"[UNIFIED] Start position: ({start_col}, {start_row})")
+            logger.info(f"[UNIFIED] gmap_handler has {len(gmap_handler.level_objects)} levels: {list(gmap_handler.level_objects.keys())[:5]}...")
+            if hasattr(gmap_handler, 'connection_gmap_data'):
+                logger.info(f"[UNIFIED] connection_gmap_data keys: {list(gmap_handler.connection_gmap_data.keys())}")
+            self._unified_debug_logged = True
+            self._last_zoom = zoom_level
+            
+        # Render the levels
+        for grid_row in range(visible_rows):
+            for grid_col in range(visible_cols):
+                level_col = start_col + grid_col
+                level_row = start_row + grid_row
+                
+                if level_col >= gmap_width or level_row >= gmap_height:
+                    continue
+                    
+                # Get actual level name from PyReborn GMAP data
+                level_name = None
+                if client and hasattr(client, 'level_manager') and gmap_name in client.level_manager.gmap_data:
+                    gmap_parser = client.level_manager.gmap_data[gmap_name]
+                    level_name = gmap_parser.get_segment_at(level_col, level_row)
+                
+                # No fallback - if we don't have the level name, skip it
+                if not level_name:
+                    continue
+                
+                # Calculate screen position
+                screen_x = grid_col * 64 * tile_size
+                screen_y = grid_row * 64 * tile_size
+                
+                if zoom_level >= 0.8:
+                    # Normal view: Apply camera offset
+                    # Center the view on the player
+                    center_x = SCREEN_WIDTH // 2
+                    center_y = SCREEN_HEIGHT // 2
+                    
+                    # Calculate offset within current level
+                    if level_col == current_col and level_row == current_row:
+                        # This is the current level - apply camera offset
+                        camera_offset_x = (self.camera_x % 64) * tile_size
+                        camera_offset_y = (self.camera_y % 64) * tile_size
+                        screen_x = center_x - camera_offset_x + (grid_col - visible_cols//2) * 64 * tile_size
+                        screen_y = center_y - camera_offset_y + (grid_row - visible_rows//2) * 64 * tile_size
+                    else:
+                        # Adjacent level
+                        screen_x = center_x + (grid_col - visible_cols//2) * 64 * tile_size
+                        screen_y = center_y + (grid_row - visible_rows//2) * 64 * tile_size
+                        
+                # Draw the level if we have it loaded
+                if level_name in gmap_handler.level_objects:
+                    level_obj = gmap_handler.level_objects[level_name]
+                    self._draw_level_at_position(level_obj, screen_x, screen_y, tile_size, 
+                                               opened_chests, respawn_timers)
+                else:
+                    # Draw placeholder for unloaded level
+                    if zoom_level < 0.5:  # Only in bird's eye view
+                        placeholder_color = (64, 64, 64)  # Dark gray
+                        level_width = 64 * tile_size
+                        level_height = 64 * tile_size
+                        pygame.draw.rect(self.screen, placeholder_color, 
+                                       (screen_x, screen_y, level_width, level_height), 1)
+                        
+                        # Draw level name
+                        if tile_size >= 2:
+                            # Show level name without extension
+                            display_name = level_name.replace('.nw', '')
+                            level_text = self.font_tiny.render(display_name, 
+                                                             True, (128, 128, 128))
+                            text_x = screen_x + level_width // 2 - level_text.get_width() // 2
+                            text_y = screen_y + level_height // 2 - level_text.get_height() // 2
+                            self.screen.blit(level_text, (text_x, text_y))
+                            
+        # Draw player marker
+        if local_player and zoom_level < 0.8:
+            # In bird's eye view, show player as a dot
+            player_screen_x = (current_col - start_col + local_player.x / 64) * 64 * tile_size
+            player_screen_y = (current_row - start_row + local_player.y / 64) * 64 * tile_size
+            
+            player_size = max(2, tile_size // 2)
+            pygame.draw.circle(self.screen, (255, 255, 0), 
+                             (int(player_screen_x), int(player_screen_y)), player_size)
+                             
+        # Draw UI overlay for bird's eye view
+        if self.birds_eye_transition > 0.3:
+            title = f"GMAP View - {gmap_name} ({gmap_width}x{gmap_height}) - Zoom: {zoom_level:.1f}"
+            text = self.font_medium.render(title, True, WHITE)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, 20))
+            
+            # Add semi-transparent background
+            bg_rect = text_rect.inflate(20, 10)
+            bg_surface = pygame.Surface(bg_rect.size)
+            bg_surface.set_alpha(128)
+            bg_surface.fill((0, 0, 0))
+            self.screen.blit(bg_surface, bg_rect)
+            self.screen.blit(text, text_rect)
+    
+    def _draw_level_at_position(self, level: Level, screen_x: float, screen_y: float, 
+                               tile_size: int, opened_chests: set, respawn_timers: dict):
+        """Helper method to draw a level at a specific screen position with given tile size"""
+        if not level or not level.board_tiles_64x64:
+            return
+            
+        # Draw tiles
+        for y in range(64):
+            for x in range(64):
+                # board_tiles_64x64 is a flat array
+                idx = y * 64 + x
+                if idx < len(level.board_tiles_64x64):
+                    tile_id = level.board_tiles_64x64[idx]
+                    
+                    # Calculate pixel position
+                    pixel_x = int(screen_x + x * tile_size)
+                    pixel_y = int(screen_y + y * tile_size)
+                    
+                    # Skip if outside screen
+                    if (pixel_x + tile_size < 0 or pixel_y + tile_size < 0 or 
+                        pixel_x >= SCREEN_WIDTH or pixel_y >= SCREEN_HEIGHT):
+                        continue
+                        
+                    if tile_size >= 4 and self.tileset:
+                        # Use actual tileset for larger tiles
+                        self._draw_tileset_tile(tile_id, pixel_x, pixel_y, tile_size)
+                    else:
+                        # Use color blocks for very small tiles
+                        color = self._tile_to_color(tile_id)
+                        if tile_size == 1:
+                            self.screen.set_at((pixel_x, pixel_y), color)
+                        else:
+                            pygame.draw.rect(self.screen, color, 
+                                           (pixel_x, pixel_y, tile_size, tile_size))
+                                           
+        # Draw items, NPCs, etc. if tile_size is large enough
+        if tile_size >= 8:
+            self._draw_level_objects_at_position(level, screen_x, screen_y, tile_size,
+                                               opened_chests, respawn_timers)
+    
+    def _draw_tileset_tile(self, tile_id: int, pixel_x: int, pixel_y: int, tile_size: int):
+        """Draw a tile from the tileset at the specified position and size"""
+        if not self.tileset:
+            return
+            
+        # Calculate tileset source position
+        tiles_per_row = self.tileset.get_width() // 16
+        src_x = (tile_id % tiles_per_row) * 16
+        src_y = (tile_id // tiles_per_row) * 16
+        
+        # Create source rect
+        src_rect = pygame.Rect(src_x, src_y, 16, 16)
+        
+        if src_x + 16 <= self.tileset.get_width() and src_y + 16 <= self.tileset.get_height():
+            if tile_size == 16:
+                # Direct blit for 1:1 scale
+                self.screen.blit(self.tileset, (pixel_x, pixel_y), src_rect)
+            else:
+                # Scale the tile
+                tile_surface = pygame.Surface((16, 16))
+                tile_surface.blit(self.tileset, (0, 0), src_rect)
+                scaled_tile = pygame.transform.scale(tile_surface, (tile_size, tile_size))
+                self.screen.blit(scaled_tile, (pixel_x, pixel_y))
+    
+    def _draw_level_objects_at_position(self, level: Level, screen_x: float, screen_y: float,
+                                       tile_size: int, opened_chests: set, respawn_timers: dict):
+        """Draw level objects (items, NPCs) at the specified position and scale"""
+        # Draw items, bushes, etc. (simplified for now)
+        # This would be expanded to handle all the game objects
+        pass

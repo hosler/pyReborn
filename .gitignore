@@ -166,3 +166,5 @@ cython_debug/
 test_output/
 debug_packets.txt
 examples/games/assets/
+cache/
+pyreborn/raw_files_cache/

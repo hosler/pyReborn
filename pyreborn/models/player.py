@@ -4,6 +4,9 @@ Player model for tracking player state
 
 from typing import Optional, Dict, Any
 from ..protocol.enums import PlayerProp, Direction, PlayerStatus
+from ..utils.logging_config import ModuleLogger
+
+logger = ModuleLogger.get_logger(__name__)
 
 class Player:
     """Represents a player in the game"""
@@ -13,6 +16,7 @@ class Player:
         self.id = player_id
         self.account = ""
         self.nickname = ""
+        self.is_local = False  # Flag to identify local player
         
         # Position
         self._x = 30.0
@@ -71,6 +75,9 @@ class Player:
         # GMAP properties
         self.gmaplevelx = None  # X segment in gmap
         self.gmaplevely = None  # Y segment in gmap
+        
+        # Store raw properties for debugging
+        self._properties = {}
     
     @property
     def x(self) -> float:
@@ -85,6 +92,7 @@ class Player:
         # Update world coordinate if in GMAP mode
         if self.gmaplevelx is not None:
             self._x2 = self.gmaplevelx * 64 + self._x
+            pass  # Debug print removed
             
     @property
     def y(self) -> float:
@@ -99,6 +107,7 @@ class Player:
         # Update world coordinate if in GMAP mode
         if self.gmaplevely is not None:
             self._y2 = self.gmaplevely * 64 + self._y
+            pass  # Debug print removed
             
     @property
     def x2(self) -> Optional[float]:
@@ -107,14 +116,10 @@ class Player:
         
     @x2.setter
     def x2(self, value: Optional[float]):
-        """Set world X coordinate and update local coordinate"""
+        """Set world X coordinate - DO NOT calculate GMAP segment"""
         self._x2 = value
-        # Update local coordinate if world coordinate is set
-        if value is not None:
-            self._x = value % 64
-            # Update GMAP segment if not set
-            if self.gmaplevelx is None:
-                self.gmaplevelx = int(value // 64)
+        # GMAP segments should ONLY be set by explicit GMAPLEVELX/Y packets from server
+        # Do not calculate or update gmaplevelx from x2 coordinates
                 
     @property
     def y2(self) -> Optional[float]:
@@ -123,14 +128,10 @@ class Player:
         
     @y2.setter
     def y2(self, value: Optional[float]):
-        """Set world Y coordinate and update local coordinate"""
+        """Set world Y coordinate - DO NOT calculate GMAP segment"""
         self._y2 = value
-        # Update local coordinate if world coordinate is set
-        if value is not None:
-            self._y = value % 64
-            # Update GMAP segment if not set
-            if self.gmaplevely is None:
-                self.gmaplevely = int(value // 64)
+        # GMAP segments should ONLY be set by explicit GMAPLEVELX/Y packets from server
+        # Do not calculate or update gmaplevely from y2 coordinates
     
     @property
     def player_id(self) -> int:
@@ -144,35 +145,50 @@ class Player:
     
     def set_property(self, prop: PlayerProp, value: Any):
         """Set a single property"""
+        # Store raw property for debugging
+        if hasattr(self, '_properties'):
+            self._properties[prop] = value
+        
         if prop == PlayerProp.PLPROP_NICKNAME:
             self.nickname = value
         elif prop == PlayerProp.PLPROP_X:
             old_x = self.x
             self.x = value / 2.0  # Convert from half-tiles
             if abs(old_x - self.x) > 10:  # Large jump indicates warp
-                print(f"[WARP] Player {self.id} X: {old_x:.2f} -> {self.x:.2f} (server sent {value})")
+                pass  # Debug: Warp detected
         elif prop == PlayerProp.PLPROP_Y:
             old_y = self.y
             self.y = value / 2.0
             if abs(old_y - self.y) > 10:  # Large jump indicates warp
-                print(f"[WARP] Player {self.id} Y: {old_y:.2f} -> {self.y:.2f} (server sent {value})")
+                pass  # Debug: Warp detected
         elif prop == PlayerProp.PLPROP_Z:
+            # Z has special encoding with +25 offset (handled in parser)
             self.z = value
         elif prop == PlayerProp.PLPROP_X2:
-            # High precision X coordinate - server might send incorrect values, ignore for now
-            server_x2 = value / 2.0  # Convert from half-tiles to tiles
-            print(f"[SERVER X2] Player {self.id} server sent X2={value} ({server_x2:.2f} tiles) - ignoring")
-            # Don't update x2 from server in GMAP mode - client maintains it
+            # X2 is pixel coordinate - convert to tiles (16 pixels per tile)
+            # Value has already been decoded from bit-shift format in packet handler
+            self._x2 = value / 16.0
+            logger.debug(f"Player {self.id} X2 pixels={value}, tiles={self._x2:.1f}")
+                
         elif prop == PlayerProp.PLPROP_Y2:
-            # High precision Y coordinate - server might send incorrect values, ignore for now  
-            server_y2 = value / 2.0  # Convert from half-tiles to tiles
-            print(f"[SERVER Y2] Player {self.id} server sent Y2={value} ({server_y2:.2f} tiles) - ignoring")
-            # Don't update y2 from server in GMAP mode - client maintains it
+            # Y2 is pixel coordinate - convert to tiles (16 pixels per tile)
+            # Value has already been decoded from bit-shift format in packet handler
+            self._y2 = value / 16.0
+            logger.debug(f"Player {self.id} Y2 pixels={value}, tiles={self._y2:.1f}")
+        elif prop == PlayerProp.PLPROP_CURLEVEL:
+            self.level = value
         elif prop == PlayerProp.PLPROP_Z2:
             # High precision Z coordinate
             self.z2 = value
         elif prop == PlayerProp.PLPROP_SPRITE:
-            self.direction = Direction(value % 4)
+            # Handle tuple from new parser (sprite, direction)
+            if isinstance(value, tuple):
+                sprite, direction = value
+                self.sprite_info = value
+                self.direction = Direction(direction)
+            else:
+                # Legacy handling
+                self.direction = Direction(value % 4)
         elif prop == PlayerProp.PLPROP_CURPOWER:
             self.hearts = value / 2.0
         elif prop == PlayerProp.PLPROP_MAXPOWER:
@@ -184,9 +200,23 @@ class Player:
         elif prop == PlayerProp.PLPROP_BOMBSCOUNT:
             self.bombs = value
         elif prop == PlayerProp.PLPROP_SWORDPOWER:
-            self.sword_power = value
+            # Handle tuple (power, image)
+            if isinstance(value, tuple):
+                self.sword_info = value
+                self.sword_power = value[0]
+                if len(value) > 1:
+                    self.sword_image = value[1]
+            else:
+                self.sword_power = value
         elif prop == PlayerProp.PLPROP_SHIELDPOWER:
-            self.shield_power = value
+            # Handle tuple (power, image)
+            if isinstance(value, tuple):
+                self.shield_info = value
+                self.shield_power = value[0]
+                if len(value) > 1:
+                    self.shield_image = value[1]
+            else:
+                self.shield_power = value
         elif prop == PlayerProp.PLPROP_GLOVEPOWER:
             self.glove_power = value
         elif prop == PlayerProp.PLPROP_BOMBPOWER:
@@ -216,7 +246,12 @@ class Player:
         elif prop == PlayerProp.PLPROP_ONLINESECS:
             self.online_time = value
         elif prop == PlayerProp.PLPROP_RATING:
-            self.rating = value
+            # Handle tuple (rating, deviation)
+            if isinstance(value, tuple):
+                self.rating_info = value
+                self.rating = value[0]
+            else:
+                self.rating = value
         elif prop == PlayerProp.PLPROP_ID:
             self.id = value
         elif prop == PlayerProp.PLPROP_COMMUNITYNAME:
@@ -228,25 +263,45 @@ class Player:
                 self.colors = value[:5]
         elif prop == PlayerProp.PLPROP_GMAPLEVELX:
             old_gmaplevelx = self.gmaplevelx
+            # Validate that value is a number, not a boolean
+            if isinstance(value, bool):
+                logger.warning(f"Ignoring invalid GMAPLEVELX value: {value} (boolean)")
+                return
+            if not isinstance(value, (int, float)) or value < 0 or value > 100:
+                logger.warning(f"Ignoring invalid GMAPLEVELX value: {value}")
+                return
             self.gmaplevelx = value
             # Update world coordinate if local coordinate is set
+            # Each GMAP level is 64 tiles, so world coordinate = gmaplevel * 64 + local_tile
             if old_gmaplevelx != value:
                 self._x2 = value * 64 + self.x
-                print(f"[GMAP] Player {self.id} GMAPLEVELX: {old_gmaplevelx} -> {value} (world x2={self._x2})")
+                logger.info(f"Player {self.id} GMAPLEVELX: {old_gmaplevelx} -> {value} (world x2={self._x2} tiles)")
+                # Check if this is our local player
+                if self.is_local:
+                    logger.warning(f"*** SERVER SENT GMAPLEVELX: {value} ***")
         elif prop == PlayerProp.PLPROP_GMAPLEVELY:
             old_gmaplevely = self.gmaplevely
+            # Validate that value is a number, not a boolean
+            if isinstance(value, bool):
+                logger.warning(f"Ignoring invalid GMAPLEVELY value: {value} (boolean)")
+                return
+            if not isinstance(value, (int, float)) or value < 0 or value > 100:
+                logger.warning(f"Ignoring invalid GMAPLEVELY value: {value}")
+                return
             self.gmaplevely = value
             # Update world coordinate if local coordinate is set
+            # Each GMAP level is 64 tiles, so world coordinate = gmaplevel * 64 + local_tile
             if old_gmaplevely != value:
                 self._y2 = value * 64 + self.y
-                print(f"[GMAP] Player {self.id} GMAPLEVELY: {old_gmaplevely} -> {value} (world y2={self._y2})")
+                logger.info(f"Player {self.id} GMAPLEVELY: {old_gmaplevely} -> {value} (world y2={self._y2} tiles)")
+                # Check if this is our local player
+                if self.is_local:
+                    logger.warning(f"*** SERVER SENT GMAPLEVELY: {value} ***")
         # Handle attributes (gattrib1-30, plattrib1-5)
         elif PlayerProp.PLPROP_GATTRIB1 <= prop <= PlayerProp.PLPROP_GATTRIB30:
             attr_num = prop - PlayerProp.PLPROP_GATTRIB1 + 1
             self.attributes[f"gattrib{attr_num}"] = value
-        elif PlayerProp.PLPROP_PLATTRIB1 <= prop <= PlayerProp.PLPROP_PLATTRIB5:
-            attr_num = prop - PlayerProp.PLPROP_PLATTRIB1 + 1
-            self.player_attributes[f"plattrib{attr_num}"] = value
+        # Note: PLATTRIB properties (42-46) were removed - they don't exist in the protocol
     
     def is_hidden(self) -> bool:
         """Check if player is hidden"""

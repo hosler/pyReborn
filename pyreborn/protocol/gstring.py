@@ -92,27 +92,35 @@ class GString:
         return self
         
     def write_gshort(self, value: int) -> 'GString':
-        """Write Graal-encoded short"""
-        if value < 223:
-            self.write_gchar(value)
-        else:
-            self.write_gchar(223 + (value >> 8))
-            self.write_char(value & 0xFF)
+        """Write Graal-encoded short - matches GServer-v2 exactly"""
+        t = min(value, 28767)  # GServer max value
+        
+        val0 = t >> 7
+        if val0 > 223:
+            val0 = 223
+        val1 = t - (val0 << 7)
+        
+        self.write_char((val0 + 32) & 0xFF)
+        self.write_char((val1 + 32) & 0xFF)
         return self
         
     def write_gint(self, value: int) -> 'GString':
-        """Write Graal-encoded int (variable length)"""
-        if value < 223:
-            self.write_gchar(value)
-        elif value < 0x1FDF:  # 8159
-            self.write_gchar(223 + (value >> 8))
-            self.write_char(value & 0xFF)
-        elif value < 0x3FBFDF:  # 4177887
-            self.write_gchar(247 + (value >> 16))
-            self.write_short(value & 0xFFFF)
-        else:
-            self.write_gchar(255)
-            self.write_int(value)
+        """Write Graal-encoded int - matches GServer-v2 exactly"""
+        t = min(value, 3682399)  # GServer max value
+        
+        val0 = t >> 14
+        if val0 > 223:
+            val0 = 223
+        t -= val0 << 14
+        
+        val1 = t >> 7
+        if val1 > 223:
+            val1 = 223
+        val2 = t - (val1 << 7)
+        
+        self.write_char((val0 + 32) & 0xFF)
+        self.write_char((val1 + 32) & 0xFF)
+        self.write_char((val2 + 32) & 0xFF)
         return self
         
     def write_gint4(self, value: int) -> 'GString':
@@ -165,23 +173,19 @@ class GString:
         return max(0, self.read_char() - 32)
         
     def read_gshort(self) -> int:
-        """Read Graal-encoded short"""
-        value = self.read_gchar()
-        if value < 223:
-            return value
-        return ((value - 223) << 8) + self.read_char()
+        """Read Graal-encoded short - matches GServer-v2 exactly"""
+        val = [0, 0]
+        val[0] = self.read_char()
+        val[1] = self.read_char()
+        return (val[0] << 7) + val[1] - 0x1020  # GServer constant
         
     def read_gint(self) -> int:
-        """Read Graal-encoded int"""
-        value = self.read_gchar()
-        if value < 223:
-            return value
-        elif value < 247:
-            return ((value - 223) << 8) + self.read_char()
-        elif value < 255:
-            return ((value - 247) << 16) + self.read_short()
-        else:
-            return self.read_int()
+        """Read Graal-encoded int - matches GServer-v2 exactly"""
+        val = [0, 0, 0]
+        val[0] = self.read_char()
+        val[1] = self.read_char()
+        val[2] = self.read_char()
+        return (((val[0] << 7) + val[1]) << 7) + val[2] - 0x81020  # GServer constant
             
     def read_gint5(self) -> int:
         """Read Graal 5-byte int"""

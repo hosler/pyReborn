@@ -15,7 +15,7 @@ import bz2
 from typing import Optional, Tuple
 from abc import ABC, abstractmethod
 
-from ..encryption import RebornEncryption, CompressionType
+from ..core.encryption import RebornEncryption, CompressionType
 from .versions import EncryptionType
 
 
