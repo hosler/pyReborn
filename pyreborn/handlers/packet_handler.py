@@ -225,18 +225,20 @@ class PacketHandler:
         self.handlers[ServerToPlayer.PLO_NEWWORLDTIME] = self._handle_newworld_time
         self.handlers[ServerToPlayer.PLO_STAFFGUILDS] = self._handle_staff_guilds
         self.handlers[ServerToPlayer.PLO_TRIGGERACTION] = self._handle_trigger_action
-        # Unknown packet IDs that appear in logs
-        self.handlers[10] = self._handle_unknown_10
+        # Improved handlers using structure-aware parsing
+        self.handlers[10] = self._handle_is_leader
         self.handlers[30] = self._handle_unknown_30
         self.handlers[45] = self._handle_file_uptodate
-        self.handlers[33] = self._handle_unknown_33
-        # self.handlers[34] = PLO_NPCWEAPONDEL - not BOARD data!
-        self.handlers[41] = self._handle_unknown_41  # Large HTML packet
+        self.handlers[33] = self._handle_npc_weapon_add_improved  # Use structure parsing
+        self.handlers[39] = self._handle_level_mod_time  # New handler
+        self.handlers[41] = self._handle_start_message   # HTML start message
         self.handlers[43] = self._handle_unknown_43
         self.handlers[44] = self._handle_unknown_44
-        self.handlers[49] = self._handle_unknown_49
-        self.handlers[52] = self._handle_unknown_52  # TILESET packet
-        self.handlers[179] = self._handle_unknown_179
+        self.handlers[49] = self._handle_player_warp2    # GMAP warp handler
+        self.handlers[52] = self._handle_unknown_52      # TILESET packet
+        self.handlers[156] = self._handle_set_active_level  # New handler
+        self.handlers[174] = self._handle_ghost_icon     # Already exists
+        self.handlers[179] = self._handle_rpg_window     # Improved handler
         self.handlers[180] = self._handle_unknown_180
         self.handlers[190] = self._handle_unknown_190
         self.handlers[197] = self._handle_unknown_197
@@ -1576,3 +1578,65 @@ class PacketHandler:
         """Handle unknown packet 197 - appears to be weapon/class data"""
         data = reader.read_gstring()
         return {"type": "unknown_197", "data": data}
+    
+    # === NEW IMPROVED HANDLERS USING STRUCTURE-AWARE PARSING ===
+    
+    def _handle_is_leader(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_ISLEADER (10) - Player is leader notification"""
+        # This is a zero-byte packet, just indicates player is leader
+        return {"type": "is_leader", "is_leader": True}
+    
+    def _handle_npc_weapon_add_improved(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_NPCWEAPONADD (33) - Add weapon to NPC using structure parsing"""
+        weapon_script = reader.read_gstring()
+        self.logger.info(f"[NPC_WEAPON_ADD] Adding NPC weapon script ({len(weapon_script)} chars)")
+        return {"type": "npc_weapon_add", "weapon_script": weapon_script}
+    
+    def _handle_level_mod_time(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_LEVELMODTIME (39) - Level modification timestamp"""
+        # This should use GINT5 format according to our structure
+        timestamp = reader.read_gint5()
+        self.logger.info(f"[LEVEL_MOD_TIME] Level modification timestamp: {timestamp}")
+        return {"type": "level_mod_time", "timestamp": timestamp}
+    
+    def _handle_start_message(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_STARTMESSAGE (41) - Server start message (often HTML)"""
+        message = reader.read_gstring()
+        self.logger.info(f"[START_MESSAGE] Server start message ({len(message)} chars)")
+        return {"type": "start_message", "message": message}
+    
+    def _handle_player_warp2(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_PLAYERWARP2 (49) - Advanced player warp with GMAP data"""
+        warp_data = reader.read_gstring()
+        self.logger.info(f"[PLAYER_WARP2] GMAP warp data: {warp_data[:50]}...")
+        
+        # Emit GMAP-related events if needed
+        if self.client:
+            from ..core.events import EventType
+            self.client.events.emit(EventType.PLAYER_WARPED, warp_data=warp_data)
+        
+        return {"type": "player_warp2", "warp_data": warp_data}
+    
+    def _handle_set_active_level(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_SETACTIVELEVEL (156) - Set active level for server operations"""
+        level_name = reader.read_gstring()
+        self.logger.info(f"[SET_ACTIVE_LEVEL] Active level: {level_name}")
+        
+        # Emit level change event
+        if self.client:
+            from ..core.events import EventType
+            self.client.events.emit(EventType.LEVEL_CHANGE, level_name=level_name)
+        
+        return {"type": "set_active_level", "level_name": level_name}
+    
+    def _handle_rpg_window(self, reader: PacketReader) -> Dict[str, Any]:
+        """Handle PLO_RPGWINDOW (179) - RPG window content"""
+        window_content = reader.read_gstring()
+        self.logger.info(f"[RPG_WINDOW] Window content ({len(window_content)} chars)")
+        
+        # Emit RPG window event
+        if self.client:
+            from ..core.events import EventType
+            self.client.events.emit(EventType.LEVEL_UPDATE, window_content=window_content)
+        
+        return {"type": "rpg_window", "window_content": window_content}

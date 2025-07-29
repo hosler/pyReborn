@@ -117,6 +117,10 @@ class EventType(Enum):
     RAW_PACKET_SENT = auto()
     PACKET_RECEIVED = auto()
     
+    # Error events
+    ERROR_OCCURRED = auto()
+    PROTOCOL_ERROR = auto()
+    
     # Server management events
     DISCONNECT_MESSAGE = auto()
     WARP_FAILED = auto()
