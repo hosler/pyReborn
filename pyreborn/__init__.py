@@ -1,112 +1,97 @@
 """
-PyReborn - Python library for connecting to Reborn servers
+PyReborn - Simple Python client for Reborn servers
+==================================================
 
-This library provides a comprehensive Python interface for interacting with
-Graal Reborn servers, including support for movement, chat, combat, items,
-NPCs, and GMAP (multi-level world) systems.
+PyReborn provides a clean, simple interface for connecting to Reborn Reborn servers.
+The library handles all the complex protocol details internally, exposing only 
+what users actually need.
 
-Architecture:
-- RebornClient is the main unified interface (incorporates former V2 features)
-- V1 client is available for legacy compatibility
-- Clean modular structure with core, protocol, models, managers, and actions
+Quick Start:
+    from pyreborn import Client
+    
+    client = Client("localhost", 14900)
+    client.connect()
+    client.login("username", "password")
+    
+    # Move player
+    client.move(1, 0)
+    
+    # Chat  
+    client.say("Hello!")
+    
+    # Get player info
+    player = client.get_player()
+    print(f"Player: {player.account} at ({player.x}, {player.y})")
+
+Advanced Usage:
+    from pyreborn import quick_connect, Direction, EventType
+    
+    # Quick connection
+    client = quick_connect("localhost", 14900, "user", "pass")
+    
+    # Event handling
+    def on_chat(event_data):
+        print(f"Chat: {event_data}")
+    
+    client.on_event(EventType.PLAYER_CHAT, on_chat)
 """
 
-# Core API (unified client)
-from .core import RebornClient, EventManager, EventType
-from .models import Player, Level
-from .managers import SessionManager, LevelManager, ItemManager, CombatManager, NPCManager
-from .actions import PlayerActions, ItemActions, CombatActions, NPCActions
-from .serverlist import ServerListClient, ServerInfo
+# Simple public API - this is all users should need to import
+from .client import Client, connect_and_login
+from .models import Player, Level  
+from .events import EventType
+from .api import quick_connect, Direction, PlayerProp
+# Import from the new advanced_api/ directory
+from .advanced_api import ClientBuilder, PresetBuilder
 
-# Note: V2 has been merged into the main RebornClient - no separate v2 client needed
+# Legacy compatibility (for existing code)
+try:
+    from .core.reborn_client import RebornClient
+except ImportError:
+    from .core.simple_consolidated_client import SimpleConsolidatedClient as RebornClient
+from .compat.legacy_client import LegacyRebornClient
 
-# Legacy V1 support
-from .core.client import RebornClient
-
-# Protocol and utilities
-from .protocol.enums import Direction, PlayerProp
-from .utils import GMAPUtils
-
-__version__ = "3.0.0"  # Major version bump for reorganization
-__author__ = "PyReborn Contributors"
+# Version info
+__version__ = "3.0.0"
+__author__ = "PyReborn Contributors"  
 __license__ = "MIT"
 
+# What users can import directly
 __all__ = [
-    # Core API (unified client)
-    'RebornClient',         # Main client class (unified)
-    'EventManager',         # Event system
-    'EventType',            # Event type constants
+    # Main client
+    'Client',                # Simple client (RECOMMENDED)
+    'connect_and_login',     # Connection helper
+    'quick_connect',         # Quick connection with defaults
     
-    # Models
-    'Player',               # Player data model
-    'Level',                # Level data model
+    # Data models
+    'Player',                # Player data
+    'Level',                 # Level data
     
-    # Managers
-    'SessionManager',       # Session state management
-    'LevelManager',         # Level management
-    'ItemManager',          # Item management
-    'CombatManager',        # Combat management
-    'NPCManager',           # NPC management
+    # Events  
+    'EventType',             # Event type constants
     
-    # Actions (High-level API)
-    'PlayerActions',        # Player action commands
-    'ItemActions',          # Item interaction commands
-    'CombatActions',        # Combat commands
-    'NPCActions',           # NPC interaction commands
+    # Constants
+    'Direction',             # Direction constants
+    'PlayerProp',            # Player property constants
     
-    # Server Discovery
-    'ServerListClient',     # Server list client
-    'ServerInfo',           # Server information
-    
-    # Legacy clients
-    'RebornClientV1',       # V1 client (legacy)
-    
-    # Protocol
-    'Direction',            # Direction constants
-    'PlayerProp',           # Player property constants
-    
-    # Utilities
-    'GMAPUtils',            # GMAP utilities
+    # Legacy clients (backward compatibility)
+    'RebornClient',          # Modern client (direct access)
+    'LegacyRebornClient',    # Legacy monolithic client
 ]
 
-# Convenience functions
-def connect(host: str, port: int = 14900, version: str = "2.19") -> RebornClient:
+# Simple convenience functions
+def connect(host: str = "localhost", port: int = 14900) -> Client:
     """
-    Create and return a new RebornClient instance.
+    Create a new Client instance.
     
     Args:
-        host: Server hostname or IP
-        port: Server port (default 14900)
-        version: Client version string (default "2.19")
+        host: Server hostname or IP (default: localhost)
+        port: Server port (default: 14900)
         
     Returns:
-        RebornClient: A new client instance ready to connect
+        Client: A new client instance ready to connect
     """
-    return RebornClient(host, port, version)
+    return Client(host, port)
 
-def connect_and_login(host: str, port: int = 14900, 
-                     account: str = None, password: str = None,
-                     version: str = "2.19") -> RebornClient:
-    """
-    Create a client, connect, and login in one step.
-    
-    Args:
-        host: Server hostname or IP  
-        port: Server port (default 14900)
-        account: Account name
-        password: Account password
-        version: Client version string (default "2.19")
-        
-    Returns:
-        RebornClient: A connected and logged-in client instance
-        
-    Raises:
-        ConnectionError: If connection or login fails
-    """
-    client = RebornClient(host, port, version)
-    if not client.connect():
-        raise ConnectionError(f"Failed to connect to {host}:{port}")
-    if account and password:
-        if not client.login(account, password):
-            raise ConnectionError("Login failed")
-    return client
+# Add convenience function to exports
+__all__.append('connect')

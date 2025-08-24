@@ -1,6 +1,6 @@
 """Server List Protocol Enumerations
 
-This module contains the enum definitions for the Graal server list protocol.
+This module contains the enum definitions for the Reborn server list protocol.
 """
 
 from enum import IntEnum, auto

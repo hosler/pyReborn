@@ -1,8 +1,7 @@
 """
-Configuration system for pyReborn
+Config Module - Configuration management for consolidated architecture
 """
 
 from .client_config import ClientConfig
-from .validation import ConfigValidationError
 
-__all__ = ['ClientConfig', 'ConfigValidationError']
+__all__ = ['ClientConfig']

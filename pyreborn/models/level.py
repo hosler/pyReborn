@@ -1,22 +1,68 @@
 """
 Level model for tracking level state
+
+UNIFIED FORMAT: All levels store board data as List[int] of exactly 4096 tile IDs,
+regardless of whether data came from PLO_BOARDPACKET or downloaded files.
 """
 
 from typing import List, Dict, Optional, Tuple
-import struct
+from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LevelLink:
+    """Represents a link from one level to another"""
+    x: int
+    y: int
+    width: int
+    height: int
+    destination: str
+    dest_x: float
+    dest_y: float
+    
+
+@dataclass  
+class Sign:
+    """Represents a sign in a level"""
+    x: int
+    y: int
+    text: str
+    
+
+@dataclass
+class Chest:
+    """Represents a chest in a level"""
+    x: int
+    y: int
+    item: str
+    signIndex: int
+
+
+@dataclass
+class NPC:
+    """Represents an NPC in a level"""
+    id: int
+    x: float
+    y: float
+    sprite: int
+    script: str = ""
 
 class Level:
     """Represents a level in the game"""
     
     def __init__(self, name: str):
         self.name = name
-        self.width = 64  # Default width in tiles
-        self.height = 64  # Default height in tiles
+        self.width = 64  # Always 64x64 for standardization
+        self.height = 64  # Always 64x64 for standardization
         
-        # Level data
-        self.tiles = []  # 2D array of tile indices
-        self.layers = {}  # Additional layers
-        self.board_data = None  # Raw board data from server
+        # UNIFIED BOARD DATA - single source of truth
+        self.board_tiles: List[int] = [0] * 4096  # Always exactly 4096 tile IDs
+        
+        # Additional layers (optional)
+        self.layers = {}  # Additional layers if needed
         
         # NPCs in level
         self.npcs = {}  # npc_id -> NPC object
@@ -45,27 +91,49 @@ class Level:
         # Level properties
         self.mod_time = 0  # Last modification time
         
+        # Cached 2D tiles array for compatibility
+        self._tiles_2d_cache = None
+        self._tiles_2d_dirty = True
+        
     def get_tile(self, x: int, y: int, layer: int = 0) -> int:
-        """Get tile at position"""
+        """Get tile at position using unified format"""
         if layer == 0:
-            if 0 <= x < self.width and 0 <= y < self.height:
-                return self.tiles[y][x]
+            if 0 <= x < 64 and 0 <= y < 64:
+                idx = y * 64 + x
+                return self.board_tiles[idx]
         elif layer in self.layers:
             layer_data = self.layers[layer]
-            if 0 <= x < self.width and 0 <= y < self.height:
+            if 0 <= x < 64 and 0 <= y < 64:
                 return layer_data[y][x]
         return 0
     
     def set_tile(self, x: int, y: int, tile: int, layer: int = 0):
-        """Set tile at position"""
+        """Set tile at position using unified format"""
         if layer == 0:
-            if 0 <= x < self.width and 0 <= y < self.height:
-                self.tiles[y][x] = tile
+            if 0 <= x < 64 and 0 <= y < 64:
+                idx = y * 64 + x
+                self.board_tiles[idx] = tile
+                self._tiles_2d_dirty = True  # Mark cache as dirty
         else:
             if layer not in self.layers:
-                self.layers[layer] = [[0] * self.width for _ in range(self.height)]
-            if 0 <= x < self.width and 0 <= y < self.height:
+                self.layers[layer] = [[0] * 64 for _ in range(64)]
+            if 0 <= x < 64 and 0 <= y < 64:
                 self.layers[layer][y][x] = tile
+    
+    @property
+    def tiles(self):
+        """Get tiles as 2D array [y][x] for compatibility with renderers"""
+        if self._tiles_2d_dirty or self._tiles_2d_cache is None:
+            # Convert flat array to 2D array
+            self._tiles_2d_cache = []
+            for y in range(64):
+                row = []
+                for x in range(64):
+                    idx = y * 64 + x
+                    row.append(self.board_tiles[idx] if idx < len(self.board_tiles) else 0)
+                self._tiles_2d_cache.append(row)
+            self._tiles_2d_dirty = False
+        return self._tiles_2d_cache
     
     def add_player(self, player):
         """Add player to level"""
@@ -76,76 +144,95 @@ class Level:
         if player_id in self.players:
             del self.players[player_id]
     
-    def set_board_data(self, board_data: bytes):
-        """Set board data from server and parse tiles"""
-        self.board_data = board_data
+    def add_link(self, link):
+        """Add a level link"""
+        self.links.append(link)
+    
+    def add_sign(self, sign):
+        """Add a sign to the level"""
+        self.signs.append(sign)
+    
+    def add_chest(self, chest):
+        """Add a chest to the level"""
+        self.chests.append(chest)
+    
+    def add_npc(self, npc):
+        """Add an NPC to the level"""
+        self.npcs[npc.id] = npc
+    
+    def set_board_tiles(self, tiles: List[int]):
+        """Set level board data using unified format
         
-        # Standard Reborn board is always 64x64 tiles (4096 tiles * 2 bytes = 8192 bytes)
-        if len(board_data) >= 8192:
-            # Parse as 64x64 array of tile IDs
-            self.board_tiles_64x64 = []
-            for i in range(4096):  # 64*64 = 4096 tiles
-                if i * 2 + 1 < len(board_data):
-                    tile_id = struct.unpack('<H', board_data[i*2:i*2+2])[0]
-                    self.board_tiles_64x64.append(tile_id)
-                else:
-                    self.board_tiles_64x64.append(0)
-        else:
-            self.board_tiles_64x64 = [0] * 4096
+        Args:
+            tiles: List of exactly 4096 tile IDs (processed by LevelDataProcessor)
+        """
+        if not isinstance(tiles, list) or len(tiles) != 4096:
+            logger.error(f"Invalid board tiles for {self.name}: expected List[int] of length 4096, "
+                        f"got {type(tiles)} of length {len(tiles) if hasattr(tiles, '__len__') else 'unknown'}")
+            self.board_tiles = [0] * 4096
+            return
+            
+        # Validate tile IDs are integers in valid range
+        valid_tiles = []
+        for i, tile in enumerate(tiles):
+            if isinstance(tile, int) and 0 <= tile <= 65535:
+                valid_tiles.append(tile)
+            else:
+                logger.warning(f"Invalid tile at index {i} for {self.name}: {tile}, using 0")
+                valid_tiles.append(0)
+                
+        self.board_tiles = valid_tiles
+        self._tiles_2d_dirty = True  # Mark cache as dirty after updating board
+        logger.debug(f"Board tiles set for {self.name}: {len(valid_tiles)} tiles, "
+                    f"{sum(1 for t in valid_tiles if t > 0)} non-zero")
+    
+    def get_board_tiles(self) -> List[int]:
+        """Get level board data as unified format
         
-        # Also maintain the legacy 2D tiles array for compatibility
-        # Use the actual level dimensions from the server
-        self.tiles = []
-        for y in range(self.height):
-            row = []
-            for x in range(self.width):
-                idx = y * self.width + x
-                if idx * 2 + 1 < len(board_data):
-                    tile_id = struct.unpack('<H', board_data[idx*2:idx*2+2])[0]
-                    row.append(tile_id)
-                else:
-                    row.append(0)
-            self.tiles.append(row)
+        Returns:
+            List of exactly 4096 tile IDs
+        """
+        return self.board_tiles.copy()
     
     def get_tile_id(self, x: int, y: int) -> int:
-        """Get raw tile ID at position (using level dimensions)"""
-        if (0 <= x < self.width and 0 <= y < self.height and 
-            self.tiles and len(self.tiles) > y and len(self.tiles[y]) > x):
-            return self.tiles[y][x]
-        return 0
-    
-    def get_board_tile_id(self, x: int, y: int) -> int:
-        """Get tile ID from 64x64 board data"""
-        if 0 <= x < 64 and 0 <= y < 64:
-            idx = y * 64 + x
-            if hasattr(self, 'board_tiles_64x64') and idx < len(self.board_tiles_64x64):
-                tile_value = self.board_tiles_64x64[idx]
-                # Ensure we return an int
-                if isinstance(tile_value, list):
-                    # If it's a list, take the first element
-                    return tile_value[0] if tile_value else 0
-                return tile_value
-        return 0
+        """Get tile ID at position (unified format)"""
+        return self.get_tile(x, y, 0)
     
     def get_board_tiles_array(self) -> List[int]:
         """Get the full 64x64 board as a flat array of tile IDs"""
-        if hasattr(self, 'board_tiles_64x64'):
-            return self.board_tiles_64x64[:]
-        return [0] * 4096
+        return self.board_tiles[:]
     
     def get_board_tiles_2d(self) -> List[List[int]]:
         """Get the 64x64 board as a 2D array of tile IDs"""
-        if not hasattr(self, 'board_tiles_64x64'):
-            return [[0] * 64 for _ in range(64)]
-        
         board_2d = []
         for y in range(64):
             row = []
             for x in range(64):
                 idx = y * 64 + x
-                row.append(self.board_tiles_64x64[idx] if idx < len(self.board_tiles_64x64) else 0)
+                row.append(self.board_tiles[idx])
             board_2d.append(row)
         return board_2d
+    
+    @property
+    def tiles(self):
+        """Compatibility property that returns 2D array of tiles"""
+        return self.get_board_tiles_2d()
+    
+    @tiles.setter
+    def tiles(self, value):
+        """Compatibility setter that accepts 2D array and converts to flat array"""
+        if isinstance(value, list) and len(value) == 64:
+            # Convert 2D array to flat array
+            flat_tiles = []
+            for row in value:
+                if isinstance(row, list) and len(row) == 64:
+                    flat_tiles.extend(row)
+                else:
+                    # Invalid row, fill with zeros
+                    flat_tiles.extend([0] * 64)
+            self.set_board_tiles(flat_tiles)
+        else:
+            logger.error(f"Invalid tiles format for {self.name}: expected 64x64 2D array")
     
     @staticmethod
     def tile_to_tileset_coords(tile_id: int) -> Tuple[int, int, int, int]:
@@ -161,7 +248,7 @@ class Level:
     
     def get_tile_string(self, x: int, y: int) -> str:
         """Get tile string representation (AA, AB, etc.) at position"""
-        tile_id = self.get_tile_id(x, y)
+        tile_id = self.get_tile(x, y, 0)
         return self.tile_id_to_string(tile_id)
     
     @staticmethod
@@ -187,7 +274,7 @@ class Level:
     
     def get_tile_tileset_position(self, x: int, y: int) -> Tuple[int, int]:
         """Get tileset position (in tiles) for the tile at level position"""
-        tile_id = self.get_tile_id(x, y)
+        tile_id = self.get_tile(x, y, 0)
         return self.tile_id_to_tileset_position(tile_id)
     
     @staticmethod
@@ -224,58 +311,6 @@ class Level:
     def __repr__(self):
         return f"Level(name='{self.name}', size={self.width}x{self.height}, players={len(self.players)}, npcs={len(self.npcs)})"
 
-
-class LevelLink:
-    """Represents a link between levels"""
-    
-    def __init__(self, x: int, y: int, width: int, height: int, 
-                 dest_level: str, dest_x: Optional[float], dest_y: Optional[float]):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.dest_level = dest_level
-        self.dest_x = dest_x  # None means use player's current position
-        self.dest_y = dest_y  # None means use player's current position
-    
-    def contains(self, x: float, y: float) -> bool:
-        """Check if position is within link area"""
-        return (self.x <= x < self.x + self.width and 
-                self.y <= y < self.y + self.height)
-
-
-class Sign:
-    """Represents a sign in a level"""
-    
-    def __init__(self, x: int, y: int, text: str):
-        self.x = x
-        self.y = y
-        self.text = text
-
-
-class Chest:
-    """Represents a chest in a level"""
-    
-    def __init__(self, x: int, y: int, item: int, sign_text: str = ""):
-        self.x = x
-        self.y = y
-        self.item = item
-        self.sign_text = sign_text
-        self.opened = False
-
-
-class NPC:
-    """Represents an NPC in a level"""
-    
-    def __init__(self, npc_id: int, x: float = 0, y: float = 0):
-        self.id = npc_id
-        self.x = x
-        self.y = y
-        self.image = ""
-        self.script = ""
-        self.attributes = {}
-        self.visible = True
-        
 
 class Baddy:
     """Represents a baddy (enemy) in a level"""

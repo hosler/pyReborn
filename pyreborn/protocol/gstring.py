@@ -1,7 +1,7 @@
 """
-Python implementation of GServer's CString class for Graal packet handling.
+Python implementation of GServer's CString class for Reborn packet handling.
 
-This provides similar functionality to CString with Graal-specific encoding methods.
+This provides similar functionality to CString with Reborn-specific encoding methods.
 """
 
 import struct
@@ -9,7 +9,7 @@ from typing import Union, Optional
 
 
 class GString:
-    """Graal-compatible string buffer with packet encoding/decoding methods"""
+    """Reborn-compatible string buffer with packet encoding/decoding methods"""
     
     def __init__(self, data: Union[bytes, str, 'GString'] = b''):
         """Initialize with optional data"""
@@ -85,14 +85,14 @@ class GString:
         self._buffer.extend(struct.pack('>I', value & 0xFFFFFFFF))
         return self
         
-    # Graal-specific write methods
+    # Reborn-specific write methods
     def write_gchar(self, value: int) -> 'GString':
-        """Write Graal-encoded char (value + 32)"""
+        """Write Reborn-encoded char (value + 32)"""
         self._buffer.append((value + 32) & 0xFF)
         return self
         
     def write_gshort(self, value: int) -> 'GString':
-        """Write Graal-encoded short - matches GServer-v2 exactly"""
+        """Write Reborn-encoded short - matches GServer-v2 exactly"""
         t = min(value, 28767)  # GServer max value
         
         val0 = t >> 7
@@ -105,7 +105,7 @@ class GString:
         return self
         
     def write_gint(self, value: int) -> 'GString':
-        """Write Graal-encoded int - matches GServer-v2 exactly"""
+        """Write Reborn-encoded int - matches GServer-v2 exactly"""
         t = min(value, 3682399)  # GServer max value
         
         val0 = t >> 14
@@ -124,19 +124,19 @@ class GString:
         return self
         
     def write_gint4(self, value: int) -> 'GString':
-        """Write Graal 4-byte int"""
+        """Write Reborn 4-byte int"""
         self.write_gchar(255)
         self.write_int(value)
         return self
         
     def write_gint5(self, value: int) -> 'GString':
-        """Write Graal 5-byte int"""
+        """Write Reborn 5-byte int"""
         self.write_gchar((value >> 32) & 0xFF)
         self.write_int(value & 0xFFFFFFFF)
         return self
         
     def write_gstring(self, text: str) -> 'GString':
-        """Write Graal string (length-prefixed)"""
+        """Write Reborn string (length-prefixed)"""
         data = text.encode('latin-1')
         self.write_gchar(len(data))
         self.write(data)
@@ -167,20 +167,20 @@ class GString:
         self._read_pos += 4
         return value
         
-    # Graal-specific read methods
+    # Reborn-specific read methods
     def read_gchar(self) -> int:
-        """Read Graal-encoded char"""
+        """Read Reborn-encoded char"""
         return max(0, self.read_char() - 32)
         
     def read_gshort(self) -> int:
-        """Read Graal-encoded short - matches GServer-v2 exactly"""
+        """Read Reborn-encoded short - matches GServer-v2 exactly"""
         val = [0, 0]
         val[0] = self.read_char()
         val[1] = self.read_char()
         return (val[0] << 7) + val[1] - 0x1020  # GServer constant
         
     def read_gint(self) -> int:
-        """Read Graal-encoded int - matches GServer-v2 exactly"""
+        """Read Reborn-encoded int - matches GServer-v2 exactly"""
         val = [0, 0, 0]
         val[0] = self.read_char()
         val[1] = self.read_char()
@@ -188,13 +188,13 @@ class GString:
         return (((val[0] << 7) + val[1]) << 7) + val[2] - 0x81020  # GServer constant
             
     def read_gint5(self) -> int:
-        """Read Graal 5-byte int"""
+        """Read Reborn 5-byte int"""
         high = self.read_gchar()
         low = self.read_int()
         return (high << 32) | low
         
     def read_gstring(self) -> str:
-        """Read Graal string"""
+        """Read Reborn string"""
         length = self.read_gchar()
         if self._read_pos + length > len(self._buffer):
             return ""

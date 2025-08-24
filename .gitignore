@@ -166,5 +166,21 @@ cython_debug/
 test_output/
 debug_packets.txt
 examples/games/assets/
+examples/games/*/assets/
 cache/
 pyreborn/raw_files_cache/
+
+# Proprietary game content (not for public release)
+examples/games/reborn_modern/assets/
+
+# Runtime artifacts
+*.hex
+*.bin
+captured_*.bin
+
+# Development files
+debug_*.py
+test_*.py
+analyze_*.py
+trace_*.py
+capture_*.py

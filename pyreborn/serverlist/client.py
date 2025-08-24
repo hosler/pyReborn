@@ -1,4 +1,4 @@
-"""Server list client for connecting to Graal listserver."""
+"""Server list client for connecting to Reborn listserver."""
 
 import socket
 import struct
@@ -32,13 +32,13 @@ class PLO(IntEnum):
 
 
 class ServerListClient:
-    """Client for retrieving server list from Graal listserver.
+    """Client for retrieving server list from Reborn listserver.
     
     This implements the direct client protocol (not RC protocol) for
     retrieving the list of available game servers.
     """
     
-    DEFAULT_HOST = "listserver.graal.in"
+    DEFAULT_HOST = "listserver.reborn.in"
     DEFAULT_PORT = 14922
     DEFAULT_TIMEOUT = 10.0
     QUICK_TIMEOUT = 0.5  # Quick timeout after receiving server list
@@ -47,7 +47,7 @@ class ServerListClient:
         """Initialize server list client.
         
         Args:
-            host: Listserver hostname (default: listserver.graal.in)
+            host: Listserver hostname (default: listserver.reborn.in)
             port: Listserver port (default: 14922)
             timeout: Socket timeout in seconds (default: 10.0)
         """
@@ -118,8 +118,8 @@ class ServerListClient:
                 if not packet:
                     break
                 
-                # Process packet (packet IDs are Graal-encoded!)
-                packet_type = packet[0] - 32  # Decode the Graal encoding
+                # Process packet (packet IDs are Reborn-encoded!)
+                packet_type = packet[0] - 32  # Decode the Reborn encoding
                 
                 if packet_type == PLO.SVRLIST:
                     servers = self._parse_server_list(packet[1:])
@@ -185,9 +185,9 @@ class ServerListClient:
         # Format: PLI_SERVERLIST (1+32) + account_len + account + pass_len + password + newline
         packet = bytearray()
         packet.append(PLI.SERVERLIST + 32)  # Packet ID: 1 + 32 = 33
-        packet.append(len(account) + 32)  # Graal encoded length
+        packet.append(len(account) + 32)  # Reborn encoded length
         packet.extend(account.encode('latin-1'))
-        packet.append(len(password) + 32)  # Graal encoded length
+        packet.append(len(password) + 32)  # Reborn encoded length
         packet.extend(password.encode('latin-1'))
         packet.append(ord('\n'))  # Newline terminator
         
@@ -254,10 +254,10 @@ class ServerListClient:
         try:
             pos = 0
             
-            # Read server count (Graal-encoded)
+            # Read server count (Reborn-encoded)
             if pos >= len(data):
                 return servers
-            server_count = data[pos] - 32  # Graal decoded
+            server_count = data[pos] - 32  # Reborn decoded
             pos += 1
             
             logger.debug(f"Parsing {server_count} servers")
