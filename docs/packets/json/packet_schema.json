@@ -1,0 +1,2461 @@
+{
+  "version": "1.0",
+  "generated": "2025-08-08T12:43:34.135894",
+  "packets": {
+    "189": {
+      "id": 189,
+      "name": "PLO_MOVE2",
+      "category": "ui",
+      "description": "Enhanced player movement",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of moving player"
+        },
+        {
+          "name": "movement_data",
+          "type": "VARIABLE_DATA",
+          "description": "Enhanced movement information"
+        }
+      ]
+    },
+    "165": {
+      "id": 165,
+      "name": "PLO_PLAYERMOVED",
+      "category": "unknown",
+      "description": "Player movement update",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GCHAR",
+          "description": "Player identifier"
+        },
+        {
+          "name": "x",
+          "type": "GCHAR",
+          "description": "X coordinate"
+        },
+        {
+          "name": "y",
+          "type": "GCHAR",
+          "description": "Y coordinate"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Movement direction"
+        },
+        {
+          "name": "sprite",
+          "type": "GCHAR",
+          "description": "Sprite/animation frame"
+        }
+      ]
+    },
+    "14": {
+      "id": 14,
+      "name": "PLO_PLAYERWARP",
+      "category": "core",
+      "description": "Player warp/teleport to new position",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player who warped (0 for self)"
+        },
+        {
+          "name": "level_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Destination level name"
+        },
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "New X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "New Y coordinate"
+        }
+      ]
+    },
+    "49": {
+      "id": 49,
+      "name": "PLO_GMAPWARP2",
+      "category": "movement",
+      "description": "GMAP warp with world coordinates and segment positions",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "x2",
+          "type": "GCHAR",
+          "description": "World X coordinate"
+        },
+        {
+          "name": "y2",
+          "type": "GCHAR",
+          "description": "World Y coordinate"
+        },
+        {
+          "name": "z_plus_50",
+          "type": "GCHAR",
+          "description": "Z coordinate + 50"
+        },
+        {
+          "name": "gmaplevelx",
+          "type": "GCHAR",
+          "description": "GMAP segment X (map_x)"
+        },
+        {
+          "name": "gmaplevely",
+          "type": "GCHAR",
+          "description": "GMAP segment Y (map_y)"
+        },
+        {
+          "name": "gmap_name",
+          "type": "VARIABLE_DATA",
+          "description": "GMAP filename"
+        }
+      ]
+    },
+    "34": {
+      "id": 34,
+      "name": "PLO_NPCWEAPONDEL",
+      "category": "npcs",
+      "description": "Remove weapon from NPC",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "NPC that owned the weapon"
+        },
+        {
+          "name": "weapon_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Weapon identifier to remove"
+        }
+      ]
+    },
+    "26": {
+      "id": 26,
+      "name": "PLO_NPCACTION",
+      "category": "unknown",
+      "description": "NPC action/animation",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "NPC unique identifier"
+        },
+        {
+          "name": "action_type",
+          "type": "GCHAR",
+          "description": "Type of action being performed"
+        },
+        {
+          "name": "action_data",
+          "type": "VARIABLE_DATA",
+          "description": "Additional action parameters"
+        }
+      ]
+    },
+    "29": {
+      "id": 29,
+      "name": "PLO_NPCDEL",
+      "category": "unknown",
+      "description": "Delete NPC from level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "NPC unique identifier to remove"
+        }
+      ]
+    },
+    "2": {
+      "id": 2,
+      "name": "PLO_BADDYPROPS",
+      "category": "core",
+      "description": "Baddy (enemy/NPC) properties and state",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "baddy_id",
+          "type": "GSHORT",
+          "description": "Unique baddy identifier"
+        },
+        {
+          "name": "baddy_x",
+          "type": "GSHORT",
+          "description": "Baddy X coordinate"
+        },
+        {
+          "name": "baddy_y",
+          "type": "GSHORT",
+          "description": "Baddy Y coordinate"
+        },
+        {
+          "name": "baddy_type",
+          "type": "GCHAR",
+          "description": "Baddy type/class"
+        },
+        {
+          "name": "baddy_props",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded baddy properties"
+        }
+      ]
+    },
+    "151": {
+      "id": 151,
+      "name": "PLO_HIDENPCS",
+      "category": "unknown",
+      "description": "Hide NPCs from view",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "hide_options",
+          "type": "VARIABLE_DATA",
+          "description": "NPC hiding configuration and filters"
+        }
+      ]
+    },
+    "3": {
+      "id": 3,
+      "name": "PLO_NPCPROPS",
+      "category": "core",
+      "description": "NPC properties update",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "properties",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded NPC properties"
+        }
+      ]
+    },
+    "24": {
+      "id": 24,
+      "name": "PLO_NPCMOVED",
+      "category": "npcs",
+      "description": "NPC movement update",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GCHAR",
+          "description": "NPC identifier"
+        },
+        {
+          "name": "x",
+          "type": "GCHAR",
+          "description": "X coordinate"
+        },
+        {
+          "name": "y",
+          "type": "GCHAR",
+          "description": "Y coordinate"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Movement direction"
+        },
+        {
+          "name": "sprite",
+          "type": "GCHAR",
+          "description": "Sprite/animation frame"
+        }
+      ]
+    },
+    "33": {
+      "id": 33,
+      "name": "PLO_NPCWEAPONADD",
+      "category": "npcs",
+      "description": "Add weapon to NPC",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "NPC that owns the weapon"
+        },
+        {
+          "name": "weapon_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Weapon identifier/script name"
+        },
+        {
+          "name": "weapon_image",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Weapon sprite/appearance"
+        },
+        {
+          "name": "weapon_script",
+          "type": "VARIABLE_DATA",
+          "description": "Weapon behavior script"
+        }
+      ]
+    },
+    "150": {
+      "id": 150,
+      "name": "PLO_NPCDEL2",
+      "category": "unknown",
+      "description": "Enhanced NPC deletion with options",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "NPC ID to remove"
+        },
+        {
+          "name": "delete_options",
+          "type": "VARIABLE_DATA",
+          "description": "Enhanced deletion parameters"
+        }
+      ]
+    },
+    "5": {
+      "id": 5,
+      "name": "PLO_LEVELSIGN",
+      "category": "core",
+      "description": "Sign placement and text content",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "BYTE",
+          "description": "X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "BYTE",
+          "description": "Y coordinate"
+        },
+        {
+          "name": "sign_text",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Sign text content"
+        }
+      ]
+    },
+    "10": {
+      "id": 10,
+      "name": "PLO_ISLEADER",
+      "category": "core",
+      "description": "Player leadership status notification",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of the player"
+        },
+        {
+          "name": "leader_status",
+          "type": "GCHAR",
+          "description": "1 if player is leader, 0 if not"
+        },
+        {
+          "name": "leadership_type",
+          "type": "GCHAR",
+          "description": "Type of leadership (guild, party, etc.)"
+        }
+      ]
+    },
+    "55": {
+      "id": 55,
+      "name": "PLO_ADDPLAYER",
+      "category": "unknown",
+      "description": "Add new player to level",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "Unique player identifier"
+        },
+        {
+          "name": "account_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Player account name"
+        },
+        {
+          "name": "nickname",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Player display nickname"
+        },
+        {
+          "name": "level_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Player's current level"
+        },
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Player X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Player Y coordinate"
+        },
+        {
+          "name": "appearance_data",
+          "type": "VARIABLE_DATA",
+          "description": "Player appearance and properties"
+        }
+      ]
+    },
+    "8": {
+      "id": 8,
+      "name": "PLO_OTHERPLPROPS",
+      "category": "core",
+      "description": "Other player properties update",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of the player these properties belong to"
+        },
+        {
+          "name": "properties_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded player properties"
+        }
+      ]
+    },
+    "56": {
+      "id": 56,
+      "name": "PLO_DELPLAYER",
+      "category": "system",
+      "description": "Remove player from level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player to remove from level"
+        }
+      ]
+    },
+    "27": {
+      "id": 27,
+      "name": "PLO_BADDYHURT",
+      "category": "unknown",
+      "description": "Baddy hurt/damage notification",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "baddy_id",
+          "type": "GSHORT",
+          "description": "ID of baddy that was hurt"
+        },
+        {
+          "name": "damage_amount",
+          "type": "GCHAR",
+          "description": "Amount of damage taken"
+        },
+        {
+          "name": "damage_type",
+          "type": "GCHAR",
+          "description": "Type of damage (sword, bomb, etc.)"
+        },
+        {
+          "name": "remaining_health",
+          "type": "GCHAR",
+          "description": "Baddy's health after damage"
+        }
+      ]
+    },
+    "1": {
+      "id": 1,
+      "name": "PLO_LEVELLINK",
+      "category": "core",
+      "description": "Level connection data for transitions",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "link_data",
+          "type": "VARIABLE_DATA",
+          "description": ""
+        }
+      ]
+    },
+    "6": {
+      "id": 6,
+      "name": "PLO_LEVELNAME",
+      "category": "core",
+      "description": "Current level name",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "level_name",
+          "type": "VARIABLE_DATA",
+          "description": "Null-terminated level name"
+        }
+      ]
+    },
+    "41": {
+      "id": 41,
+      "name": "PLO_STARTMESSAGE",
+      "category": "system",
+      "description": "Server startup/welcome message",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "message_content",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Server startup message"
+        }
+      ]
+    },
+    "7": {
+      "id": 7,
+      "name": "PLO_BOARDMODIFY",
+      "category": "core",
+      "description": "Level board tile modification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "modify_x",
+          "type": "GCHAR",
+          "description": "X coordinate of modification"
+        },
+        {
+          "name": "modify_y",
+          "type": "GCHAR",
+          "description": "Y coordinate of modification"
+        },
+        {
+          "name": "tile_data",
+          "type": "VARIABLE_DATA",
+          "description": "New tile information"
+        }
+      ]
+    },
+    "4": {
+      "id": 4,
+      "name": "PLO_LEVELCHEST",
+      "category": "core",
+      "description": "Chest placement and contents",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "BYTE",
+          "description": "X coordinate (pixels/2)"
+        },
+        {
+          "name": "y_coord",
+          "type": "BYTE",
+          "description": "Y coordinate (pixels/2)"
+        },
+        {
+          "name": "item",
+          "type": "BYTE",
+          "description": "Item/chest type"
+        },
+        {
+          "name": "sign_text",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Sign text for chest"
+        }
+      ]
+    },
+    "0": {
+      "id": 0,
+      "name": "PLO_LEVELBOARD",
+      "category": "core",
+      "description": "Unknown level-related data (not tile data)",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "compressed_length",
+          "type": "GSHORT",
+          "description": "Compressed data length"
+        },
+        {
+          "name": "compressed_data",
+          "type": "VARIABLE_DATA",
+          "description": "Compressed level board data"
+        }
+      ]
+    },
+    "9": {
+      "id": 9,
+      "name": "PLO_PLAYERPROPS",
+      "category": "core",
+      "description": "Player properties blob",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "properties",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded player properties"
+        }
+      ]
+    },
+    "18": {
+      "id": 18,
+      "name": "PLO_HORSEDEL",
+      "category": "core",
+      "description": "Remove horse from level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Horse X coordinate for removal"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Horse Y coordinate for removal"
+        }
+      ]
+    },
+    "17": {
+      "id": 17,
+      "name": "PLO_HORSEADD",
+      "category": "core",
+      "description": "Add horse to level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Horse X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Horse Y coordinate"
+        },
+        {
+          "name": "horse_type",
+          "type": "GCHAR",
+          "description": "Type/color of horse"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Direction horse is facing"
+        },
+        {
+          "name": "owner_id",
+          "type": "GSHORT",
+          "description": "Player who owns the horse"
+        }
+      ]
+    },
+    "37": {
+      "id": 37,
+      "name": "PLO_PRIVATEMESSAGE",
+      "category": "unknown",
+      "description": "Private message between players",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "sender_id",
+          "type": "GSHORT",
+          "description": "ID of player sending the message"
+        },
+        {
+          "name": "message_text",
+          "type": "VARIABLE_DATA",
+          "description": "Private message content"
+        }
+      ]
+    },
+    "13": {
+      "id": 13,
+      "name": "PLO_TOALL",
+      "category": "core",
+      "description": "Public chat message to all players",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "sender_id",
+          "type": "GSHORT",
+          "description": "ID of player sending the message"
+        },
+        {
+          "name": "message_text",
+          "type": "VARIABLE_DATA",
+          "description": "Public chat message content"
+        }
+      ]
+    },
+    "22": {
+      "id": 22,
+      "name": "PLO_ITEMADD",
+      "category": "unknown",
+      "description": "Add item to level",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Item X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Item Y coordinate"
+        },
+        {
+          "name": "item_type",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Item type/sprite identifier"
+        }
+      ]
+    },
+    "23": {
+      "id": 23,
+      "name": "PLO_ITEMDEL",
+      "category": "unknown",
+      "description": "Remove item from level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Item X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Item Y coordinate"
+        }
+      ]
+    },
+    "36": {
+      "id": 36,
+      "name": "PLO_EXPLOSION",
+      "category": "combat",
+      "description": "Explosion visual effect",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "explosion_x",
+          "type": "GSHORT",
+          "description": "X coordinate of explosion center"
+        },
+        {
+          "name": "explosion_y",
+          "type": "GSHORT",
+          "description": "Y coordinate of explosion center"
+        },
+        {
+          "name": "explosion_type",
+          "type": "GCHAR",
+          "description": "Type/power of explosion"
+        },
+        {
+          "name": "explosion_data",
+          "type": "VARIABLE_DATA",
+          "description": "Additional explosion parameters"
+        }
+      ]
+    },
+    "74": {
+      "id": 74,
+      "name": "PLO_RC_CHAT",
+      "category": "unknown",
+      "description": "Remote Control admin chat message",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "admin_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of RC admin"
+        },
+        {
+          "name": "chat_message",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Admin chat message"
+        }
+      ]
+    },
+    "35": {
+      "id": 35,
+      "name": "PLO_RC_ADMINMESSAGE",
+      "category": "combat",
+      "description": "Remote Control admin message",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "message_content",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Admin message text"
+        }
+      ]
+    },
+    "12": {
+      "id": 12,
+      "name": "PLO_BOMBDEL",
+      "category": "core",
+      "description": "Delete bomb at coordinates",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "COORDINATE",
+          "description": "X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "COORDINATE",
+          "description": "Y coordinate"
+        }
+      ]
+    },
+    "21": {
+      "id": 21,
+      "name": "PLO_THROWCARRIED",
+      "category": "unknown",
+      "description": "Throw carried object projectile",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Throw starting X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Throw starting Y coordinate"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Direction of throw"
+        },
+        {
+          "name": "object_type",
+          "type": "GCHAR",
+          "description": "Type of object being thrown"
+        },
+        {
+          "name": "thrower_id",
+          "type": "GSHORT",
+          "description": "Player ID who threw the object"
+        }
+      ]
+    },
+    "40": {
+      "id": 40,
+      "name": "PLO_HURTPLAYER",
+      "category": "combat",
+      "description": "Player hurt/damage notification",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player who was hurt (0 for self)"
+        },
+        {
+          "name": "damage_amount",
+          "type": "GCHAR",
+          "description": "Amount of damage taken"
+        },
+        {
+          "name": "damage_type",
+          "type": "GCHAR",
+          "description": "Type of damage (sword, bomb, etc.)"
+        },
+        {
+          "name": "source_x",
+          "type": "GCHAR",
+          "description": "X coordinate of damage source"
+        },
+        {
+          "name": "source_y",
+          "type": "GCHAR",
+          "description": "Y coordinate of damage source"
+        }
+      ]
+    },
+    "43": {
+      "id": 43,
+      "name": "PLO_DEFAULTWEAPON",
+      "category": "unknown",
+      "description": "Default weapon assignment for player",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "weapon_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of default weapon"
+        },
+        {
+          "name": "weapon_script",
+          "type": "VARIABLE_DATA",
+          "description": "Default weapon code/script"
+        }
+      ]
+    },
+    "194": {
+      "id": 194,
+      "name": "PLO_CLEARWEAPONS",
+      "category": "ui",
+      "description": "Clear all weapons from player inventory",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "clear_type",
+          "type": "GCHAR",
+          "description": "Type of weapon clearing"
+        }
+      ]
+    },
+    "20": {
+      "id": 20,
+      "name": "PLO_FIRESPY",
+      "category": "core",
+      "description": "Fire spy projectile",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Firespy starting X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Firespy starting Y coordinate"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Direction of travel"
+        },
+        {
+          "name": "fire_power",
+          "type": "GCHAR",
+          "description": "Fire power/intensity"
+        },
+        {
+          "name": "owner_id",
+          "type": "GSHORT",
+          "description": "Player ID who fired the firespy"
+        }
+      ]
+    },
+    "191": {
+      "id": 191,
+      "name": "PLO_SHOOT2",
+      "category": "ui",
+      "description": "Enhanced player shooting",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "shooter_id",
+          "type": "GSHORT",
+          "description": "ID of player shooting"
+        },
+        {
+          "name": "shoot_data",
+          "type": "VARIABLE_DATA",
+          "description": "Enhanced shooting information"
+        }
+      ]
+    },
+    "11": {
+      "id": 11,
+      "name": "PLO_BOMBADD",
+      "category": "core",
+      "description": "Add bomb to level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Bomb X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Bomb Y coordinate"
+        },
+        {
+          "name": "bomb_power",
+          "type": "GCHAR",
+          "description": "Explosive power/radius"
+        },
+        {
+          "name": "bomb_timer",
+          "type": "GCHAR",
+          "description": "Time until detonation"
+        },
+        {
+          "name": "owner_id",
+          "type": "GSHORT",
+          "description": "Player ID who placed the bomb"
+        }
+      ]
+    },
+    "19": {
+      "id": 19,
+      "name": "PLO_ARROWADD",
+      "category": "core",
+      "description": "Add arrow projectile to level",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "x_coord",
+          "type": "GCHAR",
+          "description": "Arrow starting X coordinate"
+        },
+        {
+          "name": "y_coord",
+          "type": "GCHAR",
+          "description": "Arrow starting Y coordinate"
+        },
+        {
+          "name": "direction",
+          "type": "GCHAR",
+          "description": "Arrow direction (0-3: down,left,up,right)"
+        },
+        {
+          "name": "speed",
+          "type": "GCHAR",
+          "description": "Arrow velocity"
+        },
+        {
+          "name": "owner_id",
+          "type": "GSHORT",
+          "description": "Player ID who fired the arrow"
+        }
+      ]
+    },
+    "32": {
+      "id": 32,
+      "name": "PLO_SHOWIMG",
+      "category": "unknown",
+      "description": "Display image on client screen",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "image_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name/path of image to display"
+        },
+        {
+          "name": "display_x",
+          "type": "GSHORT",
+          "description": "X coordinate for image display"
+        },
+        {
+          "name": "display_y",
+          "type": "GSHORT",
+          "description": "Y coordinate for image display"
+        },
+        {
+          "name": "display_options",
+          "type": "VARIABLE_DATA",
+          "description": "Additional display parameters"
+        }
+      ]
+    },
+    "171": {
+      "id": 171,
+      "name": "PLO_BIGMAP",
+      "category": "ui",
+      "description": "Big map (world overview) display data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "map_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded big map information"
+        }
+      ]
+    },
+    "170": {
+      "id": 170,
+      "name": "PLO_GHOSTMODE",
+      "category": "ui",
+      "description": "Ghost mode notification and configuration",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "ghost_state",
+          "type": "GCHAR",
+          "description": "Ghost mode state or type"
+        },
+        {
+          "name": "ghost_data",
+          "type": "VARIABLE_DATA",
+          "description": "Ghost mode configuration"
+        }
+      ]
+    },
+    "172": {
+      "id": 172,
+      "name": "PLO_MINIMAP",
+      "category": "ui",
+      "description": "Minimap display data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "minimap_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded minimap information"
+        }
+      ]
+    },
+    "174": {
+      "id": 174,
+      "name": "PLO_GHOSTICON",
+      "category": "ui",
+      "description": "Ghost mode icon display",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "icon_x",
+          "type": "GSHORT",
+          "description": "X coordinate for icon display"
+        },
+        {
+          "name": "icon_y",
+          "type": "GSHORT",
+          "description": "Y coordinate for icon display"
+        },
+        {
+          "name": "icon_type",
+          "type": "GCHAR",
+          "description": "Type or ID of icon"
+        },
+        {
+          "name": "icon_data",
+          "type": "VARIABLE_DATA",
+          "description": "Icon configuration data"
+        }
+      ]
+    },
+    "180": {
+      "id": 180,
+      "name": "PLO_STATUSLIST",
+      "category": "ui",
+      "description": "Status list display (players, scores, etc.)",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "status_type",
+          "type": "GCHAR",
+          "description": "Type of status list"
+        },
+        {
+          "name": "status_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded status information"
+        }
+      ]
+    },
+    "179": {
+      "id": 179,
+      "name": "PLO_RPGWINDOW",
+      "category": "ui",
+      "description": "RPG window/interface display",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "window_type",
+          "type": "GCHAR",
+          "description": "Type of RPG window to display"
+        },
+        {
+          "name": "window_x",
+          "type": "GSHORT",
+          "description": "X coordinate for window"
+        },
+        {
+          "name": "window_y",
+          "type": "GSHORT",
+          "description": "Y coordinate for window"
+        },
+        {
+          "name": "window_data",
+          "type": "VARIABLE_DATA",
+          "description": "Window content and configuration"
+        }
+      ]
+    },
+    "173": {
+      "id": 173,
+      "name": "PLO_GHOSTTEXT",
+      "category": "ui",
+      "description": "Ghost mode text display",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "text_x",
+          "type": "GSHORT",
+          "description": "X coordinate for text display"
+        },
+        {
+          "name": "text_y",
+          "type": "GSHORT",
+          "description": "Y coordinate for text display"
+        },
+        {
+          "name": "text_content",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Ghost text content"
+        }
+      ]
+    },
+    "163": {
+      "id": 163,
+      "name": "PLO_NC_CLASSADD",
+      "category": "unknown",
+      "description": "NPC-Control class addition",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "class_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of NPC class"
+        },
+        {
+          "name": "class_data",
+          "type": "VARIABLE_DATA",
+          "description": "Class definition and methods"
+        }
+      ]
+    },
+    "140": {
+      "id": 140,
+      "name": "PLO_NPCWEAPONSCRIPT",
+      "category": "unknown",
+      "description": "NPC weapon script data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "weapon_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of NPC weapon"
+        },
+        {
+          "name": "script_data",
+          "type": "VARIABLE_DATA",
+          "description": "Weapon script and behavior code"
+        }
+      ]
+    },
+    "131": {
+      "id": 131,
+      "name": "PLO_NPCBYTECODE",
+      "category": "unknown",
+      "description": "NPC compiled bytecode for scripting",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_id",
+          "type": "GSHORT",
+          "description": "Unique NPC identifier"
+        },
+        {
+          "name": "bytecode_data",
+          "type": "VARIABLE_DATA",
+          "description": "Compiled NPC script bytecode"
+        }
+      ]
+    },
+    "134": {
+      "id": 134,
+      "name": "PLO_GANISCRIPT",
+      "category": "unknown",
+      "description": "GANI animation script data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "gani_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of GANI animation"
+        },
+        {
+          "name": "script_data",
+          "type": "VARIABLE_DATA",
+          "description": "Animation script and timing data"
+        }
+      ]
+    },
+    "31": {
+      "id": 31,
+      "name": "PLO_FLAGDEL",
+      "category": "unknown",
+      "description": "Delete server flag",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "flag_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the flag being deleted"
+        }
+      ]
+    },
+    "155": {
+      "id": 155,
+      "name": "PLO_UNFREEZEPLAYER",
+      "category": "unknown",
+      "description": "Unfreeze a previously frozen player",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player to unfreeze"
+        }
+      ]
+    },
+    "60": {
+      "id": 60,
+      "name": "PLO_PLAYERRIGHTS",
+      "category": "unknown",
+      "description": "Player rights and permissions",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "rights_level",
+          "type": "GCHAR",
+          "description": "Player rights/admin level"
+        },
+        {
+          "name": "rights_data",
+          "type": "VARIABLE_DATA",
+          "description": "Specific permissions and capabilities"
+        }
+      ]
+    },
+    "77": {
+      "id": 77,
+      "name": "PLO_QUESTUPDATE",
+      "category": "unknown",
+      "description": "Quest system update and progress",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "quest_id",
+          "type": "GSHORT",
+          "description": "Unique identifier for the quest"
+        },
+        {
+          "name": "quest_status",
+          "type": "GCHAR",
+          "description": "Current quest status"
+        },
+        {
+          "name": "quest_progress",
+          "type": "GCHAR",
+          "description": "Progress percentage or step"
+        },
+        {
+          "name": "quest_data",
+          "type": "VARIABLE_DATA",
+          "description": "Objectives, rewards, and description"
+        }
+      ]
+    },
+    "71": {
+      "id": 71,
+      "name": "PLO_SCRIPTENGINE",
+      "category": "unknown",
+      "description": "Script engine control and management",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "script_command",
+          "type": "GCHAR",
+          "description": "Type of script operation"
+        },
+        {
+          "name": "script_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name/identifier of script"
+        },
+        {
+          "name": "script_data",
+          "type": "VARIABLE_DATA",
+          "description": "Script code, parameters, and context"
+        }
+      ]
+    },
+    "82": {
+      "id": 82,
+      "name": "PLO_SERVERTEXT",
+      "category": "system",
+      "description": "Server text message/announcement",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "message_type",
+          "type": "GCHAR",
+          "description": "Type of server message"
+        },
+        {
+          "name": "message_content",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Server message text"
+        }
+      ]
+    },
+    "57": {
+      "id": 57,
+      "name": "PLO_ADMINMESSAGE",
+      "category": "system",
+      "description": "Administrative message to players",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "admin_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the admin"
+        },
+        {
+          "name": "message_content",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Admin message text"
+        }
+      ]
+    },
+    "62": {
+      "id": 62,
+      "name": "PLO_PLAYERSTATUS",
+      "category": "unknown",
+      "description": "Player status update",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of the player"
+        },
+        {
+          "name": "status_flags",
+          "type": "GCHAR",
+          "description": "Status flags and indicators"
+        },
+        {
+          "name": "status_message",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Custom status message"
+        }
+      ]
+    },
+    "38": {
+      "id": 38,
+      "name": "PLO_PUSHAWAY",
+      "category": "unknown",
+      "description": "Push away effect from explosions/impacts",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "target_player_id",
+          "type": "GSHORT",
+          "description": "ID of player being pushed (0 for self)"
+        },
+        {
+          "name": "push_source_x",
+          "type": "GCHAR",
+          "description": "X coordinate of push source"
+        },
+        {
+          "name": "push_source_y",
+          "type": "GCHAR",
+          "description": "Y coordinate of push source"
+        },
+        {
+          "name": "push_force",
+          "type": "GCHAR",
+          "description": "Strength of the push effect"
+        },
+        {
+          "name": "push_direction",
+          "type": "GCHAR",
+          "description": "Direction of the push"
+        }
+      ]
+    },
+    "48": {
+      "id": 48,
+      "name": "PLO_TRIGGERACTION",
+      "category": "unknown",
+      "description": "Trigger activation notification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "trigger_x",
+          "type": "GCHAR",
+          "description": "X position of trigger"
+        },
+        {
+          "name": "trigger_y",
+          "type": "GCHAR",
+          "description": "Y position of trigger"
+        },
+        {
+          "name": "action_type",
+          "type": "GCHAR",
+          "description": "Type of action triggered"
+        },
+        {
+          "name": "action_data",
+          "type": "VARIABLE_DATA",
+          "description": "Action parameters and data"
+        }
+      ]
+    },
+    "153": {
+      "id": 153,
+      "name": "PLO_SAY2",
+      "category": "unknown",
+      "description": "Enhanced say/chat message",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player speaking"
+        },
+        {
+          "name": "message_data",
+          "type": "VARIABLE_DATA",
+          "description": "Enhanced message with formatting"
+        }
+      ]
+    },
+    "67": {
+      "id": 67,
+      "name": "PLO_PARTICLEEFFECT",
+      "category": "unknown",
+      "description": "Particle effects system",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "effect_type",
+          "type": "GCHAR",
+          "description": "Type of particle effect"
+        },
+        {
+          "name": "effect_x",
+          "type": "GSHORT",
+          "description": "X coordinate for effect"
+        },
+        {
+          "name": "effect_y",
+          "type": "GSHORT",
+          "description": "Y coordinate for effect"
+        },
+        {
+          "name": "effect_data",
+          "type": "VARIABLE_DATA",
+          "description": "Particle parameters and settings"
+        }
+      ]
+    },
+    "156": {
+      "id": 156,
+      "name": "PLO_SETACTIVELEVEL",
+      "category": "unknown",
+      "description": "Set active level for processing",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "level_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of level to set as active"
+        }
+      ]
+    },
+    "28": {
+      "id": 28,
+      "name": "PLO_FLAGSET",
+      "category": "unknown",
+      "description": "Set server flag for global state",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "flag_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the flag being set"
+        },
+        {
+          "name": "flag_value",
+          "type": "VARIABLE_DATA",
+          "description": "Value assigned to the flag"
+        }
+      ]
+    },
+    "182": {
+      "id": 182,
+      "name": "PLO_LISTPROCESSES",
+      "category": "ui",
+      "description": "List of running server processes",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "process_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded list of running processes"
+        }
+      ]
+    },
+    "154": {
+      "id": 154,
+      "name": "PLO_FREEZEPLAYER2",
+      "category": "unknown",
+      "description": "Enhanced freeze player with options",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player to freeze"
+        },
+        {
+          "name": "freeze_options",
+          "type": "VARIABLE_DATA",
+          "description": "Freeze type and duration settings"
+        }
+      ]
+    },
+    "66": {
+      "id": 66,
+      "name": "PLO_LIGHTINGCONTROL",
+      "category": "unknown",
+      "description": "Lighting and visual effects control",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "lighting_type",
+          "type": "GCHAR",
+          "description": "Type of lighting effect"
+        },
+        {
+          "name": "light_intensity",
+          "type": "GCHAR",
+          "description": "Brightness/intensity level"
+        },
+        {
+          "name": "lighting_data",
+          "type": "VARIABLE_DATA",
+          "description": "Color, position, and effect parameters"
+        }
+      ]
+    },
+    "53": {
+      "id": 53,
+      "name": "PLO_PLAYERKICK",
+      "category": "unknown",
+      "description": "Kick player from server",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "kick_reason",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Reason for kicking player"
+        }
+      ]
+    },
+    "75": {
+      "id": 75,
+      "name": "PLO_PROFILE",
+      "category": "unknown",
+      "description": "Player profile data and statistics",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "profile_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded player profile information"
+        }
+      ]
+    },
+    "15": {
+      "id": 15,
+      "name": "PLO_WARPFAILED",
+      "category": "core",
+      "description": "Warp attempt failed notification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "error_message",
+          "type": "VARIABLE_DATA",
+          "description": "Reason why the warp failed"
+        }
+      ]
+    },
+    "76": {
+      "id": 76,
+      "name": "PLO_EVENTTRIGGER",
+      "category": "unknown",
+      "description": "Event system trigger and management",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "event_id",
+          "type": "GSHORT",
+          "description": "Unique identifier for the event"
+        },
+        {
+          "name": "event_type",
+          "type": "GCHAR",
+          "description": "Category/type of event"
+        },
+        {
+          "name": "event_data",
+          "type": "VARIABLE_DATA",
+          "description": "Event parameters and actions"
+        }
+      ]
+    },
+    "79": {
+      "id": 79,
+      "name": "PLO_NPCSERVERADDR",
+      "category": "unknown",
+      "description": "NPC server address and port",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "npc_server_ip",
+          "type": "STRING_GCHAR_LEN",
+          "description": "IP address of NPC server"
+        },
+        {
+          "name": "npc_server_port",
+          "type": "GSHORT",
+          "description": "Port number for NPC server"
+        }
+      ]
+    },
+    "197": {
+      "id": 197,
+      "name": "PLO_UNKNOWN197",
+      "category": "ui",
+      "description": "Unknown packet type 197",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "unknown_data",
+          "type": "VARIABLE_DATA",
+          "description": "Packet data of unknown format"
+        }
+      ]
+    },
+    "81": {
+      "id": 81,
+      "name": "PLO_CRAFTINGSYSTEM",
+      "category": "unknown",
+      "description": "Item crafting and creation system",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "crafting_type",
+          "type": "GCHAR",
+          "description": "Type of crafting operation"
+        },
+        {
+          "name": "recipe_id",
+          "type": "GSHORT",
+          "description": "Identifier for crafting recipe"
+        },
+        {
+          "name": "crafting_data",
+          "type": "VARIABLE_DATA",
+          "description": "Materials, results, and parameters"
+        }
+      ]
+    },
+    "42": {
+      "id": 42,
+      "name": "PLO_NEWWORLDTIME",
+      "category": "unknown",
+      "description": "Server heartbeat and world time synchronization packet (sent ~1/sec)",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "world_time",
+          "type": "GINT5",
+          "description": ""
+        }
+      ]
+    },
+    "44": {
+      "id": 44,
+      "name": "PLO_HASNPCSERVER",
+      "category": "unknown",
+      "description": "NPC server availability status",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "has_npc_server",
+          "type": "GCHAR",
+          "description": "1 if NPC server available, 0 if not"
+        },
+        {
+          "name": "npc_server_version",
+          "type": "GCHAR",
+          "description": "Version of the NPC server"
+        }
+      ]
+    },
+    "58": {
+      "id": 58,
+      "name": "PLO_PLAYERBAN",
+      "category": "system",
+      "description": "Ban player from server",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "ban_duration",
+          "type": "GINT4",
+          "description": "Ban duration in seconds"
+        },
+        {
+          "name": "ban_reason",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Reason for the ban"
+        }
+      ]
+    },
+    "59": {
+      "id": 59,
+      "name": "PLO_SERVERSTATS",
+      "category": "unknown",
+      "description": "Server performance and usage statistics",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "stats_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded server statistics"
+        }
+      ]
+    },
+    "47": {
+      "id": 47,
+      "name": "PLO_STAFFGUILDS",
+      "category": "system",
+      "description": "Staff guilds and member information",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "guild_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded staff guild information"
+        }
+      ]
+    },
+    "177": {
+      "id": 177,
+      "name": "PLO_FULLSTOP2",
+      "category": "ui",
+      "description": "Enhanced full stop command with parameters",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "stop_type",
+          "type": "GCHAR",
+          "description": "Type of stop command"
+        },
+        {
+          "name": "stop_data",
+          "type": "VARIABLE_DATA",
+          "description": "Additional stop parameters"
+        }
+      ]
+    },
+    "39": {
+      "id": 39,
+      "name": "PLO_LEVELMODTIME",
+      "category": "unknown",
+      "description": "Level modification timestamp for caching",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "level_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the level"
+        },
+        {
+          "name": "modification_time",
+          "type": "GINT4",
+          "description": "Unix timestamp of last modification"
+        }
+      ]
+    },
+    "72": {
+      "id": 72,
+      "name": "PLO_ACHIEVEMENTUNLOCK",
+      "category": "unknown",
+      "description": "Achievement unlock notification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "achievement_id",
+          "type": "GSHORT",
+          "description": "Unique achievement identifier"
+        },
+        {
+          "name": "achievement_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Display name of achievement"
+        },
+        {
+          "name": "achievement_data",
+          "type": "VARIABLE_DATA",
+          "description": "Description, rewards, and metadata"
+        }
+      ]
+    },
+    "46": {
+      "id": 46,
+      "name": "PLO_HITOBJECTS",
+      "category": "unknown",
+      "description": "Objects hit by weapons/projectiles",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "hit_x",
+          "type": "GCHAR",
+          "description": "X position of hit"
+        },
+        {
+          "name": "hit_y",
+          "type": "GCHAR",
+          "description": "Y position of hit"
+        },
+        {
+          "name": "hit_type",
+          "type": "GCHAR",
+          "description": "Type of hit/weapon used"
+        },
+        {
+          "name": "hit_data",
+          "type": "VARIABLE_DATA",
+          "description": "Additional hit information"
+        }
+      ]
+    },
+    "61": {
+      "id": 61,
+      "name": "PLO_GUILDINFO",
+      "category": "unknown",
+      "description": "Guild information and member data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "guild_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the guild"
+        },
+        {
+          "name": "guild_data",
+          "type": "VARIABLE_DATA",
+          "description": "Guild members, settings, and information"
+        }
+      ]
+    },
+    "63": {
+      "id": 63,
+      "name": "PLO_WORLDINFO",
+      "category": "unknown",
+      "description": "World/server information and settings",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "world_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the world/server"
+        },
+        {
+          "name": "world_data",
+          "type": "VARIABLE_DATA",
+          "description": "World settings, description, and info"
+        }
+      ]
+    },
+    "64": {
+      "id": 64,
+      "name": "PLO_WEATHERUPDATE",
+      "category": "unknown",
+      "description": "Weather system update",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "weather_type",
+          "type": "GCHAR",
+          "description": "Type of weather"
+        },
+        {
+          "name": "weather_intensity",
+          "type": "GCHAR",
+          "description": "Intensity level of weather"
+        },
+        {
+          "name": "weather_data",
+          "type": "VARIABLE_DATA",
+          "description": "Additional weather parameters"
+        }
+      ]
+    },
+    "65": {
+      "id": 65,
+      "name": "PLO_MUSICCONTROL",
+      "category": "unknown",
+      "description": "Music and sound control",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "music_type",
+          "type": "GCHAR",
+          "description": "Type of music/sound command"
+        },
+        {
+          "name": "music_file",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Music/sound file name"
+        },
+        {
+          "name": "music_settings",
+          "type": "VARIABLE_DATA",
+          "description": "Volume, loop, and effect settings"
+        }
+      ]
+    },
+    "52": {
+      "id": 52,
+      "name": "PLO_PLAYERFREEZE",
+      "category": "unknown",
+      "description": "Freeze player movement and actions",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "player_id",
+          "type": "GSHORT",
+          "description": "ID of player to freeze"
+        },
+        {
+          "name": "freeze_duration",
+          "type": "GSHORT",
+          "description": "Freeze time in seconds"
+        }
+      ]
+    },
+    "178": {
+      "id": 178,
+      "name": "PLO_SERVERWARP",
+      "category": "ui",
+      "description": "Server-initiated player warp/teleportation",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "level_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Destination level name"
+        },
+        {
+          "name": "x_position",
+          "type": "GSHORT",
+          "description": "Destination X coordinate"
+        },
+        {
+          "name": "y_position",
+          "type": "GSHORT",
+          "description": "Destination Y coordinate"
+        },
+        {
+          "name": "z_position",
+          "type": "GCHAR",
+          "description": "Destination Z layer"
+        }
+      ]
+    },
+    "70": {
+      "id": 70,
+      "name": "PLO_CAMERACONTROL",
+      "category": "unknown",
+      "description": "Camera control and movement",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "camera_command",
+          "type": "GCHAR",
+          "description": "Type of camera control"
+        },
+        {
+          "name": "camera_x",
+          "type": "GSHORT",
+          "description": "Target X position for camera"
+        },
+        {
+          "name": "camera_y",
+          "type": "GSHORT",
+          "description": "Target Y position for camera"
+        },
+        {
+          "name": "camera_data",
+          "type": "VARIABLE_DATA",
+          "description": "Zoom, speed, and transition settings"
+        }
+      ]
+    },
+    "78": {
+      "id": 78,
+      "name": "PLO_INVENTORYUPDATE",
+      "category": "unknown",
+      "description": "Inventory system update and management",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "inventory_slot",
+          "type": "GCHAR",
+          "description": "Slot number or inventory section"
+        },
+        {
+          "name": "item_id",
+          "type": "GSHORT",
+          "description": "Unique identifier for the item"
+        },
+        {
+          "name": "item_quantity",
+          "type": "GCHAR",
+          "description": "Number of items in slot"
+        },
+        {
+          "name": "item_data",
+          "type": "VARIABLE_DATA",
+          "description": "Item properties and metadata"
+        }
+      ]
+    },
+    "54": {
+      "id": 54,
+      "name": "PLO_TIMEOUTWARNING",
+      "category": "unknown",
+      "description": "Player timeout warning",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "warning_message",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Timeout warning text"
+        },
+        {
+          "name": "timeout_seconds",
+          "type": "GSHORT",
+          "description": "Seconds until timeout"
+        }
+      ]
+    },
+    "198": {
+      "id": 198,
+      "name": "PLO_UNKNOWN198",
+      "category": "ui",
+      "description": "Unknown packet type 198",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "unknown_data",
+          "type": "VARIABLE_DATA",
+          "description": "Packet data of unknown format"
+        }
+      ]
+    },
+    "73": {
+      "id": 73,
+      "name": "PLO_LEADERBOARD",
+      "category": "unknown",
+      "description": "Player leaderboard and ranking data",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "leaderboard_type",
+          "type": "GCHAR",
+          "description": "Type of leaderboard"
+        },
+        {
+          "name": "player_count",
+          "type": "GCHAR",
+          "description": "Number of players in leaderboard"
+        },
+        {
+          "name": "leaderboard_data",
+          "type": "VARIABLE_DATA",
+          "description": "Ranked player data and statistics"
+        }
+      ]
+    },
+    "25": {
+      "id": 25,
+      "name": "PLO_SIGNATURE",
+      "category": "system",
+      "description": "Login signature confirmation",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "signature",
+          "type": "VARIABLE_DATA",
+          "description": "Login signature data"
+        }
+      ]
+    },
+    "176": {
+      "id": 176,
+      "name": "PLO_FULLSTOP",
+      "category": "ui",
+      "description": "Full stop command for player movement",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "stop_type",
+          "type": "GCHAR",
+          "description": "Type of stop command"
+        }
+      ]
+    },
+    "16": {
+      "id": 16,
+      "name": "PLO_DISCMESSAGE",
+      "category": "core",
+      "description": "Disconnect notification with reason",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "disconnect_reason",
+          "type": "VARIABLE_DATA",
+          "description": "Message explaining disconnection"
+        }
+      ]
+    },
+    "92": {
+      "id": 92,
+      "name": "PLO_SERVERMESSAGE",
+      "category": "system",
+      "description": "Server message/notification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "message",
+          "type": "VARIABLE_DATA",
+          "description": "Server message text"
+        }
+      ]
+    },
+    "105": {
+      "id": 105,
+      "name": "PLO_UPDATEPACKAGESIZE",
+      "category": "unknown",
+      "description": "Update package size announcement",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "package_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of update package"
+        },
+        {
+          "name": "package_size",
+          "type": "GINT5",
+          "description": "Size of package in bytes"
+        }
+      ]
+    },
+    "68": {
+      "id": 68,
+      "name": "PLO_LARGEFILESTART",
+      "category": "files",
+      "description": "Start of large file transfer",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the large file"
+        },
+        {
+          "name": "total_file_size",
+          "type": "GINT4",
+          "description": "Total size of file in bytes"
+        },
+        {
+          "name": "chunk_size",
+          "type": "GSHORT",
+          "description": "Size of each chunk to follow"
+        }
+      ]
+    },
+    "45": {
+      "id": 45,
+      "name": "PLO_FILEUPTODATE",
+      "category": "unknown",
+      "description": "File is up to date, no download needed",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of file that's up to date"
+        },
+        {
+          "name": "modification_time",
+          "type": "GINT4",
+          "description": "Timestamp of current file version"
+        }
+      ]
+    },
+    "102": {
+      "id": 102,
+      "name": "PLO_FILE",
+      "category": "files",
+      "description": "File transfer packet (needs special handling)",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_data",
+          "type": "VARIABLE_DATA",
+          "description": "File transfer data (complex structure)"
+        }
+      ]
+    },
+    "107": {
+      "id": 107,
+      "name": "PLO_BOARDLAYER",
+      "category": "unknown",
+      "description": "Board layer data for complex displays",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "layer_id",
+          "type": "GCHAR",
+          "description": "Board layer identifier"
+        },
+        {
+          "name": "layer_data",
+          "type": "VARIABLE_DATA",
+          "description": "Encoded layer board content"
+        }
+      ]
+    },
+    "84": {
+      "id": 84,
+      "name": "PLO_LARGEFILESIZE",
+      "category": "files",
+      "description": "Large file size announcement",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the large file"
+        },
+        {
+          "name": "file_size",
+          "type": "GINT5",
+          "description": "Size of file in bytes (5-byte integer)"
+        }
+      ]
+    },
+    "100": {
+      "id": 100,
+      "name": "PLO_RAWDATA",
+      "category": "files",
+      "description": "Announces size of raw data in next packet",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "size",
+          "type": "GINT3",
+          "description": "Size of following data"
+        }
+      ]
+    },
+    "69": {
+      "id": 69,
+      "name": "PLO_LARGEFILEEND",
+      "category": "files",
+      "description": "End of large file transfer",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of the completed file"
+        },
+        {
+          "name": "checksum",
+          "type": "GINT4",
+          "description": "File checksum for verification"
+        }
+      ]
+    },
+    "30": {
+      "id": 30,
+      "name": "PLO_FILESENDFAILED",
+      "category": "unknown",
+      "description": "File transfer failed notification",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "file_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of file that failed to send"
+        },
+        {
+          "name": "error_message",
+          "type": "VARIABLE_DATA",
+          "description": "Reason for the failure"
+        }
+      ]
+    },
+    "101": {
+      "id": 101,
+      "name": "PLO_BOARDPACKET",
+      "category": "files",
+      "description": "Level board data (usually 8192 bytes)",
+      "variable_length": false,
+      "fields": [
+        {
+          "name": "board_data",
+          "type": "FIXED_DATA",
+          "description": "Board tile data (8192 bytes)"
+        }
+      ]
+    },
+    "106": {
+      "id": 106,
+      "name": "PLO_UPDATEPACKAGEDONE",
+      "category": "unknown",
+      "description": "Update package download complete",
+      "variable_length": true,
+      "fields": [
+        {
+          "name": "package_name",
+          "type": "STRING_GCHAR_LEN",
+          "description": "Name of completed package"
+        },
+        {
+          "name": "completion_status",
+          "type": "GCHAR",
+          "description": "Success/failure status"
+        }
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 """
-Python implementation of GServer's CString class for Graal packet handling.
+Python implementation of GServer's CString class for Reborn packet handling.
 
-This provides similar functionality to CString with Graal-specific encoding methods.
+This provides similar functionality to CString with Reborn-specific encoding methods.
 """
 
 import struct
@@ -9,7 +9,7 @@ from typing import Union, Optional
 
 
 class GString:
-    """Graal-compatible string buffer with packet encoding/decoding methods"""
+    """Reborn-compatible string buffer with packet encoding/decoding methods"""
     
     def __init__(self, data: Union[bytes, str, 'GString'] = b''):
         """Initialize with optional data"""
@@ -85,50 +85,58 @@ class GString:
         self._buffer.extend(struct.pack('>I', value & 0xFFFFFFFF))
         return self
         
-    # Graal-specific write methods
+    # Reborn-specific write methods
     def write_gchar(self, value: int) -> 'GString':
-        """Write Graal-encoded char (value + 32)"""
+        """Write Reborn-encoded char (value + 32)"""
         self._buffer.append((value + 32) & 0xFF)
         return self
         
     def write_gshort(self, value: int) -> 'GString':
-        """Write Graal-encoded short"""
-        if value < 223:
-            self.write_gchar(value)
-        else:
-            self.write_gchar(223 + (value >> 8))
-            self.write_char(value & 0xFF)
+        """Write Reborn-encoded short - matches GServer-v2 exactly"""
+        t = min(value, 28767)  # GServer max value
+        
+        val0 = t >> 7
+        if val0 > 223:
+            val0 = 223
+        val1 = t - (val0 << 7)
+        
+        self.write_char((val0 + 32) & 0xFF)
+        self.write_char((val1 + 32) & 0xFF)
         return self
         
     def write_gint(self, value: int) -> 'GString':
-        """Write Graal-encoded int (variable length)"""
-        if value < 223:
-            self.write_gchar(value)
-        elif value < 0x1FDF:  # 8159
-            self.write_gchar(223 + (value >> 8))
-            self.write_char(value & 0xFF)
-        elif value < 0x3FBFDF:  # 4177887
-            self.write_gchar(247 + (value >> 16))
-            self.write_short(value & 0xFFFF)
-        else:
-            self.write_gchar(255)
-            self.write_int(value)
+        """Write Reborn-encoded int - matches GServer-v2 exactly"""
+        t = min(value, 3682399)  # GServer max value
+        
+        val0 = t >> 14
+        if val0 > 223:
+            val0 = 223
+        t -= val0 << 14
+        
+        val1 = t >> 7
+        if val1 > 223:
+            val1 = 223
+        val2 = t - (val1 << 7)
+        
+        self.write_char((val0 + 32) & 0xFF)
+        self.write_char((val1 + 32) & 0xFF)
+        self.write_char((val2 + 32) & 0xFF)
         return self
         
     def write_gint4(self, value: int) -> 'GString':
-        """Write Graal 4-byte int"""
+        """Write Reborn 4-byte int"""
         self.write_gchar(255)
         self.write_int(value)
         return self
         
     def write_gint5(self, value: int) -> 'GString':
-        """Write Graal 5-byte int"""
+        """Write Reborn 5-byte int"""
         self.write_gchar((value >> 32) & 0xFF)
         self.write_int(value & 0xFFFFFFFF)
         return self
         
     def write_gstring(self, text: str) -> 'GString':
-        """Write Graal string (length-prefixed)"""
+        """Write Reborn string (length-prefixed)"""
         data = text.encode('latin-1')
         self.write_gchar(len(data))
         self.write(data)
@@ -159,38 +167,34 @@ class GString:
         self._read_pos += 4
         return value
         
-    # Graal-specific read methods
+    # Reborn-specific read methods
     def read_gchar(self) -> int:
-        """Read Graal-encoded char"""
+        """Read Reborn-encoded char"""
         return max(0, self.read_char() - 32)
         
     def read_gshort(self) -> int:
-        """Read Graal-encoded short"""
-        value = self.read_gchar()
-        if value < 223:
-            return value
-        return ((value - 223) << 8) + self.read_char()
+        """Read Reborn-encoded short - matches GServer-v2 exactly"""
+        val = [0, 0]
+        val[0] = self.read_char()
+        val[1] = self.read_char()
+        return (val[0] << 7) + val[1] - 0x1020  # GServer constant
         
     def read_gint(self) -> int:
-        """Read Graal-encoded int"""
-        value = self.read_gchar()
-        if value < 223:
-            return value
-        elif value < 247:
-            return ((value - 223) << 8) + self.read_char()
-        elif value < 255:
-            return ((value - 247) << 16) + self.read_short()
-        else:
-            return self.read_int()
+        """Read Reborn-encoded int - matches GServer-v2 exactly"""
+        val = [0, 0, 0]
+        val[0] = self.read_char()
+        val[1] = self.read_char()
+        val[2] = self.read_char()
+        return (((val[0] << 7) + val[1]) << 7) + val[2] - 0x81020  # GServer constant
             
     def read_gint5(self) -> int:
-        """Read Graal 5-byte int"""
+        """Read Reborn 5-byte int"""
         high = self.read_gchar()
         low = self.read_int()
         return (high << 32) | low
         
     def read_gstring(self) -> str:
-        """Read Graal string"""
+        """Read Reborn string"""
         length = self.read_gchar()
         if self._read_pos + length > len(self._buffer):
             return ""

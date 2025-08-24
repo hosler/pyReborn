@@ -5,16 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pyreborn"
 dynamic = ["version"]
-description = "A Python library for connecting to GServer (Graal Reborn) servers"
+description = "Modern Python library for Reborn Online servers with multiple API patterns, async support, and game actions"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
     {name = "PyReborn Contributors"},
 ]
-keywords = ["graal", "gserver", "game", "networking", "protocol", "client", "library"]
+keywords = ["reborn", "reborn-online", "game", "networking", "protocol", "client", "library", "async", "builder-pattern", "context-manager"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -44,13 +44,13 @@ examples = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/pyReborn"
-"Bug Reports" = "https://github.com/yourusername/pyReborn/issues"
-"Source" = "https://github.com/yourusername/pyReborn"
-"Documentation" = "https://github.com/yourusername/pyReborn/blob/main/docs/GRAAL_PROTOCOL_GUIDE.md"
+"Homepage" = "https://github.com/openreborn/pyReborn"
+"Bug Reports" = "https://github.com/openreborn/pyReborn/issues"
+"Source" = "https://github.com/openreborn/pyReborn"
+"Documentation" = "https://github.com/openreborn/pyReborn/blob/main/README.md"
 
 [project.scripts]
-pyreborn-test = "pyreborn.examples.test_connection:main"
+pyreborn-test = "tests.bots.comprehensive_test_bot:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "pyreborn.__version__"}
