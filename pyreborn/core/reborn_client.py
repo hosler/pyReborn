@@ -14,7 +14,7 @@ import queue
 
 from ..connection.connection_manager import ConnectionManager as ConnManager
 from ..session.session_manager import SessionManager
-from ..world.world_manager import WorldManager
+# World manager removed for simplicity
 from ..world.level_manager import LevelManager
 from ..world.gmap_manager import GMAPManager
 # Gameplay manager removed for simplicity
@@ -54,22 +54,18 @@ class RebornClient:
         self.session_manager = SessionManager()
         self.level_manager = LevelManager()
         self.gmap_manager = GMAPManager()
-        self.world_manager = WorldManager()
+        # World manager removed for simplicity
         # Gameplay manager removed for simplicity
         
         # Initialize individual gameplay managers from the gameplay system
         from ..gameplay.item_manager import ItemManager
-        from ..gameplay.combat_manager import CombatManager
-        from ..gameplay.npc_manager import NPCManager
-        from ..gameplay.weapon_manager import WeaponManager
+        # Combat, NPC, and weapon managers removed for simplicity
         # Communication manager removed - functionality moved to client
         from ..session.file_manager import FileManager
         from ..session.cache_manager import CacheManager
         
         self.item_manager = ItemManager()
-        self.combat_manager = CombatManager()
-        self.npc_manager = NPCManager()
-        self.weapon_manager = WeaponManager()
+        # Combat, NPC, and weapon managers removed for simplicity
         # Communication functionality moved to client methods
         
         # Initialize file download system
@@ -290,15 +286,14 @@ class RebornClient:
             'level': self.level_manager,
             'level_packet_manager': self.level_packet_manager,
             'gmap': self.gmap_manager,
-            'world': self.world_manager,
+            # world manager removed
             # gameplay manager removed
             'system_manager': self.system_manager,
             'event': self.events,
             # Individual managers for test compatibility
             'item': self.item_manager,
-            'combat': self.combat_manager,
-            'npc': self.npc_manager,
-            'communication': self.communication_manager
+            # combat and npc managers removed
+            # communication manager removed
         }
         return managers.get(manager_name)
     

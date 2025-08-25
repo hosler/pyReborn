@@ -8,7 +8,7 @@ from typing import Dict, Callable, Any, List, Tuple, Optional
 from .interfaces import IPacketProcessor, IPacketHandler
 from ..config.client_config import ClientConfig
 from ..session.events import EventManager, EventType
-from .unified_reader import StructureAwarePacketParser
+# Unified reader removed for simplicity
 from ..protocol.registry_packet_parser import RegistryPacketParser
 from ..protocol.manager_packet_processor import ManagerPacketProcessor
 from ..session.error_handling import (
@@ -31,8 +31,7 @@ class PacketProcessor(IPacketProcessor):
         self.registry_parser = RegistryPacketParser()
         self.manager_processor: Optional[ManagerPacketProcessor] = None
         
-        # Legacy parser for backward compatibility
-        self.parser = StructureAwarePacketParser(enable_validation=True)
+# Legacy parser removed - registry-driven only
         self.packet_handler: Optional['PacketHandler'] = None
         self.custom_handlers: List[IPacketHandler] = []
         self.handler_registry: Dict[int, List[Callable]] = {}

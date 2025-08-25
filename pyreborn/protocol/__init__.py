@@ -13,10 +13,9 @@ from .packet_processor import PacketProcessor
 # from .protocol_state import ProtocolState
 # Packet analyzer removed for simplicity
 from .binary_reader import BinaryPacketReader
-from .unified_reader import UnifiedProtocolReader
+# Unified reader removed for simplicity
 
 __all__ = [
     'PacketProcessor',
     'BinaryPacketReader',
-    'UnifiedProtocolReader',
 ]

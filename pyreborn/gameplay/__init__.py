@@ -9,12 +9,8 @@ This module consolidates all gameplay-related functionality:
 """
 
 # Keep only essential managers
-from .combat_manager import CombatManager
 from .item_manager import ItemManager
-from .npc_manager import NPCManager
 
 __all__ = [
-    'CombatManager',
-    'ItemManager', 
-    'NPCManager',
+    'ItemManager'
 ]

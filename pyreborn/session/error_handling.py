@@ -34,8 +34,8 @@ class ErrorHandler:
         # Simple stub for compatibility
         pass
     
-    def handle_packet_error(self, *args, **kwargs):
-        # Simple stub for packet error handling - accepts any arguments
+    def handle_packet_error(self, packet_data, error, context=None, **kwargs):
+        # Simple stub for packet error handling with correct signature
         pass
 
 def handle_errors(func):

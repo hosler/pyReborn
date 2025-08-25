@@ -132,6 +132,9 @@ class ManagerPacketProcessor:
         logger.info(f"Manager delegation configured for {len(self.manager_delegation)} packet types")
     
     def process_packet(self, packet_id: int, data: bytes, announced_size: int = 0) -> Optional[Dict[str, Any]]:
+        # Debug: Log PLO_PLAYERPROPS packets specifically
+        if packet_id == 9:
+            logger.info(f"🔍 MANAGER_PROCESSOR: Received PLO_PLAYERPROPS (packet {packet_id})")
         """
         Process a packet using registry-driven parsing and manager delegation.
         
@@ -210,9 +213,16 @@ class ManagerPacketProcessor:
                         logger.warning(f"Failed to emit event {event_type}: {e}")
             
             # Step 2: Check if we have manager delegation for this packet
+            logger.debug(f"🔍 Checking delegation for packet {packet_id}")
+            logger.debug(f"🔍 Delegation map has: {list(self.manager_delegation.keys())}")
+            
             if packet_id in self.manager_delegation:
                 manager_name = self.manager_delegation[packet_id]
-                logger.debug(f"📋 Delegating packet {packet_id} to {manager_name}")
+                logger.info(f"📋 Delegating packet {packet_id} to {manager_name}")
+                
+                # Special debug for PLO_PLAYERPROPS
+                if packet_id == 9:
+                    logger.info(f"🎯 PLO_PLAYERPROPS delegation to {manager_name}")
                 
                 # Debug logging for specific packets
                 if packet_id == 49:  # PLO_GMAPWARP2

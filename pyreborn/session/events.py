@@ -16,6 +16,13 @@ class EventType(Enum):
     CONNECTION_FAILED = "connection_failed"
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILED = "login_failed"
+    DISCONNECTED = "disconnected"
+    AUTHENTICATION_SUCCESS = "authentication_success"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    RAW_PACKET_RECEIVED = "raw_packet_received"
+    PLAYER_PROPERTIES_RECEIVED = "player_properties_received"
+    STRUCTURED_PACKET_RECEIVED = "structured_packet_received"
+    INCOMING_PACKET_STRUCTURED = "incoming_packet_structured"
     
 class EventManager:
     """Simple event manager - no complex patterns"""

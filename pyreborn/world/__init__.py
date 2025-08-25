@@ -8,12 +8,10 @@ This module consolidates all world-related functionality:
 - Level data parsing and caching
 """
 
-from .world_manager import WorldManager
 from .level_manager import LevelManager
 from .gmap_manager import GMAPManager
 
 __all__ = [
-    'WorldManager',
     'LevelManager',
     'GMAPManager'
 ]
