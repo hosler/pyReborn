@@ -73,7 +73,7 @@ class MovementTestBot:
         self.start_segment = (1, 1)
         self.start_world = (94.0, 94.0)
     
-    def run_tests(self, username: str = "your_username", password: str = "your_password", 
+    def run_tests(self, username: str, password: str, 
                   host: str = "localhost", port: int = 14900) -> Dict[str, bool]:
         """Run comprehensive movement tests
         
@@ -452,8 +452,18 @@ class MovementTestBot:
 
 def main():
     """Run the movement test bot"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Movement Test Bot for PyReborn")
+    parser.add_argument("username", help="Username to login with")
+    parser.add_argument("password", help="Password to login with")
+    parser.add_argument("--server", default="localhost", help="Server to connect to")
+    parser.add_argument("--port", type=int, default=14900, help="Port to connect to")
+    
+    args = parser.parse_args()
+    
     bot = MovementTestBot()
-    results = bot.run_tests()
+    results = bot.run_tests(args.username, args.password, args.server, args.port)
     
     # Exit with appropriate code based on movement success
     movement_tests = ['movement_east', 'movement_north', 'movement_west', 'movement_south']

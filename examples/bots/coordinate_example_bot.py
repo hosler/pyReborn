@@ -72,7 +72,7 @@ class CoordinateValidationBot:
         # Tolerance for coordinate comparisons
         self.coord_tolerance = 1.0
     
-    def run_tests(self, username: str = "your_username", password: str = "your_password", 
+    def run_tests(self, username: str, password: str, 
                   host: str = "localhost", port: int = 14900) -> Dict[str, bool]:
         """Run comprehensive coordinate validation tests
         
@@ -399,8 +399,18 @@ class CoordinateValidationBot:
 
 def main():
     """Run the coordinate validation bot"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Coordinate Validation Bot for PyReborn")
+    parser.add_argument("username", help="Username to login with")
+    parser.add_argument("password", help="Password to login with")
+    parser.add_argument("--server", default="localhost", help="Server to connect to")
+    parser.add_argument("--port", type=int, default=14900, help="Port to connect to")
+    
+    args = parser.parse_args()
+    
     bot = CoordinateValidationBot()
-    results = bot.run_tests()
+    results = bot.run_tests(args.username, args.password, args.server, args.port)
     
     # Exit with appropriate code
     coordinate_tests = [
