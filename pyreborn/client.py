@@ -10,17 +10,9 @@ ModularRebornClient implementation. Users only need to import this one file.
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 import logging
 
-if TYPE_CHECKING:
-    from .advanced_api.builder import ClientBuilder
-
-# Import the real implementation, with fallback to mock for testing
-try:
-    from .core.reborn_client import RebornClient as _ModularRebornClient
-    _using_real_client = True
-except ImportError as e:
-    logging.warning(f"Could not import real RebornClient: {e}. Using mock implementation.")
-    from .core.simple_consolidated_client import SimpleConsolidatedClient as _ModularRebornClient
-    _using_real_client = False
+# Import the real implementation
+from .core.reborn_client import RebornClient as _ModularRebornClient
+_using_real_client = True
 from .models.player import Player
 from .models.level import Level
 from .protocol.enums import Direction, PlayerProp
@@ -105,24 +97,7 @@ class Client:
             raise ConnectionError(f"Failed to login as {username}")
         return client
     
-    @classmethod
-    def builder(cls) -> 'ClientBuilder':
-        """
-        Create a fluent builder for configuring the client.
-        
-        Returns:
-            ClientBuilder instance for fluent configuration
-            
-        Example:
-            client = (Client.builder()
-                .with_server("localhost", 14900)
-                .with_version("6.037")
-                .with_auto_reconnect(max_retries=3)
-                .with_logging(level="DEBUG")
-                .build())
-        """
-        from .advanced_api.builder import ClientBuilder
-        return ClientBuilder()
+    # Builder pattern removed for simplicity - use direct Client() constructor
     
     def connect(self) -> bool:
         """

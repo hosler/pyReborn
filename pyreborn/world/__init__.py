@@ -11,11 +11,9 @@ This module consolidates all world-related functionality:
 from .world_manager import WorldManager
 from .level_manager import LevelManager
 from .gmap_manager import GMAPManager
-from .coordinate_manager import CoordinateManager
 
 __all__ = [
     'WorldManager',
     'LevelManager',
-    'GMAPManager', 
-    'CoordinateManager',
+    'GMAPManager'
 ]

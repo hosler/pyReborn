@@ -17,7 +17,7 @@ from ..session.session_manager import SessionManager
 from ..world.world_manager import WorldManager
 from ..world.level_manager import LevelManager
 from ..world.gmap_manager import GMAPManager
-from ..gameplay.gameplay_manager import GameplayManager
+# Gameplay manager removed for simplicity
 from ..protocol.packet_processor import PacketProcessor
 from ..config.client_config import ClientConfig
 from ..models.player import Player
@@ -55,14 +55,14 @@ class RebornClient:
         self.level_manager = LevelManager()
         self.gmap_manager = GMAPManager()
         self.world_manager = WorldManager()
-        self.gameplay_manager = GameplayManager()
+        # Gameplay manager removed for simplicity
         
         # Initialize individual gameplay managers from the gameplay system
         from ..gameplay.item_manager import ItemManager
         from ..gameplay.combat_manager import CombatManager
         from ..gameplay.npc_manager import NPCManager
         from ..gameplay.weapon_manager import WeaponManager
-        from ..communication.communication_manager import CommunicationManager
+        # Communication manager removed - functionality moved to client
         from ..session.file_manager import FileManager
         from ..session.cache_manager import CacheManager
         
@@ -70,7 +70,7 @@ class RebornClient:
         self.combat_manager = CombatManager()
         self.npc_manager = NPCManager()
         self.weapon_manager = WeaponManager()
-        self.communication_manager = CommunicationManager()
+        # Communication functionality moved to client methods
         
         # Initialize file download system
         self.cache_manager = CacheManager()
@@ -291,7 +291,7 @@ class RebornClient:
             'level_packet_manager': self.level_packet_manager,
             'gmap': self.gmap_manager,
             'world': self.world_manager,
-            'gameplay': self.gameplay_manager,
+            # gameplay manager removed
             'system_manager': self.system_manager,
             'event': self.events,
             # Individual managers for test compatibility

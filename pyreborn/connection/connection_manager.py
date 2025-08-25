@@ -12,8 +12,14 @@ import logging
 from typing import Optional, Callable
 
 from .socket_manager import ConnectionManager as SocketManager
-from .resilience_manager import ConnectionState, ReconnectStrategy
-from .version_manager import VersionManager
+# Simplified - define simple connection state directly
+from enum import Enum
+
+class ConnectionState(Enum):
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting" 
+    CONNECTED = "connected"
+    FAILED = "failed"
 from .encryption import RebornEncryption
 
 logger = logging.getLogger(__name__)
@@ -27,7 +33,9 @@ class ConnectionManager:
         self.port = port
         
         # Core components
-        self.version_manager = VersionManager(version)
+        # Simple version manager instead of complex one
+        from .simple_version_manager import SimpleVersionManager
+        self.version_manager = SimpleVersionManager(version)
         self.socket_manager = SocketManager()
         self.encryption = RebornEncryption()
         
@@ -68,6 +76,7 @@ class ConnectionManager:
             return False
             
         try:
+            # Use simplified version manager
             login_packet = self.version_manager.create_login_packet(
                 account, password, self.socket_manager.encryption_key
             )

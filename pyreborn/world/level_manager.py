@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .level_parser import LevelParser
-from .coordinate_manager import Position
+# Use simple tuple for position instead of complex Position class
+Position = tuple  # (x, y)
 
 
 @dataclass

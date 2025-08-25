@@ -41,15 +41,8 @@ from .client import Client, connect_and_login
 from .models import Player, Level  
 from .events import EventType
 from .api import quick_connect, Direction, PlayerProp
-# Import from the new advanced_api/ directory
-from .advanced_api import ClientBuilder, PresetBuilder
-
-# Legacy compatibility (for existing code)
-try:
-    from .core.reborn_client import RebornClient
-except ImportError:
-    from .core.simple_consolidated_client import SimpleConsolidatedClient as RebornClient
-from .compat.legacy_client import LegacyRebornClient
+# Core client implementation
+from .core.reborn_client import RebornClient
 
 # Version info
 __version__ = "3.0.0"
@@ -62,6 +55,7 @@ __all__ = [
     'Client',                # Simple client (RECOMMENDED)
     'connect_and_login',     # Connection helper
     'quick_connect',         # Quick connection with defaults
+    'RebornClient',          # Core implementation
     
     # Data models
     'Player',                # Player data

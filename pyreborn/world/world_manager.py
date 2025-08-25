@@ -13,7 +13,8 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from .level_manager import LevelManager, LevelData, LevelEntity
 from .gmap_manager import GMAPManager
-from .coordinate_manager import CoordinateManager, Position
+# Simplified - no need for complex coordinate manager
+Position = tuple  # (x, y)
 
 
 class WorldManager:
@@ -25,7 +26,7 @@ class WorldManager:
         # Core components
         self.levels = LevelManager()
         self.gmap = GMAPManager()
-        self.coordinates = CoordinateManager()
+        # Coordinate manager removed - use coordinate helpers directly
         
         # World state
         self.current_world_name: Optional[str] = None
@@ -176,7 +177,7 @@ class WorldManager:
         """Clean up world resources"""
         self.gmap.cleanup()
         self.levels.cleanup_cache()
-        self.coordinates = CoordinateManager()  # Reset coordinates
+        # Coordinate manager removed - use coordinate helpers directly  # Reset coordinates
         self.current_world_name = None
         self.logger.info("World manager cleaned up")
         

@@ -285,7 +285,10 @@ class Level:
         to their correct positions in the tileset (128x32 tiles).
         """
         try:
-            from ..server_tile_mapping import get_tileset_position
+            # Simple math instead of 4,114-line lookup table
+            def get_tileset_position(tile_id: int) -> tuple:
+                """Convert tile ID to tileset position using simple math"""
+                return (tile_id % 128, tile_id // 128)  # 128-wide tileset
             return get_tileset_position(tile_id)
         except ImportError:
             # Fallback if mapping not available
@@ -295,7 +298,10 @@ class Level:
     def tileset_position_to_tile_id(tileset_x: int, tileset_y: int) -> int:
         """Convert tileset position to server tile ID"""
         try:
-            from ..server_tile_mapping import get_server_tile_id
+            # Simple math instead of 4,114-line lookup table  
+            def get_server_tile_id(x: int, y: int) -> int:
+                """Convert tileset position to tile ID using simple math"""
+                return y * 128 + x  # 128-wide tileset
             return get_server_tile_id(tileset_x, tileset_y)
         except ImportError:
             # Fallback

@@ -8,20 +8,16 @@ This module consolidates all connection-related functionality:
 - Connection resilience and recovery
 """
 
+# Simplified connection module
 from .connection_manager import ConnectionManager
 from .socket_manager import ConnectionManager as SocketManager
-from .resilience_manager import ConnectionState, ReconnectStrategy
-from .version_manager import VersionManager
 from .encryption import RebornEncryption
 from .versions import get_version_config, get_default_version, ClientType
 from .version_codecs import create_codec
 
 __all__ = [
     'ConnectionManager',
-    'SocketManager',
-    'ConnectionState',
-    'ReconnectStrategy', 
-    'VersionManager',
+    'SocketManager', 
     'RebornEncryption',
     'get_version_config',
     'get_default_version',

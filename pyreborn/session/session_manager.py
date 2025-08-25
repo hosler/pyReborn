@@ -23,7 +23,10 @@ try:
     from ..world.coordinate_helpers import CoordinateHelpers, CoordinateSet
     GMAP_AVAILABLE = True
 except ImportError:
+    # Fallback if coordinate helpers not available
     GMAP_AVAILABLE = False
+    CoordinateSet = None
+    CoordinateHelpers = None
 
 
 class SessionManager:
