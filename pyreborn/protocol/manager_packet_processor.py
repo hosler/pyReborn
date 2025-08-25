@@ -16,7 +16,9 @@ from ..packets import PACKET_REGISTRY
 from .registry_packet_parser import RegistryPacketParser
 from .enums import ServerToPlayer
 from ..session.events import EventType
-from .packet_metrics import record_packet_metric
+# Packet metrics removed for simplicity
+def record_packet_metric(packet_id, success, duration=0, packet_name=None, **kwargs):
+    pass  # No-op stub - accepts all arguments
 
 logger = logging.getLogger(__name__)
 

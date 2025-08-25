@@ -33,9 +33,9 @@ class ConnectionManager:
         self.port = port
         
         # Core components
-        # Simple version manager instead of complex one
-        from .simple_version_manager import SimpleVersionManager
-        self.version_manager = SimpleVersionManager(version)
+        # Use working version manager for login compatibility  
+        from .version_manager import VersionManager
+        self.version_manager = VersionManager(version)
         self.socket_manager = SocketManager()
         self.encryption = RebornEncryption()
         
@@ -76,7 +76,7 @@ class ConnectionManager:
             return False
             
         try:
-            # Use simplified version manager
+            # Use working version manager for proper login packets
             login_packet = self.version_manager.create_login_packet(
                 account, password, self.socket_manager.encryption_key
             )
