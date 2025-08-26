@@ -81,13 +81,7 @@ def get_registry_stats() -> Dict[str, Any]:
 # Export commonly used constants
 from .protocol.enums import Direction, PlayerProp
 
-# Export remaining API components (simplified)
-try:
-    from .advanced_api import AsyncClient, async_quick_connect
-except ImportError:
-    # Advanced APIs removed for simplicity
-    AsyncClient = None
-    async_quick_connect = None
+# Advanced APIs removed for simplicity - use basic Client class instead
 from .protocol.packet_enums import IncomingPackets, OutgoingPackets, ServerToClient, ClientToServer
 
 __all__ = [
