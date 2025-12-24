@@ -186,3 +186,11 @@ analyze_*.py
 trace_*.py
 capture_*.py
 CLAUDE.md
+
+# Old examples/tests/docs (use old API)
+examples/
+tests/
+docs/
+API_QUICKSTART.md
+baseline_results.json
+quick_test.py
