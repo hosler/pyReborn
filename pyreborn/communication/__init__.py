@@ -1,1 +1,0 @@
-"""Communication module for handling chat and messages"""

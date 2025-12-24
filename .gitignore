@@ -169,6 +169,7 @@ examples/games/assets/
 examples/games/*/assets/
 cache/
 pyreborn/raw_files_cache/
+pyreborn/assets/
 
 # Proprietary game content (not for public release)
 examples/games/reborn_modern/assets/
@@ -184,3 +185,4 @@ test_*.py
 analyze_*.py
 trace_*.py
 capture_*.py
+CLAUDE.md

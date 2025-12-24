@@ -1,1 +1,0 @@
-# NPC outgoing packets - NPC interactions, properties

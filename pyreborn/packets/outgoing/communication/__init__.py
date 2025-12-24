@@ -1,1 +1,0 @@
-# Communication outgoing packets - chat, private messages

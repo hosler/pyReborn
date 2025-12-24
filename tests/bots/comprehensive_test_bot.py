@@ -70,15 +70,11 @@ class ComprehensiveTestBot:
         try:
             logger.info(f"\n[TEST] {test_name}")
             
-            # Import and create client - try real client first, fallback to mock
-            try:
-                from pyreborn import RebornClient
-                logger.info("Using RebornClient from pyreborn package")
-            except ImportError:
-                from pyreborn.core.simple_consolidated_client import SimpleConsolidatedClient as RebornClient
-                logger.warning("Using mock SimpleConsolidatedClient")
+            # Import and create client - use simplified Client
+            from pyreborn import Client
+            logger.info("Using simplified Client from pyreborn package")
             
-            self.client = RebornClient(
+            self.client = Client(
                 host=self.host,
                 port=self.port,
                 version=self.version

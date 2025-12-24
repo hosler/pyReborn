@@ -1,91 +1,87 @@
 """
-PyReborn - Simple Python client for Reborn servers
-==================================================
+pyreborn - A minimal Python client for Reborn servers
 
-PyReborn provides a clean, simple interface for connecting to Reborn Reborn servers.
-The library handles all the complex protocol details internally, exposing only 
-what users actually need.
-
-Quick Start:
+Usage:
     from pyreborn import Client
-    
+
     client = Client("localhost", 14900)
     client.connect()
     client.login("username", "password")
-    
-    # Move player
-    client.move(1, 0)
-    
-    # Chat  
+    client.move(1, 0)  # Move right
     client.say("Hello!")
-    
-    # Get player info
-    player = client.get_player()
-    print(f"Player: {player.account} at ({player.x}, {player.y})")
+    client.disconnect()
 
-Advanced Usage:
-    from pyreborn import quick_connect, Direction, EventType
-    
-    # Quick connection
-    client = quick_connect("localhost", 14900, "user", "pass")
-    
-    # Event handling
-    def on_chat(event_data):
-        print(f"Chat: {event_data}")
-    
-    client.on_event(EventType.PLAYER_CHAT, on_chat)
+Or with context manager:
+    with Client("localhost", 14900) as client:
+        client.connect()
+        client.login("username", "password")
+        client.move(1, 0)
+
+Or quick connect:
+    from pyreborn import connect
+
+    client = connect("username", "password")
+    if client:
+        client.move(1, 0)
+        client.disconnect()
+
+Or via listserver:
+    from pyreborn import ListServerClient, connect_via_listserver
+
+    # Get server list
+    ls = ListServerClient("listserver.example.com", 14922)
+    response = ls.login("username", "password")
+    for server in response.servers:
+        print(f"{server.name}: {server.ip}:{server.port}")
+
+    # Or connect directly via listserver
+    client = connect_via_listserver(
+        "listserver.example.com", 14922,
+        "username", "password",
+        server_name="My Server"
+    )
+
+RC (Remote Control) for server administration:
+    from pyreborn import RCClient, rc_connect
+
+    # Full control
+    rc = RCClient("localhost", 14900)
+    rc.connect()
+    rc.login("admin_account", "password")
+    rc.rc_say("Hello other admins!")
+    rc.kick_player(player_id)
+    rc.ban_player("baduser", True, "Cheating")
+    rc.disconnect()
+
+    # Quick connect
+    rc = rc_connect("admin", "password")
+    if rc:
+        rc.admin_message("Server maintenance in 5 minutes!")
+        rc.disconnect()
 """
 
-# Simple public API - this is all users should need to import
-from .client import Client, connect_and_login
-from .models import Player, Level  
-from .events import EventType
-from .api import quick_connect, Direction, PlayerProp
-# Core client implementation
-from .core.reborn_client import RebornClient
+__version__ = "1.0.0"
 
-# Version info
-__version__ = "3.0.0"
-__author__ = "PyReborn Contributors"  
-__license__ = "MIT"
+from .client import Client, connect
+from .player import Player
+from .listserver import (
+    ListServerClient,
+    ServerEntry,
+    ListServerResponse,
+    get_server_list,
+    connect_via_listserver
+)
+from .rc_client import RCClient, rc_connect
 
-# What users can import directly
 __all__ = [
-    # Main client
-    'Client',                # Simple client (RECOMMENDED)
-    'connect_and_login',     # Connection helper
-    'quick_connect',         # Quick connection with defaults
-    'RebornClient',          # Core implementation
-    
-    # Data models
-    'Player',                # Player data
-    'Level',                 # Level data
-    
-    # Events  
-    'EventType',             # Event type constants
-    
-    # Constants
-    'Direction',             # Direction constants
-    'PlayerProp',            # Player property constants
-    
-    # Legacy clients (backward compatibility)
-    'RebornClient',          # Modern client (direct access)
-    'LegacyRebornClient',    # Legacy monolithic client
+    "Client",
+    "Player",
+    "connect",
+    "ListServerClient",
+    "ServerEntry",
+    "ListServerResponse",
+    "get_server_list",
+    "connect_via_listserver",
+    "RCClient",
+    "rc_connect"
 ]
-
-# Simple convenience functions
-def connect(host: str = "localhost", port: int = 14900) -> Client:
-    """
-    Create a new Client instance.
-    
-    Args:
-        host: Server hostname or IP (default: localhost)
-        port: Server port (default: 14900)
-        
-    Returns:
-        Client: A new client instance ready to connect
-    """
-    return Client(host, port)
-
-# Add convenience function to exports
-__all__.append('connect')

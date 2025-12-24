@@ -1,1 +1,0 @@
-"""System and protocol packets - Connection, authentication, server communication"""
