@@ -1,17 +1,27 @@
 """
 pyreborn - Protocol layer
 Handles socket connection, encryption, and packet framing.
+
+Supports both TCP sockets (native Python) and WebSocket (browser via Pyodide).
 """
 
-import socket
+import sys
 import struct
 import zlib
 import bz2
 import random
-import select
+import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Callable
+
+# Detect browser environment
+IS_BROWSER = sys.platform == "emscripten"
+
+# Only import socket/select for non-browser
+if not IS_BROWSER:
+    import socket
+    import select
 
 
 # =============================================================================
@@ -447,4 +457,307 @@ class Protocol:
         except Exception as e:
             print(f"Recv error: {e}")
 
+        return packets
+
+
+# =============================================================================
+# WebSocket Protocol (for browser/Pyodide)
+# =============================================================================
+
+class WebSocketProtocol:
+    """
+    WebSocket-based protocol for browser environments.
+
+    Connects to a WebSocket proxy that bridges to the Reborn TCP server.
+    Has the same interface as Protocol for drop-in replacement.
+
+    Usage:
+        # In browser, connect via proxy:
+        protocol = WebSocketProtocol("ws://localhost:14901", "reborn.server.com", 14900)
+        protocol.connect()  # Connects to proxy, which connects to Reborn server
+        protocol.send_login(username, password)
+        packets = protocol.recv_packets()
+    """
+
+    def __init__(self, proxy_url: str, host: str, port: int, version: str = "6.037"):
+        """
+        Create a WebSocket protocol.
+
+        Args:
+            proxy_url: WebSocket URL of the proxy (e.g., ws://localhost:14901)
+            host: Reborn server hostname (proxy will connect to this)
+            port: Reborn server port
+            version: Protocol version
+        """
+        self.proxy_url = proxy_url
+        self.host = host
+        self.port = port
+
+        self.ws = None
+        self.connected = False
+        self._tcp_connected = False
+
+        # Encryption (same as TCP Protocol)
+        self.encryption_key = random.randint(0, 127)
+        self.codec = Gen5Codec(self.encryption_key)
+        self.first_packet = True
+
+        # Version config
+        self.version = VERSIONS.get(version, VERSIONS["6.037"])
+        self.client_type_override: Optional[ClientType] = None
+
+        # Receive buffer and packet queue
+        self.recv_buffer = b""
+        self.raw_data_expected = 0
+        self.raw_data_buffer = b""
+        self.pending_packets: List[Tuple[int, bytes]] = []
+
+        # Callbacks
+        self.on_connect: Optional[Callable] = None
+        self.on_disconnect: Optional[Callable] = None
+
+    def connect(self) -> bool:
+        """Connect to the WebSocket proxy."""
+        if not IS_BROWSER:
+            print("WebSocketProtocol requires browser environment")
+            return False
+
+        try:
+            from pyscript import window
+        except ImportError:
+            try:
+                from js import window
+            except ImportError:
+                print("Cannot import browser APIs")
+                return False
+
+        try:
+            self.ws = window.WebSocket.new(self.proxy_url)
+            self.ws.binaryType = "arraybuffer"
+
+            self.ws.onopen = self._on_open
+            self.ws.onclose = self._on_close
+            self.ws.onerror = self._on_error
+            self.ws.onmessage = self._on_message
+
+            return True
+        except Exception as e:
+            print(f"WebSocket connection failed: {e}")
+            return False
+
+    def _on_open(self, event):
+        """Handle WebSocket open."""
+        print(f"Connected to proxy: {self.proxy_url}")
+        self.connected = True
+
+        # Tell proxy which Reborn server to connect to
+        connect_msg = json.dumps({
+            "host": self.host,
+            "port": self.port
+        })
+        self.ws.send(connect_msg)
+
+        if self.on_connect:
+            self.on_connect()
+
+    def _on_close(self, event):
+        """Handle WebSocket close."""
+        print("WebSocket closed")
+        self.connected = False
+        self._tcp_connected = False
+        if self.on_disconnect:
+            self.on_disconnect()
+
+    def _on_error(self, event):
+        """Handle WebSocket error."""
+        print("WebSocket error")
+
+    def _on_message(self, event):
+        """Handle incoming WebSocket message."""
+        try:
+            try:
+                from pyscript import window
+            except ImportError:
+                from js import window
+            arr = window.Uint8Array.new(event.data)
+            data = bytes(arr)
+
+            # Check for JSON message from proxy
+            if not self._tcp_connected:
+                try:
+                    msg = json.loads(data.decode('utf-8'))
+                    if msg.get("type") == "connected":
+                        print(f"Proxy connected to {msg.get('host')}:{msg.get('port')}")
+                        self._tcp_connected = True
+                        return
+                    elif msg.get("type") == "error":
+                        print(f"Proxy error: {msg.get('message')}")
+                        return
+                    elif msg.get("type") == "disconnected":
+                        self._tcp_connected = False
+                        return
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._tcp_connected = True
+
+            # Add to receive buffer
+            self.recv_buffer += data
+            self._process_buffer()
+
+        except Exception as e:
+            print(f"Message error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _process_buffer(self):
+        """Process received data and extract packets."""
+        # Handle raw data mode
+        if self.raw_data_expected > 0:
+            bytes_needed = self.raw_data_expected - len(self.raw_data_buffer)
+            bytes_available = min(bytes_needed, len(self.recv_buffer))
+            if bytes_available > 0:
+                self.raw_data_buffer += self.recv_buffer[:bytes_available]
+                self.recv_buffer = self.recv_buffer[bytes_available:]
+
+            if len(self.raw_data_buffer) >= self.raw_data_expected:
+                self.pending_packets.append((101, self.raw_data_buffer[:self.raw_data_expected]))
+                self.raw_data_buffer = b""
+                self.raw_data_expected = 0
+
+        # Process framed packets
+        while len(self.recv_buffer) >= 2:
+            length = struct.unpack('>H', self.recv_buffer[:2])[0]
+
+            if len(self.recv_buffer) < 2 + length:
+                break
+
+            packet_data = self.recv_buffer[2:2 + length]
+            self.recv_buffer = self.recv_buffer[2 + length:]
+
+            # Decrypt/decompress
+            if self.first_packet:
+                try:
+                    decrypted = zlib.decompress(packet_data)
+                    self.first_packet = False
+                except:
+                    decrypted = self.codec.recv_packet(packet_data)
+            else:
+                decrypted = self.codec.recv_packet(packet_data)
+
+            if not decrypted:
+                continue
+
+            self._parse_packets(decrypted)
+
+    def _parse_packets(self, decrypted: bytes):
+        """Parse packets from decrypted data."""
+        pos = 0
+        while pos < len(decrypted):
+            if self.raw_data_expected > 0:
+                if pos + self.raw_data_expected <= len(decrypted):
+                    raw_packet = decrypted[pos:pos + self.raw_data_expected]
+                    pos += self.raw_data_expected
+                    self.raw_data_expected = 0
+
+                    if len(raw_packet) >= 1:
+                        raw_id = raw_packet[0] - 32
+                        raw_body = raw_packet[1:] if len(raw_packet) > 1 else b""
+                        if raw_body and raw_body[-1:] == b'\n':
+                            raw_body = raw_body[:-1]
+                        self.pending_packets.append((raw_id, raw_body))
+                else:
+                    self.raw_data_buffer = decrypted[pos:]
+                    break
+                continue
+
+            newline = decrypted.find(b'\n', pos)
+            if newline == -1:
+                break
+
+            packet_bytes = decrypted[pos:newline]
+            pos = newline + 1
+
+            if packet_bytes and len(packet_bytes) >= 1:
+                packet_id = packet_bytes[0] - 32
+                packet_body = packet_bytes[1:] if len(packet_bytes) > 1 else b""
+
+                if packet_id == 100 and len(packet_body) >= 3:
+                    b1 = packet_body[0] - 32
+                    b2 = packet_body[1] - 32
+                    b3 = packet_body[2] - 32
+                    self.raw_data_expected = (b1 << 14) | (b2 << 7) | b3
+
+                self.pending_packets.append((packet_id, packet_body))
+
+    def disconnect(self):
+        """Disconnect from proxy."""
+        self.connected = False
+        self._tcp_connected = False
+        if self.ws:
+            try:
+                self.ws.close()
+            except:
+                pass
+            self.ws = None
+
+    def send_login(self, username: str, password: str) -> bool:
+        """Send login packet."""
+        if not self.ws or not self._tcp_connected:
+            return False
+
+        try:
+            packet = bytearray()
+
+            client_type = self.client_type_override or self.version.client_type
+            packet.append((client_type.value + 32) & 0xFF)
+            packet.append((self.encryption_key + 32) & 0xFF)
+            packet.extend(self.version.protocol_string.encode('ascii'))
+            packet.append((len(username) + 32) & 0xFF)
+            packet.extend(username.encode('ascii'))
+            packet.append((len(password) + 32) & 0xFF)
+            packet.extend(password.encode('ascii'))
+
+            if self.version.sends_build and self.version.build_string:
+                packet.append((len(self.version.build_string) + 32) & 0xFF)
+                packet.extend(self.version.build_string.encode('ascii'))
+
+            packet.extend(b'emscripten,,,,,pyreborn')
+
+            compressed = zlib.compress(bytes(packet))
+            length = struct.pack('>H', len(compressed))
+            self._send_bytes(length + compressed)
+            return True
+
+        except Exception as e:
+            print(f"Login failed: {e}")
+            return False
+
+    def send_packet(self, packet_id: int, data: bytes = b"") -> bool:
+        """Send encrypted packet."""
+        if not self.ws or not self._tcp_connected:
+            return False
+
+        try:
+            packet = bytes([packet_id + 32]) + data + b'\n'
+            encrypted = self.codec.send_packet(packet)
+            self._send_bytes(encrypted)
+            return True
+        except Exception as e:
+            print(f"Send failed: {e}")
+            return False
+
+    def _send_bytes(self, data: bytes):
+        """Send bytes over WebSocket."""
+        try:
+            from pyscript import window
+        except ImportError:
+            from js import window
+        arr = window.Uint8Array.new(len(data))
+        for i, b in enumerate(data):
+            arr[i] = b
+        self.ws.send(arr.buffer)
+
+    def recv_packets(self, timeout: float = 0.0) -> List[Tuple[int, bytes]]:
+        """Get received packets (async - just returns pending packets)."""
+        packets = self.pending_packets[:]
+        self.pending_packets.clear()
         return packets

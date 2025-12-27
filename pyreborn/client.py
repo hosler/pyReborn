@@ -1,12 +1,16 @@
 """
 pyreborn - Client
 Simple, synchronous client for Reborn servers.
+
+Supports both TCP (native Python) and WebSocket (browser via Pyodide).
+In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
+import sys
 import time
 from typing import Optional, Callable, Dict, List, Tuple
 
-from .protocol import Protocol
+from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
 from .packets import (
     PacketID,
@@ -64,7 +68,8 @@ class Client:
         client.disconnect()
     """
 
-    def __init__(self, host: str = "localhost", port: int = 14900, version: str = "2.22"):
+    def __init__(self, host: str = "localhost", port: int = 14900, version: str = "2.22",
+                 proxy_url: Optional[str] = None):
         """
         Create a new client.
 
@@ -72,12 +77,22 @@ class Client:
             host: Server hostname or IP
             port: Server port (default 14900)
             version: Protocol version ("2.22" or "6.037")
+            proxy_url: WebSocket proxy URL for browser (e.g., "ws://localhost:14901")
+                       Required when running in browser, ignored otherwise.
         """
         self.host = host
         self.port = port
         self.version = version
+        self.proxy_url = proxy_url
 
-        self._protocol = Protocol(host, port, version)
+        # Use WebSocketProtocol in browser, regular Protocol otherwise
+        if IS_BROWSER:
+            if not proxy_url:
+                raise ValueError("proxy_url is required when running in browser")
+            self._protocol = WebSocketProtocol(proxy_url, host, port, version)
+        else:
+            self._protocol = Protocol(host, port, version)
+
         self.player = Player()
 
         # Authentication state
