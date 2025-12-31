@@ -85,8 +85,10 @@ class PacketID:
     PLO_OTHERPLPROPS = 8     # Other player properties
     PLO_PLAYERPROPS = 9      # Player properties
     PLO_TOALL = 13           # Chat
+    PLO_PLAYERWARP = 14      # Warp confirmation: [x*2:GChar][y*2:GChar][level_name]
     PLO_NPCDEL = 29          # NPC deleted
     PLO_SHOWIMG = 32         # Show image - also used for level chat!
+    PLO_NPCWEAPONADD = 33    # Weapon added: +name image!<script
     PLO_RC_ADMINMESSAGE = 35 # Admin message to all players
     PLO_HURTPLAYER = 40      # Player hurt/damage notification
     PLO_NEWWORLDTIME = 42    # Heartbeat/time sync
@@ -99,6 +101,8 @@ class PacketID:
     PLO_PLAYERWARP2 = 49     # Player warp with gmap position
     PLO_RAWDATA = 100        # Raw data size announcement
     PLO_BOARDPACKET = 101    # Level tile data (8192 bytes = 64x64 tiles @ 2 bytes each)
+    PLO_FILE = 102           # File transfer packet
+    PLO_FILESENDFAILED = 104 # File send failed
 
     # RC Server -> Client packets
     PLO_RC_SERVERFLAGSGET = 61    # Server flags response
@@ -119,6 +123,7 @@ class PacketID:
     # Client -> Server
     PLI_LEVELWARP = 0        # Warp to level (x, y, level_name)
     PLI_PLAYERPROPS = 2      # Send player properties (note: 6 is PLI_TOALL in old protocol)
+    PLI_NPCPROPS = 3         # Send NPC properties (char props like #P1, #P2)
     PLI_HORSEADD = 7         # Add/mount horse
     PLI_ARROWADD = 9         # Add arrow to level
     PLI_BADDYHURT = 16       # Hurt a baddy
@@ -126,6 +131,7 @@ class PacketID:
     PLI_FLAGDEL = 19         # Delete a flag
     PLI_TOALL = 6            # Chat (this is the actual PLI_TOALL)
     PLI_OPENCHEST = 20       # Open a chest
+    PLI_WANTFILE = 23        # Request file from server
     PLI_SHOWIMG = 24         # Show image (chat in level)
     PLI_HURTPLAYER = 26      # Attack/hurt player (send damage to victim)
     PLI_EXPLOSION = 27       # Bomb explosion
@@ -283,29 +289,23 @@ def parse_npc_props(data: bytes) -> dict:
                 props['direction'] = data[pos] - 32
                 pos += 1
 
-        # X2 (prop 75) - 2 bytes, precise position
+        # PLPROP_OSTYPE (75) - string (1 byte length + chars)
         elif prop_id == 75:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['x'] = pixels / 16.0
-                pos += 2
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props['os_type'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
 
-        # Y2 (prop 76) - 2 bytes, precise position
+        # PLPROP_TEXTCODEPAGE (76) - gInt (3 bytes)
         elif prop_id == 76:
-            if pos + 1 < len(data):
+            if pos + 2 < len(data):
                 b1 = data[pos] - 32
                 b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['y'] = pixels / 16.0
-                pos += 2
+                b3 = data[pos + 2] - 32
+                props['codepage'] = (b1 << 14) | (b2 << 7) | b3
+                pos += 3
 
         # String properties - skip
         elif prop_id in [1, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]:
@@ -438,8 +438,17 @@ def parse_player_movement(data: bytes) -> dict:
             if pos < len(data):
                 pos += 1  # Skip value byte
 
+        # PLPROP_CURLEVEL (20) - level name string - extract it
+        elif prop_id == 20:
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    result['level'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
         # String props - skip them
-        elif prop_id in [0, 10, 11, 12, 20, 21, 22, 23]:
+        elif prop_id in [0, 10, 11, 12, 21, 22, 23]:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1 + str_len
@@ -575,9 +584,16 @@ def parse_other_player(data: bytes) -> dict:
                 props['y'] = float(data[pos] - 32) / 2.0
                 pos += 1
 
-        # PLPROP_SPRITE/STATUS (17, 18) - 1 byte each
-        elif prop_id in [17, 18]:
+        # PLPROP_SPRITE (17) - contains direction in lower 2 bits
+        elif prop_id == 17:
             if pos < len(data):
+                props['sprite'] = data[pos] - 32
+                pos += 1
+
+        # PLPROP_STATUS (18) - 1 byte
+        elif prop_id == 18:
+            if pos < len(data):
+                props['status'] = data[pos] - 32
                 pos += 1
 
         # PLPROP_SWORDPOWER (8) - may have gchar followed by string for custom sword
@@ -585,26 +601,44 @@ def parse_other_player(data: bytes) -> dict:
             if pos < len(data):
                 val = data[pos] - 32
                 pos += 1
-                if val > 4:  # Custom image
+                if val > 4:  # Custom image - power is (val - 30)
+                    props['sword_power'] = val - 30
                     if pos < len(data):
                         str_len = data[pos] - 32
                         pos += 1
-                        pos += str_len
+                        if str_len > 0 and pos + str_len <= len(data):
+                            props['sword_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                            pos += str_len
+                else:
+                    props['sword_power'] = val
 
         # PLPROP_SHIELDPOWER (9) - similar to sword
         elif prop_id == 9:
             if pos < len(data):
                 val = data[pos] - 32
                 pos += 1
-                if val > 3:  # Custom shield
-                    val -= 10
-                    if val >= 0 and pos < len(data):
+                if val > 3:  # Custom shield - power is (val - 10)
+                    props['shield_power'] = val - 10
+                    if pos < len(data):
                         str_len = data[pos] - 32
                         pos += 1
-                        pos += str_len
+                        if str_len > 0 and pos + str_len <= len(data):
+                            props['shield_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                            pos += str_len
+                else:
+                    props['shield_power'] = val
 
-        # PLPROP_HEADGIF (11), PLPROP_CURCHAT (12) - strings
-        elif prop_id in [11, 12]:
+        # PLPROP_HEADGIF (11) - head image
+        elif prop_id == 11:
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props['head_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
+        # PLPROP_CURCHAT (12) - chat string (skip)
+        elif prop_id == 12:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1
@@ -631,16 +665,47 @@ def parse_other_player(data: bytes) -> dict:
                 if str_len > 0 and pos + str_len <= len(data):
                     pos += str_len
 
+        # PLPROP_BODYIMG (35) - body image string
+        elif prop_id == 35:
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props['body_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
         # Various other string props
-        elif prop_id in [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 35, 36, 37, 38, 39, 40, 41]:
+        elif prop_id in [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 36, 37, 38, 39, 40, 41]:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1
                 if str_len > 0 and pos + str_len <= len(data):
                     pos += str_len
 
-        # PLPROP_X2 (75) - 2 bytes precise pixel position
+        # PLPROP_OSTYPE (75) - string (1 byte length + chars)
         elif prop_id == 75:
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props['os_type'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
+        # PLPROP_TEXTCODEPAGE (76) - gInt (3 bytes)
+        elif prop_id == 76:
+            if pos + 2 < len(data):
+                b1 = data[pos] - 32
+                b2 = data[pos + 1] - 32
+                b3 = data[pos + 2] - 32
+                props['codepage'] = (b1 << 14) | (b2 << 7) | b3
+                pos += 3
+
+        # Single byte props (1-7 are numeric stats)
+        elif prop_id in [1, 2, 3, 4, 5, 6, 7]:
+            pos += 1
+
+        # PLPROP_X2 (78) - 2 bytes, high precision X
+        elif prop_id == 78:
             if pos + 1 < len(data):
                 b1 = data[pos] - 32
                 b2 = data[pos + 1] - 32
@@ -651,8 +716,8 @@ def parse_other_player(data: bytes) -> dict:
                 props['x'] = pixels / 16.0
                 pos += 2
 
-        # PLPROP_Y2 (76) - 2 bytes precise pixel position
-        elif prop_id == 76:
+        # PLPROP_Y2 (79) - 2 bytes, high precision Y
+        elif prop_id == 79:
             if pos + 1 < len(data):
                 b1 = data[pos] - 32
                 b2 = data[pos + 1] - 32
@@ -663,12 +728,10 @@ def parse_other_player(data: bytes) -> dict:
                 props['y'] = pixels / 16.0
                 pos += 2
 
-        # Single byte props (1-7 are numeric stats)
-        elif prop_id in [1, 2, 3, 4, 5, 6, 7]:
-            pos += 1
-
-        # PLPROP_RUPEESCOUNT (3) is 3 bytes
-        # Actually need to handle this specially but skip for now
+        # PLPROP_Z2 (80) - 2 bytes, high precision Z
+        elif prop_id == 80:
+            if pos + 1 < len(data):
+                pos += 2
 
         # Default: single byte
         else:
@@ -705,6 +768,33 @@ def parse_newworldtime(data: bytes) -> dict:
     return {'time': time_val}
 
 
+def parse_playerwarp(data: bytes) -> dict:
+    """
+    Parse PLO_PLAYERWARP (packet 14) - player warp/spawn position.
+    Format: x*2(gchar) y*2(gchar) level_name
+
+    x, y are sent as half-tile coordinates (multiplied by 2).
+    We convert to full tile coordinates for consistency.
+
+    Returns dict with:
+        x, y: position in tiles (local coordinates 0-63)
+        level: level name
+    """
+    if len(data) < 2:
+        return {}
+
+    reader = PacketReader(data)
+    x_halftile = reader.read_gchar()
+    y_halftile = reader.read_gchar()
+    level = reader.remaining().decode('latin-1', errors='replace').strip()
+
+    return {
+        'x': float(x_halftile) / 2.0,
+        'y': float(y_halftile) / 2.0,
+        'level': level
+    }
+
+
 def parse_playerwarp2(data: bytes) -> dict:
     """
     Parse PLO_PLAYERWARP2 (packet 49) - player position in GMAP.
@@ -739,6 +829,58 @@ def parse_playerwarp2(data: bytes) -> dict:
         'gmap_y': gmap_y,
         'level': level
     }
+
+
+def parse_weapon_add(data: bytes) -> dict:
+    """
+    Parse PLO_NPCWEAPONADD (packet 33) - weapon being added to player.
+    Format: +weaponname imagename!<script
+
+    Returns dict with:
+        name: weapon name (without + prefix)
+        image: weapon image
+        script: weapon GS1 script
+    """
+    try:
+        text = data.decode('latin-1', errors='replace')
+
+        # Format: +name image!<script  or  +name image script
+        if not text.startswith('+'):
+            return {}
+
+        # Remove + prefix
+        text = text[1:]
+
+        # Find first space (separates name from rest)
+        space_idx = text.find(' ')
+        if space_idx == -1:
+            return {'name': text, 'image': '', 'script': ''}
+
+        name = text[:space_idx]
+        rest = text[space_idx + 1:]
+
+        # Find script separator (!< or just find script start)
+        script_sep = rest.find('!<')
+        if script_sep != -1:
+            image = rest[:script_sep]
+            script = rest[script_sep + 2:]  # Skip !<
+        else:
+            # Try to find 'if(' as script start
+            if_idx = rest.lower().find('if(')
+            if if_idx != -1:
+                image = rest[:if_idx].strip()
+                script = rest[if_idx:]
+            else:
+                image = rest
+                script = ''
+
+        return {
+            'name': name,
+            'image': image.strip(),
+            'script': script
+        }
+    except:
+        return {}
 
 
 def parse_player_props(data: bytes) -> Dict[str, Any]:
@@ -963,12 +1105,15 @@ def parse_player_props(data: bytes) -> Dict[str, Any]:
                 pos += 4
 
         # Account name (prop 34) - string
+        # Only parse if we haven't seen account yet (avoid corruption from misinterpreted bytes)
         elif prop_id == 34:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1
                 if str_len > 0 and pos + str_len <= len(data):
-                    props['account'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    # Only set account if we haven't parsed it yet
+                    if 'account' not in props:
+                        props['account'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
                     pos += str_len
 
         # Body image (prop 35) - string
@@ -1063,12 +1208,33 @@ def build_chat(message: str) -> bytes:
     return message.encode('latin-1', errors='replace')
 
 
+def build_player_chat(message: str) -> bytes:
+    """
+    Build PLI_PLAYERPROPS with PLPROP_CURCHAT (prop 12) for local level chat.
+    This shows the message above the player's head.
+    """
+    packet = bytearray()
+
+    # PLPROP_CURCHAT = 12
+    packet.append(12 + 32)
+
+    # Message length (guchar) + message
+    msg_bytes = message.encode('latin-1', errors='replace')
+    msg_len = min(len(msg_bytes), 223)
+    packet.append(msg_len + 32)
+    packet.extend(msg_bytes[:msg_len])
+
+    return bytes(packet)
+
+
 def build_movement(x: float, y: float, direction: int = 2,
-                   level_name: Optional[str] = None) -> bytes:
+                   level_name: Optional[str] = None,
+                   use_new_format: bool = False) -> bytes:
     """
     Build movement packet.
     Direction: 0=up, 1=left, 2=down, 3=right
     level_name: If provided, include PLPROP_CURLEVEL to notify server of level change
+    use_new_format: If True, use PLPROP_X2/Y2 (for v2.30+), else use PLPROP_X/Y (for pre-2.30)
     """
     packet = bytearray()
 
@@ -1077,28 +1243,48 @@ def build_movement(x: float, y: float, direction: int = 2,
     packet.append(17 + 32)
     packet.append(direction + 32)
 
-    # Convert position to pixels (16 pixels per tile)
-    pixel_x = int(x * 16)
-    pixel_y = int(y * 16)
+    if use_new_format:
+        # For v2.30+ clients: use PLPROP_X2 (78) and PLPROP_Y2 (79)
+        # Position is in pixels (tiles * 16), encoded as GUShort with sign bit
+        pixel_x = int(x * 16)
+        pixel_y = int(y * 16)
 
-    # PixelX (prop 78) - 2-byte encoding
-    packet.append(78 + 32)
-    # Encode: value = (pixels << 1) | sign_bit
-    if pixel_x < 0:
-        value = ((-pixel_x) << 1) | 1
-    else:
-        value = pixel_x << 1
-    packet.append(((value >> 7) & 0x7F) + 32)
-    packet.append((value & 0x7F) + 32)
+        # PixelX (prop 78) - 2-byte encoding
+        packet.append(78 + 32)
+        if pixel_x < 0:
+            value = ((-pixel_x) << 1) | 1
+        else:
+            value = pixel_x << 1
+        packet.append(((value >> 7) & 0x7F) + 32)
+        packet.append((value & 0x7F) + 32)
 
-    # PixelY (prop 79) - 2-byte encoding
-    packet.append(79 + 32)
-    if pixel_y < 0:
-        value = ((-pixel_y) << 1) | 1
+        # PixelY (prop 79) - 2-byte encoding
+        packet.append(79 + 32)
+        if pixel_y < 0:
+            value = ((-pixel_y) << 1) | 1
+        else:
+            value = pixel_y << 1
+        packet.append(((value >> 7) & 0x7F) + 32)
+        packet.append((value & 0x7F) + 32)
     else:
-        value = pixel_y << 1
-    packet.append(((value >> 7) & 0x7F) + 32)
-    packet.append((value & 0x7F) + 32)
+        # For pre-2.30 clients: use PLPROP_X (15) and PLPROP_Y (16)
+        # Position is in half-tiles: x_byte = x * 2 (GUChar format)
+        # Server reads: x = pPacket.readGUChar() / 2.0f
+        # So we send: (x * 2) + 32
+        x_byte = int(x * 2)
+        y_byte = int(y * 2)
+
+        # Clamp to valid range (0-223 after +32 = 32-255)
+        x_byte = max(0, min(223, x_byte))
+        y_byte = max(0, min(223, y_byte))
+
+        # PLPROP_X (15)
+        packet.append(15 + 32)
+        packet.append(x_byte + 32)
+
+        # PLPROP_Y (16)
+        packet.append(16 + 32)
+        packet.append(y_byte + 32)
 
     # PLPROP_CURLEVEL (prop 20) - current level name (for GMAP level changes)
     if level_name:
@@ -1501,6 +1687,50 @@ def build_triggeraction(x: float, y: float, action: str, npc_id: int = 0) -> byt
 
     # Action string
     packet.extend(action.encode('latin-1'))
+
+    return bytes(packet)
+
+
+def build_npc_props(npc_id: int, prop_name: str, value: str) -> bytes:
+    """
+    Build PLI_NPCPROPS (packet 3) - update NPC properties.
+
+    Args:
+        npc_id: NPC ID to update
+        prop_name: Property name (e.g., "P1", "P2", "P3" for gani attrs)
+        value: Property value
+
+    Returns:
+        Packet data for PLI_NPCPROPS
+    """
+    packet = bytearray()
+
+    # NPC ID (guint - 4 bytes)
+    packet.append(((npc_id >> 21) & 0x7F) + 32)
+    packet.append(((npc_id >> 14) & 0x7F) + 32)
+    packet.append(((npc_id >> 7) & 0x7F) + 32)
+    packet.append((npc_id & 0x7F) + 32)
+
+    # Map prop name to NPCPROP_GATTRIB
+    # P1 -> GATTRIB1 (36), P2 -> GATTRIB2 (37), P3 -> GATTRIB3 (38), etc.
+    gattrib_map = {
+        'P1': 36, 'P2': 37, 'P3': 38, 'P4': 39, 'P5': 40,
+        'P6': 44, 'P7': 45, 'P8': 46, 'P9': 47,
+        'P10': 53, 'P11': 54, 'P12': 55, 'P13': 56, 'P14': 57,
+        'P15': 58, 'P16': 59, 'P17': 60, 'P18': 61, 'P19': 62,
+        'P20': 63, 'P21': 64, 'P22': 65, 'P23': 66, 'P24': 67,
+        'P25': 68, 'P26': 69, 'P27': 70, 'P28': 71, 'P29': 72,
+        'P30': 73
+    }
+
+    prop_id = gattrib_map.get(prop_name, 15)  # Default to MESSAGE if unknown
+    packet.append(prop_id + 32)
+
+    # Value length (guchar) + value
+    val_bytes = value.encode('latin-1', errors='replace')
+    val_len = min(len(val_bytes), 223)
+    packet.append(val_len + 32)
+    packet.extend(val_bytes[:val_len])
 
     return bytes(packet)
 
@@ -2251,3 +2481,75 @@ def build_rc_filebrowser_rename(old_name: str, new_name: str) -> bytes:
     Format: old_name + "," + new_name
     """
     return f"{old_name},{new_name}".encode('latin-1', errors='replace')
+
+
+# =============================================================================
+# File Transfer Packets
+# =============================================================================
+
+def build_wantfile(filename: str) -> bytes:
+    """
+    Build PLI_WANTFILE (packet 23) - Request file from server.
+    Format: filename
+    """
+    return filename.encode('latin-1', errors='replace')
+
+
+def parse_file(data: bytes) -> dict:
+    """
+    Parse PLO_FILE (packet 102) - File transfer packet.
+
+    Format (version >= 2.1):
+        modTime (5 bytes GCHAR5) + filename_length (1 byte GCHAR) + filename + file_data
+
+    Note: GCHAR values have 32 added to them for encoding.
+
+    Returns dict with:
+        - mod_time: int - file modification time
+        - filename: str - name of the file
+        - data: bytes - file contents
+    """
+    if len(data) < 7:  # Minimum: 5 (modTime) + 1 (len) + 1 (min filename)
+        return {'mod_time': 0, 'filename': '', 'data': b''}
+
+    pos = 0
+
+    # Read modification time (5 bytes, GCHAR encoded - subtract 32 from each)
+    mod_time = 0
+    for i in range(5):
+        if pos < len(data):
+            byte_val = max(0, data[pos] - 32)  # GCHAR decode
+            mod_time = (mod_time << 8) | byte_val
+            pos += 1
+
+    # Read filename length (GCHAR encoded)
+    if pos >= len(data):
+        return {'mod_time': mod_time, 'filename': '', 'data': b''}
+
+    filename_len = max(0, data[pos] - 32)  # GCHAR decode
+    pos += 1
+
+    # Read filename
+    if pos + filename_len > len(data):
+        filename_len = len(data) - pos
+    filename = data[pos:pos + filename_len].decode('latin-1', errors='replace')
+    pos += filename_len
+
+    # Rest is file data (may end with \n which we strip)
+    file_data = data[pos:]
+    if file_data and file_data[-1:] == b'\n':
+        file_data = file_data[:-1]
+
+    return {
+        'mod_time': mod_time,
+        'filename': filename,
+        'data': file_data
+    }
+
+
+def parse_filesendfailed(data: bytes) -> str:
+    """
+    Parse PLO_FILESENDFAILED (packet 104) - File send failed.
+    Format: filename
+    """
+    return data.decode('latin-1', errors='replace')

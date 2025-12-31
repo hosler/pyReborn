@@ -18,6 +18,7 @@ from .packets import (
     parse_level_link,
     parse_npc_props,
     parse_player_props,
+    parse_playerwarp,
     parse_playerwarp2,
     parse_chat,
     parse_player_movement,
@@ -31,8 +32,10 @@ from .packets import (
     parse_item_del,
     parse_private_message,
     parse_baddy_props,
+    parse_weapon_add,
     build_movement,
     build_chat,
+    build_player_chat,
     build_sword_attack,
     build_bomb_drop,
     build_item_take,
@@ -42,13 +45,17 @@ from .packets import (
     build_attack_player,
     build_shoot,
     build_triggeraction,
+    build_npc_props,
     build_flag_set,
     build_flag_del,
     build_level_warp,
     build_private_message,
     build_baddy_hurt,
     build_open_chest,
-    build_horse_add
+    build_horse_add,
+    build_wantfile,
+    parse_file,
+    parse_filesendfailed
 )
 
 # NPC delete packet ID not in PacketID class yet
@@ -136,6 +143,9 @@ class Client:
         # Baddies (enemies): maps baddy_id -> baddy dict with x, y, type, power, etc.
         self.baddies: Dict[int, dict] = {}
 
+        # Weapons: maps weapon_name -> weapon dict with name, image, script
+        self.weapons: Dict[str, dict] = {}
+
         # Server time (from heartbeat)
         self.server_time = 0
 
@@ -159,6 +169,17 @@ class Client:
 
         # Baddy callback: handler(baddy_id, baddy_props)
         self.on_baddy: Optional[Callable[[int, dict], None]] = None
+
+        # Weapon added callback: handler(weapon_name, weapon_data)
+        self.on_weapon_add: Optional[Callable[[str, dict], None]] = None
+
+        # File callback: handler(filename, data) - called when file is received
+        self.on_file: Optional[Callable[[str, bytes], None]] = None
+
+        # File download tracking
+        self._pending_files: set = set()  # Files we're waiting for
+        self._received_files: Dict[str, bytes] = {}  # Received files
+        self._failed_files: set = set()  # Files that failed to download
 
         # Auto-respond settings
         self.auto_respond_hurt = True  # Automatically send hurt response with health update
@@ -244,13 +265,14 @@ class Client:
     # Actions
     # =========================================================================
 
-    def move(self, dx: int, dy: int) -> bool:
+    def move(self, dx: int, dy: int, step: float = 0.25) -> bool:
         """
         Move the player.
 
         Args:
             dx: X direction (-1=left, 0=none, 1=right)
             dy: Y direction (-1=up, 0=none, 1=down)
+            step: Movement step size in tiles (default 0.5 for half-tile precision)
 
         Returns:
             True if packet sent successfully
@@ -258,9 +280,9 @@ class Client:
         if not self.connected or not self._authenticated:
             return False
 
-        # Calculate new position
-        new_x = self.player.x + dx
-        new_y = self.player.y + dy
+        # Calculate new position using step size
+        new_x = self.player.x + dx * step
+        new_y = self.player.y + dy * step
 
         # Determine direction
         if dx > 0:
@@ -332,6 +354,23 @@ class Client:
 
         data = build_chat(message)
         return self._protocol.send_packet(PacketID.PLI_TOALL, data)
+
+    def send_level_chat(self, message: str) -> bool:
+        """
+        Send local level chat (shows above player's head).
+        Uses PLPROP_CURCHAT (prop 12) via PLI_PLAYERPROPS.
+
+        Args:
+            message: Message to display
+
+        Returns:
+            True if packet sent successfully
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_player_chat(message)
+        return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
     def sword_attack(self, direction: Optional[int] = None) -> bool:
         """
@@ -546,6 +585,24 @@ class Client:
         data = build_triggeraction(x, y, action, npc_id)
         return self._protocol.send_packet(PacketID.PLI_TRIGGERACTION, data)
 
+    def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
+        """
+        Send NPC properties update (char props like #P1, #P2).
+
+        Args:
+            npc_id: NPC ID to update
+            prop_name: Property name (e.g., "P1", "P2", "P3")
+            value: Property value
+
+        Returns:
+            True if packet sent successfully
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_npc_props(npc_id, prop_name, value)
+        return self._protocol.send_packet(PacketID.PLI_NPCPROPS, data)
+
     def set_flag(self, flag_name: str, flag_value: str = "") -> bool:
         """
         Set a player flag.
@@ -741,6 +798,47 @@ class Client:
 
         return self._protocol.send_packet(PacketID.PLI_ADJACENTLEVEL, data)
 
+    def request_file(self, filename: str) -> bool:
+        """
+        Request a file from the server.
+
+        Args:
+            filename: Name of the file to request (e.g., "image.png")
+
+        Returns:
+            True if packet sent successfully
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        self._pending_files.add(filename)
+        data = build_wantfile(filename)
+        return self._protocol.send_packet(PacketID.PLI_WANTFILE, data)
+
+    def get_file(self, filename: str) -> Optional[bytes]:
+        """
+        Get a previously downloaded file.
+
+        Args:
+            filename: Name of the file
+
+        Returns:
+            File data as bytes, or None if not downloaded
+        """
+        return self._received_files.get(filename)
+
+    def has_file(self, filename: str) -> bool:
+        """Check if a file has been downloaded."""
+        return filename in self._received_files
+
+    def is_file_pending(self, filename: str) -> bool:
+        """Check if a file download is pending."""
+        return filename in self._pending_files
+
+    def did_file_fail(self, filename: str) -> bool:
+        """Check if a file download failed."""
+        return filename in self._failed_files
+
     def load_gmap(self, gmap_data: str):
         """
         Parse GMAP data to build the level grid.
@@ -780,19 +878,50 @@ class Client:
             y = i // self.gmap_width
             self.gmap_grid[(x, y)] = name
 
+
         # With GMAP-relative coordinates, there's no offset needed
         # player.x and player.y are directly in GMAP tile coordinates
         # grid position = player.x // 64, player.y // 64
         self._gmap_offset_x = 0
         self._gmap_offset_y = 0
 
-        # Set current level based on player position
-        grid_x = int(self.player.x // 64)
-        grid_y = int(self.player.y // 64)
-        spawn_pos = (grid_x, grid_y)
+        # Set current level based on spawn grid position from PLO_PLAYERWARP2
+        # (which is received before GMAP file, so we can't use gmap_grid at that time)
+        # If we have a spawn grid position, use it; otherwise fall back to calculating from coords
+        if self._gmap_spawn_x != 0 or self._gmap_spawn_y != 0:
+            spawn_pos = (self._gmap_spawn_x, self._gmap_spawn_y)
+        else:
+            grid_x = int(self.player.x // 64)
+            grid_y = int(self.player.y // 64)
+            spawn_pos = (grid_x, grid_y)
+
         if spawn_pos in self.gmap_grid:
             self._current_level_name = self.gmap_grid[spawn_pos]
             self._gmap_base_level = self._current_level_name
+
+            # Convert player coords to world coords if they're still local
+            # (PLAYERWARP2 arrives before GMAP, so coords are local at that point)
+            if self.player.x < 64 and self.player.y < 64:
+                self.player.x = self.player.x + spawn_pos[0] * 64
+                self.player.y = self.player.y + spawn_pos[1] * 64
+
+        # Update existing NPC coords to world coords now that we have the GMAP grid
+        self._update_npc_world_coords()
+
+    def _update_npc_world_coords(self):
+        """Update NPC world coordinates based on their level's grid position."""
+        for npc_id, npc in self.npcs.items():
+            npc_level = npc.get('_level')
+            if not npc_level:
+                continue  # No level info
+            # Find the level's grid position
+            for (gx, gy), level_name in self.gmap_grid.items():
+                if level_name == npc_level:
+                    if 'x' in npc:
+                        npc['world_x'] = npc['x'] + gx * 64
+                    if 'y' in npc:
+                        npc['world_y'] = npc['y'] + gy * 64
+                    break
 
     def get_adjacent_levels(self, level_name: str) -> List[str]:
         """
@@ -887,6 +1016,19 @@ class Client:
         # Player properties (our player data)
         elif packet_id == PacketID.PLO_PLAYERPROPS:
             props = parse_player_props(data)
+
+            # Check if we're in GMAP mode
+            has_gmap_grid = self.gmap_width > 0 and self.gmap_height > 0
+            level_is_gmap = self.player.level and self.player.level.endswith('.gmap')
+            in_gmap = has_gmap_grid or level_is_gmap
+
+            # Server sends world coordinates in PixelX/PixelY (props 78/79)
+            # For non-GMAP levels, convert to local coordinates (0-63)
+            if not in_gmap and 'x' in props:
+                props['x'] = props['x'] % 64
+            if not in_gmap and 'y' in props:
+                props['y'] = props['y'] % 64
+
             self.player.update_from_props(props)
 
             # First props packet means we're authenticated
@@ -899,12 +1041,13 @@ class Client:
             movement = parse_player_movement(data)
             if movement and 'id' in movement:
                 player_id = movement['id']
-                if player_id in self.players:
-                    # Update position
-                    if 'x' in movement:
-                        self.players[player_id]['x'] = movement['x']
-                    if 'y' in movement:
-                        self.players[player_id]['y'] = movement['y']
+                # Create player entry if not exists
+                if player_id not in self.players:
+                    self.players[player_id] = {'id': player_id}
+                # Update position and other movement data
+                for key in ('x', 'y', 'direction', 'animation', 'level'):
+                    if key in movement:
+                        self.players[player_id][key] = movement[key]
             else:
                 # Regular chat message
                 player_id, message = parse_chat(data)
@@ -917,6 +1060,15 @@ class Client:
             player_id, message = parse_chat(data)
             if message and self.on_chat:
                 self.on_chat(player_id, message)
+
+        # PLO_NPCWEAPONADD (33) - weapon being added to player
+        elif packet_id == PacketID.PLO_NPCWEAPONADD:
+            weapon = parse_weapon_add(data)
+            if weapon and weapon.get('name'):
+                self.weapons[weapon['name']] = weapon
+                # Callback for weapon added
+                if self.on_weapon_add:
+                    self.on_weapon_add(weapon['name'], weapon)
 
         # PLO_HURTPLAYER (40) - player hurt/damage notification
         elif packet_id == PacketID.PLO_HURTPLAYER:
@@ -998,30 +1150,72 @@ class Client:
         elif packet_id == PacketID.PLO_RAWDATA:
             self._raw_data_expected = parse_rawdata(data)
 
+        # File transfer
+        elif packet_id == PacketID.PLO_FILE:
+            file_info = parse_file(data)
+            if file_info and file_info['filename']:
+                filename = file_info['filename']
+                file_data = file_info['data']
+                self._received_files[filename] = file_data
+                self._pending_files.discard(filename)
+                if self.on_file:
+                    self.on_file(filename, file_data)
+
+        # File send failed
+        elif packet_id == PacketID.PLO_FILESENDFAILED:
+            filename = parse_filesendfailed(data)
+            if filename:
+                self._failed_files.add(filename)
+                self._pending_files.discard(filename)
+
         # Heartbeat / time sync
         elif packet_id == PacketID.PLO_NEWWORLDTIME:
             info = parse_newworldtime(data)
             self.server_time = info.get('time', 0)
 
+        # Player warp/spawn position (packet 14) - non-GMAP levels
+        elif packet_id == PacketID.PLO_PLAYERWARP:
+            warp = parse_playerwarp(data)
+            if warp:
+                # x, y are local coords (0-63 range for non-GMAP levels)
+                self.player.x = warp.get('x', 0)
+                self.player.y = warp.get('y', 0)
+                level = warp.get('level', '')
+                if level:
+                    self.player.level = level
+
         # Player warp with GMAP position (packet 49)
         elif packet_id == PacketID.PLO_PLAYERWARP2:
             warp = parse_playerwarp2(data)
             if warp:
-                # x, y are already in tiles (converted from half-tiles in parse_playerwarp2)
-                # These are GMAP-relative coordinates (not level-local)
-                gmap_rel_x = warp.get('x', 0)
-                gmap_rel_y = warp.get('y', 0)
+                # x, y are local coords within the level/grid cell
+                local_x = warp.get('x', 0)
+                local_y = warp.get('y', 0)
                 gmap_x = warp.get('gmap_x', 0)
                 gmap_y = warp.get('gmap_y', 0)
 
-                # x,y are LOCAL coords within the grid cell
-                # Convert to GMAP-relative by adding grid_offset * 64
-                self.player.x = gmap_rel_x + gmap_x * 64
-                self.player.y = gmap_rel_y + gmap_y * 64
+                # Check if we're in GMAP mode:
+                # 1. Have a gmap grid loaded, OR
+                # 2. Level name ends with .gmap, OR
+                # 3. The warp packet itself has non-zero gmap grid coords
+                has_gmap_grid = self.gmap_width > 0 and self.gmap_height > 0
+                level_is_gmap = self.player.level and self.player.level.endswith('.gmap')
+                warp_has_grid = gmap_x != 0 or gmap_y != 0
 
-                # print(f"DEBUG WARP2: local=({gmap_rel_x}, {gmap_rel_y}), grid=({gmap_x}, {gmap_y}), world=({self.player.x}, {self.player.y}), level={warp.get('level')}")
+                # Only use world coords if we have a loaded gmap grid or level is explicitly a .gmap
+                # If just warp_has_grid but no gmap loaded, use local coords
+                in_gmap = has_gmap_grid or level_is_gmap
 
-                # Always store grid position from warp packet for GMAP detection
+                if in_gmap:
+                    # Convert to world coords by adding grid_offset * 64
+                    self.player.x = local_x + gmap_x * 64
+                    self.player.y = local_y + gmap_y * 64
+                else:
+                    # Not in GMAP - use local coordinates only
+                    self.player.x = local_x
+                    self.player.y = local_y
+
+                # Store grid position for GMAP detection
                 self._gmap_spawn_x = gmap_x
                 self._gmap_spawn_y = gmap_y
 
@@ -1043,6 +1237,26 @@ class Client:
             props = parse_npc_props(data)
             if props and 'id' in props:
                 npc_id = props['id']
+                # Associate NPC with the pending/current level
+                npc_level = self._pending_level_name or self._current_level_name
+                props['_level'] = npc_level
+
+                # Convert NPC local coords to world coords if in GMAP
+                if self.gmap_grid and npc_level:
+                    # Find the level's grid position
+                    for (gx, gy), level_name in self.gmap_grid.items():
+                        if level_name == npc_level:
+                            if 'x' in props:
+                                props['world_x'] = props['x'] + gx * 64
+                            if 'y' in props:
+                                props['world_y'] = props['y'] + gy * 64
+                            break
+                else:
+                    # Not in GMAP - local coords are world coords
+                    if 'x' in props:
+                        props['world_x'] = props['x']
+                    if 'y' in props:
+                        props['world_y'] = props['y']
                 if npc_id in self.npcs:
                     self.npcs[npc_id].update(props)
                 else:

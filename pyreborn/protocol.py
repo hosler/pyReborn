@@ -245,7 +245,7 @@ class Protocol:
         """Connect to server"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10.0)
+            self.socket.settimeout(30.0)
             self.socket.connect((self.host, self.port))
             self.socket.setblocking(False)
             self.connected = True
