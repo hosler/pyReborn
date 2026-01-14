@@ -114,11 +114,27 @@ class RCClient(Client):
         self._server_flags: List[str] = []
         self._server_options: Dict[str, str] = {}
         self._account_list: List[str] = []
+        self._folder_config: Dict[str, str] = {}
+
+        # Cached player/account data (populated on request)
+        self._last_player_props: Dict = {}
+        self._last_account: Dict = {}
+        self._last_player_rights: Dict = {}
+        self._last_player_comments: Dict = {}
+        self._last_player_ban: Dict = {}
 
         # RC-specific callbacks
         self.on_rc_chat: Optional[Callable[[str], None]] = None
         self.on_admin_message: Optional[Callable[[str, str], None]] = None
         self.on_filebrowser_update: Optional[Callable[[str, List[dict]], None]] = None
+
+        # Callbacks for RC response data
+        self.on_player_props: Optional[Callable[[Dict], None]] = None
+        self.on_account: Optional[Callable[[Dict], None]] = None
+        self.on_player_rights: Optional[Callable[[Dict], None]] = None
+        self.on_player_comments: Optional[Callable[[Dict], None]] = None
+        self.on_player_ban: Optional[Callable[[Dict], None]] = None
+        self.on_folder_config: Optional[Callable[[Dict], None]] = None
 
     # =========================================================================
     # RC Chat
@@ -621,6 +637,54 @@ class RCClient(Client):
             self.file_browser_message = parse_rc_filebrowser_message(data)
             return
 
+        # Player Properties (RC format)
+        if packet_id == PacketID.PLO_RC_PLAYERPROPSGET:
+            info = parse_rc_player_props(data)
+            self._last_player_props = info
+            if self.on_player_props:
+                self.on_player_props(info)
+            return
+
+        # Account Details
+        if packet_id == PacketID.PLO_RC_ACCOUNTGET:
+            info = parse_rc_account_get(data)
+            self._last_account = info
+            if self.on_account:
+                self.on_account(info)
+            return
+
+        # Player Rights
+        if packet_id == PacketID.PLO_RC_PLAYERRIGHTSGET:
+            info = parse_rc_player_rights(data)
+            self._last_player_rights = info
+            if self.on_player_rights:
+                self.on_player_rights(info)
+            return
+
+        # Player Comments
+        if packet_id == PacketID.PLO_RC_PLAYERCOMMENTSGET:
+            info = parse_rc_player_comments(data)
+            self._last_player_comments = info
+            if self.on_player_comments:
+                self.on_player_comments(info)
+            return
+
+        # Player Ban Status
+        if packet_id == PacketID.PLO_RC_PLAYERBANGET:
+            info = parse_rc_player_ban(data)
+            self._last_player_ban = info
+            if self.on_player_ban:
+                self.on_player_ban(info)
+            return
+
+        # Folder Configuration
+        if packet_id == PacketID.PLO_RC_FOLDERCONFIGGET:
+            info = parse_rc_folder_config(data)
+            self._folder_config = info
+            if self.on_folder_config:
+                self.on_folder_config(info)
+            return
+
         # Defer to parent for all other packets
         super()._handle_packet(packet_id, data)
 
@@ -647,6 +711,36 @@ class RCClient(Client):
     def account_list(self) -> List[str]:
         """Get cached account list (call get_account_list() first)."""
         return self._account_list
+
+    @property
+    def folder_config(self) -> Dict[str, str]:
+        """Get cached folder config (call get_folder_config() first)."""
+        return self._folder_config
+
+    @property
+    def last_player_props(self) -> Dict:
+        """Get last queried player properties (call get_player_props_by_* first)."""
+        return self._last_player_props
+
+    @property
+    def last_account(self) -> Dict:
+        """Get last queried account details (call get_account() first)."""
+        return self._last_account
+
+    @property
+    def last_player_rights(self) -> Dict:
+        """Get last queried player rights (call get_player_rights() first)."""
+        return self._last_player_rights
+
+    @property
+    def last_player_comments(self) -> Dict:
+        """Get last queried player comments (call get_player_comments() first)."""
+        return self._last_player_comments
+
+    @property
+    def last_player_ban(self) -> Dict:
+        """Get last queried ban status (call get_ban_status() first)."""
+        return self._last_player_ban
 
 
 # =============================================================================

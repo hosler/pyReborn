@@ -55,6 +55,10 @@ class InventoryUI:
         self.font_medium = pygame.font.Font(None, 22)
         self.font_small = pygame.font.Font(None, 18)
 
+        # Track weapon section Y position for click handling
+        self._weapons_section_y = 0
+        self._weapon_line_height = 22  # Approximate height per weapon entry
+
         # Calculate UI dimensions
         screen_w, screen_h = screen.get_size()
         self.ui_width = 300
@@ -217,6 +221,9 @@ class InventoryUI:
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
 
+        # Store Y position where weapon list starts (for click handling)
+        self._weapons_section_y = y
+
         if not weapons:
             no_weapons = self.font_medium.render("(no weapons)", True, self.LABEL_COLOR)
             self.overlay.blit(no_weapons, (self.PADDING + 10, y))
@@ -282,7 +289,21 @@ class InventoryUI:
         if not (0 <= rel_x < self.ui_width and 0 <= rel_y < self.ui_height):
             return None
 
-        # TODO: Implement weapon selection by click
+        # Check if click is in weapons section
+        if not weapons or self._weapons_section_y == 0:
+            return None
+
+        # Check if Y is in weapons list area
+        weapons_start_y = self._weapons_section_y
+        weapons_end_y = weapons_start_y + len(weapons) * self._weapon_line_height
+
+        if weapons_start_y <= rel_y < weapons_end_y:
+            # Calculate which weapon was clicked
+            weapon_idx = int((rel_y - weapons_start_y) / self._weapon_line_height)
+            if 0 <= weapon_idx < len(weapons):
+                self.selected_weapon_idx = weapon_idx
+                return weapons[weapon_idx]
+
         return None
 
 

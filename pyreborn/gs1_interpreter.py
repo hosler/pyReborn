@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GS1 interpreter for pyreborn.
-Full implementation of client-side Graal Script 1.
+Full implementation of client-side Reborn Script 1.
 
 Supports:
 - Event handlers: playerenters, playertouchsme, timeout, playerchats

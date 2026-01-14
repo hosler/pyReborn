@@ -1357,10 +1357,14 @@ class GameClient:
         # Render entities (sorted by Y for depth)
         self._render_entities()
 
-        # Render combat effects (damage numbers, bombs, projectiles)
+        # Render combat effects (damage numbers, bombs, projectiles, explosions)
         self._render_damage_numbers()
         self._render_bombs()
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
+        self._render_server_explosions()
+
+        # Render sign popups
+        self._check_and_render_signs()
 
         # Render UI
         self._render_ui()
@@ -1778,6 +1782,103 @@ class GameClient:
                 active_projectiles.append(proj)
 
         self.active_projectiles = active_projectiles
+
+    def _render_server_explosions(self):
+        """Render explosions received from server (PLO_EXPLOSION packets)."""
+        current_time = time.time()
+        explosion_duration = 0.5  # seconds
+
+        # Get camera offset
+        gmap_visual_x = self.visual_x - self.client._gmap_offset_x * 64
+        gmap_visual_y = self.visual_y - self.client._gmap_offset_y * 64
+        world_px = gmap_visual_x * TILE_SIZE
+        world_py = gmap_visual_y * TILE_SIZE
+        cam_offset_x = SCREEN_WIDTH // 2 - world_px
+        cam_offset_y = SCREEN_HEIGHT // 2 - world_py
+
+        # Clean up expired explosions and render active ones
+        active = []
+        for exp in self.client.active_explosions:
+            elapsed = current_time - exp['time']
+            if elapsed < explosion_duration:
+                # Calculate screen position
+                screen_x = exp['x'] * TILE_SIZE + cam_offset_x
+                screen_y = exp['y'] * TILE_SIZE + cam_offset_y
+
+                # Expanding explosion based on radius
+                progress = elapsed / explosion_duration
+                base_radius = exp.get('radius', 2) * TILE_SIZE
+                radius = int(base_radius * (0.5 + progress * 0.5))
+                alpha = int(255 * (1.0 - progress))
+
+                # Draw explosion circles
+                if radius > 0:
+                    explosion_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(explosion_surf, (255, 150, 50, alpha), (radius, radius), radius)
+                    pygame.draw.circle(explosion_surf, (255, 100, 0, alpha), (radius, radius), int(radius * 0.7))
+                    pygame.draw.circle(explosion_surf, (255, 200, 100, alpha), (radius, radius), int(radius * 0.4))
+                    self.screen.blit(explosion_surf, (screen_x - radius, screen_y - radius))
+
+                active.append(exp)
+
+        self.client.active_explosions = active
+
+    def _check_and_render_signs(self):
+        """Check if player is near a sign and show popup."""
+        if not self.client.signs:
+            return
+
+        px = self.client.player.x
+        py = self.client.player.y
+
+        # Check each sign
+        for (sx, sy), text in self.client.signs.items():
+            # Check if player is within 2 tiles of sign
+            if abs(px - sx) < 2 and abs(py - sy) < 2:
+                self._render_sign_popup(text)
+                break  # Only show one sign at a time
+
+    def _render_sign_popup(self, text: str):
+        """Render sign text as popup overlay."""
+        if not text:
+            return
+
+        # Render sign text in a box at bottom of screen
+        font = getattr(self, '_sign_font', None)
+        if font is None:
+            try:
+                self._sign_font = pygame.font.Font(None, 24)
+            except:
+                self._sign_font = pygame.font.SysFont('monospace', 20)
+            font = self._sign_font
+
+        # Split text into lines
+        lines = text.split('\n')
+        line_height = font.get_linesize()
+        max_width = 0
+        rendered_lines = []
+
+        for line in lines:
+            rendered = font.render(line, True, (0, 0, 0))
+            rendered_lines.append(rendered)
+            max_width = max(max_width, rendered.get_width())
+
+        # Create background box
+        box_width = max_width + 20
+        box_height = len(rendered_lines) * line_height + 20
+        box_x = (SCREEN_WIDTH - box_width) // 2
+        box_y = SCREEN_HEIGHT - box_height - 60  # Above the UI bar
+
+        # Draw box with border
+        pygame.draw.rect(self.screen, (240, 230, 200), (box_x, box_y, box_width, box_height))
+        pygame.draw.rect(self.screen, (100, 80, 50), (box_x, box_y, box_width, box_height), 2)
+
+        # Draw text
+        y = box_y + 10
+        for rendered in rendered_lines:
+            x = box_x + (box_width - rendered.get_width()) // 2
+            self.screen.blit(rendered, (x, y))
+            y += line_height
 
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""

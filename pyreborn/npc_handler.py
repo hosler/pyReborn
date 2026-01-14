@@ -2,7 +2,7 @@
 """
 NPC handler for client-side NPC collision detection and script execution.
 
-In Graal, many NPC events are client-side:
+In Reborn, many NPC events are client-side:
 - playerenters: Client detects entering a level
 - playertouchsme: Client detects touching an NPC shape
 - timeout: Client manages script timeouts

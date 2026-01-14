@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 dependencies = [
-    # No external dependencies - uses only standard library
+    "reborn-protocol",  # Shared protocol library
 ]
 
 [project.optional-dependencies]

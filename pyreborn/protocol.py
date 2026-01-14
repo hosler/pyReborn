@@ -3,17 +3,24 @@ pyreborn - Protocol layer
 Handles socket connection, encryption, and packet framing.
 
 Supports both TCP sockets (native Python) and WebSocket (browser via Pyodide).
+Uses the shared reborn_protocol library for core encryption and codec.
 """
 
 import sys
 import struct
 import zlib
-import bz2
 import random
 import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Tuple, Callable
+
+# Import shared protocol components
+from reborn_protocol import (
+    CompressionType,
+    RebornEncryption,
+    Gen5Codec,
+)
 
 # Detect browser environment
 IS_BROWSER = sys.platform == "emscripten"
@@ -22,145 +29,6 @@ IS_BROWSER = sys.platform == "emscripten"
 if not IS_BROWSER:
     import socket
     import select
-
-
-# =============================================================================
-# Compression Types
-# =============================================================================
-
-class CompressionType:
-    UNCOMPRESSED = 0x02
-    ZLIB = 0x04
-    BZ2 = 0x06
-
-
-# =============================================================================
-# Encryption (ENCRYPT_GEN_5)
-# =============================================================================
-
-class RebornEncryption:
-    """ENCRYPT_GEN_5 implementation"""
-
-    def __init__(self, key: int = 0):
-        self.key = key
-        self.iterator = 0x4A80B38
-        self.limit = -1
-        self.multiplier = 0x8088405
-
-    def reset(self, key: int):
-        self.key = key
-        self.iterator = 0x4A80B38
-        self.limit = -1
-
-    def limit_from_type(self, compression_type: int):
-        if compression_type == CompressionType.UNCOMPRESSED:
-            self.limit = 0x0C
-        elif compression_type == CompressionType.ZLIB:
-            self.limit = 0x04
-        elif compression_type == CompressionType.BZ2:
-            self.limit = 0x04
-
-    def encrypt(self, data: bytes) -> bytes:
-        result = bytearray(data)
-
-        if self.limit < 0:
-            bytes_to_encrypt = len(data)
-        elif self.limit == 0:
-            return bytes(result)
-        else:
-            bytes_to_encrypt = min(len(data), self.limit * 4)
-
-        for i in range(bytes_to_encrypt):
-            if i % 4 == 0:
-                if self.limit == 0:
-                    break
-                self.iterator = (self.iterator * self.multiplier + self.key) & 0xFFFFFFFF
-                if self.limit > 0:
-                    self.limit -= 1
-
-            iterator_bytes = struct.pack('<I', self.iterator)
-            result[i] ^= iterator_bytes[i % 4]
-
-        return bytes(result)
-
-    def decrypt(self, data: bytes) -> bytes:
-        return self.encrypt(data)
-
-
-# =============================================================================
-# Gen5 Codec
-# =============================================================================
-
-class Gen5Codec:
-    """ENCRYPT_GEN_5: Partial encryption, dynamic compression (2.22+)"""
-
-    def __init__(self, encryption_key: int = 0):
-        self.encryption_key = encryption_key
-        self.in_codec = RebornEncryption(encryption_key)
-        self.out_codec = RebornEncryption(encryption_key)
-
-    def send_packet(self, data: bytes) -> bytes:
-        """Encode packet for sending (returns with length prefix)"""
-        # Choose compression based on size
-        if len(data) <= 55:
-            compression_type = CompressionType.UNCOMPRESSED
-            compressed_data = data
-        elif len(data) > 0x2000:
-            compression_type = CompressionType.BZ2
-            compressed_data = bz2.compress(data)
-        else:
-            compression_type = CompressionType.ZLIB
-            compressed_data = zlib.compress(data)
-
-        # Encrypt
-        packet_codec = RebornEncryption(self.encryption_key)
-        packet_codec.iterator = self.out_codec.iterator
-        packet_codec.limit_from_type(compression_type)
-        encrypted = packet_codec.encrypt(compressed_data)
-        self.out_codec.iterator = packet_codec.iterator
-
-        # Build packet with compression type
-        packet = bytes([compression_type]) + encrypted
-        return struct.pack('>H', len(packet)) + packet
-
-    def recv_packet(self, data: bytes) -> Optional[bytes]:
-        """Decode received packet"""
-        if not data or len(data) == 0:
-            return None
-
-        compression_type = data[0]
-
-        # Check for plain zlib (first response from server)
-        if compression_type == 0x78:
-            try:
-                return zlib.decompress(data)
-            except:
-                return None
-
-        encrypted_data = data[1:]
-
-        if compression_type not in [CompressionType.UNCOMPRESSED,
-                                   CompressionType.ZLIB,
-                                   CompressionType.BZ2]:
-            return None
-
-        # Decrypt
-        packet_codec = RebornEncryption(self.encryption_key)
-        packet_codec.iterator = self.in_codec.iterator
-        packet_codec.limit_from_type(compression_type)
-        decrypted = packet_codec.decrypt(encrypted_data)
-        self.in_codec.iterator = packet_codec.iterator
-
-        # Decompress
-        try:
-            if compression_type == CompressionType.ZLIB:
-                return zlib.decompress(decrypted)
-            elif compression_type == CompressionType.BZ2:
-                return bz2.decompress(decrypted)
-            else:  # UNCOMPRESSED
-                return decrypted
-        except:
-            return None
 
 
 # =============================================================================
@@ -418,14 +286,8 @@ class Protocol:
                             pos += self.raw_data_expected
                             self.raw_data_expected = 0
 
-                            # Parse the raw packet (first byte is packet ID)
-                            if len(raw_packet) >= 1:
-                                raw_id = raw_packet[0] - 32
-                                raw_body = raw_packet[1:] if len(raw_packet) > 1 else b""
-                                # Strip trailing newline if present
-                                if raw_body and raw_body[-1:] == b'\n':
-                                    raw_body = raw_body[:-1]
-                                packets.append((raw_id, raw_body))
+                            # Emit as PLO_BOARDPACKET (101) with raw tile data
+                            packets.append((101, raw_packet))
                         else:
                             # Not enough data yet, save remainder
                             self.raw_data_buffer = decrypted[pos:]

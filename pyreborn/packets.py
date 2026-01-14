@@ -1,76 +1,18 @@
 """
 pyreborn - Packet parsing
 Essential packet handlers for basic gameplay.
+
+Uses the shared reborn_protocol library for core protocol components.
 """
 
 from typing import Dict, Any, Optional
 
-
-# =============================================================================
-# Packet Reader Utility
-# =============================================================================
-
-class PacketReader:
-    """Utility for reading packet data with Reborn protocol encodings"""
-
-    def __init__(self, data: bytes):
-        self.data = data
-        self.pos = 0
-
-    def read_byte(self) -> int:
-        """Read a raw byte"""
-        if self.pos >= len(self.data):
-            return 0
-        value = self.data[self.pos]
-        self.pos += 1
-        return value
-
-    def read_gchar(self) -> int:
-        """Read a GCHAR (byte - 32)"""
-        return max(0, self.read_byte() - 32)
-
-    def read_gshort(self) -> int:
-        """Read a 2-byte protocol integer"""
-        if self.pos + 1 >= len(self.data):
-            return 0
-        b1 = self.data[self.pos] - 32
-        b2 = self.data[self.pos + 1] - 32
-        self.pos += 2
-        return (b1 << 7) + b2
-
-    def read_gint3(self) -> int:
-        """Read a 3-byte protocol integer"""
-        if self.pos + 2 >= len(self.data):
-            return 0
-        b1 = self.data[self.pos] - 32
-        b2 = self.data[self.pos + 1] - 32
-        b3 = self.data[self.pos + 2] - 32
-        self.pos += 3
-        return (b1 << 14) | (b2 << 7) | b3
-
-    def read_string(self, length: int) -> str:
-        """Read a fixed-length string"""
-        if self.pos + length > len(self.data):
-            length = len(self.data) - self.pos
-        data = self.data[self.pos:self.pos + length]
-        self.pos += length
-        return data.decode('latin-1', errors='replace')
-
-    def read_gstring(self) -> str:
-        """Read a length-prefixed string (GCHAR length)"""
-        length = self.read_gchar()
-        return self.read_string(length)
-
-    def remaining(self) -> bytes:
-        """Get remaining data"""
-        return self.data[self.pos:]
-
-    def has_data(self) -> bool:
-        return self.pos < len(self.data)
+# Import shared protocol components
+from reborn_protocol import PacketReader, PLI, PLO, PLPROP
 
 
 # =============================================================================
-# Packet IDs
+# Packet IDs (backwards compatibility layer)
 # =============================================================================
 
 class PacketID:
@@ -103,6 +45,10 @@ class PacketID:
     PLO_BOARDPACKET = 101    # Level tile data (8192 bytes = 64x64 tiles @ 2 bytes each)
     PLO_FILE = 102           # File transfer packet
     PLO_FILESENDFAILED = 104 # File send failed
+    PLO_BOARDLAYER = 107     # Extra level layer
+    PLO_GHOSTMODE = 170      # Ghost/spectator mode
+    PLO_BIGMAP = 171         # Full world map
+    PLO_MINIMAP = 172        # Mini map overlay
 
     # RC Server -> Client packets
     PLO_RC_SERVERFLAGSGET = 61    # Server flags response
@@ -226,6 +172,88 @@ def parse_level_link(data: bytes) -> dict:
     return {}
 
 
+def parse_level_sign(data: bytes) -> dict:
+    """
+    Parse PLO_LEVELSIGN (packet 5) - sign/board text.
+    Format: [x:GCHAR][y:GCHAR][text:raw_string]
+
+    Position values are in half-tiles (divide by 2 for tile coordinates).
+    """
+    if len(data) < 2:
+        return {}
+    reader = PacketReader(data)
+    return {
+        'x': reader.read_gchar() / 2.0,
+        'y': reader.read_gchar() / 2.0,
+        'text': reader.remaining().decode('latin-1', errors='replace')
+    }
+
+
+def parse_explosion(data: bytes) -> dict:
+    """
+    Parse PLO_EXPLOSION (packet 36) - explosion effect.
+    Format: [x:GCHAR][y:GCHAR][radius:GCHAR][power:GCHAR?]
+
+    Position values are in half-tiles. Power is optional.
+    """
+    if len(data) < 3:
+        return {}
+    reader = PacketReader(data)
+    return {
+        'x': reader.read_gchar() / 2.0,
+        'y': reader.read_gchar() / 2.0,
+        'radius': reader.read_gchar(),
+        'power': reader.read_gchar() if reader.has_data() else 1
+    }
+
+
+def parse_hit_objects(data: bytes) -> dict:
+    """
+    Parse PLO_HITOBJECTS (packet 46) - hit detection feedback.
+    Format: [x:GCHAR][y:GCHAR][power:GCHAR][player_id:GSHORT?]
+
+    Sent when player hits objects (bushes, pots, etc) with sword/weapon.
+    """
+    if len(data) < 3:
+        return {}
+    reader = PacketReader(data)
+    return {
+        'x': reader.read_gchar() / 2.0,
+        'y': reader.read_gchar() / 2.0,
+        'power': reader.read_gchar(),
+        'player_id': reader.read_gshort() if reader.has_data() else 0
+    }
+
+
+def parse_minimap(data: bytes) -> dict:
+    """
+    Parse PLO_MINIMAP (packet 172) - minimap data.
+    Format varies by server implementation.
+    """
+    return {
+        'data': data,
+        'type': data[0] - 32 if data else 0
+    }
+
+
+def parse_board_layer(data: bytes) -> dict:
+    """
+    Parse PLO_BOARDLAYER (packet 107) - extra level layer.
+    Format: [layer:GCHAR][x:GCHAR][y:GCHAR][tiles:raw_data]
+
+    Used for multi-layer level rendering.
+    """
+    if len(data) < 3:
+        return {}
+    reader = PacketReader(data)
+    return {
+        'layer': reader.read_gchar(),
+        'x': reader.read_gchar(),
+        'y': reader.read_gchar(),
+        'tiles': reader.remaining()
+    }
+
+
 def parse_npc_props(data: bytes) -> dict:
     """
     Parse PLO_NPCPROPS (packet 3) - returns NPC info.
@@ -326,47 +354,23 @@ def parse_npc_props(data: bytes) -> dict:
 def parse_chat(data: bytes) -> tuple:
     """
     Parse PLO_TOALL (packet 13) - returns (player_id, message)
-    Format: gshort(player_id) + gchar(message_length-1) + message[1:]
+    Format: [player_id:GShort][message_length:GChar][message:raw_bytes]
 
-    Note: GServer v6.037 appears to send chat messages with the first
-    character encoded in a gchar length byte. The actual first character
-    is NOT transmitted - only the message length and remaining characters.
-
-    We attempt to reconstruct the first character by computing first_byte * 2,
-    which works for some characters (like 'H' = 72 = 36 * 2).
+    The message length is gchar-encoded (value + 32), followed by the
+    full message text as raw bytes (not gchar-encoded).
     """
-    if len(data) < 2:
+    if len(data) < 3:
         return (0, "")
+
     reader = PacketReader(data)
     player_id = reader.read_gshort()
 
-    remaining = reader.remaining()
-    if not remaining:
-        return (player_id, "")
+    # Read the gchar-encoded message length
+    message_length = reader.read_gchar()
 
-    # First byte is gchar(message_length - 1), NOT the first character
-    first_byte = remaining[0]
-    length_minus_1 = first_byte - 32  # Decode gchar
+    # Read exactly 'message_length' bytes as the plain message text
+    message = reader.read_string(message_length)
 
-    # Rest of message (starting from second character)
-    rest = remaining[1:].decode('latin-1', errors='replace') if len(remaining) > 1 else ""
-
-    # The first character is lost in transmission.
-    # We can try to recover it with first_byte * 2, but this only works
-    # when the first char's ASCII value happens to equal 2 * gchar(len-1).
-    # For most messages, we just have to accept the first char is missing.
-
-    # If the message is very short (1 char), the whole message is just the length byte
-    if length_minus_1 == 0 and not rest:
-        # Single character message - try first_byte * 2
-        first_char_doubled = first_byte * 2
-        if 32 <= first_char_doubled < 127:
-            return (player_id, chr(first_char_doubled))
-        return (player_id, "")
-
-    # For longer messages, just return what we have (missing first char)
-    # The caller/display can handle this
-    message = rest if rest else ""
     return (player_id, message)
 
 
@@ -674,8 +678,18 @@ def parse_other_player(data: bytes) -> dict:
                     props['body_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
                     pos += str_len
 
-        # Various other string props
-        elif prop_id in [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 36, 37, 38, 39, 40, 41]:
+        # GATTRIB1-30 (props 36-74) - custom server attributes
+        elif 36 <= prop_id <= 74:
+            attr_index = prop_id - 35  # GATTRIB1 = prop 36, so index 1
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props[f'gattrib{attr_index}'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
+        # Various other string props (excluding GATTRIBs which are handled above)
+        elif prop_id in [24, 25, 26, 27, 28, 29, 30, 31, 32, 33]:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1
@@ -1125,6 +1139,16 @@ def parse_player_props(data: bytes) -> Dict[str, Any]:
                     props['body_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
                     pos += str_len
 
+        # GATTRIB1-30 (props 36-74) - custom server attributes
+        elif 36 <= prop_id <= 74:
+            attr_index = prop_id - 35  # GATTRIB1 = prop 36, so index 1
+            if pos < len(data):
+                str_len = data[pos] - 32
+                pos += 1
+                if str_len > 0 and pos + str_len <= len(data):
+                    props[f'gattrib{attr_index}'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += str_len
+
         # PixelX (prop 78) - 2 bytes, precise position
         elif prop_id == 78:
             if pos + 1 < len(data):
@@ -1155,8 +1179,8 @@ def parse_player_props(data: bytes) -> Dict[str, Any]:
                 pos += 2
 
         # String properties (various) - skip with length
-        elif prop_id in [35, 37, 38, 39, 40, 41, 46, 47, 48, 49, 52, 54, 55, 56, 57, 58, 59,
-                         60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 82]:
+        # Note: props 36-74 (GATTRIBs) are handled above
+        elif prop_id in [75, 82]:
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1

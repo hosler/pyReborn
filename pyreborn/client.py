@@ -16,6 +16,11 @@ from .packets import (
     PacketID,
     parse_level_name,
     parse_level_link,
+    parse_level_sign,
+    parse_explosion,
+    parse_hit_objects,
+    parse_minimap,
+    parse_board_layer,
     parse_npc_props,
     parse_player_props,
     parse_playerwarp,
@@ -175,6 +180,30 @@ class Client:
 
         # File callback: handler(filename, data) - called when file is received
         self.on_file: Optional[Callable[[str, bytes], None]] = None
+
+        # Sign callback: handler(x, y, text) - when sign text is received
+        self.on_sign: Optional[Callable[[float, float, str], None]] = None
+
+        # Explosion callback: handler(x, y, radius, power) - explosion effect
+        self.on_explosion: Optional[Callable[[float, float, int, int], None]] = None
+
+        # Hit objects callback: handler(x, y, power, player_id) - object hit feedback
+        self.on_hit_objects: Optional[Callable[[float, float, int, int], None]] = None
+
+        # Minimap callback: handler(data) - minimap data received
+        self.on_minimap: Optional[Callable[[bytes], None]] = None
+
+        # Board layer callback: handler(layer, x, y, tiles) - extra level layer
+        self.on_board_layer: Optional[Callable[[int, int, int, bytes], None]] = None
+
+        # Level signs: maps (x, y) -> text
+        self.signs: Dict[Tuple[float, float], str] = {}
+
+        # Active explosions for rendering: list of {x, y, radius, power, time}
+        self.active_explosions: List[dict] = []
+
+        # Board layers: maps layer_id -> tile data
+        self.board_layers: Dict[int, bytes] = {}
 
         # File download tracking
         self._pending_files: set = set()  # Files we're waiting for
@@ -1295,6 +1324,48 @@ class Client:
             player_id = parse_player_left(data)
             if player_id in self.players:
                 del self.players[player_id]
+
+        # Level sign (packet 5)
+        elif packet_id == PacketID.PLO_LEVELSIGN:
+            sign = parse_level_sign(data)
+            if sign:
+                self.signs[(sign['x'], sign['y'])] = sign['text']
+                if self.on_sign:
+                    self.on_sign(sign['x'], sign['y'], sign['text'])
+
+        # Explosion effect (packet 36)
+        elif packet_id == PacketID.PLO_EXPLOSION:
+            exp = parse_explosion(data)
+            if exp:
+                self.active_explosions.append({
+                    'x': exp['x'],
+                    'y': exp['y'],
+                    'radius': exp['radius'],
+                    'power': exp['power'],
+                    'time': time.time()
+                })
+                if self.on_explosion:
+                    self.on_explosion(exp['x'], exp['y'], exp['radius'], exp['power'])
+
+        # Hit objects feedback (packet 46)
+        elif packet_id == PacketID.PLO_HITOBJECTS:
+            hit = parse_hit_objects(data)
+            if hit and self.on_hit_objects:
+                self.on_hit_objects(hit['x'], hit['y'], hit['power'], hit['player_id'])
+
+        # Minimap data (packet 172)
+        elif packet_id == PacketID.PLO_MINIMAP:
+            mm = parse_minimap(data)
+            if mm and self.on_minimap:
+                self.on_minimap(mm['data'])
+
+        # Board layer (packet 107)
+        elif packet_id == PacketID.PLO_BOARDLAYER:
+            layer = parse_board_layer(data)
+            if layer:
+                self.board_layers[layer['layer']] = layer['tiles']
+                if self.on_board_layer:
+                    self.on_board_layer(layer['layer'], layer['x'], layer['y'], layer['tiles'])
 
         # Custom handler
         if packet_id in self.on_packet:

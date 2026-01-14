@@ -194,3 +194,4 @@ docs/
 API_QUICKSTART.md
 baseline_results.json
 quick_test.py
+.aider*
