@@ -218,13 +218,11 @@ class TilesetManager:
             return self.tile_cache[cache_key]
 
         # Calculate tileset coordinates using Reborn's formula
-        # The tileset is organized in a specific pattern
-        tileset_x = (tile_id // 512) * 16 + (tile_id % 16)
-        tileset_y = (tile_id // 16) % 32
-
-        # Convert to pixels
-        px = tileset_x * self.TILE_SIZE
-        py = tileset_y * self.TILE_SIZE
+        # The tileset is organized in 16-column blocks, 32 rows each
+        tx = (tile_id // 512) * 16 + (tile_id % 16)
+        ty = (tile_id // 16) % 32
+        px = tx * self.TILE_SIZE
+        py = ty * self.TILE_SIZE
 
         tile = self.sprite_mgr.get_sprite(tileset, px, py,
                                           self.TILE_SIZE, self.TILE_SIZE)

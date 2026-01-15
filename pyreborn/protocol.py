@@ -240,10 +240,18 @@ class Protocol:
 
                 # Check if we have all raw data
                 if len(self.raw_data_buffer) >= self.raw_data_expected:
-                    # Emit as PLO_BOARDPACKET (101)
-                    packets.append((101, self.raw_data_buffer[:self.raw_data_expected]))
+                    raw_packet = self.raw_data_buffer[:self.raw_data_expected]
                     self.raw_data_buffer = b""
                     self.raw_data_expected = 0
+                    # Raw data format: [packet_id+32][data...][newline]
+                    if len(raw_packet) >= 2:
+                        packet_id = raw_packet[0] - 32
+                        packet_body = raw_packet[1:]
+                        if packet_body and packet_body[-1:] == b'\n':
+                            packet_body = packet_body[:-1]
+                        packets.append((packet_id, packet_body))
+                    else:
+                        packets.append((101, raw_packet))
 
             # Process complete packets from buffer
             while len(self.recv_buffer) >= 2:
@@ -286,8 +294,18 @@ class Protocol:
                             pos += self.raw_data_expected
                             self.raw_data_expected = 0
 
-                            # Emit as PLO_BOARDPACKET (101) with raw tile data
-                            packets.append((101, raw_packet))
+                            # Raw data format: [packet_id+32][data...][newline]
+                            # Extract packet_id and strip header/trailer
+                            if len(raw_packet) >= 2:
+                                packet_id = raw_packet[0] - 32
+                                # Strip packet ID byte and trailing newline
+                                packet_body = raw_packet[1:]
+                                if packet_body and packet_body[-1:] == b'\n':
+                                    packet_body = packet_body[:-1]
+                                packets.append((packet_id, packet_body))
+                            else:
+                                # Emit as PLO_BOARDPACKET (101) with raw tile data
+                                packets.append((101, raw_packet))
                         else:
                             # Not enough data yet, save remainder
                             self.raw_data_buffer = decrypted[pos:]
