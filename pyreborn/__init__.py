@@ -72,6 +72,7 @@ from .listserver import (
     connect_via_listserver
 )
 from .rc_client import RCClient, rc_connect
+from .nc_client import NCClient, nc_connect
 
 __all__ = [
     "Client",
@@ -83,5 +84,7 @@ __all__ = [
     "get_server_list",
     "connect_via_listserver",
     "RCClient",
-    "rc_connect"
+    "rc_connect",
+    "NCClient",
+    "nc_connect"
 ]

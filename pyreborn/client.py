@@ -20,6 +20,7 @@ from .packets import (
     parse_explosion,
     parse_hit_objects,
     parse_minimap,
+    parse_bigmap,
     parse_board_layer,
     parse_npc_props,
     parse_player_props,
@@ -31,7 +32,7 @@ from .packets import (
     parse_rawdata,
     parse_newworldtime,
     parse_other_player,
-    parse_player_left,
+    parse_level_chest,
     parse_hurt_player,
     parse_item_add,
     parse_item_del,
@@ -60,11 +61,55 @@ from .packets import (
     build_horse_add,
     build_wantfile,
     parse_file,
-    parse_filesendfailed
+    parse_filesendfailed,
+    parse_signature,
+    parse_default_weapon,
+    parse_ghost_icon,
+    parse_level_modtime,
+    parse_set_active_level,
+    parse_flag_set,
+    parse_npcweapondel,
+    parse_start_message,
+    parse_server_text,
+    parse_staff_guilds,
+    parse_status_list,
+    parse_rpg_window,
+    parse_baddy_hurt,
 )
 
 # NPC delete packet ID not in PacketID class yet
 PLO_NPCDEL = 29
+
+
+# Set of PLO packet ids that _handle_packet has an explicit branch for.
+# Kept in sync with the if/elif chain in _handle_packet and used by the
+# packet-coverage harness to distinguish "handled" from "silently dropped".
+def _build_handled_plo_ids() -> set:
+    names = [
+        "PLO_LEVELNAME", "PLO_PLAYERPROPS", "PLO_TOALL", "PLO_SHOWIMG",
+        "PLO_NPCWEAPONADD", "PLO_HURTPLAYER", "PLO_ITEMADD", "PLO_ITEMDEL",
+        "PLO_PRIVATEMESSAGE", "PLO_BADDYPROPS", "PLO_BOARDPACKET", "PLO_RAWDATA",
+        "PLO_FILE", "PLO_FILESENDFAILED", "PLO_NEWWORLDTIME", "PLO_PLAYERWARP",
+        "PLO_PLAYERWARP2", "PLO_LEVELLINK", "PLO_NPCPROPS", "PLO_OTHERPLPROPS",
+        "PLO_LEVELCHEST", "PLO_DISCMESSAGE", "PLO_LEVELSIGN", "PLO_EXPLOSION",
+        "PLO_HITOBJECTS", "PLO_MINIMAP", "PLO_BOARDLAYER", "PLO_GHOSTMODE",
+        # Misc server packets added for full coverage.
+        "PLO_LEVELBOARD", "PLO_ISLEADER", "PLO_SIGNATURE", "PLO_BADDYHURT",
+        "PLO_FLAGSET", "PLO_NPCWEAPONDEL", "PLO_LEVELMODTIME", "PLO_STARTMESSAGE",
+        "PLO_DEFAULTWEAPON", "PLO_STAFFGUILDS", "PLO_SERVERTEXT",
+        "PLO_SETACTIVELEVEL", "PLO_UNKNOWN168", "PLO_GHOSTICON", "PLO_RPGWINDOW",
+        "PLO_STATUSLIST", "PLO_UNKNOWN190", "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
+        "PLO_BIGMAP",
+    ]
+    ids = {PLO_NPCDEL}
+    for n in names:
+        v = getattr(PacketID, n, None)
+        if v is not None:
+            ids.add(int(v))
+    return ids
+
+
+HANDLED_PLO_IDS = _build_handled_plo_ids()
 
 
 class Client:
@@ -125,6 +170,9 @@ class Client:
         self.gmap_grid: Dict[Tuple[int, int], str] = {}
         self.gmap_width = 0
         self.gmap_height = 0
+        self.gmap_name = ""            # name of the loaded .gmap (e.g. chicken.gmap)
+        self._requested_gmap = ""      # .gmap we've already sent a WANTFILE for
+        self.bigmap_info: Dict = {}    # PLO_BIGMAP (171): image/levels_file/x/y
         self._gmap_base_level = ""  # The level player started in when GMAP was loaded
         self._gmap_spawn_x = 0  # GMAP grid x from PLO_PLAYERWARP2
         self._gmap_spawn_y = 0  # GMAP grid y from PLO_PLAYERWARP2
@@ -196,6 +244,24 @@ class Client:
         # Board layer callback: handler(layer, x, y, tiles) - extra level layer
         self.on_board_layer: Optional[Callable[[int, int, int, bytes], None]] = None
 
+        # Ghost mode callback: handler(enabled) - ghost/spectator mode toggled
+        self.on_ghost_mode: Optional[Callable[[bool], None]] = None
+
+        # Chest callback: handler(x, y, opened) - level chest state
+        self.on_chest: Optional[Callable[[int, int, bool], None]] = None
+
+        # Disconnect callback: handler(reason) - server sent PLO_DISCMESSAGE
+        self.on_disconnect: Optional[Callable[[str], None]] = None
+
+        # Ghost mode state
+        self.ghost_mode = False
+
+        # Level chests: maps (x, y) -> opened (bool)
+        self.chests: Dict[Tuple[int, int], bool] = {}
+        # Item a chest holds: maps (x, y) -> item name (known only for unopened
+        # chests, which the server announces with item/sign on level entry).
+        self.chest_items: Dict[Tuple[int, int], str] = {}
+
         # Level signs: maps (x, y) -> text
         self.signs: Dict[Tuple[float, float], str] = {}
 
@@ -213,6 +279,36 @@ class Client:
         # Auto-respond settings
         self.auto_respond_hurt = True  # Automatically send hurt response with health update
         self.hurt_animation = "hurt"   # Animation to use when hurt
+
+        # Misc server state (populated by the corresponding PLO handlers).
+        self.is_leader = False              # PLO_ISLEADER: we drive level NPCs/baddies
+        self.global_flags: Dict[str, str] = {}   # PLO_FLAGSET: server-wide flags
+        self.staff_guilds: List[str] = []   # PLO_STAFFGUILDS
+        self.status_list: List[str] = []    # PLO_STATUSLIST (selectable statuses)
+        self.server_message = ""            # PLO_STARTMESSAGE (MOTD)
+        self.server_text = ""               # PLO_SERVERTEXT (last text answer)
+        self.has_npc_server = False         # PLO_HASNPCSERVER (44) flag
+        self.rpg_window_lines: List[str] = []   # PLO_RPGWINDOW (last window)
+        self.default_weapon = 0             # PLO_DEFAULTWEAPON
+        self.server_signature = 0           # PLO_SIGNATURE
+        self.ghost_icon = False             # PLO_GHOSTICON
+        self.active_level = ""              # PLO_SETACTIVELEVEL routing target
+        self.level_modtimes: Dict[str, int] = {}  # PLO_LEVELMODTIME per level
+
+        # Callbacks for the misc packets.
+        self.on_server_text: Optional[Callable[[str], None]] = None
+        self.on_rpg_window: Optional[Callable[[List[str]], None]] = None
+        self.on_baddy_hurt: Optional[Callable[[int, int], None]] = None
+        self.on_flag: Optional[Callable[[str, str], None]] = None
+
+        # Packet coverage instrumentation (for the QA coverage harness).
+        # Maps packet_id -> {'received': n, 'handled': n, 'errors': n, 'last_error': str}
+        self.packet_stats: Dict[int, Dict[str, object]] = {}
+        # Capture the most recent error traceback per packet id for debugging.
+        self._packet_trace_enabled = False  # when True, keep raw bytes of each id
+        # PLO ids this instance has a dispatch branch for. Subclasses (e.g.
+        # RCClient) extend this so coverage counts their handlers too.
+        self._handled_plo_ids = set(HANDLED_PLO_IDS)
 
     # =========================================================================
     # Connection
@@ -368,6 +464,21 @@ class Client:
 
         return False
 
+    def send_position(self) -> bool:
+        """Re-broadcast the player's current position without moving.
+
+        The server only tells other players our position when it changes, so a
+        stationary player is invisible (position-wise) to anyone who joins after
+        us. Calling this pushes our current X/Y so others can place us. Useful
+        for tests and for an initial position announce after entering a level.
+        """
+        if not self.connected or not self._authenticated:
+            return False
+        local_x = self.player.x % 64
+        local_y = self.player.y % 64
+        data = build_movement(local_x, local_y, self.player.direction)
+        return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
+
     def say(self, message: str) -> bool:
         """
         Send a chat message.
@@ -381,6 +492,9 @@ class Client:
         if not self.connected or not self._authenticated:
             return False
 
+        # Optimistic local echo: your own bubble/message shows immediately.
+        # The server never relays your toall back to you (pid == m_id is skipped).
+        self.player.chat = message
         data = build_chat(message)
         return self._protocol.send_packet(PacketID.PLI_TOALL, data)
 
@@ -398,6 +512,9 @@ class Client:
         if not self.connected or not self._authenticated:
             return False
 
+        # Optimistic local echo so our own bubble renders right away; the server
+        # does not echo CURCHAT back to the setter.
+        self.player.chat = message
         data = build_player_chat(message)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
@@ -681,13 +798,36 @@ class Client:
             return False
 
         # Update local state
+        if level_name != self._current_level_name:
+            self._reset_level_state()
+        # On a gmap, store WORLD coords (grid*64 + local) for the target segment
+        # so position stays consistent with the world-coordinate model. A fresh
+        # gmap entry (grid not loaded yet) relies on the server's PLAYERPROPS to
+        # supply world coords; a re-warp between already-loaded segments does not
+        # get those, so convert here. Non-segment targets keep their local coords.
         self.player.x = x
         self.player.y = y
+        if self.gmap_width > 0:
+            for (gx, gy), seg in self.gmap_grid.items():
+                if seg == level_name:
+                    self.player.x = gx * 64 + x
+                    self.player.y = gy * 64 + y
+                    break
         self._current_level_name = level_name
         self._pending_level_name = level_name
 
+        # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
         return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
+
+    def _reset_level_state(self):
+        """Clear per-level (x,y)-keyed state on a full level change so chests,
+        chest items, signs and ground items from the old level don't leak into
+        the new one. (Links are keyed by level name, so they don't need this.)"""
+        self.chests.clear()
+        self.chest_items.clear()
+        self.signs.clear()
+        self.items.clear()
 
     def send_pm(self, player_id: int, message: str) -> bool:
         """
@@ -868,6 +1008,25 @@ class Client:
         """Check if a file download failed."""
         return filename in self._failed_files
 
+    def _exit_gmap(self, level_name: str):
+        """Leave gmap mode and become a standalone level.
+
+        Called when the player warps from a gmap world into a level that isn't
+        one of its segments (e.g. an interior). Clears the grid so is_gmap is
+        False and positions are treated as plain local coordinates again.
+        """
+        self.gmap_grid.clear()
+        self.gmap_width = 0
+        self.gmap_height = 0
+        self.gmap_name = ""
+        self._requested_gmap = ""
+        self._gmap_base_level = ""
+        self._gmap_spawn_x = 0
+        self._gmap_spawn_y = 0
+        self.player.level = level_name
+        self._current_level_name = level_name
+        self._pending_level_name = level_name
+
     def load_gmap(self, gmap_data: str):
         """
         Parse GMAP data to build the level grid.
@@ -1021,7 +1180,18 @@ class Client:
         packets = self._protocol.recv_packets(timeout)
 
         for packet_id, data in packets:
-            self._handle_packet(packet_id, data)
+            stats = self.packet_stats.get(packet_id)
+            if stats is None:
+                stats = {'received': 0, 'handled': 0, 'errors': 0, 'last_error': ''}
+                self.packet_stats[packet_id] = stats
+            stats['received'] += 1
+            try:
+                self._handle_packet(packet_id, data)
+                if packet_id in self._handled_plo_ids:
+                    stats['handled'] += 1
+            except Exception as e:
+                stats['errors'] += 1
+                stats['last_error'] = f"{type(e).__name__}: {e}"
 
         return packets
 
@@ -1041,6 +1211,18 @@ class Client:
             # Set player.level to GMAP name if available, else level name
             if level_name.endswith('.gmap') or not self.player.level:
                 self.player.level = level_name
+            # Entering a gmap: download the .gmap file so we can build the grid.
+            # The server announces the gmap by name but doesn't push the file;
+            # the client must request it (once) via PLI_WANTFILE.
+            if level_name.endswith('.gmap') and level_name != self._requested_gmap:
+                self._requested_gmap = level_name
+                self.request_file(level_name)
+            # Leaving a gmap: a .nw level that isn't one of the gmap's segments
+            # (e.g. warping into a cave/house) means we've left gmap mode. Clear
+            # the grid so is_gmap/coordinates reflect the standalone level.
+            elif (level_name.endswith('.nw') and self.gmap_width > 0 and
+                  level_name not in self.gmap_grid.values()):
+                self._exit_gmap(level_name)
 
         # Player properties (our player data)
         elif packet_id == PacketID.PLO_PLAYERPROPS:
@@ -1066,22 +1248,11 @@ class Client:
 
         # Chat message OR movement update
         elif packet_id == PacketID.PLO_TOALL:
-            # Try to parse as movement update first
-            movement = parse_player_movement(data)
-            if movement and 'id' in movement:
-                player_id = movement['id']
-                # Create player entry if not exists
-                if player_id not in self.players:
-                    self.players[player_id] = {'id': player_id}
-                # Update position and other movement data
-                for key in ('x', 'y', 'direction', 'animation', 'level'):
-                    if key in movement:
-                        self.players[player_id][key] = movement[key]
-            else:
-                # Regular chat message
-                player_id, message = parse_chat(data)
-                if self.on_chat:
-                    self.on_chat(player_id, message)
+            # PLO_TOALL is a server-wide broadcast message only. Player movement
+            # arrives via PLO_OTHERPLPROPS (8), never here.
+            player_id, message = parse_chat(data)
+            if message and self.on_chat:
+                self.on_chat(player_id, message)
 
         # PLO_SHOWIMG (32) - also carries level chat messages
         elif packet_id == PacketID.PLO_SHOWIMG:
@@ -1187,6 +1358,13 @@ class Client:
                 file_data = file_info['data']
                 self._received_files[filename] = file_data
                 self._pending_files.discard(filename)
+                # A downloaded .gmap file is the world grid - parse it.
+                if filename.endswith('.gmap'):
+                    try:
+                        self.load_gmap(file_data.decode('latin-1', errors='replace'))
+                        self.gmap_name = filename
+                    except Exception:
+                        pass
                 if self.on_file:
                     self.on_file(filename, file_data)
 
@@ -1305,6 +1483,11 @@ class Client:
             props = parse_other_player(data)
             if props and 'id' in props:
                 player_id = props['id']
+                # A non-empty CURCHAT prop is another player's chat bubble — the
+                # primary in-level chat path. Surface it through on_chat.
+                chat = props.get('chat')
+                if chat and self.on_chat:
+                    self.on_chat(player_id, chat)
                 if player_id in self.players:
                     # Merge props, preferring tile positions (15/16) over pixel (75/76)
                     # Only update x/y if the new value is reasonable
@@ -1319,11 +1502,24 @@ class Client:
                 else:
                     self.players[player_id] = props
 
-        # Player left
-        elif packet_id == PacketID.PLO_PLAYERLEFT:
-            player_id = parse_player_left(data)
-            if player_id in self.players:
-                del self.players[player_id]
+        # Level chest (packet 4)
+        elif packet_id == PacketID.PLO_LEVELCHEST:
+            chest = parse_level_chest(data)
+            if chest:
+                key = (chest['x'], chest['y'])
+                self.chests[key] = chest['opened']
+                # Remember the item an unopened chest holds (only sent on warp).
+                if 'item' in chest:
+                    self.chest_items[key] = chest['item']
+                if self.on_chest:
+                    self.on_chest(chest['x'], chest['y'], chest['opened'])
+
+        # Disconnect message (packet 16) - server kicked us / is shutting down
+        elif packet_id == PacketID.PLO_DISCMESSAGE:
+            reason = data.decode('latin-1', errors='replace').strip()
+            if self.on_disconnect:
+                self.on_disconnect(reason)
+            self.disconnect()
 
         # Level sign (packet 5)
         elif packet_id == PacketID.PLO_LEVELSIGN:
@@ -1359,6 +1555,10 @@ class Client:
             if mm and self.on_minimap:
                 self.on_minimap(mm['data'])
 
+        # Bigmap/minimap config (packet 171) - sent on gmap entry.
+        elif packet_id == PacketID.PLO_BIGMAP:
+            self.bigmap_info = parse_bigmap(data)
+
         # Board layer (packet 107)
         elif packet_id == PacketID.PLO_BOARDLAYER:
             layer = parse_board_layer(data)
@@ -1366,6 +1566,111 @@ class Client:
                 self.board_layers[layer['layer']] = layer['tiles']
                 if self.on_board_layer:
                     self.on_board_layer(layer['layer'], layer['x'], layer['y'], layer['tiles'])
+
+        # Ghost mode (packet 170)
+        elif packet_id == PacketID.PLO_GHOSTMODE:
+            # Ghost mode packet - typically just a toggle flag
+            enabled = data[0] != 0 if data else True
+            self.ghost_mode = enabled
+            if self.on_ghost_mode:
+                self.on_ghost_mode(enabled)
+
+        # ---- Misc server packets (full-coverage handlers) -----------------
+
+        # Empty board marker (packet 0) - in modern mode board data arrives via
+        # PLO_BOARDPACKET/PLO_RAWDATA, so this is just an acknowledgement.
+        elif packet_id == PacketID.PLO_LEVELBOARD:
+            pass
+
+        # We are this level's leader (packet 10) - drive baddies/NPCs.
+        elif packet_id == PacketID.PLO_ISLEADER:
+            self.is_leader = True
+
+        # Server signature/version (packet 25).
+        elif packet_id == PacketID.PLO_SIGNATURE:
+            self.server_signature = parse_signature(data)
+
+        # A baddy was hurt (packet 27) - relayed to the level leader.
+        elif packet_id == PacketID.PLO_BADDYHURT:
+            bh = parse_baddy_hurt(data)
+            bid = bh['baddy_id']
+            if bid in self.baddies:
+                self.baddies[bid]['power'] = max(
+                    0, self.baddies[bid].get('power', 0) - bh['power'])
+            if self.on_baddy_hurt:
+                self.on_baddy_hurt(bid, bh['power'])
+
+        # Server flag set/clear (packet 28).
+        elif packet_id == PacketID.PLO_FLAGSET:
+            name, value = parse_flag_set(data)
+            self.global_flags[name] = value
+            if self.on_flag:
+                self.on_flag(name, value)
+
+        # Remove a weapon from inventory (packet 34).
+        elif packet_id == PacketID.PLO_NPCWEAPONDEL:
+            name = parse_npcweapondel(data)
+            self.weapons.pop(name, None)
+
+        # Active level's mod time (packet 39).
+        elif packet_id == PacketID.PLO_LEVELMODTIME:
+            level = self.active_level or self._pending_level_name
+            self.level_modtimes[level] = parse_level_modtime(data)
+
+        # Server MOTD (packet 41).
+        elif packet_id == PacketID.PLO_STARTMESSAGE:
+            self.server_message = parse_start_message(data)
+
+        # Default weapon id (packet 43).
+        elif packet_id == PacketID.PLO_DEFAULTWEAPON:
+            self.default_weapon = parse_default_weapon(data)
+
+        # Staff guild list (packet 47).
+        elif packet_id == PacketID.PLO_STAFFGUILDS:
+            self.staff_guilds = parse_staff_guilds(data)
+
+        # Server text answer (packet 82).
+        elif packet_id == PacketID.PLO_SERVERTEXT:
+            self.server_text = parse_server_text(data)
+            if self.on_server_text:
+                self.on_server_text(self.server_text)
+
+        # Active level for subsequent chest/baddy/npc/board packets (packet 156).
+        elif packet_id == PacketID.PLO_SETACTIVELEVEL:
+            self.active_level = parse_set_active_level(data)
+            # Route level-scoped data (board/chest/sign) to this level too.
+            self._pending_level_name = self.active_level
+
+        # Login-server marker, blank (packet 168) - no-op.
+        elif packet_id == PacketID.PLO_UNKNOWN168:
+            pass
+
+        # Ghost icon toggle (packet 174).
+        elif packet_id == PacketID.PLO_GHOSTICON:
+            self.ghost_icon = parse_ghost_icon(data)
+
+        # RPG-style text window (packet 179).
+        elif packet_id == PacketID.PLO_RPGWINDOW:
+            self.rpg_window_lines = parse_rpg_window(data)
+            if self.on_rpg_window:
+                self.on_rpg_window(self.rpg_window_lines)
+
+        # Selectable player-status labels (packet 180).
+        elif packet_id == PacketID.PLO_STATUSLIST:
+            self.status_list = parse_status_list(data)
+
+        # Blank marker before weapon list (packet 190) - no-op.
+        elif packet_id == PacketID.PLO_UNKNOWN190:
+            pass
+
+        # Clear all weapons before the server resends the list (packet 194).
+        elif packet_id == PacketID.PLO_CLEARWEAPONS:
+            self.weapons.clear()
+
+        # PLO_HASNPCSERVER (44): empty flag - the server has an npc-server, so
+        # the client should not update npc props itself. Just record it.
+        elif packet_id == PacketID.PLO_HASNPCSERVER:
+            self.has_npc_server = True
 
         # Custom handler
         if packet_id in self.on_packet:
@@ -1461,6 +1766,8 @@ class Client:
             new_y = 0.0
 
         # Request the destination level
+        if dest_level != self._current_level_name:
+            self._reset_level_state()
         self.request_level(dest_level)
 
         # Update player position

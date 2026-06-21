@@ -55,6 +55,7 @@ class Player:
     animation: str = "idle"  # Current gani animation name
     sprite: int = 0  # Sprite frame within animation
     status: int = 0  # Status flags (paused, hidden, etc.)
+    chat: str = ""  # Current chat bubble text (CURCHAT)
 
     # Hurt state tracking
     hurt_timeout: float = 0.0  # When hurt animation should end

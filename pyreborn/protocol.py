@@ -13,13 +13,14 @@ import random
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List, Tuple, Callable
+from typing import Optional, List, Tuple, Callable, Dict
 
 # Import shared protocol components
 from reborn_protocol import (
     CompressionType,
     RebornEncryption,
     Gen5Codec,
+    Gen2Codec,
 )
 
 # Detect browser environment
@@ -93,6 +94,10 @@ class Protocol:
 
         # Encryption
         self.encryption_key = random.randint(0, 127)
+        # Encryption generation. GEN_5 (default) is the modern client/RC codec.
+        # NC connections use GEN_2 (zlib framing, no per-packet encryption and
+        # no encryption-key byte in the login packet) - see use_gen2().
+        self.gen = 5
         self.codec = Gen5Codec(self.encryption_key)
         self.first_packet = True  # First response is just zlib compressed
 
@@ -109,6 +114,10 @@ class Protocol:
         self.raw_data_expected = 0
         self.raw_data_buffer = b""
 
+        # Optional outgoing-packet recorder for the coverage harness:
+        # packet_id -> list of payloads sent (after the id byte, before newline).
+        self.sent_payloads: Optional[Dict[int, List[bytes]]] = None
+
     def connect(self) -> bool:
         """Connect to server"""
         try:
@@ -121,6 +130,18 @@ class Protocol:
         except Exception as e:
             print(f"Connection failed: {e}")
             return False
+
+    def use_gen2(self):
+        """
+        Switch this connection to ENCRYPT_GEN_2 framing (used by NC clients).
+
+        GEN_2 bundles are zlib-compressed with a 2-byte length prefix and carry
+        no per-packet encryption or compression-type byte. The login packet also
+        omits the encryption-key byte (the server only reads it for gen > 3).
+        Call before send_login().
+        """
+        self.gen = 2
+        self.codec = Gen2Codec()
 
     def disconnect(self):
         """Disconnect from server"""
@@ -145,8 +166,10 @@ class Protocol:
             client_type = self.client_type_override or self.version.client_type
             packet.append((client_type.value + 32) & 0xFF)
 
-            # Encryption key + 32
-            packet.append((self.encryption_key + 32) & 0xFF)
+            # Encryption key + 32. GEN_2 (NC) logins do not include this byte -
+            # the server only reads it when the negotiated gen is > GEN_3.
+            if self.gen > 3:
+                packet.append((self.encryption_key + 32) & 0xFF)
 
             # Protocol version (8 bytes)
             packet.extend(self.version.protocol_string.encode('ascii'))
@@ -187,6 +210,11 @@ class Protocol:
         try:
             # Build packet: packet_id + 32, then data, then newline
             packet = bytes([packet_id + 32]) + data + b'\n'
+
+            # Record the outgoing payload (coverage harness compares this to the
+            # server's logged view of what it received - a true wire round-trip).
+            if self.sent_payloads is not None:
+                self.sent_payloads.setdefault(packet_id, []).append(data)
 
             # Encrypt and get length-prefixed result
             encrypted = self.codec.send_packet(packet)

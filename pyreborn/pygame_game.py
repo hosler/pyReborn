@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import pygame
 from pygame.locals import (
     QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE,
+    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m,
     K_UP, K_DOWN, K_LEFT, K_RIGHT,
     K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
@@ -221,6 +221,15 @@ class GameClient:
         self.debug_selected_type = TileType.NONBLOCK  # Currently selected tile type for editing
         self._load_tile_corrections()
 
+        # Minimap state
+        self.minimap_data: Optional[bytes] = None
+        self.minimap_surface: Optional[pygame.Surface] = None
+        self.minimap_visible = True  # Toggle with M key
+        self.minimap_size = (100, 100)  # Display size in pixels
+
+        # Ghost mode state
+        self.ghost_mode = False
+
         # Removed tiles tracking (for pickup/throw mechanics)
         # Maps (level_name, x, y) -> original_tile_id
         self.removed_tiles: Dict[Tuple[str, int, int], int] = {}
@@ -278,8 +287,90 @@ class GameClient:
                 # Set death animation
                 self.player_anim.set_animation("dead", self.client.player.direction)
 
+        def on_minimap(data: bytes):
+            """Handle minimap data from server."""
+            self.minimap_data = data
+            self._build_minimap_surface()
+
+        def on_ghost_mode(enabled: bool):
+            """Handle ghost mode toggle."""
+            self.ghost_mode = enabled
+
         self.client.on_chat = on_chat
         self.client.on_hurt = on_hurt
+        self.client.on_minimap = on_minimap
+        self.client.on_ghost_mode = on_ghost_mode
+
+    def _build_minimap_surface(self):
+        """Build minimap surface from data."""
+        if not self.minimap_data:
+            return
+
+        # Minimap data is typically a 64x64 or 128x128 grid of color indices
+        # Each byte represents a tile's color (0-255 palette index)
+        data_len = len(self.minimap_data)
+
+        # Determine minimap grid size
+        if data_len >= 128 * 128:
+            grid_size = 128
+        elif data_len >= 64 * 64:
+            grid_size = 64
+        else:
+            grid_size = int(data_len ** 0.5)
+            if grid_size * grid_size != data_len:
+                return  # Invalid data size
+
+        # Create surface at native resolution
+        self.minimap_surface = pygame.Surface((grid_size, grid_size))
+
+        # Simple color palette for minimap
+        palette = self._get_minimap_palette()
+
+        # Fill pixels
+        for y in range(grid_size):
+            for x in range(grid_size):
+                idx = y * grid_size + x
+                if idx < len(self.minimap_data):
+                    color_idx = self.minimap_data[idx]
+                    color = palette[color_idx % len(palette)]
+                    self.minimap_surface.set_at((x, y), color)
+
+        # Scale to display size
+        self.minimap_surface = pygame.transform.scale(
+            self.minimap_surface, self.minimap_size
+        )
+
+    def _get_minimap_palette(self) -> List[Tuple[int, int, int]]:
+        """Get color palette for minimap rendering."""
+        # Common tile type colors
+        palette = [(0, 0, 0)] * 256  # Default black
+
+        # Grass/ground tones
+        for i in range(0, 32):
+            palette[i] = (34 + i * 2, 139 + i, 34)  # Green tones
+
+        # Water tones
+        for i in range(32, 64):
+            palette[i] = (30, 100 + i, 200 + min(55, i))  # Blue tones
+
+        # Rock/wall tones
+        for i in range(64, 96):
+            palette[i] = (100 + i - 64, 100 + i - 64, 100 + i - 64)  # Gray tones
+
+        # Sand tones
+        for i in range(96, 128):
+            palette[i] = (194, 178, 128 + i - 96)  # Tan tones
+
+        # Building/road tones
+        for i in range(128, 160):
+            palette[i] = (139 + i - 128, 90 + i - 128, 43)  # Brown tones
+
+        # Special markers
+        palette[255] = (255, 0, 0)  # Player position / important markers
+        palette[254] = (255, 255, 0)  # NPCs / points of interest
+        palette[253] = (0, 255, 255)  # Warps / doors
+
+        return palette
 
     def _setup_gs1_callbacks(self):
         """Setup GS1 interpreter callbacks for visual/audio feedback."""
@@ -548,6 +639,10 @@ class GameClient:
             self.visual_x = self.client.x
             self.visual_y = self.client.y
             print(f"Warped to (30, 30) on {self.client._current_level_name}")
+
+        elif event.key == K_m:
+            # Toggle minimap visibility
+            self.minimap_visible = not self.minimap_visible
 
     def _handle_tile_click(self, event):
         """Handle mouse click on tile in debug mode."""
@@ -2333,7 +2428,7 @@ class GameClient:
                 help_text = "1-7: Type | Click: Apply | RClick: Reset | F1: Exit"
                 text = self.font_small.render(help_text, True, (255, 255, 0))
             else:
-                help_text = "Arrows: Move | A: Grab | S/Space: Sword | Q: Inv | F1: Debug | F2: Warp"
+                help_text = "Arrows: Move | A: Grab | S/Space: Sword | Q: Inv | M: Map | F1: Debug"
                 text = self.font_small.render(help_text, True, (200, 200, 200))
             self.screen.blit(text, (SCREEN_WIDTH - text.get_width() - 10, 10))
 
@@ -2371,6 +2466,39 @@ class GameClient:
                 type_name = type_names.get(tile_type, f"Type {tile_type}")
                 info_text = f"Tile {tile_id} ({tx},{ty}): {type_name}"
                 self._draw_text_with_bg(info_text, mouse_x + 15, mouse_y + 15, (255, 255, 255))
+
+        # Minimap (top-right corner)
+        if self.minimap_visible and self.minimap_surface:
+            minimap_x = SCREEN_WIDTH - self.minimap_size[0] - 10
+            minimap_y = 10
+
+            # Draw border
+            border_rect = pygame.Rect(
+                minimap_x - 2, minimap_y - 2,
+                self.minimap_size[0] + 4, self.minimap_size[1] + 4
+            )
+            pygame.draw.rect(self.screen, (100, 100, 100), border_rect)
+            pygame.draw.rect(self.screen, (50, 50, 50), border_rect, 2)
+
+            # Draw minimap
+            self.screen.blit(self.minimap_surface, (minimap_x, minimap_y))
+
+            # Draw player position indicator
+            if self.client._current_level_name:
+                # Calculate player dot position relative to minimap
+                grid_size = 64  # Assume 64x64 minimap
+                local_x = self.client.x % 64
+                local_y = self.client.y % 64
+                dot_x = int(minimap_x + (local_x / 64) * self.minimap_size[0])
+                dot_y = int(minimap_y + (local_y / 64) * self.minimap_size[1])
+                pygame.draw.circle(self.screen, (255, 0, 0), (dot_x, dot_y), 3)
+                pygame.draw.circle(self.screen, (255, 255, 255), (dot_x, dot_y), 3, 1)
+
+        # Ghost mode indicator
+        if self.ghost_mode:
+            ghost_text = "GHOST MODE"
+            ghost_surf = self.font.render(ghost_text, True, (200, 200, 255))
+            self.screen.blit(ghost_surf, (SCREEN_WIDTH // 2 - ghost_surf.get_width() // 2, 50))
 
         # Inventory UI
         self.inventory_ui.render(self.client.player, self.weapons)

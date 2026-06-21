@@ -27,6 +27,9 @@ from .packets import (
     parse_rc_filebrowser_message,
     parse_rc_server_options,
     parse_rc_folder_config,
+    parse_rc_max_upload_size,
+    parse_rc_add_player,
+    parse_rc_del_player,
     build_rc_chat,
     build_rc_admin_message,
     build_rc_priv_admin_message,
@@ -98,6 +101,20 @@ class RCClient(Client):
         # TYPE_RC (1) is for old protocol, TYPE_RC2 (6) is for 2.22+ with ENCRYPT_GEN_5
         self._protocol.client_type_override = ClientType.TYPE_RC2
 
+        # Register the RC PLO ids this class handles so the coverage harness
+        # counts them as handled (kept in sync with _handle_packet below).
+        self._handled_plo_ids |= {
+            PacketID.PLO_RC_CHAT, PacketID.PLO_RC_ADMINMESSAGE,
+            PacketID.PLO_RC_SERVERFLAGSGET, PacketID.PLO_RC_SERVEROPTIONSGET,
+            PacketID.PLO_RC_ACCOUNTLISTGET, PacketID.PLO_RC_FILEBROWSER_DIRLIST,
+            PacketID.PLO_RC_FILEBROWSER_DIR, PacketID.PLO_RC_FILEBROWSER_MESSAGE,
+            PacketID.PLO_RC_PLAYERPROPSGET, PacketID.PLO_RC_ACCOUNTGET,
+            PacketID.PLO_RC_PLAYERRIGHTSGET, PacketID.PLO_RC_PLAYERCOMMENTSGET,
+            PacketID.PLO_RC_PLAYERBANGET, PacketID.PLO_RC_FOLDERCONFIGGET,
+            PacketID.PLO_RC_MAXUPLOADFILESIZE, PacketID.PLO_ADDPLAYER,
+            PacketID.PLO_DELPLAYER,
+        }
+
         # RC-specific state
         self._is_rc_mode = False
 
@@ -115,6 +132,7 @@ class RCClient(Client):
         self._server_options: Dict[str, str] = {}
         self._account_list: List[str] = []
         self._folder_config: Dict[str, str] = {}
+        self.max_upload_size = 0  # PLO_RC_MAXUPLOADFILESIZE
 
         # Cached player/account data (populated on request)
         self._last_player_props: Dict = {}
@@ -683,6 +701,26 @@ class RCClient(Client):
             self._folder_config = info
             if self.on_folder_config:
                 self.on_folder_config(info)
+            return
+
+        # Max upload file size (sent during RC login).
+        if packet_id == PacketID.PLO_RC_MAXUPLOADFILESIZE:
+            self.max_upload_size = parse_rc_max_upload_size(data)
+            return
+
+        # Playerlist entry (RC sees players join). Track id -> account so
+        # warp/kick/props-by-name can resolve targets.
+        if packet_id == PacketID.PLO_ADDPLAYER:
+            info = parse_rc_add_player(data)
+            if info:
+                self.players[info['id']] = {'id': info['id'],
+                                            'account': info['account'],
+                                            'nickname': info['account']}
+            return
+
+        # Playerlist removal.
+        if packet_id == PacketID.PLO_DELPLAYER:
+            self.players.pop(parse_rc_del_player(data), None)
             return
 
         # Defer to parent for all other packets

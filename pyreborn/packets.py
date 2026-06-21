@@ -16,128 +16,164 @@ from reborn_protocol import PacketReader, PLI, PLO, PLPROP
 # =============================================================================
 
 class PacketID:
-    """Common packet IDs"""
-    # Server -> Client
-    PLO_LEVELBOARD = 0       # Level-related data (NOT tile data, possibly compressed metadata)
-    PLO_LEVELLINK = 1        # Level link/warp definition
-    PLO_NPCPROPS = 3         # NPC properties
-    PLO_PLAYERLEFT = 4       # Player left level
-    PLO_LEVELSIGN = 5        # Level sign text
-    PLO_LEVELNAME = 6        # Level name
-    PLO_OTHERPLPROPS = 8     # Other player properties
-    PLO_PLAYERPROPS = 9      # Player properties
-    PLO_TOALL = 13           # Chat
-    PLO_PLAYERWARP = 14      # Warp confirmation: [x*2:GChar][y*2:GChar][level_name]
-    PLO_NPCDEL = 29          # NPC deleted
-    PLO_SHOWIMG = 32         # Show image - also used for level chat!
-    PLO_NPCWEAPONADD = 33    # Weapon added: +name image!<script
-    PLO_RC_ADMINMESSAGE = 35 # Admin message to all players
-    PLO_HURTPLAYER = 40      # Player hurt/damage notification
-    PLO_NEWWORLDTIME = 42    # Heartbeat/time sync
-    PLO_BADDYPROPS = 2       # Baddy/enemy properties
-    PLO_ITEMADD = 22         # Item added to level
-    PLO_ITEMDEL = 23         # Item removed from level
-    PLO_EXPLOSION = 36       # Explosion effect
-    PLO_PRIVATEMESSAGE = 37  # Private message received
-    PLO_HITOBJECTS = 46      # Hit objects notification
-    PLO_PLAYERWARP2 = 49     # Player warp with gmap position
-    PLO_RAWDATA = 100        # Raw data size announcement
-    PLO_BOARDPACKET = 101    # Level tile data (8192 bytes = 64x64 tiles @ 2 bytes each)
-    PLO_FILE = 102           # File transfer packet
-    PLO_FILESENDFAILED = 104 # File send failed
-    PLO_BOARDLAYER = 107     # Extra level layer
-    PLO_GHOSTMODE = 170      # Ghost/spectator mode
-    PLO_BIGMAP = 171         # Full world map
-    PLO_MINIMAP = 172        # Mini map overlay
+    """Protocol packet IDs.
 
-    # RC Server -> Client packets
-    PLO_RC_SERVERFLAGSGET = 61    # Server flags response
-    PLO_RC_PLAYERRIGHTSGET = 62   # Player rights response
-    PLO_RC_PLAYERCOMMENTSGET = 63 # Player comments response
-    PLO_RC_PLAYERBANGET = 64      # Ban status response
-    PLO_RC_FILEBROWSER_DIRLIST = 65  # Directory listing
-    PLO_RC_FILEBROWSER_DIR = 66   # Current directory contents
-    PLO_RC_FILEBROWSER_MESSAGE = 67  # File operation message
-    PLO_RC_ACCOUNTLISTGET = 70    # Account list response
-    PLO_RC_PLAYERPROPSGET = 72    # Player properties (RC format)
-    PLO_RC_ACCOUNTGET = 73        # Account details response
-    PLO_RC_CHAT = 74              # RC chat message
-    PLO_RC_SERVEROPTIONSGET = 76  # Server options response
-    PLO_RC_FOLDERCONFIGGET = 77   # Folder config response
-    PLO_RC_MAXUPLOADFILESIZE = 103  # Max upload size (GINT5)
+    These are generated from the canonical ``reborn_protocol`` PLO/PLI enums so
+    there is a single source of truth. This class used to hard-code the numbers
+    and had drifted out of sync with the server (e.g. FILESENDFAILED was 104
+    instead of 30, PLI_LANGUAGE was 44 instead of 37, and a bogus PLO_PLAYERLEFT
+    aliased PLO_LEVELCHEST=4). Access them as ``PacketID.PLO_LEVELCHEST`` etc.
+    """
+    pass
 
-    # Client -> Server
-    PLI_LEVELWARP = 0        # Warp to level (x, y, level_name)
-    PLI_PLAYERPROPS = 2      # Send player properties (note: 6 is PLI_TOALL in old protocol)
-    PLI_NPCPROPS = 3         # Send NPC properties (char props like #P1, #P2)
-    PLI_HORSEADD = 7         # Add/mount horse
-    PLI_ARROWADD = 9         # Add arrow to level
-    PLI_BADDYHURT = 16       # Hurt a baddy
-    PLI_FLAGSET = 18         # Set a flag
-    PLI_FLAGDEL = 19         # Delete a flag
-    PLI_TOALL = 6            # Chat (this is the actual PLI_TOALL)
-    PLI_OPENCHEST = 20       # Open a chest
-    PLI_WANTFILE = 23        # Request file from server
-    PLI_SHOWIMG = 24         # Show image (chat in level)
-    PLI_HURTPLAYER = 26      # Attack/hurt player (send damage to victim)
-    PLI_EXPLOSION = 27       # Bomb explosion
-    PLI_PRIVATEMESSAGE = 28  # Private message
-    PLI_ITEMTAKE = 32        # Pick up item
-    PLI_ADJACENTLEVEL = 35   # Request adjacent GMAP level
-    PLI_HITOBJECTS = 36      # Hit objects (sword, etc.)
-    PLI_TRIGGERACTION = 38   # Trigger server action
-    PLI_SHOOT = 40           # Shoot projectile (old format)
-    PLI_LANGUAGE = 44        # Set language
-    PLI_SHOOT2 = 48          # Shoot projectile (new format, v5.07+)
 
-    # RC Client -> Server packets
-    PLI_RC_SERVEROPTIONSGET = 51     # Get server configuration
-    PLI_RC_SERVEROPTIONSSET = 52     # Set server configuration
-    PLI_RC_FOLDERCONFIGGET = 53      # Get folder configuration
-    PLI_RC_FOLDERCONFIGSET = 54      # Set folder configuration
-    PLI_RC_RESPAWNSET = 55           # Set respawn settings
-    PLI_RC_HORSELIFESET = 56         # Set horse lifetime
-    PLI_RC_APINCREMENTSET = 57       # Set AP increment
-    PLI_RC_BADDYRESPAWNSET = 58      # Set baddy respawn
-    PLI_RC_PLAYERPROPSGET = 59       # Get player properties
-    PLI_RC_PLAYERPROPSSET = 60       # Set player properties
-    PLI_RC_DISCONNECTPLAYER = 61     # Kick a player
-    PLI_RC_UPDATELEVELS = 62         # Update/reload server levels
-    PLI_RC_ADMINMESSAGE = 63         # Send admin message to all
-    PLI_RC_PRIVADMINMESSAGE = 64     # Send private admin message
-    PLI_RC_LISTRCS = 65              # Get list of connected RCs
-    PLI_RC_DISCONNECTRC = 66         # Disconnect another RC
-    PLI_RC_APPLYREASON = 67          # Set disconnect reason
-    PLI_RC_SERVERFLAGSGET = 68       # Get server flags
-    PLI_RC_SERVERFLAGSSET = 69       # Set server flags
-    PLI_RC_ACCOUNTADD = 70           # Create new account
-    PLI_RC_ACCOUNTDEL = 71           # Delete account
-    PLI_RC_ACCOUNTLISTGET = 72       # Get list of accounts
-    PLI_RC_PLAYERPROPSGET2 = 73      # Get player by ID
-    PLI_RC_PLAYERPROPSGET3 = 74      # Get player by account name
-    PLI_RC_PLAYERPROPSRESET = 75     # Reset player props
-    PLI_RC_PLAYERPROPSSET2 = 76      # Set player props (alt)
-    PLI_RC_ACCOUNTGET = 77           # Get account details
-    PLI_RC_ACCOUNTSET = 78           # Set account properties
-    PLI_RC_CHAT = 79                 # Send message in RC chat
-    PLI_RC_WARPPLAYER = 82           # Warp player to level
-    PLI_RC_PLAYERRIGHTSGET = 83      # Get player rights
-    PLI_RC_PLAYERRIGHTSSET = 84      # Set player rights
-    PLI_RC_PLAYERCOMMENTSGET = 85    # Get player comments
-    PLI_RC_PLAYERCOMMENTSSET = 86    # Set player comments
-    PLI_RC_PLAYERBANGET = 87         # Get ban status
-    PLI_RC_PLAYERBANSET = 88         # Set ban (duration, reason)
-    PLI_RC_FILEBROWSER_START = 89    # Start file browser session
-    PLI_RC_FILEBROWSER_CD = 90       # Change directory
-    PLI_RC_FILEBROWSER_END = 91      # End session
-    PLI_RC_FILEBROWSER_DOWN = 92     # Download file
-    PLI_RC_FILEBROWSER_UP = 93       # Upload file
-    PLI_RC_FILEBROWSER_MOVE = 96     # Move/rename file
-    PLI_RC_FILEBROWSER_DELETE = 97   # Delete file/directory
-    PLI_RC_FILEBROWSER_RENAME = 98   # Rename file
-    PLI_RC_LARGEFILESTART = 155      # Start large file transfer
-    PLI_RC_LARGEFILEEND = 156        # End large file transfer
-    PLI_RC_FOLDERDELETE = 160        # Delete folder
+# Populate PacketID.<PREFIX><NAME> from the authoritative enums.
+for _enum, _prefix in ((PLO, "PLO_"), (PLI, "PLI_")):
+    for _member in _enum:
+        setattr(PacketID, _prefix + _member.name, int(_member))
+del _enum, _prefix, _member
+
+
+# =============================================================================
+# Player property parsing helpers
+#
+# Player-property payload widths are authoritative per GServer-v2:
+#   server/include/object/Player.h           (prop -> serializer X-macro)
+#   server/include/utilities/PropertySerializers.{h,cpp}  (serializer widths)
+#   dependencies/gs2lib/src/CString.cpp       (readGChar/Short/Int = 1/2/3 bytes)
+# Getting any width wrong misaligns the rest of the props packet (the classic
+# "Y position suddenly jumps" symptom), so all skipping goes through one table.
+# pyReborn targets v6.037 (MODERN / new-world mode => COLORS is 8 bytes).
+# =============================================================================
+
+# Fixed-size numeric props: prop_id -> payload byte count.
+_PROP_FIXED_BYTES = {
+    1: 1, 2: 1, 3: 3, 4: 1, 5: 1, 6: 1, 7: 1,   # power/rupees/arrows/bombs/gloves
+    13: 8,                                        # COLORS (new-world = 8, classic = 5)
+    14: 2,                                        # ID (gshort)
+    15: 1, 16: 1, 17: 1, 18: 1, 19: 1,           # X / Y / SPRITE / STATUS / CARRYSPRITE
+    22: 1, 24: 3, 25: 2, 26: 1, 27: 3, 28: 3,    # horsebushes/carrynpc/apcounter/mp/kills/deaths
+    29: 3, 30: 5, 31: 3, 32: 1, 33: 1,           # onlinesecs/ip/udpport/alignment/additflags
+    36: 3,                                        # RATING (PropertyEloRating, readGInt = 3)
+    42: 4,                                        # ATTACHNPC (1-byte type + readGInt 3)
+    43: 1, 44: 1, 45: 1,                         # GMAPLEVELX / GMAPLEVELY / Z
+    50: 1, 51: 0, 53: 1,                         # JOINLEAVELVL / DISCONNECT(void) / PLAYERLISTSTATUS
+    76: 3, 77: 5, 78: 2, 79: 2, 80: 2, 81: 1,    # codepage/onlinesecs2/X2/Y2/Z2/listcategory
+    83: 5,                                        # UNKNOWN83 (v6 reads a GBYTE5)
+}
+
+# Length-prefixed string props (1-byte length + chars).
+_PROP_STRING_IDS = (
+    {0, 10, 12, 20, 21, 34, 35, 52, 75, 82}
+    | {37, 38, 39, 40, 41}        # GATTRIB1-5
+    | {46, 47, 48, 49}            # GATTRIB6-9
+    | set(range(54, 75))          # GATTRIB10-30
+)
+
+# GATTRIB prop_id -> attribute index (1..30), in protocol order.
+_GATTRIB_IDS = {
+    pid: i + 1 for i, pid in enumerate(
+        [37, 38, 39, 40, 41, 46, 47, 48, 49, 54, 55, 56, 57, 58, 59,
+         60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74]
+    )
+}
+
+
+def _read_string(data: bytes, pos: int):
+    """Read a 1-byte-length-prefixed string. Returns (value_or_None, new_pos)."""
+    n = len(data)
+    if pos >= n:
+        return None, pos
+    str_len = data[pos] - 32
+    pos += 1
+    if str_len <= 0:
+        return None, pos
+    end = pos + str_len
+    if end > n:
+        return None, n
+    return data[pos:end].decode('latin-1', errors='replace'), end
+
+
+def _read_gbyte(data: bytes, pos: int, count: int):
+    """Read a `count`-byte Graal-packed unsigned int. Returns (value_or_None, new_pos)."""
+    n = len(data)
+    if pos + count > n:
+        return None, n
+    value = 0
+    for i in range(count):
+        value = (value << 7) | ((data[pos + i] - 32) & 0x7F)
+    return value, pos + count
+
+
+def _read_pixel(data: bytes, pos: int):
+    """Read a 2-byte high-precision pixel coordinate (PropertyPixelCoordinate).
+    Returns (tiles_float_or_None, new_pos)."""
+    if pos + 2 > len(data):
+        return None, len(data)
+    value = ((data[pos] - 32) << 7) | (data[pos + 1] - 32)
+    pixels = value >> 1
+    if value & 0x0001:
+        pixels = -pixels
+    return pixels / 16.0, pos + 2
+
+
+def _read_sword(data: bytes, pos: int, threshold: int):
+    """Read a SWORDPOWER/SHIELDPOWER prop. `threshold` is 30 (sword) or 10 (shield):
+    a raw value below it is a preset power with no image; at/above it the power is
+    (raw - threshold) followed by a length-prefixed image. Returns (power, image_or_None, new_pos)."""
+    if pos >= len(data):
+        return 0, None, pos
+    raw = data[pos] - 32
+    pos += 1
+    if raw < threshold:
+        return raw, None, pos
+    image, pos = _read_string(data, pos)
+    return raw - threshold, image, pos
+
+
+def _read_headgif(data: bytes, pos: int):
+    """Read a HEADGIF prop. Length < 100 is a preset id (int); otherwise a custom
+    image string of (length - 100) chars. Returns (value_or_None, new_pos)."""
+    n = len(data)
+    if pos >= n:
+        return None, pos
+    length = data[pos] - 32
+    pos += 1
+    if length < 100:
+        return length, pos
+    end = pos + (length - 100)
+    if end > n:
+        return None, n
+    return data[pos:end].decode('latin-1', errors='replace'), end
+
+
+def _prop_payload_len(prop_id: int, data: bytes, pos: int) -> int:
+    """Number of payload bytes a player-prop occupies (prop-id byte already consumed).
+    Used to keep the stream aligned for props the caller does not decode itself."""
+    fixed = _PROP_FIXED_BYTES.get(prop_id)
+    if fixed is not None:
+        return fixed
+    if prop_id in _PROP_STRING_IDS:
+        return 1 + (data[pos] - 32) if pos < len(data) else 0
+    if prop_id == 8:        # SWORDPOWER
+        if pos >= len(data):
+            return 0
+        return 1 + (1 + (data[pos + 1] - 32) if (data[pos] - 32) >= 30 and pos + 1 < len(data) else 0)
+    if prop_id == 9:        # SHIELDPOWER
+        if pos >= len(data):
+            return 0
+        return 1 + (1 + (data[pos + 1] - 32) if (data[pos] - 32) >= 10 and pos + 1 < len(data) else 0)
+    if prop_id == 11:       # HEADGIF
+        if pos >= len(data):
+            return 0
+        length = data[pos] - 32
+        return 1 + ((length - 100) if length >= 100 else 0)
+    if prop_id == 23:       # EFFECTCOLORS: 1 byte if first is 0, else 5
+        if pos >= len(data):
+            return 0
+        return 1 if (data[pos] - 32) == 0 else 5
+    # Unknown: advance a single byte so the loop makes progress.
+    return 1
 
 
 # =============================================================================
@@ -172,20 +208,55 @@ def parse_level_link(data: bytes) -> dict:
     return {}
 
 
+# Graal sign text alphabet (from GServer-v2 LevelSign.cpp `signText`). Each
+# encoded sign byte is `index_into_this_string + 32`.
+_SIGN_ALPHABET = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "0123456789!?-.,#>()#####\"####':/~&### <####;\n"
+)
+# Button-symbol escape tables (ctab/ctabindex/signSymbols in LevelSign.cpp).
+_SIGN_CTAB = [91, 92, 93, 94, 77, 78, 79, 80, 74, 75, 71, 72, 73, 86, 86, 87, 88, 67]
+_SIGN_CTABINDEX = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17]
+_SIGN_SYMBOLS = "ABXYudlrhxyz#4."
+
+
+def decode_sign_text(body: bytes) -> str:
+    """Decode the Graal-encoded sign text body (after the x/y bytes).
+
+    Mirrors LevelSign::decodeSignCode: each byte's code (byte-32) either maps to
+    a button-symbol escape (#A, #B, ...) via the ctab tables or indexes the sign
+    alphabet directly.
+    """
+    out = []
+    for raw in body:
+        code = raw - 32
+        if code in _SIGN_CTAB:
+            code_id = _SIGN_CTAB.index(code)
+            if code_id in _SIGN_CTABINDEX:
+                out.append('#' + _SIGN_SYMBOLS[_SIGN_CTABINDEX.index(code_id)])
+                continue
+        if 0 <= code < len(_SIGN_ALPHABET):
+            out.append(_SIGN_ALPHABET[code])
+    return ''.join(out).replace('#K(13)', '')
+
+
 def parse_level_sign(data: bytes) -> dict:
     """
     Parse PLO_LEVELSIGN (packet 5) - sign/board text.
-    Format: [x:GCHAR][y:GCHAR][text:raw_string]
+    Format: [x:GCHAR][y:GCHAR][encoded_text...]
 
-    Position values are in half-tiles (divide by 2 for tile coordinates).
+    x/y are whole-tile coordinates. The text is Graal sign-encoded and must be
+    run through decode_sign_text to recover readable characters.
     """
     if len(data) < 2:
         return {}
     reader = PacketReader(data)
+    x = reader.read_gchar()
+    y = reader.read_gchar()
     return {
-        'x': reader.read_gchar() / 2.0,
-        'y': reader.read_gchar() / 2.0,
-        'text': reader.remaining().decode('latin-1', errors='replace')
+        'x': x,
+        'y': y,
+        'text': decode_sign_text(reader.remaining()),
     }
 
 
@@ -539,228 +610,129 @@ def parse_other_player(data: bytes) -> dict:
     while pos < len(data):
         prop_id = data[pos] - 32
         pos += 1
+        if prop_id < 0 or prop_id > 83:
+            break
 
-        # PLPROP_NICKNAME (0) - string
-        if prop_id == 0:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['nickname'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_GANI (10) - animation string
-        elif prop_id == 10:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['ani'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_CURLEVEL (20) - level name string
-        elif prop_id == 20:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['level'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_ACCOUNTNAME (34) - account name string
-        elif prop_id == 34:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['account'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_X (15) - 1 byte gchar (tiles * 2)
-        elif prop_id == 15:
+        if prop_id == 0:          # NICKNAME
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['nickname'] = val
+        elif prop_id == 8:        # SWORDPOWER
+            power, image, pos = _read_sword(data, pos, 30)
+            props['sword_power'] = power
+            if image is not None:
+                props['sword_image'] = image
+        elif prop_id == 9:        # SHIELDPOWER
+            power, image, pos = _read_sword(data, pos, 10)
+            props['shield_power'] = power
+            if image is not None:
+                props['shield_image'] = image
+        elif prop_id == 10:       # GANI
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['ani'] = val
+        elif prop_id == 11:       # HEADGIF
+            val, pos = _read_headgif(data, pos)
+            if isinstance(val, str):
+                props['head_image'] = val
+        elif prop_id == 12:       # CURCHAT (chat bubble above the player)
+            val, pos = _read_string(data, pos)
+            # An empty CURCHAT clears the bubble; surface '' too so callers
+            # can distinguish "no chat prop" (key absent) from "chat cleared".
+            props['chat'] = val if val is not None else ''
+        elif prop_id == 15:       # X (half-tiles)
             if pos < len(data):
                 props['x'] = float(data[pos] - 32) / 2.0
                 pos += 1
-
-        # PLPROP_Y (16) - 1 byte gchar (tiles * 2)
-        elif prop_id == 16:
+        elif prop_id == 16:       # Y (half-tiles)
             if pos < len(data):
                 props['y'] = float(data[pos] - 32) / 2.0
                 pos += 1
-
-        # PLPROP_SPRITE (17) - contains direction in lower 2 bits
-        elif prop_id == 17:
+        elif prop_id == 17:       # SPRITE (direction in lower 2 bits)
             if pos < len(data):
-                props['sprite'] = data[pos] - 32
+                sprite = data[pos] - 32
+                props['sprite'] = sprite
+                props['direction'] = sprite & 0x03
                 pos += 1
-
-        # PLPROP_STATUS (18) - 1 byte
-        elif prop_id == 18:
+        elif prop_id == 18:       # STATUS
             if pos < len(data):
                 props['status'] = data[pos] - 32
                 pos += 1
-
-        # PLPROP_SWORDPOWER (8) - may have gchar followed by string for custom sword
-        elif prop_id == 8:
-            if pos < len(data):
-                val = data[pos] - 32
-                pos += 1
-                if val > 4:  # Custom image - power is (val - 30)
-                    props['sword_power'] = val - 30
-                    if pos < len(data):
-                        str_len = data[pos] - 32
-                        pos += 1
-                        if str_len > 0 and pos + str_len <= len(data):
-                            props['sword_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                            pos += str_len
-                else:
-                    props['sword_power'] = val
-
-        # PLPROP_SHIELDPOWER (9) - similar to sword
-        elif prop_id == 9:
-            if pos < len(data):
-                val = data[pos] - 32
-                pos += 1
-                if val > 3:  # Custom shield - power is (val - 10)
-                    props['shield_power'] = val - 10
-                    if pos < len(data):
-                        str_len = data[pos] - 32
-                        pos += 1
-                        if str_len > 0 and pos + str_len <= len(data):
-                            props['shield_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                            pos += str_len
-                else:
-                    props['shield_power'] = val
-
-        # PLPROP_HEADGIF (11) - head image
-        elif prop_id == 11:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['head_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_CURCHAT (12) - chat string (skip)
-        elif prop_id == 12:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    pos += str_len
-
-        # PLPROP_COLORS (13) - 5 bytes
-        elif prop_id == 13:
-            pos += 5
-
-        # PLPROP_ID (14) - 2 bytes gshort
-        elif prop_id == 14:
-            pos += 2
-
-        # PLPROP_CARRYSPRITE (19) - 1 byte
-        elif prop_id == 19:
-            pos += 1
-
-        # PLPROP_HORSEGIF (21), PLPROP_HORSEBUSHES (22), PLPROP_EFFECTCOLORS (23) - strings
-        elif prop_id in [21, 22, 23]:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    pos += str_len
-
-        # PLPROP_BODYIMG (35) - body image string
-        elif prop_id == 35:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['body_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # GATTRIB1-30 (props 36-74) - custom server attributes
-        elif 36 <= prop_id <= 74:
-            attr_index = prop_id - 35  # GATTRIB1 = prop 36, so index 1
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props[f'gattrib{attr_index}'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Various other string props (excluding GATTRIBs which are handled above)
-        elif prop_id in [24, 25, 26, 27, 28, 29, 30, 31, 32, 33]:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    pos += str_len
-
-        # PLPROP_OSTYPE (75) - string (1 byte length + chars)
-        elif prop_id == 75:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['os_type'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PLPROP_TEXTCODEPAGE (76) - gInt (3 bytes)
-        elif prop_id == 76:
-            if pos + 2 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                b3 = data[pos + 2] - 32
-                props['codepage'] = (b1 << 14) | (b2 << 7) | b3
-                pos += 3
-
-        # Single byte props (1-7 are numeric stats)
-        elif prop_id in [1, 2, 3, 4, 5, 6, 7]:
-            pos += 1
-
-        # PLPROP_X2 (78) - 2 bytes, high precision X
-        elif prop_id == 78:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['x'] = pixels / 16.0
-                pos += 2
-
-        # PLPROP_Y2 (79) - 2 bytes, high precision Y
-        elif prop_id == 79:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['y'] = pixels / 16.0
-                pos += 2
-
-        # PLPROP_Z2 (80) - 2 bytes, high precision Z
-        elif prop_id == 80:
-            if pos + 1 < len(data):
-                pos += 2
-
-        # Default: single byte
+        elif prop_id == 20:       # CURLEVEL
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['level'] = val
+        elif prop_id == 34:       # ACCOUNTNAME
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['account'] = val
+        elif prop_id == 35:       # BODYIMG
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['body_image'] = val
+        elif prop_id in _GATTRIB_IDS:
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props[f'gattrib{_GATTRIB_IDS[prop_id]}'] = val
+        elif prop_id == 75:       # OSTYPE
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['os_type'] = val
+        elif prop_id == 76:       # TEXTCODEPAGE (gbyte3)
+            val, pos = _read_gbyte(data, pos, 3)
+            if val is not None:
+                props['codepage'] = val
+        elif prop_id == 78:       # X2 (high-precision X)
+            val, pos = _read_pixel(data, pos)
+            if val is not None:
+                props['x'] = val
+        elif prop_id == 79:       # Y2 (high-precision Y)
+            val, pos = _read_pixel(data, pos)
+            if val is not None:
+                props['y'] = val
         else:
-            if pos < len(data):
-                pos += 1
+            # Everything else (incl. COLORS/EFFECTCOLORS/CARRYNPC/numeric stats):
+            # consume the correct number of bytes to keep the stream aligned.
+            pos += _prop_payload_len(prop_id, data, pos)
 
     return props
 
 
-def parse_player_left(data: bytes) -> int:
-    """Parse PLO_PLAYERLEFT (4) - returns player_id that left."""
-    if len(data) < 2:
-        return 0
-    reader = PacketReader(data)
-    return reader.read_gshort()
+# LevelItemType id -> name (from GServer-v2 LevelItem.h enum order).
+LEVEL_ITEM_NAMES = {
+    0: 'greenrupee', 1: 'bluerupee', 2: 'redrupee', 3: 'bombs', 4: 'darts',
+    5: 'heart', 6: 'glove1', 7: 'bow', 8: 'bomb', 9: 'shield', 10: 'sword',
+    11: 'fullheart', 12: 'superbomb', 13: 'battleaxe', 14: 'goldensword',
+    15: 'mirrorshield', 16: 'glove2', 17: 'lizardshield', 18: 'lizardsword',
+    19: 'goldrupee', 20: 'fireball', 21: 'fireblast', 22: 'nukeshot',
+    23: 'joltbomb', 24: 'spinattack',
+}
+
+
+def parse_level_chest(data: bytes) -> dict:
+    """Parse PLO_LEVELCHEST (4).
+
+    Format: {gchar opened}{gchar x}{gchar y}[ {gchar item}{gchar sign} ].
+    (Packet id 4 is LEVELCHEST, not a "player left" message — there is no
+    player-left packet in this protocol.)
+
+    The trailing item/sign pair is only present for *unopened* chests announced
+    when entering a level. The response to actually opening a chest, and entries
+    for already-opened chests, are just the 3-byte form.
+    """
+    if len(data) < 3:
+        return {}
+    result = {
+        'opened': (data[0] - 32) != 0,
+        'x': data[1] - 32,
+        'y': data[2] - 32,
+    }
+    if len(data) >= 5:
+        item_id = data[3] - 32
+        result['item_id'] = item_id
+        result['item'] = LEVEL_ITEM_NAMES.get(item_id, f'item{item_id}')
+        result['sign'] = data[4] - 32
+    return result
 
 
 def parse_newworldtime(data: bytes) -> dict:
@@ -906,299 +878,127 @@ def parse_player_props(data: bytes) -> Dict[str, Any]:
     pos = 0
 
     while pos < len(data):
-        if pos >= len(data):
-            break
-
         prop_id = data[pos] - 32
         pos += 1
-
-        if prop_id < 0 or prop_id > 125:
+        if prop_id < 0 or prop_id > 83:
             break
 
-        # Nickname (prop 0) - string
-        if prop_id == 0:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['nickname'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Max hearts (prop 1)
-        elif prop_id == 1:
+        if prop_id == 0:          # NICKNAME
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['nickname'] = val
+        elif prop_id == 1:        # MAXPOWER (halves)
             if pos < len(data):
                 props['max_hearts'] = (data[pos] - 32) / 2.0
                 pos += 1
-
-        # Current hearts (prop 2)
-        elif prop_id == 2:
+        elif prop_id == 2:        # CURPOWER (halves)
             if pos < len(data):
                 props['hearts'] = (data[pos] - 32) / 2.0
                 pos += 1
-
-        # Rupees (prop 3) - 3 bytes
-        elif prop_id == 3:
-            if pos + 2 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                b3 = data[pos + 2] - 32
-                props['rupees'] = (b1 << 14) | (b2 << 7) | b3
-                pos += 3
-
-        # Arrows (prop 4) - 1 byte
-        elif prop_id == 4:
+        elif prop_id == 3:        # RUPEESCOUNT (gbyte3)
+            val, pos = _read_gbyte(data, pos, 3)
+            if val is not None:
+                props['rupees'] = val
+        elif prop_id == 4:        # ARROWSCOUNT
             if pos < len(data):
                 props['arrows'] = data[pos] - 32
                 pos += 1
-
-        # Bombs (prop 5) - 1 byte
-        elif prop_id == 5:
+        elif prop_id == 5:        # BOMBSCOUNT
             if pos < len(data):
                 props['bombs'] = data[pos] - 32
                 pos += 1
-
-        # Glove power (prop 6) - 1 byte
-        elif prop_id == 6:
+        elif prop_id == 6:        # GLOVEPOWER
             if pos < len(data):
                 props['glove_power'] = data[pos] - 32
                 pos += 1
-
-        # Bomb power (prop 7) - 1 byte
-        elif prop_id == 7:
+        elif prop_id == 7:        # BOMBPOWER
             if pos < len(data):
                 props['bomb_power'] = data[pos] - 32
                 pos += 1
-
-        # Sword (prop 8) - power + image
-        # Format: (swordPower + 30), imgLen, imgString
-        elif prop_id == 8:
-            if pos < len(data):
-                sp = data[pos] - 32
-                pos += 1
-                sword_power = sp
-                if sp > 4:
-                    # Has image: power is encoded as (power + 30)
-                    sword_power = sp - 30
-                    if pos < len(data):
-                        img_len = data[pos] - 32
-                        pos += 1
-                        if img_len > 0 and pos + img_len <= len(data):
-                            props['sword_image'] = data[pos:pos + img_len].decode('latin-1', errors='replace')
-                            pos += img_len
-                props['sword_power'] = max(0, sword_power)
-
-        # Shield (prop 9) - power + image
-        # Format: (shieldPower + 10), imgLen, imgString
-        elif prop_id == 9:
-            if pos < len(data):
-                sp = data[pos] - 32
-                pos += 1
-                shield_power = sp
-                if sp > 3:
-                    # Has image: power is encoded as (power + 10)
-                    shield_power = sp - 10
-                    if shield_power < 0:
-                        break
-                    if pos < len(data):
-                        img_len = data[pos] - 32
-                        pos += 1
-                        if img_len > 0 and pos + img_len <= len(data):
-                            props['shield_image'] = data[pos:pos + img_len].decode('latin-1', errors='replace')
-                            pos += img_len
-                props['shield_power'] = max(0, shield_power)
-
-        # Animation (prop 10) - string
-        elif prop_id == 10:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['animation'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Head image (prop 11) - special encoding
-        # Format: (imgLen + 100), imgString
-        elif prop_id == 11:
-            if pos < len(data):
-                len_val = data[pos] - 32
-                pos += 1
-                if len_val >= 100:
-                    actual_len = len_val - 100
-                    if actual_len > 0 and pos + actual_len <= len(data):
-                        props['head_image'] = data[pos:pos + actual_len].decode('latin-1', errors='replace')
-                        pos += actual_len
-
-        # Current chat (prop 12) - string (what player is saying)
-        elif prop_id == 12:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['chat'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Colors (prop 13) - 5 bytes
-        elif prop_id == 13:
-            if pos + 4 < len(data):
-                pos += 5
-
-        # Direction (prop 14)
-        elif prop_id == 14:
-            if pos < len(data):
-                props['direction'] = data[pos] - 32
-                pos += 1
-
-        # X coordinate (prop 15) - half-tiles
-        elif prop_id == 15:
+        elif prop_id == 8:        # SWORDPOWER
+            power, image, pos = _read_sword(data, pos, 30)
+            props['sword_power'] = power
+            if image is not None:
+                props['sword_image'] = image
+        elif prop_id == 9:        # SHIELDPOWER
+            power, image, pos = _read_sword(data, pos, 10)
+            props['shield_power'] = power
+            if image is not None:
+                props['shield_image'] = image
+        elif prop_id == 10:       # GANI
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['animation'] = val
+        elif prop_id == 11:       # HEADGIF
+            val, pos = _read_headgif(data, pos)
+            if isinstance(val, str):
+                props['head_image'] = val
+        elif prop_id == 12:       # CURCHAT
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['chat'] = val
+        elif prop_id == 15:       # X (half-tiles)
             if pos < len(data):
                 props['x'] = (data[pos] - 32) / 2.0
                 pos += 1
-
-        # Y coordinate (prop 16) - half-tiles
-        elif prop_id == 16:
+        elif prop_id == 16:       # Y (half-tiles)
             if pos < len(data):
                 props['y'] = (data[pos] - 32) / 2.0
                 pos += 1
-
-        # Sprite (prop 17)
-        elif prop_id == 17:
+        elif prop_id == 17:       # SPRITE (direction in lower 2 bits)
             if pos < len(data):
-                props['sprite'] = data[pos] - 32
+                sprite = data[pos] - 32
+                props['sprite'] = sprite
+                props['direction'] = sprite & 0x03
                 pos += 1
-
-        # Status (prop 18) - 1 byte
-        elif prop_id == 18:
+        elif prop_id == 18:       # STATUS
             if pos < len(data):
                 props['status'] = data[pos] - 32
                 pos += 1
-
-        # Carry sprite (prop 19) - 1 byte
-        elif prop_id == 19:
+        elif prop_id == 19:       # CARRYSPRITE
             if pos < len(data):
                 props['carry_sprite'] = data[pos] - 32
                 pos += 1
-
-        # Current level (prop 20) - string
-        elif prop_id == 20:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['level'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Horse image (prop 21) - string
-        elif prop_id == 21:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['horse_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Horse bushes (prop 22) - 1 byte
-        elif prop_id == 22:
+        elif prop_id == 20:       # CURLEVEL
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['level'] = val
+        elif prop_id == 21:       # HORSEGIF
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['horse_image'] = val
+        elif prop_id == 22:       # HORSEBUSHES
             if pos < len(data):
                 props['horse_bushes'] = data[pos] - 32
                 pos += 1
-
-        # Effect colors (prop 23) - 4 bytes (RGBA)
-        elif prop_id == 23:
-            if pos + 3 < len(data):
-                pos += 4
-
-        # Carry NPC ID (prop 24) - 4 bytes (int)
-        elif prop_id == 24:
-            if pos + 3 < len(data):
-                # Read as 4-byte GInt
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                b3 = data[pos + 2] - 32
-                b4 = data[pos + 3] - 32
-                props['carry_npc'] = (b1 << 21) | (b2 << 14) | (b3 << 7) | b4
-                pos += 4
-
-        # Account name (prop 34) - string
-        # Only parse if we haven't seen account yet (avoid corruption from misinterpreted bytes)
-        elif prop_id == 34:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    # Only set account if we haven't parsed it yet
-                    if 'account' not in props:
-                        props['account'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # Body image (prop 35) - string
-        elif prop_id == 35:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['body_image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # GATTRIB1-30 (props 36-74) - custom server attributes
-        elif 36 <= prop_id <= 74:
-            attr_index = prop_id - 35  # GATTRIB1 = prop 36, so index 1
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props[f'gattrib{attr_index}'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # PixelX (prop 78) - 2 bytes, precise position
-        elif prop_id == 78:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['x'] = pixels / 16.0
-                pos += 2
-
-        # PixelY (prop 79) - 2 bytes, precise position
-        elif prop_id == 79:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                value = (b1 << 7) | b2
-                pixels = value >> 1
-                if value & 0x0001:
-                    pixels = -pixels
-                props['y'] = pixels / 16.0
-                pos += 2
-
-        # PixelZ (prop 80) - 2 bytes
-        elif prop_id == 80:
-            if pos + 1 < len(data):
-                pos += 2
-
-        # String properties (various) - skip with length
-        # Note: props 36-74 (GATTRIBs) are handled above
-        elif prop_id in [75, 82]:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0:
-                    pos += str_len
-
-        # High-numbered string properties (83-125)
-        elif prop_id >= 83:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0:
-                    pos += str_len
-
-        # Default: single byte property
+        elif prop_id == 24:       # CARRYNPC (gbyte3)
+            val, pos = _read_gbyte(data, pos, 3)
+            if val is not None:
+                props['carry_npc'] = val
+        elif prop_id == 34:       # ACCOUNTNAME
+            val, pos = _read_string(data, pos)
+            if val is not None and 'account' not in props:
+                props['account'] = val
+        elif prop_id == 35:       # BODYIMG
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props['body_image'] = val
+        elif prop_id in _GATTRIB_IDS:
+            val, pos = _read_string(data, pos)
+            if val is not None:
+                props[f'gattrib{_GATTRIB_IDS[prop_id]}'] = val
+        elif prop_id == 78:       # X2 (high-precision X)
+            val, pos = _read_pixel(data, pos)
+            if val is not None:
+                props['x'] = val
+        elif prop_id == 79:       # Y2 (high-precision Y)
+            val, pos = _read_pixel(data, pos)
+            if val is not None:
+                props['y'] = val
         else:
-            if pos < len(data):
-                pos += 1
+            # Everything else (COLORS/EFFECTCOLORS/numeric stats/OSTYPE/etc.):
+            # consume the correct number of bytes to keep the stream aligned.
+            pos += _prop_payload_len(prop_id, data, pos)
 
     return props
 
@@ -1228,8 +1028,15 @@ def build_player_props(x: Optional[float] = None, y: Optional[float] = None,
 
 
 def build_chat(message: str) -> bytes:
-    """Build PLI_TOALL (packet 24) for chat message."""
-    return message.encode('latin-1', errors='replace')
+    """Build PLI_TOALL (packet 6) body for a server-wide message.
+
+    Server (Player::msgPLI_TOALL) reads `readString(readGUChar())` — i.e. a
+    gchar length prefix (raw byte - 32) followed by the raw message bytes.
+    Without the length prefix the server consumes the first message char as the
+    length and the relayed text is shifted/garbled.
+    """
+    msg = message.encode('latin-1', errors='replace')[:223]
+    return bytes([len(msg) + 32]) + msg
 
 
 def build_player_chat(message: str) -> bytes:
@@ -1323,24 +1130,33 @@ def build_movement(x: float, y: float, direction: int = 2,
 def parse_hurt_player(data: bytes) -> dict:
     """
     Parse PLO_HURTPLAYER (packet 40) - player hurt notification.
-    Format: gshort(player_id) + gchar(damage) + gchar(type) + gchar(source_x) + gchar(source_y)
+
+    Server layout (PlayerClient::msgPLI_HURTPLAYER relay):
+        gshort(attacker_id) gchar(hurtdx) gchar(hurtdy) gchar(power) gint3(npc)
+    `power` is the damage in half-hearts. The old parser mistook the first
+    knockback byte (hurtdx) for damage, so an attack with no knockback read as
+    0 damage.
     """
     if len(data) < 2:
         return {}
 
     reader = PacketReader(data)
     player_id = reader.read_gshort()
-    damage = reader.read_gchar() if reader.has_data() else 0
-    damage_type = reader.read_gchar() if reader.has_data() else 0
-    source_x = reader.read_gchar() if reader.has_data() else 0
-    source_y = reader.read_gchar() if reader.has_data() else 0
+    hurt_dx = reader.read_gchar() if reader.has_data() else 0
+    hurt_dy = reader.read_gchar() if reader.has_data() else 0
+    power = reader.read_gchar() if reader.has_data() else 0
+    npc_id = reader.read_gint3() if reader.has_data() else 0
 
     return {
-        'player_id': player_id,  # 0 = self
-        'damage': damage / 2.0,  # damage in half-hearts
-        'damage_type': damage_type,  # 0=sword, 1=bomb, etc.
-        'source_x': source_x,
-        'source_y': source_y
+        'player_id': player_id,       # attacker id; 0 = environment/self
+        'damage': power / 2.0,        # power is in half-hearts
+        'knockback_x': hurt_dx,
+        'knockback_y': hurt_dy,
+        'npc_id': npc_id,
+        # legacy keys kept for callers that referenced the old field names
+        'damage_type': 0,
+        'source_x': hurt_dx,
+        'source_y': hurt_dy,
     }
 
 
@@ -1604,8 +1420,7 @@ def build_attack_player(victim_id: int, hurt_dx: int, hurt_dy: int,
     # power (guchar) - damage in half-hearts
     packet.append(int(damage * 2) + 32)
 
-    # npc_id (guint - 4 bytes)
-    packet.append(((npc_id >> 21) & 0x7F) + 32)
+    # npc_id (gint3 - 3 bytes; server reads readGUInt() == readGInt() == 3 bytes)
     packet.append(((npc_id >> 14) & 0x7F) + 32)
     packet.append(((npc_id >> 7) & 0x7F) + 32)
     packet.append((npc_id & 0x7F) + 32)
@@ -2006,11 +1821,13 @@ def build_open_chest(x: float, y: float) -> bytes:
     """
     packet = bytearray()
 
-    # Local position in half-tiles
-    local_x = x % 64
-    local_y = y % 64
-    packet.append(int(local_x * 2) + 32)
-    packet.append(int(local_y * 2) + 32)
+    # Whole-tile local position. The server (msgPLI_OPENCHEST) reads two gchars
+    # and matches them directly against the chest's whole-tile position from the
+    # .nw "CHEST x y item sign" line — NOT half-tiles.
+    local_x = int(x) % 64
+    local_y = int(y) % 64
+    packet.append(local_x + 32)
+    packet.append(local_y + 32)
 
     return bytes(packet)
 
@@ -2098,67 +1915,170 @@ def parse_rc_server_flags(data: bytes) -> dict:
 def parse_rc_player_props(data: bytes) -> dict:
     """
     Parse PLO_RC_PLAYERPROPSGET (packet 72) - Player properties (RC format).
-    Format: gshort(player_id) + props...
+
+    Server layout: gshort(player_id) then getPropsForRCPacket()
+    (PlayerProps.cpp Player::getPropsForRCPacket):
+      gstring(account) gstring(worldName) gstring_short? -> actually
+      gstring(props_blob) gshort(flag_count)[gstring(flag)]*
+      gshort(chest_count)[gchar(len) gchar(x) gchar(y) str(level)]*
+      gchar(weapon_count)[gstring(weapon)]*
+    The embedded props_blob is a standard player-props packet.
     """
     if len(data) < 2:
         return {}
 
     reader = PacketReader(data)
     player_id = reader.read_gshort()
+    account = reader.read_gstring()
+    world = reader.read_gstring()
 
-    # The rest is player props in standard format
-    props = parse_player_props(reader.remaining())
-    props['player_id'] = player_id
-    return props
+    props_blob = reader.read_gstring()  # gchar-length-prefixed props packet
+    props = parse_player_props(props_blob.encode('latin-1')) if props_blob else {}
+
+    flags = []
+    if reader.has_data():
+        flag_count = reader.read_gshort()
+        for _ in range(flag_count):
+            if not reader.has_data():
+                break
+            flags.append(reader.read_gstring())
+
+    chests = []
+    if reader.has_data():
+        chest_count = reader.read_gshort()
+        for _ in range(chest_count):
+            if not reader.has_data():
+                break
+            entry_len = reader.read_gchar()      # level length + 2
+            x = reader.read_gchar()
+            y = reader.read_gchar()
+            level = reader.read_string(max(0, entry_len - 2))
+            chests.append({'x': x, 'y': y, 'level': level})
+
+    weapons = []
+    if reader.has_data():
+        weapon_count = reader.read_gchar()
+        for _ in range(weapon_count):
+            if not reader.has_data():
+                break
+            weapons.append(reader.read_gstring())
+
+    return {
+        'player_id': player_id,
+        'account': account,
+        'world': world,
+        'props': props,
+        'flags': flags,
+        'chests': chests,
+        'weapons': weapons,
+    }
+
+
+def parse_rc_max_upload_size(data: bytes) -> int:
+    """PLO_RC_MAXUPLOADFILESIZE (103): gint5 max upload size in bytes."""
+    if len(data) < 5:
+        return 0
+    return PacketReader(data).read_gint5()
+
+
+def parse_rc_add_player(data: bytes) -> dict:
+    """
+    Parse PLO_ADDPLAYER (55) - RC/NC playerlist entry.
+
+    Server layout (Player.cpp): gshort(id) gchar(namelen) name + a stream of
+    ``gchar(propid) <serialized>`` prop pairs (CURLEVEL/PLAYERLISTSTATUS/
+    NICKNAME/COMMUNITYNAME). We decode the positional id + account name (the
+    reliable part); the variable-width prop tail is kept raw.
+    """
+    if len(data) < 3:
+        return {}
+    reader = PacketReader(data)
+    pid = reader.read_gshort()
+    account = reader.read_gstring()
+    return {'id': pid, 'account': account, 'rest': reader.remaining()}
+
+
+def parse_rc_del_player(data: bytes) -> int:
+    """Parse PLO_DELPLAYER (56) - returns the removed player id (gshort)."""
+    if len(data) < 2:
+        return 0
+    return PacketReader(data).read_gshort()
 
 
 def parse_rc_account_list(data: bytes) -> dict:
     """
     Parse PLO_RC_ACCOUNTLISTGET (packet 70) - Account list response.
-    Returns list of account names.
+
+    Server layout (PlayerRCPackets.cpp msgPLI_RC_ACCOUNTLISTGET): a sequence of
+    length-prefixed account names, ``[gchar(len)][name]`` repeated. NOT
+    newline-separated (the old parser produced one mashed string).
     """
-    # Format: tokenized list of account names
-    text = data.decode('latin-1', errors='replace')
-    accounts = [a.strip() for a in text.split('\n') if a.strip()]
+    reader = PacketReader(data)
+    accounts = []
+    while reader.has_data():
+        name = reader.read_gstring()
+        if name:
+            accounts.append(name)
     return {'accounts': accounts}
 
 
 def parse_rc_account_get(data: bytes) -> dict:
     """
     Parse PLO_RC_ACCOUNTGET (packet 73) - Account details response.
-    Format: gchar(name_len) + name + gchar(banned) + ban_reason + gchar(pw_len) + password + ...
+
+    Server layout (PlayerRCPackets.cpp msgPLI_RC_ACCOUNTGET):
+      gstring(name) gstring(password, always empty) gstring(email)
+      gchar(banned) gchar(loadOnly) gchar(adminlevel)
+      gstring(folders, e.g. "main") gstring(banLength) gstring(banReason)
     """
     if len(data) < 1:
         return {}
 
     reader = PacketReader(data)
     name = reader.read_gstring()
-    banned = reader.read_gchar() == 1 if reader.has_data() else False
+    password = reader.read_gstring() if reader.has_data() else ''
+    email = reader.read_gstring() if reader.has_data() else ''
+    banned = (reader.read_gchar() == 1) if reader.has_data() else False
+    load_only = (reader.read_gchar() == 1) if reader.has_data() else False
+    admin_level = reader.read_gchar() if reader.has_data() else 0
+    folders = reader.read_gstring() if reader.has_data() else ''
+    ban_length = reader.read_gstring() if reader.has_data() else ''
     ban_reason = reader.read_gstring() if reader.has_data() else ''
 
     return {
         'name': name,
+        'password': password,
+        'email': email,
         'banned': banned,
-        'ban_reason': ban_reason
+        'load_only': load_only,
+        'admin_level': admin_level,
+        'folders': folders,
+        'ban_length': ban_length,
+        'ban_reason': ban_reason,
     }
 
 
 def parse_rc_player_rights(data: bytes) -> dict:
     """
     Parse PLO_RC_PLAYERRIGHTSGET (packet 62) - Player rights response.
-    Format: gchar(name_len) + name + rights_flags + folder_access
+
+    Server layout (PlayerRCPackets.cpp msgPLI_RC_PLAYERRIGHTSGET):
+      gstring(name) gint5(adminRights) gstring(adminIp) gstring_short(folders CSV)
     """
     if len(data) < 1:
         return {}
 
     reader = PacketReader(data)
     name = reader.read_gstring()
-    # Rights are in remaining data as encoded flags
-    rights_data = reader.remaining().decode('latin-1', errors='replace')
+    admin_rights = reader.read_gint5() if reader.has_data() else 0
+    admin_ip = reader.read_gstring() if reader.has_data() else ''
+    folders = reader.read_gstring_short() if reader.has_data() else ''
 
     return {
         'name': name,
-        'rights': rights_data
+        'admin_rights': admin_rights,
+        'admin_ip': admin_ip,
+        'folders': _parse_graal_csv(folders) if folders else [],
     }
 
 
@@ -2250,23 +2170,29 @@ def parse_rc_filebrowser_message(data: bytes) -> str:
 def parse_rc_server_options(data: bytes) -> dict:
     """
     Parse PLO_RC_SERVEROPTIONSGET (packet 76) - Server options response.
-    Format: tokenized key=value pairs
+
+    Server sends ``string::toCSV(serveroptions.txt lines)`` - a quoted CSV where
+    each element is one ``key=value`` (or comment/blank) line of the config file.
     """
     text = data.decode('latin-1', errors='replace')
+    lines = _parse_graal_csv(text)
     options = {}
-    for line in text.split('\n'):
+    for line in lines:
         if '=' in line:
             key, value = line.split('=', 1)
             options[key.strip()] = value.strip()
-    return {'options': options}
+    return {'options': options, 'lines': lines}
 
 
 def parse_rc_folder_config(data: bytes) -> dict:
     """
     Parse PLO_RC_FOLDERCONFIGGET (packet 77) - Folder config response.
+
+    Server sends ``string::toCSV(foldersconfig.txt lines)``; each element is one
+    ``rights folder/path`` line (e.g. ``rw world/*``).
     """
     text = data.decode('latin-1', errors='replace')
-    return {'config': text}
+    return {'lines': _parse_graal_csv(text)}
 
 
 # =============================================================================
@@ -2559,10 +2485,12 @@ def parse_file(data: bytes) -> dict:
     filename = data[pos:pos + filename_len].decode('latin-1', errors='replace')
     pos += filename_len
 
-    # Rest is file data (may end with \n which we strip)
+    # Rest is the file data. The server appends one framing '\n' after the file
+    # bytes, but the protocol raw-data layer (PLO_RAWDATA) already strips that
+    # trailing newline before handing the body here. Stripping again would
+    # truncate any file whose real last byte is 0x0A (corrupts binary files and
+    # drops the final newline of text/level files).
     file_data = data[pos:]
-    if file_data and file_data[-1:] == b'\n':
-        file_data = file_data[:-1]
 
     return {
         'mod_time': mod_time,
@@ -2577,3 +2505,413 @@ def parse_filesendfailed(data: bytes) -> str:
     Format: filename
     """
     return data.decode('latin-1', errors='replace')
+
+
+# =============================================================================
+# Misc server packets
+#
+# Wire layouts confirmed against GServer-v2 4.0 source + GS_PKTLOG trace.
+# String payloads are RAW ascii (no length prefix, no +32 offset); numeric
+# payloads are gchar/gint encoded (value + 32 per byte). The framing layer has
+# already stripped the leading id byte and trailing newline.
+# =============================================================================
+
+def _parse_graal_csv(text: str) -> list:
+    """Parse a Graal/quoted CSV row (toCSV format).
+
+    Fields are comma-separated; a field may be wrapped in double quotes, inside
+    which a literal quote is doubled ("").  Used by STAFFGUILDS and RPGWINDOW.
+    """
+    out, field, i, n, in_quotes = [], [], 0, len(text), False
+    while i < n:
+        ch = text[i]
+        if in_quotes:
+            if ch == '"':
+                if i + 1 < n and text[i + 1] == '"':
+                    field.append('"')
+                    i += 1
+                else:
+                    in_quotes = False
+            else:
+                field.append(ch)
+        else:
+            if ch == '"':
+                in_quotes = True
+            elif ch == ',':
+                out.append(''.join(field))
+                field = []
+            else:
+                field.append(ch)
+        i += 1
+    out.append(''.join(field))
+    return out
+
+
+def parse_signature(data: bytes) -> int:
+    """PLO_SIGNATURE (25): one gchar server signature/version (73 = stock)."""
+    return (data[0] - 32) if data else 0
+
+
+def parse_default_weapon(data: bytes) -> int:
+    """PLO_DEFAULTWEAPON (43): one gchar default-weapon enum id."""
+    return (data[0] - 32) if data else 0
+
+
+def parse_ghost_icon(data: bytes) -> bool:
+    """PLO_GHOSTICON (174): one gchar, 1 = show ghost icon."""
+    return bool(data and (data[0] - 32))
+
+
+def parse_level_modtime(data: bytes) -> int:
+    """PLO_LEVELMODTIME (39): gint5 unix mod-time of the active level."""
+    if len(data) < 5:
+        return 0
+    return PacketReader(data).read_gint5()
+
+
+def parse_set_active_level(data: bytes) -> str:
+    """PLO_SETACTIVELEVEL (156): raw level name. Routes subsequent
+    chest/baddy/npc/board packets to this level."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_flag_set(data: bytes) -> tuple:
+    """PLO_FLAGSET (28): raw 'name' or 'name=value' server flag."""
+    text = data.decode('latin-1', errors='replace')
+    name, sep, value = text.partition('=')
+    return name, (value if sep else '')
+
+
+def parse_npcweapondel(data: bytes) -> str:
+    """PLO_NPCWEAPONDEL (34): raw weapon name to remove from inventory."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_start_message(data: bytes) -> str:
+    """PLO_STARTMESSAGE (41): raw server MOTD (often HTML)."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_server_text(data: bytes) -> str:
+    """PLO_SERVERTEXT (82): raw text; answer to PLI_REQUESTTEXT/SENDTEXT."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_staff_guilds(data: bytes) -> list:
+    """PLO_STAFFGUILDS (47): quoted-CSV list of staff guild names."""
+    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+
+
+def parse_status_list(data: bytes) -> list:
+    """PLO_STATUSLIST (180): plain comma-separated player-status labels."""
+    text = data.decode('latin-1', errors='replace')
+    return text.split(',') if text else []
+
+
+def parse_rpg_window(data: bytes) -> list:
+    """PLO_RPGWINDOW (179): quoted-CSV text lines for an RPG-style window."""
+    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+
+
+def parse_baddy_hurt(data: bytes) -> dict:
+    """PLO_BADDYHURT (27): relayed from PLI_BADDYHURT; first gchar is the baddy
+    id, remaining gchar(s) the hurt power. Forwarded to the level leader."""
+    reader = PacketReader(data)
+    baddy_id = reader.read_gchar() if reader.has_data() else 0
+    power = reader.read_gchar() if reader.has_data() else 0
+    return {'baddy_id': baddy_id, 'power': power}
+
+
+# =============================================================================
+# NC (NPC Control) packets
+#
+# NC is the npc-control connection (PLTYPE_NC, ENCRYPT_GEN_2). Wire formats are
+# taken from the server build code:
+#   server/src/player/packets/PlayerNCPackets.cpp  (PLI handlers / PLO replies)
+#   dependencies/gs2lib/include/IEnums.h           (ids + layout comments)
+# NPC ids are gint3 (CString writeGInt = 3 bytes); coords are gchar(tiles*2);
+# trailing scripts/levels/flags are raw strings read to end-of-packet.
+# =============================================================================
+
+
+def _gint3(value: int) -> bytes:
+    """Encode a 3-byte GInt (matches CString::writeGInt / readGUInt)."""
+    return bytes((
+        ((value >> 14) & 0x7F) + 32,
+        ((value >> 7) & 0x7F) + 32,
+        (value & 0x7F) + 32,
+    ))
+
+
+def _raw(text: str) -> bytes:
+    return text.encode('latin-1', errors='replace')
+
+
+def _gtokenize(text: str) -> str:
+    """Encode a multi-line string the way CString::gtokenize does.
+
+    Each line becomes one comma-separated token; tokens that start with a quote,
+    are blank/whitespace, or contain a non-printable / ',' / '/' char are wrapped
+    in double quotes with internal backslash and quote doubled. The server
+    reverses this with guntokenize(). Crucially this removes raw newlines, which
+    would otherwise split the packet under the bundle's newline framing.
+    """
+    if not text.endswith('\n'):
+        text = text + '\n'
+    tokens = []
+    for line in text.split('\n')[:-1]:
+        line = line.replace('\r', '')
+        if line == '':
+            tokens.append('')
+            continue
+        complex_ = (line[0] == '"' or line.strip() == '' or
+                    any(ord(c) < 33 or ord(c) > 126 or c == ',' or c == '/'
+                        for c in line))
+        if complex_:
+            esc = line.replace('\\', '\\\\').replace('"', '""')
+            tokens.append('"' + esc + '"')
+        else:
+            tokens.append(line)
+    return ','.join(tokens)
+
+
+# ---- PLI builders (client -> server) ----------------------------------------
+
+def build_nc_npcget(npc_id: Optional[int] = None) -> bytes:
+    """PLI_NC_NPCGET (103): {INT id}. Empty body is a server ping/poll."""
+    return b"" if npc_id is None else _gint3(npc_id)
+
+
+def build_nc_npcdelete(npc_id: int) -> bytes:
+    """PLI_NC_NPCDELETE (104): {INT id}."""
+    return _gint3(npc_id)
+
+
+def build_nc_npcreset(npc_id: int) -> bytes:
+    """PLI_NC_NPCRESET (105): {INT id}."""
+    return _gint3(npc_id)
+
+
+def build_nc_npcscriptget(npc_id: int) -> bytes:
+    """PLI_NC_NPCSCRIPTGET (106): {INT id}."""
+    return _gint3(npc_id)
+
+
+def build_nc_npcwarp(npc_id: int, x: float, y: float, level: str) -> bytes:
+    """PLI_NC_NPCWARP (107): {INT id}{CHAR x*2}{CHAR y*2}{level}."""
+    out = bytearray(_gint3(npc_id))
+    out.append((int(round(x * 2)) & 0xFF) + 32)
+    out.append((int(round(y * 2)) & 0xFF) + 32)
+    out.extend(_raw(level))
+    return bytes(out)
+
+
+def build_nc_npcflagsget(npc_id: int) -> bytes:
+    """PLI_NC_NPCFLAGSGET (108): {INT id}."""
+    return _gint3(npc_id)
+
+
+def build_nc_npcscriptset(npc_id: int, script: str) -> bytes:
+    """PLI_NC_NPCSCRIPTSET (109): {INT id}{GSTRING script}.
+
+    The script is gtokenized (the server calls guntokenize on it). This also
+    encodes any newlines so they don't split the packet under newline framing.
+    """
+    return _gint3(npc_id) + _raw(_gtokenize(script))
+
+
+def build_nc_npcflagsset(npc_id: int, flags: str) -> bytes:
+    """PLI_NC_NPCFLAGSSET (110): {INT id}{GSTRING flags} (CSV key=value list)."""
+    return _gint3(npc_id) + _raw(flags)
+
+
+def build_nc_npcadd(info: str) -> bytes:
+    """PLI_NC_NPCADD (111): {GSTRING info} = CSV name,id,type,scripter,level,x,y."""
+    return _raw(info)
+
+
+def build_nc_classedit(class_name: str) -> bytes:
+    """PLI_NC_CLASSEDIT (112): {class}."""
+    return _raw(class_name)
+
+
+def build_nc_classadd(class_name: str, script: str) -> bytes:
+    """PLI_NC_CLASSADD (113): {CHAR name length}{name}{GSTRING script}.
+
+    The script is gtokenized (server reverses it with fromCSV + join "\\n").
+    """
+    name = _raw(class_name)
+    return bytes([(len(name) + 32) & 0xFF]) + name + _raw(_gtokenize(script))
+
+
+def build_nc_localnpcsget(level: str) -> bytes:
+    """PLI_NC_LOCALNPCSGET (114): {level}."""
+    return _raw(level)
+
+
+def build_nc_weaponlistget() -> bytes:
+    """PLI_NC_WEAPONLISTGET (115): no body."""
+    return b""
+
+
+def build_nc_weaponget(weapon: str) -> bytes:
+    """PLI_NC_WEAPONGET (116): {weapon}."""
+    return _raw(weapon)
+
+
+def build_nc_weaponadd(weapon: str, image: str, code: str) -> bytes:
+    """PLI_NC_WEAPONADD (117): {CHAR wlen}{weapon}{CHAR ilen}{image}{code}.
+
+    Newlines in the code are sent as 0xA7 (the server replaces 0xA7 -> '\\n');
+    this also keeps raw newlines out of the newline-framed bundle.
+    """
+    w = _raw(weapon)
+    img = _raw(image)
+    out = bytearray([(len(w) + 32) & 0xFF])
+    out.extend(w)
+    out.append((len(img) + 32) & 0xFF)
+    out.extend(img)
+    out.extend(_raw(code.replace('\n', '\xa7')))
+    return bytes(out)
+
+
+def build_nc_weapondelete(weapon: str) -> bytes:
+    """PLI_NC_WEAPONDELETE (118): {weapon}."""
+    return _raw(weapon)
+
+
+def build_nc_classdelete(class_name: str) -> bytes:
+    """PLI_NC_CLASSDELETE (119): {class}."""
+    return _raw(class_name)
+
+
+def build_nc_levellistget() -> bytes:
+    """PLI_NC_LEVELLISTGET (150): no body."""
+    return b""
+
+
+# ---- PLO parsers (server -> client) -----------------------------------------
+
+def parse_nc_weapon_list(data: bytes) -> list:
+    """PLO_NC_WEAPONLISTGET (167): sequence of [CHAR len][name] weapon names."""
+    names = []
+    reader = PacketReader(data)
+    while reader.has_data():
+        name = reader.read_gstring()
+        if name == "" and not reader.has_data():
+            break
+        names.append(name)
+    return names
+
+
+def parse_nc_level_list(data: bytes) -> list:
+    """PLO_NC_LEVELLIST (80): {GSTRING levels}, graal-tokenized (toCSV-style)."""
+    text = data.decode('latin-1', errors='replace')
+    return [lvl for lvl in _parse_graal_csv(text) if lvl]
+
+
+def parse_nc_level_dump(data: bytes) -> str:
+    """PLO_NC_LEVELDUMP (164): graal-tokenized variable dump for a level.
+
+    The body is one toCSV row whose joined fields reconstruct the multi-line
+    dump; returned as the decoded text for inspection.
+    """
+    text = data.decode('latin-1', errors='replace')
+    return "\n".join(_parse_graal_csv(text))
+
+
+def parse_nc_weapon_get(data: bytes) -> dict:
+    """PLO_NC_WEAPONGET (192): {CHAR nlen}{name}{CHAR ilen}{image}{script}.
+
+    (NC >= 2.1 reply; older clients get PLO_NPCWEAPONADD instead.)
+    """
+    reader = PacketReader(data)
+    name = reader.read_gstring()
+    image = reader.read_gstring()
+    script = reader.remaining().decode('latin-1', errors='replace')
+    # Server replaces newlines with 0xA7 on the wire; restore them.
+    script = script.replace('\xa7', '\n')
+    return {'name': name, 'image': image, 'script': script}
+
+
+# ---- NC NPC / class management replies (require a running npc-server) --------
+
+def parse_nc_npc_attributes(data: bytes) -> list:
+    """PLO_NC_NPCATTRIBUTES (157): toCSV variable dump for one database NPC."""
+    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+
+
+def parse_nc_npc_add(data: bytes) -> dict:
+    """PLO_NC_NPCADD (158): {INT id} then [gchar propid][gchar len][string]*.
+
+    Props: 50=NAME, 51=TYPE, 52=CURLEVEL (NPCProp ids, gchar-encoded).
+    """
+    reader = PacketReader(data)
+    npc_id = reader.read_gint3()
+    fields = {'id': npc_id, 'name': '', 'type': '', 'level': ''}
+    prop_map = {50: 'name', 51: 'type', 52: 'level'}
+    while reader.has_data():
+        prop_id = reader.read_gchar()
+        value = reader.read_gstring()
+        key = prop_map.get(prop_id)
+        if key:
+            fields[key] = value
+    return fields
+
+
+def parse_nc_npc_delete(data: bytes) -> int:
+    """PLO_NC_NPCDELETE (159): {INT id}."""
+    return PacketReader(data).read_gint3()
+
+
+def parse_nc_npc_script(data: bytes) -> dict:
+    """PLO_NC_NPCSCRIPT (160): {INT id}{toCSV(script, "\\n")}."""
+    reader = PacketReader(data)
+    npc_id = reader.read_gint3()
+    script = "\n".join(_parse_graal_csv(
+        reader.remaining().decode('latin-1', errors='replace')))
+    return {'id': npc_id, 'script': script}
+
+
+def parse_nc_npc_flags(data: bytes) -> dict:
+    """PLO_NC_NPCFLAGS (161): {INT id}{toCSV(flag list)}."""
+    reader = PacketReader(data)
+    npc_id = reader.read_gint3()
+    text = reader.remaining().decode('latin-1', errors='replace')
+    flags = [f for f in _parse_graal_csv(text) if f] if text else []
+    return {'id': npc_id, 'flags': flags}
+
+
+def parse_nc_class_get(data: bytes) -> dict:
+    """PLO_NC_CLASSGET (162): {CHAR name length}{name}{toCSV(script)}."""
+    reader = PacketReader(data)
+    name = reader.read_gstring()
+    script = "\n".join(_parse_graal_csv(
+        reader.remaining().decode('latin-1', errors='replace')))
+    return {'name': name, 'script': script}
+
+
+def parse_nc_class_add(data: bytes) -> str:
+    """PLO_NC_CLASSADD (163): {class} - the class name (raw)."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_nc_class_delete(data: bytes) -> str:
+    """PLO_NC_CLASSDELETE (188): {class} - the class name (raw)."""
+    return data.decode('latin-1', errors='replace')
+
+
+def parse_bigmap(data: bytes) -> dict:
+    """PLO_BIGMAP (171): "<imgfile>,<levelsfile>,<x>,<y>" minimap/bigmap config.
+
+    Sent on entering a gmap/bigmap world (and via the GS1 setmap command).
+    """
+    parts = data.decode('latin-1', errors='replace').split(',')
+    parts += [''] * (4 - len(parts))
+    def _num(v):
+        try:
+            return float(v)
+        except ValueError:
+            return 0.0
+    return {'image': parts[0].strip(), 'levels_file': parts[1].strip(),
+            'x': _num(parts[2]), 'y': _num(parts[3])}
