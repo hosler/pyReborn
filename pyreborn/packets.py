@@ -1291,20 +1291,22 @@ def build_bomb_drop(x: float, y: float, power: int = 1) -> bytes:
 def parse_item_add(data: bytes) -> dict:
     """
     Parse PLO_ITEMADD (packet 22) - item added to level.
-    Format: gchar(x) + gchar(y) + gchar(len) + string(item_type)
+    Format (GServer-v2 Level.cpp): gchar(x*2) + gchar(y*2) + gchar(item_id).
+    item_id is the numeric LevelItemType; map it to a name for convenience.
     """
-    if len(data) < 2:
+    if len(data) < 3:
         return {}
 
     reader = PacketReader(data)
     x = reader.read_gchar() / 2.0  # half-tiles to tiles
     y = reader.read_gchar() / 2.0
-    item_type = reader.read_gstring()
+    item_id = reader.read_gchar()
 
     return {
         'x': x,
         'y': y,
-        'type': item_type
+        'item_id': item_id,
+        'type': LEVEL_ITEM_NAMES.get(item_id, f'item{item_id}'),
     }
 
 
@@ -1729,8 +1731,8 @@ def parse_private_message(data: bytes) -> dict:
     """
     Parse PLO_PRIVATEMESSAGE (packet 37) - received private message.
 
-    Format: short(sender_id) + "type," + message
-    Example: "\x00\x03\"Private message:\",Hello!"
+    Format: gshort(sender_id) + "type," + message
+    Example: gshort(3) + '"","Private message:",Hello!'
 
     Returns:
         dict with 'from_id' (sender player ID), 'type', and 'message'
@@ -1739,8 +1741,8 @@ def parse_private_message(data: bytes) -> dict:
         if len(data) < 2:
             return {'from_id': 0, 'type': '', 'message': ''}
 
-        # First 2 bytes are raw short (big endian) sender ID
-        sender_id = (data[0] << 8) | data[1]
+        # First 2 bytes are the GShort sender id (same encoding as PLO_TOALL).
+        sender_id = ((data[0] - 32) << 7) + (data[1] - 32)
 
         # Rest is the message type and content
         text = data[2:].decode('latin-1', errors='replace')
@@ -1836,35 +1838,46 @@ def parse_baddy_props(data: bytes) -> dict:
                 props['type'] = data[pos] - 32
                 pos += 1
 
-        # BDPROP_POWER (4) - Remaining power/health
+        # BDPROP_POWERIMAGE (4) - power byte + length-prefixed image string
+        # (GServer-v2 BaddyProp::POWERIMAGE getProp).
         elif prop_id == 4:
             if pos < len(data):
                 props['power'] = data[pos] - 32
                 pos += 1
+                if pos < len(data):
+                    str_len = data[pos] - 32
+                    pos += 1
+                    if str_len > 0 and pos + str_len <= len(data):
+                        props['image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                    pos += max(0, str_len)
 
-        # BDPROP_DIR (5) - Direction
+        # BDPROP_MODE (5) - 1 byte
         elif prop_id == 5:
             if pos < len(data):
-                props['direction'] = data[pos] - 32
+                props['mode'] = data[pos] - 32
                 pos += 1
 
-        # BDPROP_IMAGE (6) - Image string
+        # BDPROP_ANI (6) - 1 byte animation index
         elif prop_id == 6:
             if pos < len(data):
-                str_len = data[pos] - 32
+                props['animation'] = data[pos] - 32
                 pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
 
-        # BDPROP_ANI (7) - Animation string
+        # BDPROP_DIR (7) - 1 byte (headDir << 2 | direction)
         elif prop_id == 7:
+            if pos < len(data):
+                props['direction'] = (data[pos] - 32) & 0x03
+                pos += 1
+
+        # BDPROP_VERSESIGHT/HURT/ATTACK (8/9/10) - length-prefixed strings
+        elif prop_id in (8, 9, 10):
             if pos < len(data):
                 str_len = data[pos] - 32
                 pos += 1
                 if str_len > 0 and pos + str_len <= len(data):
-                    props['animation'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
+                    key = {8: 'verse_sight', 9: 'verse_hurt', 10: 'verse_attack'}[prop_id]
+                    props[key] = data[pos:pos + str_len].decode('latin-1', errors='replace')
+                pos += max(0, str_len)
 
         # Default: single byte
         else:
