@@ -325,99 +325,165 @@ def parse_board_layer(data: bytes) -> dict:
     }
 
 
+# NPCProp string props: serialized as [gchar len][raw bytes].
+# (PropertyString in GServer-v2 NPC.h FOR_LIST_OF_NPC_PROPS.)
+_NPC_STRING_PROPS = frozenset({
+    0,                       # IMAGE
+    15,                      # MESSAGE (chat)
+    20,                      # NICKNAME
+    21,                      # HORSEIMAGE
+    35,                      # BODYIMAGE
+    49, 50, 51, 52,          # SCRIPTER, NAME, TYPE, CURLEVEL (NC-only, normally not sent)
+    *range(36, 48),          # GATTRIB1-12  (36-47)
+    *range(53, 74),          # GATTRIB10-30 (53-73)
+})
+# NPCProp single-byte numeric props (PropertyNumeric<GBYTE1> / flags / Z-tile).
+_NPC_BYTE_PROPS = frozenset({
+    4,                       # POWER
+    6, 7, 8, 9,              # ARROWS, BOMBS, GLOVEPOWER, BOMBPOWER
+    13, 14,                  # VISFLAGS, BLOCKFLAGS
+    *range(23, 34),          # SAVE0-9 (23-32), ALIGNMENT (33)
+    41, 42,                  # GMAPLEVELX, GMAPLEVELY
+    43,                      # Z (TileCoordinateZ, 1 byte)
+})
+# Friendly names for the props we surface as dict keys.
+_NPC_STRING_KEYS = {0: 'image', 15: 'message', 20: 'nickname',
+                    21: 'horseimage', 35: 'bodyimage', 52: 'curlevel'}
+
+
 def parse_npc_props(data: bytes) -> dict:
     """
-    Parse PLO_NPCPROPS (packet 3) - returns NPC info.
-    Format: INT3(npc_id) + props...
+    Parse PLO_NPCPROPS (packet 3) -> NPC info dict.
+
+    Format: GInt3(npc_id) followed by [gchar prop_id][value...] pairs.
+    Widths/encodings come straight from GServer-v2 NPC.h FOR_LIST_OF_NPC_PROPS
+    + PropertySerializers.cpp (modern / new-world generation). Prop ids are the
+    NPCProp enum, which differs from PlayerProp (e.g. 75/76/77 are X2/Y2/Z2,
+    NOT OSTYPE/codepage).
     """
     if len(data) < 3:
         return {}
 
-    reader = PacketReader(data)
-    npc_id = reader.read_gint3()
+    n = len(data)
+    pos = 3  # GInt3 npc id
+    props = {'id': ((data[0] - 32) << 14) + ((data[1] - 32) << 7) + (data[2] - 32)}
 
-    props = {'id': npc_id}
-    pos = reader.pos
+    def read_gstr():
+        """[gchar len][raw len bytes] -> str (advances pos)."""
+        nonlocal pos
+        if pos >= n:
+            return None
+        slen = data[pos] - 32
+        pos += 1
+        if slen < 0:
+            slen = 0
+        s = data[pos:pos + slen].decode('latin-1', errors='replace')
+        pos += slen
+        return s
 
-    while pos < len(data):
-        if pos >= len(data):
-            break
-
+    while pos < n:
         prop_id = data[pos] - 32
         pos += 1
+        if prop_id < 0 or prop_id >= 78:
+            break  # outside the NPCProp range -> bail rather than misalign
 
-        if prop_id < 0 or prop_id > 100:
-            break
+        if prop_id in _NPC_STRING_PROPS:
+            s = read_gstr()
+            key = _NPC_STRING_KEYS.get(prop_id)
+            if key:
+                props[key] = s
 
-        # Image (prop 0) - string with gchar length
-        if prop_id == 0:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
+        elif prop_id == 1:  # SCRIPT - PropertyGS1Script: gshort len + raw
+            if pos + 1 >= n:
+                break
+            slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+            pos += 2
+            props['script'] = data[pos:pos + slen].decode('latin-1', errors='replace')
+            pos += slen
 
-        # Script (prop 1) - string with SHORT length (2 bytes)
-        elif prop_id == 1:
-            if pos + 1 < len(data):
-                # Read 2-byte length (gshort)
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                str_len = (b1 << 7) + b2
-                pos += 2
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['script'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
+        elif prop_id == 2 or prop_id == 3:  # X / Y tile coordinate (1 byte)
+            v = data[pos] - 32
+            pos += 1
+            if v >= 216:        # negative tile coordinate (signed)
+                v -= 256
+            props['x' if prop_id == 2 else 'y'] = v / 2.0
 
-        # X position (prop 2) - 1 byte
-        elif prop_id == 2:
-            if pos < len(data):
-                props['x'] = (data[pos] - 32) / 2.0
-                pos += 1
+        elif prop_id in (75, 76, 77):  # X2 / Y2 / Z2 - PixelCoordinate (gshort)
+            if pos + 1 >= n:
+                break
+            value = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+            pos += 2
+            pixels = value >> 1
+            if value & 1:
+                pixels = -pixels
+            key = {75: 'x', 76: 'y', 77: 'z'}[prop_id]
+            props[key] = pixels / 16.0
 
-        # Y position (prop 3) - 1 byte
-        elif prop_id == 3:
-            if pos < len(data):
-                props['y'] = (data[pos] - 32) / 2.0
-                pos += 1
+        elif prop_id in _NPC_BYTE_PROPS:
+            v = data[pos] - 32
+            pos += 1
+            if prop_id == 13:
+                props['visflags'] = v
 
-        # Direction (prop 5) - 1 byte
-        elif prop_id == 5:
-            if pos < len(data):
-                props['direction'] = data[pos] - 32
-                pos += 1
+        elif prop_id == 5:  # RUPEES - GBYTE3 (also covers 17 ID below)
+            pos += 3
 
-        # PLPROP_OSTYPE (75) - string (1 byte length + chars)
-        elif prop_id == 75:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    props['os_type'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
+        elif prop_id == 17:  # ID - GBYTE3
+            pos += 3
 
-        # PLPROP_TEXTCODEPAGE (76) - gInt (3 bytes)
-        elif prop_id == 76:
-            if pos + 2 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                b3 = data[pos + 2] - 32
-                props['codepage'] = (b1 << 14) | (b2 << 7) | b3
-                pos += 3
+        elif prop_id == 18:  # SPRITE: (sprite<<2)|direction, 1 byte
+            v = data[pos] - 32
+            pos += 1
+            props['sprite'] = v
+            props['direction'] = v & 3
 
-        # String properties - skip
-        elif prop_id in [1, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0:
-                    pos += str_len
+        elif prop_id == 12:  # GANI (modern: gchar len + raw)
+            props['gani'] = read_gstr()
 
-        # Default: single byte
+        elif prop_id == 22:  # HEADIMAGE - PropertyHeadGif
+            marker = data[pos] - 32
+            pos += 1
+            if marker >= 100:
+                props['headimage'] = data[pos:pos + (marker - 100)].decode('latin-1', errors='replace')
+                pos += marker - 100
+            else:
+                props['headimage'] = marker  # preset id
+
+        elif prop_id == 10:  # SWORDIMAGE - PropertySwordPower
+            v = data[pos] - 32
+            pos += 1
+            if v >= 30:
+                read_gstr()  # custom image name
+
+        elif prop_id == 11:  # SHIELDIMAGE - PropertyShieldPower
+            v = data[pos] - 32
+            pos += 1
+            if v >= 10:
+                read_gstr()
+
+        elif prop_id == 19:  # COLORS - 8 bytes (new-world) / 5 (classic)
+            props['colors'] = [data[i] - 32 for i in range(pos, min(pos + 8, n))]
+            pos += 8
+
+        elif prop_id == 16:  # HURTDXDY - 2 bytes
+            pos += 2
+
+        elif prop_id == 34:  # IMAGEPART - short,short,char,char = 6 bytes
+            pos += 6
+
+        elif prop_id == 74:  # CLASS - PropertyLongString: gshort len + raw
+            if pos + 1 >= n:
+                break
+            slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+            pos += 2
+            pos += slen
+
+        elif prop_id == 48:  # UNKNOWN48 - PropertyVoid (0 bytes)
+            pass
+
         else:
-            if pos < len(data):
-                pos += 1
+            # Unknown id within range: assume single byte (best-effort).
+            pos += 1
 
     return props
 

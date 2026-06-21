@@ -333,34 +333,44 @@ class HeartDisplay:
         if not PYGAME_AVAILABLE:
             return
 
-        x = self.x
         full_hearts = int(current)
         has_half = (current - full_hearts) >= 0.5
         total_hearts = int(maximum)
 
         for i in range(total_hearts):
+            x = self.x + i * (self.HEART_SIZE + self.HEART_SPACING)
             if i < full_hearts:
-                # Full heart
-                color = self.HEART_COLOR
+                fill = 'full'
             elif i == full_hearts and has_half:
-                # Half heart
-                color = self.HEART_HALF_COLOR
+                fill = 'half'
             else:
-                # Empty heart
-                color = self.HEART_EMPTY_COLOR
+                fill = 'empty'
+            self._draw_heart(screen, x, self.y, fill)
 
-            # Draw heart shape (simplified as circles)
-            cx = x + self.HEART_SIZE // 2
-            cy = self.y + self.HEART_SIZE // 2
+    OUTLINE_COLOR = (20, 10, 10)
 
-            # Draw a simple heart using circles and triangle
-            r = self.HEART_SIZE // 4
-            pygame.draw.circle(screen, color, (cx - r, cy - r//2), r)
-            pygame.draw.circle(screen, color, (cx + r, cy - r//2), r)
+    def _draw_heart(self, screen, x: int, y: int, fill: str):
+        """Draw a single heart icon (fill = 'full' | 'half' | 'empty')."""
+        s = self.HEART_SIZE
+        cx = x + s // 2
+
+        def heart_shapes(color):
+            r = s // 4
+            top = y + r
+            pygame.draw.circle(screen, color, (cx - r + 1, top), r)
+            pygame.draw.circle(screen, color, (cx + r - 1, top), r)
             pygame.draw.polygon(screen, color, [
-                (cx - self.HEART_SIZE//2, cy),
-                (cx + self.HEART_SIZE//2, cy),
-                (cx, cy + self.HEART_SIZE//2)
+                (x + 1, top), (x + s - 1, top), (cx, y + s - 1)
             ])
 
-            x += self.HEART_SIZE + self.HEART_SPACING
+        # Base/empty body (always drawn so empty hearts read as outlines)
+        heart_shapes(self.HEART_EMPTY_COLOR)
+
+        if fill in ('full', 'half'):
+            prev_clip = screen.get_clip()
+            if fill == 'half':
+                screen.set_clip(pygame.Rect(x, y, s // 2, s))
+            heart_shapes(self.HEART_COLOR)
+            # Small highlight
+            pygame.draw.circle(screen, (255, 170, 170), (cx - s // 5, y + s // 4), max(1, s // 8))
+            screen.set_clip(prev_clip)

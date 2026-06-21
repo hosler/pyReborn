@@ -156,8 +156,11 @@ class GaniParser:
             for dir_idx, line in enumerate(frame_lines[:4]):  # Max 4 directions
                 frame = self._parse_frame_line(line)
                 if frame:
-                    # First frame in group gets the pending sound
-                    if dir_idx == 0 and pending_sound:
+                    # PLAYSOUND applies to this whole frame group. Since a gani
+                    # only ever plays one direction at a time, attach the sound
+                    # to every direction's frame so it fires no matter which way
+                    # the player is facing (not just direction 0 / up).
+                    if pending_sound:
                         frame.sound = pending_sound
                     direction_frames[dir_idx].append(frame)
 

@@ -351,6 +351,19 @@ class Client:
             return True
         return False
 
+    @property
+    def in_gmap_segment(self) -> bool:
+        """True when the current level is an actual GMAP grid segment.
+
+        Distinct from is_gmap: once a .gmap is loaded is_gmap stays True even
+        after a door drops the player into a standalone interior level (house,
+        cave) that is NOT part of the grid. Such levels use plain local (0-63)
+        coordinates and must be edge-clamped like any non-GMAP level, whereas
+        real segments stitch together with their neighbours and span past 64.
+        """
+        return (self.gmap_width > 0 and
+                self._current_level_name in self.gmap_grid.values())
+
     # =========================================================================
     # Authentication
     # =========================================================================
@@ -1228,17 +1241,30 @@ class Client:
         elif packet_id == PacketID.PLO_PLAYERPROPS:
             props = parse_player_props(data)
 
-            # Check if we're in GMAP mode
-            has_gmap_grid = self.gmap_width > 0 and self.gmap_height > 0
-            level_is_gmap = self.player.level and self.player.level.endswith('.gmap')
-            in_gmap = has_gmap_grid or level_is_gmap
-
-            # Server sends world coordinates in PixelX/PixelY (props 78/79)
-            # For non-GMAP levels, convert to local coordinates (0-63)
-            if not in_gmap and 'x' in props:
-                props['x'] = props['x'] % 64
-            if not in_gmap and 'y' in props:
-                props['y'] = props['y'] % 64
+            # The server tracks position as LOCAL coords (0-63) within the
+            # player's current segment, not world coords. Convert to the client's
+            # world-coordinate model so the camera stays aligned with the tiles.
+            #
+            # Only a level that is an actual GMAP segment gets the grid offset;
+            # standalone interior levels reached via a door (houses, caves) are
+            # not in the grid even though a gmap is loaded, so they stay local.
+            if 'x' in props or 'y' in props:
+                grid = None
+                if self.gmap_width > 0:
+                    grid = next((cell for cell, name in self.gmap_grid.items()
+                                 if name == self._current_level_name), None)
+                if grid:
+                    # Rebuild world coords: world = local + grid*64. Using (x % 64)
+                    # makes this correct whether the server sent local or world.
+                    if 'x' in props:
+                        props['x'] = props['x'] % 64 + grid[0] * 64
+                    if 'y' in props:
+                        props['y'] = props['y'] % 64 + grid[1] * 64
+                else:
+                    if 'x' in props:
+                        props['x'] = props['x'] % 64
+                    if 'y' in props:
+                        props['y'] = props['y'] % 64
 
             self.player.update_from_props(props)
 
@@ -1757,7 +1783,8 @@ class Client:
         dest_x = link.get('dest_x', '0')
         dest_y = link.get('dest_y', '0')
 
-        # Parse destination coordinates
+        # Parse destination coordinates (link dest is LOCAL coords within the
+        # destination level).
         try:
             new_x = float(dest_x)
             new_y = float(dest_y)
@@ -1765,17 +1792,12 @@ class Client:
             new_x = 0.0
             new_y = 0.0
 
-        # Request the destination level
-        if dest_level != self._current_level_name:
-            self._reset_level_state()
-        self.request_level(dest_level)
-
-        # Update player position
-        self.player.x = new_x
-        self.player.y = new_y
-        self._current_level_name = dest_level
-
-        return True
+        # Warp through warp_to_level so the SERVER is notified (PLI_LEVELWARP)
+        # and the destination's coordinate frame is handled correctly: a GMAP
+        # segment gets world coords, a standalone interior level (house/cave
+        # reached via a door) keeps local coords. Without the server warp the
+        # server keeps streaming our old GMAP position and yanks us around.
+        return self.warp_to_level(dest_level, new_x, new_y)
 
     # =========================================================================
     # Convenience Properties

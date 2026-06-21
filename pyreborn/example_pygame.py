@@ -63,7 +63,7 @@ def main():
     listserver_port = 14922
     host = "localhost"
     port = 14900
-    version = "2.22"  # Default version, can be overridden with --version
+    version = "6.037"  # Default version, can be overridden with --version
 
     if len(sys.argv) >= 3:
         # Credentials provided via command line
