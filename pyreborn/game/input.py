@@ -142,6 +142,12 @@ class InputMixin:
         if self.typing or self.inventory_ui.visible:
             return
 
+        # Dead players can't move or act until the server respawns them (it
+        # restores hearts after a short delay); the death gani plays meanwhile.
+        if self.client.player.hearts <= 0:
+            self.is_moving = False
+            return
+
         keys = pygame.key.get_pressed()
 
         # Check for combined key actions first

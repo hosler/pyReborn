@@ -263,7 +263,7 @@ class Client:
         self.chest_items: Dict[Tuple[int, int], str] = {}
 
         # Level signs: maps (x, y) -> text
-        self.signs: Dict[Tuple[float, float], str] = {}
+        self.signs: Dict[str, Dict[Tuple[float, float], str]] = {}  # level -> {(x,y): text}
 
         # Active explosions for rendering: list of {x, y, radius, power, time}
         self.active_explosions: List[dict] = []
@@ -834,13 +834,18 @@ class Client:
         return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
 
     def _reset_level_state(self):
-        """Clear per-level (x,y)-keyed state on a full level change so chests,
-        chest items, signs and ground items from the old level don't leak into
-        the new one. (Links are keyed by level name, so they don't need this.)"""
+        """Clear per-level state on a full level change so chests, chest items,
+        signs, ground items, baddies and NPCs from the old level don't leak into
+        the new one. (Links/signs are keyed by level name; the rest are flat.)
+
+        Not called on seamless GMAP segment crossing (that goes through move(),
+        not warp_to_level), so the stitched world keeps its entities."""
         self.chests.clear()
         self.chest_items.clear()
         self.signs.clear()
         self.items.clear()
+        self.baddies.clear()
+        self.npcs.clear()
 
     def send_pm(self, player_id: int, message: str) -> bool:
         """
@@ -1389,6 +1394,10 @@ class Client:
                     try:
                         self.load_gmap(file_data.decode('latin-1', errors='replace'))
                         self.gmap_name = filename
+                        # Now that the grid is known, pull in the neighbouring
+                        # segments so the world renders stitched instead of a
+                        # lone current segment.
+                        self.request_adjacent_levels()
                     except Exception:
                         pass
                 if self.on_file:
@@ -1551,7 +1560,11 @@ class Client:
         elif packet_id == PacketID.PLO_LEVELSIGN:
             sign = parse_level_sign(data)
             if sign:
-                self.signs[(sign['x'], sign['y'])] = sign['text']
+                # Key signs by the level they belong to (the level whose board is
+                # currently being received) so a sign never shows in another level
+                # — local sign coords collide across segments otherwise.
+                lvl = self._pending_level_name or self._current_level_name
+                self.signs.setdefault(lvl, {})[(sign['x'], sign['y'])] = sign['text']
                 if self.on_sign:
                     self.on_sign(sign['x'], sign['y'], sign['text'])
 
@@ -1739,9 +1752,14 @@ class Client:
         if not links:
             return None
 
-        # Player's local position within the level
-        local_x = self.player.x % 64
-        local_y = self.player.y % 64
+        # Sample the player's body down the centre column — head, mid, feet — not
+        # a single point. Walking *down* onto a link the feet reach it; walking
+        # *up* to a door (cave entrances sit on blocking tiles you can't stand on,
+        # only the head overlaps) the upper points reach it. A single point breaks
+        # one case or the other.
+        px, py = self.player.x, self.player.y
+        local_x = (px + 1.0) % 64
+        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5)]
 
         for link in links:
             lx = link.get('x', 0)
@@ -1760,8 +1778,8 @@ class Client:
             if is_edge and is_adjacent:
                 continue
 
-            # Check collision
-            if lx <= local_x < lx + lw and ly <= local_y < ly + lh:
+            # Triggered if any body sample falls inside the link rect.
+            if lx <= local_x < lx + lw and any(ly <= by < ly + lh for by in body_ys):
                 return link
 
         return None

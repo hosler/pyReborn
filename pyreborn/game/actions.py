@@ -59,6 +59,12 @@ class ActionsMixin:
         if mdx == 0 and mdy == 0:
             # Fully blocked - still face where we tried to go.
             self.player_anim.set_direction(direction_from_delta(dx, dy))
+            # Cave/door entrances sit on solid tiles you can't step onto, so
+            # walking into them blocks. Treat pushing into a warp link as
+            # entering it (the body-sample detection sees the overlapped door).
+            door_link = self._get_non_edge_door()
+            if door_link:
+                self._use_door_link(door_link)
             return
 
         # Move is allowed (full or slid onto a free axis).

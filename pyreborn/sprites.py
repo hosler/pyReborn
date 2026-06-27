@@ -95,6 +95,22 @@ class SpriteManager:
             print(f"Error loading sprite sheet {name}: {e}")
             return None
 
+    def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:
+        """Load a sprite sheet from in-memory bytes (e.g. a file downloaded from
+        the server) and cache it under `name`, so load_sheet(name) finds it."""
+        import io
+        try:
+            surface = pygame.image.load(io.BytesIO(data), name)
+            if surface.get_alpha() is not None or name.endswith('.png'):
+                surface = surface.convert_alpha()
+            else:
+                surface = surface.convert()
+            self.sheet_cache[name] = surface
+            return surface
+        except Exception as e:
+            print(f"Error loading downloaded sheet {name}: {e}")
+            return None
+
     def get_sprite(self, sheet_name: str, x: int, y: int,
                    width: int, height: int) -> Optional[pygame.Surface]:
         """

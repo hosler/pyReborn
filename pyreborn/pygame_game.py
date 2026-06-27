@@ -110,6 +110,9 @@ class GameClient(
 
         # Animation states for NPCs
         self.npc_anims: Dict[int, AnimationState] = {}
+        self.baddy_anims: Dict[int, AnimationState] = {}
+        # Assets (NPC/player images) already requested from the server.
+        self._requested_assets: set = set()
         # Visual positions for NPCs (for smooth interpolation)
         self.npc_visual: Dict[int, Tuple[float, float]] = {}
 

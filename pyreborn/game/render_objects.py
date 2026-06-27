@@ -87,16 +87,17 @@ class LevelObjectsRenderMixin:
                 continue
             self.screen.blit(sprite, (int(sx), int(sy)))
     def _check_and_render_signs(self):
-        """Check if player is near a sign and show popup."""
-        if not self.client.signs:
+        """Check if player is near a sign in the current level and show popup."""
+        signs = self.client.signs.get(self.client._current_level_name)
+        if not signs:
             return
 
-        px = self.client.player.x
-        py = self.client.player.y
+        # Sign coords are LOCAL (0-63); compare against the player's local feet
+        # position so it works in a GMAP (where player.x/y are world coords).
+        px = (self.client.player.x + 1.0) % 64
+        py = (self.client.player.y + 2.5) % 64
 
-        # Check each sign
-        for (sx, sy), text in self.client.signs.items():
-            # Check if player is within 2 tiles of sign
+        for (sx, sy), text in signs.items():
             if abs(px - sx) < 2 and abs(py - sy) < 2:
                 self._render_sign_popup(text)
                 break  # Only show one sign at a time

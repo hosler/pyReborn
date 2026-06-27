@@ -114,6 +114,23 @@ class EntityRenderMixin:
                 npx, npy = self.camera.world_to_screen(vx, vy)
                 entities.append(('npc', vy, npx, npy, npc, npc_id))
 
+        # Add baddies (enemies). Their x/y are local to the current segment, so
+        # fold in that segment's gmap offset to line them up with the world.
+        seg_off_x = seg_off_y = 0
+        if self.client.gmap_grid:
+            seg = next((g for g, n in self.client.gmap_grid.items()
+                        if n == self.client._current_level_name), None)
+            if seg:
+                seg_off_x, seg_off_y = seg[0] * 64, seg[1] * 64
+        for bid, baddy in self.client.baddies.items():
+            bx = baddy.get('x')
+            by = baddy.get('y')
+            if bx is None or by is None:
+                continue
+            wx, wy = bx + seg_off_x, by + seg_off_y
+            sx, sy = self.camera.world_to_screen(wx, wy)
+            entities.append(('baddy', wy, sx, sy, baddy, bid))
+
         # Sort by Y for depth
         entities.sort(key=lambda e: e[1])
 
@@ -125,6 +142,33 @@ class EntityRenderMixin:
                 self._render_other_player(entity[2], entity[3], entity[4], entity[5])
             elif entity[0] == 'npc':
                 self._render_npc(entity[2], entity[3], entity[4], entity[5])
+            elif entity[0] == 'baddy':
+                self._render_baddy(entity[2], entity[3], entity[4], entity[5])
+    def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
+        """Render a baddy. Uses its gani/image if present, else a clear enemy
+        marker so they aren't invisible (and lethal)."""
+        gani_name = baddy.get('gani') or baddy.get('ani')
+        image_name = baddy.get('image')
+        if gani_name:
+            anim = self.baddy_anims.get(baddy_id)
+            if anim is None:
+                anim = AnimationState(self.gani_parser)
+                anim.set_animation(gani_name, baddy.get('direction', 2))
+                self.baddy_anims[baddy_id] = anim
+            self._render_animated_entity(x, y, anim, {})
+            return
+        if image_name:
+            sprite = self.sprite_mgr.load_sheet(image_name)
+            if sprite:
+                self.screen.blit(sprite, (x, y))
+                return
+        # Fallback marker: a red body so the enemy is visible.
+        body = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.circle(body, (200, 40, 40), (12, 12), 11)
+        pygame.draw.circle(body, (90, 0, 0), (12, 12), 11, 2)
+        pygame.draw.circle(body, (255, 230, 230), (8, 9), 2)
+        pygame.draw.circle(body, (255, 230, 230), (16, 9), 2)
+        self.screen.blit(body, (int(x), int(y)))
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""
         # Check if player should flash (hurt effect)
@@ -323,6 +367,15 @@ class EntityRenderMixin:
             text_x = bubble_x + padding
             text_y = bubble_y + padding + i * line_height
             self.screen.blit(text_surf, (text_x, text_y))
+    def _request_asset(self, filename: str):
+        """Request a missing image/file from the server exactly once."""
+        if not filename or filename in self._requested_assets:
+            return
+        self._requested_assets.add(filename)
+        try:
+            self.client.request_file(filename)
+        except Exception:
+            pass
     def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
         """Render an NPC."""
         gani_name = npc.get('gani', npc.get('animation'))
@@ -357,6 +410,9 @@ class EntityRenderMixin:
                 else:
                     self.screen.blit(sprite, (x, y))
             else:
+                # Not cached locally — ask the server for it (once); meanwhile
+                # show the placeholder. on_file caches it when it arrives.
+                self._request_asset(image_name)
                 self.screen.blit(self.npc_placeholder, (x, y))
         else:
             # Placeholder

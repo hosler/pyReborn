@@ -88,10 +88,17 @@ class SetupMixin:
             """Handle ghost mode toggle."""
             self.ghost_mode = enabled
 
+        def on_file(filename: str, data: bytes):
+            """Cache a downloaded image so NPCs/players using it render properly
+            instead of falling back to the placeholder."""
+            if filename.lower().rsplit('.', 1)[-1] in ('png', 'gif', 'bmp', 'mng'):
+                self.sprite_mgr.load_bytes(filename, data)
+
         self.client.on_chat = on_chat
         self.client.on_hurt = on_hurt
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
+        self.client.on_file = on_file
     def _setup_gs1_callbacks(self):
         """Setup GS1 interpreter callbacks for visual/audio feedback."""
         # Play sound callback
