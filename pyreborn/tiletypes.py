@@ -32,9 +32,9 @@ class TileType(IntEnum):
     # Liftable objects (a pyReborn client mechanic, not in the base type data).
     # The standard tile data only knows these as BLOCKING; bush/rock/pot are
     # distinguished via the tile-corrections overlay so glove power can gate them.
-    BUSH = 23              # Bushes - glove power 1+
-    ROCK = 24              # Rocks - glove power 3
-    POT = 25               # Pots - glove power 2+
+    BUSH = 23              # Bushes - bare-handed (glove power 0)
+    ROCK = 24              # Rocks - need a glove (power 1)
+    POT = 25               # Pots - bare-handed (glove power 0)
 
 
 _DAT_PATH = os.path.join(os.path.dirname(__file__), "tiletypes1.dat")
@@ -137,18 +137,12 @@ def get_lift_power_required(tile_id: int) -> int:
     Get the glove power required to lift a tile.
 
     Returns:
-        0 = not liftable
-        1 = bushes (glove power 1+)
-        2 = pots (glove power 2+)
-        3 = rocks (glove power 3)
+        0 = bushes and pots (bare-handed) or not liftable
+        1 = rocks (need a glove)
     """
     tile_type = get_tile_type(tile_id)
-    if tile_type == TileType.BUSH:
+    if tile_type == TileType.ROCK:
         return 1
-    elif tile_type == TileType.POT:
-        return 2
-    elif tile_type == TileType.ROCK:
-        return 3
     return 0
 
 

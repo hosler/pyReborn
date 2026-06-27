@@ -57,14 +57,15 @@ class CollisionMixin:
         tile_type = self._get_corrected_tile_type(tile_id)
         return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT)
     def _get_tile_lift_power(self, tile_id: int) -> int:
-        """Get required glove power to lift tile, using corrections."""
+        """Get required glove power to lift tile, using corrections.
+
+        Bushes and pots lift bare-handed (power 0); rocks need a glove (power 1).
+        """
         tile_type = self._get_corrected_tile_type(tile_id)
-        if tile_type == TileType.BUSH:
-            return 1
-        elif tile_type == TileType.POT:
-            return 2
+        if tile_type in (TileType.BUSH, TileType.POT):
+            return 0
         elif tile_type == TileType.ROCK:
-            return 3
+            return 1
         return 0
     def _get_liftable_name(self, tile_id: int) -> str:
         """Get the name of a liftable object, using corrections."""
