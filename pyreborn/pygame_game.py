@@ -25,6 +25,10 @@ from .game.constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
 )
+from .game.camera import Camera2D
+from .game.viewport import Viewport
+from .game.assets import FontManager
+from .game.hud import HUD
 from .game.setup import SetupMixin
 from .game.minimap import MinimapMixin
 from .game.tile_editor import TileEditorMixin
@@ -32,6 +36,10 @@ from .game.collision import CollisionMixin
 from .game.input import InputMixin
 from .game.actions import ActionsMixin
 from .game.render import RenderMixin
+from .game.render_world import WorldRenderMixin
+from .game.render_entities import EntityRenderMixin
+from .game.render_effects import EffectsRenderMixin
+from .game.render_objects import LevelObjectsRenderMixin
 
 
 class GameClient(
@@ -42,6 +50,10 @@ class GameClient(
     InputMixin,
     ActionsMixin,
     RenderMixin,
+    WorldRenderMixin,
+    EntityRenderMixin,
+    EffectsRenderMixin,
+    LevelObjectsRenderMixin,
 ):
     """Enhanced pygame game client with animations and sounds."""
 
@@ -53,13 +65,24 @@ class GameClient(
         pygame.init()
         pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
 
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption(f"pyreborn - {client.player.account}")
+        # Resolution-independent rendering: all game/HUD drawing targets a fixed
+        # 640x480 virtual canvas (self.screen); the Viewport scales it onto a
+        # resizable window each frame. self.screen stays the canvas so the ~200
+        # existing self.screen.blit(...) call sites need no changes.
+        self.viewport = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT,
+                                 caption=f"pyreborn - {client.player.account}")
+        self.screen = self.viewport.canvas
         self.clock = pygame.time.Clock()
 
-        # Fonts
-        self.font = pygame.font.Font(None, 24)
-        self.font_small = pygame.font.Font(None, 18)
+        # Camera: single source of truth for world<->screen mapping, replacing
+        # the offset math that used to be copy-pasted into every render method.
+        self.camera = Camera2D(SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE)
+
+        # Fonts: keyed/cached via FontManager. self.font / self.font_small remain
+        # as aliases for the HUD and small roles the legacy render code uses.
+        self.fonts = FontManager()
+        self.font = self.fonts.get("hud")
+        self.font_small = self.fonts.get("small")
 
         # Setup asset paths
         self.asset_paths = self._setup_asset_paths()
@@ -103,6 +126,7 @@ class GameClient(
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
         self.heart_display = HeartDisplay(10, 10)
+        self.hud = HUD(self)
 
         # Input state
         self.typing = False

@@ -23,7 +23,7 @@ from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
 from ..player import Player
-from ..tiletypes import TileType, get_tile_type
+from ..tiletypes import TileType, get_tile_type, type_is_blocking
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
@@ -39,18 +39,11 @@ class CollisionMixin:
             return self.tile_corrections[tile_id]
         return get_tile_type(tile_id)
     def _is_tile_blocking(self, tile_id: int) -> bool:
-        """Check if tile is blocking, using corrections."""
-        tile_type = self._get_corrected_tile_type(tile_id)
-        # Blocking includes solid walls and objects like bushes, rocks, pots
-        return tile_type in (
-            TileType.BLOCKING,
-            TileType.BED_UPPER,
-            TileType.BED_LOWER,
-            TileType.THROW_THROUGH,
-            TileType.BUSH,
-            TileType.ROCK,
-            TileType.POT,
-        )
+        """Check if tile is blocking, using corrections.
+
+        Uses the shared threshold predicate (Preagonal-style) so the blocking
+        rule lives in one place instead of being duplicated as a type set."""
+        return type_is_blocking(self._get_corrected_tile_type(tile_id))
     def _is_tile_water(self, tile_id: int) -> bool:
         """Check if tile is water, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
@@ -93,6 +86,29 @@ class CollisionMixin:
         """World-tile coordinates of the player's feet (standing point)."""
         return (self.client.x + self.PLAYER_FEET_DX,
                 self.client.y + self.PLAYER_FEET_DY)
+
+    # Per-facing interaction offsets — the original Graal client's Player._touchtestd
+    # idea. Each entry lists the (dx, dy) tile offsets from the sprite's TOP-LEFT to
+    # the point(s) probed when grabbing / lifting / reading something in that
+    # direction. The feet footprint is the 2-wide box at columns {x, x+1}, row y+2
+    # (see _check_collision). Up/down probe both feet columns one row beyond the
+    # box; left/right probe the *adjacent* column at feet- and torso-height. This
+    # replaces a single feet point plus a symmetric unit delta, which only ever
+    # probed the feet row and — because the feet point sits on the box's right edge
+    # — probed the player's own left column instead of the tile to its left.
+    TOUCH_OFFSETS = {
+        0: [(0.5, 1.5), (1.5, 1.5)],    # up:    both columns, row above the box
+        1: [(-0.5, 2.5), (-0.5, 1.5)],  # left:  adjacent column, feet + torso
+        2: [(0.5, 3.5), (1.5, 3.5)],    # down:  both columns, row below the box
+        3: [(2.5, 2.5), (2.5, 1.5)],    # right: adjacent column, feet + torso
+    }
+
+    def _touch_points(self, direction: int) -> List[Tuple[float, float]]:
+        """World-tile coords probed for interactions in the given facing direction
+        (0=up, 1=left, 2=down, 3=right). First entry is the primary point."""
+        offs = self.TOUCH_OFFSETS.get(
+            direction, [(self.PLAYER_FEET_DX, self.PLAYER_FEET_DY)])
+        return [(self.client.x + ox, self.client.y + oy) for ox, oy in offs]
     def _get_tile_at(self, x: float, y: float) -> int:
         """Get the tile ID at a given position (in tile coordinates)."""
         # Get the current level's tiles

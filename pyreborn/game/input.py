@@ -50,6 +50,10 @@ class InputMixin:
                 else:
                     self._handle_key_press(event)
 
+            elif event.type == pygame.VIDEORESIZE:
+                # Resizable window: the viewport rescales the fixed virtual canvas.
+                self.viewport.handle_resize(event.w, event.h)
+
             elif event.type == MOUSEBUTTONDOWN and self.debug_mode:
                 self._handle_tile_click(event)
     def _handle_chat_input(self, event):

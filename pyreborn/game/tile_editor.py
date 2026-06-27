@@ -55,21 +55,9 @@ class TileEditorMixin:
             print(f"Failed to save tile corrections: {e}")
     def _handle_tile_click(self, event):
         """Handle mouse click on tile in debug mode."""
-        mouse_x, mouse_y = event.pos
-
-        # Calculate camera offset using GMAP-relative visual position
-        gmap_visual_x = self.visual_x - self.client._gmap_offset_x * 64
-        gmap_visual_y = self.visual_y - self.client._gmap_offset_y * 64
-
-        world_px = gmap_visual_x * TILE_SIZE
-        world_py = gmap_visual_y * TILE_SIZE
-
-        cam_offset_x = SCREEN_WIDTH // 2 - world_px
-        cam_offset_y = SCREEN_HEIGHT // 2 - world_py
-
-        # Convert screen coords to world tile coords
-        world_tile_x = (mouse_x - cam_offset_x) / TILE_SIZE
-        world_tile_y = (mouse_y - cam_offset_y) / TILE_SIZE
+        # Window pixel -> virtual canvas -> world tile, all via the shared camera.
+        mouse_x, mouse_y = self.viewport.window_to_virtual(*event.pos)
+        world_tile_x, world_tile_y = self.camera.screen_to_world(mouse_x, mouse_y)
 
         # Get tile at this position
         tile_x = int(world_tile_x) % 64
@@ -110,20 +98,12 @@ class TileEditorMixin:
         # Invalidate world surface to force redraw
         self.world_surface = None
     def _get_tile_info_at_screen_pos(self, screen_x: int, screen_y: int) -> Optional[Tuple[int, int, int, int]]:
-        """Get tile info at screen position. Returns (tile_id, tile_type, tx, ty) or None."""
-        # Calculate camera offset using GMAP-relative visual position
-        gmap_visual_x = self.visual_x - self.client._gmap_offset_x * 64
-        gmap_visual_y = self.visual_y - self.client._gmap_offset_y * 64
+        """Get tile info at screen position. Returns (tile_id, tile_type, tx, ty) or None.
 
-        world_px = gmap_visual_x * TILE_SIZE
-        world_py = gmap_visual_y * TILE_SIZE
-
-        cam_offset_x = SCREEN_WIDTH // 2 - world_px
-        cam_offset_y = SCREEN_HEIGHT // 2 - world_py
-
-        # Convert screen coords to world tile coords
-        world_tile_x = (screen_x - cam_offset_x) / TILE_SIZE
-        world_tile_y = (screen_y - cam_offset_y) / TILE_SIZE
+        screen_x/screen_y are virtual-canvas coordinates (already mapped from the
+        window by the caller).
+        """
+        world_tile_x, world_tile_y = self.camera.screen_to_world(screen_x, screen_y)
 
         tile_x = int(world_tile_x) % 64
         tile_y = int(world_tile_y) % 64

@@ -140,19 +140,17 @@ class ActionsMixin:
         """Check for sign NPC nearby and return its text if found."""
         import re
         player = self.client.player
-        px, py = self._player_feet()
 
-        # Check in front of the player's feet based on facing direction
-        dx, dy = self._facing_delta(player.direction)
-        check_x = px + dx
-        check_y = py + dy
+        # Probe the per-direction touch points in front of the player.
+        points = self._touch_points(player.direction)
 
         for npc_id, npc in self.client.npcs.items():
             npc_x = npc.get('x', 0)
             npc_y = npc.get('y', 0)
 
-            # Check if NPC is close to check position
-            if abs(npc_x - check_x) < 1.5 and abs(npc_y - check_y) < 1.5:
+            # Check if NPC is close to any probed touch point
+            if any(abs(npc_x - cx) < 1.5 and abs(npc_y - cy) < 1.5
+                   for cx, cy in points):
                 # Check if this NPC is a sign (has signlink or setplayerprop #c)
                 script = npc.get('script', '')
                 image = npc.get('image', '')
@@ -202,16 +200,14 @@ class ActionsMixin:
         if player.is_sitting:
             player.stand_up()
 
-        # Target the tile in front of the player's feet, not the sprite corner.
-        fx, fy = self._player_feet()
-        target_x = fx + dx
-        target_y = fy + dy
+        # Probe the per-direction touch points and take the first liftable tile.
+        points = self._touch_points(direction)
+        target = next(((tx, ty) for tx, ty in points
+                       if self._is_tile_liftable(self._get_tile_at(tx, ty))), None)
 
-        # Get tile at target position
-        tile_id = self._get_tile_at(target_x, target_y)
-
-        # Check if it's a liftable tile
-        if self._is_tile_liftable(tile_id):
+        if target is not None:
+            target_x, target_y = target
+            tile_id = self._get_tile_at(target_x, target_y)
             required_power = self._get_tile_lift_power(tile_id)
             glove_power = player.glove_power
 
@@ -243,8 +239,10 @@ class ActionsMixin:
                 object_name = self._get_liftable_name(tile_id)
                 print(f"Need glove power {required_power} to lift {object_name} (have {glove_power})")
         else:
-            # No liftable object - try regular item pickup
-            self.client.pickup_item(target_x, target_y)
+            # No liftable object in front - try a regular item pickup at the
+            # primary touch point.
+            px, py = points[0]
+            self.client.pickup_item(px, py)
 
             # Play lift animation anyway for visual feedback
             self.player_anim.set_animation("lift", direction, force=True)
@@ -383,12 +381,11 @@ class ActionsMixin:
         Returns (tile_x, tile_y, tile_id) if chair found, None otherwise.
         """
         player = self.client.player
-        dx, dy = self._facing_delta(player.direction)
 
-        # Check the tile in front of the player's feet (and the feet tile itself,
-        # so sitting works whether you walk onto or face a chair).
-        fx, fy = self._player_feet()
-        for cx, cy in ((fx + dx, fy + dy), (fx, fy)):
+        # Check the per-direction touch points in front of the player, plus the
+        # feet tile itself, so sitting works whether you walk onto or face a chair.
+        candidates = self._touch_points(player.direction) + [self._player_feet()]
+        for cx, cy in candidates:
             tile_id = self._get_tile_at(cx, cy)
             if self._is_tile_chair(tile_id):
                 return (int(cx), int(cy), tile_id)

@@ -60,6 +60,10 @@ where = ["."]  # list of folders that contain the packages (["src"] by default)
 include = ["pyreborn*"]  # package names should match these glob patterns (["*"] by default)
 exclude = ["tests*"]  # exclude packages matching these glob patterns (["tests*"] by default)
 
+[tool.setuptools.package-data]
+# Ship the data files the client loads at runtime (tile-type table, corrections).
+pyreborn = ["*.json", "*.dat"]
+
 [tool.black]
 line-length = 88
 target-version = ['py38']

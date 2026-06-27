@@ -1,482 +1,308 @@
-"""
-Pygame UI screens for pyreborn client.
+"""Pygame UI screens for pyreborn: login, server select, loading.
 
-Contains login screen, server selection screen, and loading screen utilities.
+Rebuilt on the game.ui widget toolkit + the resolution-independent Viewport, so
+these screens are resizable and share the client's look. The old version
+hand-managed an `active_field` string, per-field `_handle_char`/`_handle_backspace`
+branches, manual cursor blinking and a wall of magic x/y numbers; all of that is
+now handled by TextInput / Button / Panel widgets with anchor-based layout.
+
+Public API is unchanged:
+    LoginScreen().run() -> dict | None
+    ServerSelectScreen(servers, username).run() -> ServerEntry | None
+    show_loading_screen(message)
 """
 
-import pygame
-from pygame.locals import QUIT, KEYDOWN, MOUSEBUTTONDOWN, K_ESCAPE, K_TAB, K_RETURN, K_BACKSPACE, K_F1, K_UP, K_DOWN, K_SPACE, KMOD_SHIFT
 from typing import Optional
 
-from .listserver import ServerEntry
+import pygame
+from pygame.locals import (
+    QUIT, KEYDOWN, MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION,
+    K_ESCAPE, K_TAB, K_RETURN, K_UP, K_DOWN, K_SPACE,
+)
 
-# Screen constants
+from .listserver import ServerEntry
+from .game.viewport import Viewport
+from .game.assets import FontManager
+from .game import ui
+
 SCREEN_WIDTH = 640
 SCREEN_HEIGHT = 480
+BG = (22, 28, 44)
 
 
-class LoginScreen:
-    """Pygame login screen for entering credentials."""
+class _Screen:
+    """Shared boilerplate: resizable viewport, font/UI managers, event pump.
 
-    # Layout constants
-    FIELD_X = 180
-    FIELD_WIDTH = 380
-    LABEL_X = 70
+    Subclasses build their widget tree in `build()` and may set `self._result`
+    (and `self._done = True`) from widget callbacks to finish the loop.
+    """
+
+    caption = "pyreborn"
 
     def __init__(self):
-        # Initialize pygame if not already
         if not pygame.get_init():
             pygame.init()
-
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("pyreborn - Login")
+        self.viewport = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT, caption=self.caption,
+                                 bg=(0, 0, 0))
+        self.canvas = self.viewport.canvas
+        self.fonts = FontManager()
+        self.ui = ui.UIManager(self.fonts, SCREEN_WIDTH, SCREEN_HEIGHT)
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 28)
-        self.font_small = pygame.font.Font(None, 22)
-        self.font_title = pygame.font.Font(None, 42)
+        self._result = None
+        self._done = False
 
-        # Input fields
-        self.username = ""
-        self.password = ""
-        self.host = "localhost"
-        self.port = "14900"
-        self.listserver_host = "listserver.example.com"
+    # subclass hooks
+    def build(self):
+        ...
 
-        # Which field is active
-        self.active_field = "username"  # username, password, host, port, listserver
-        self.fields = ["username", "password", "host", "port", "listserver"]
+    def on_key(self, event):
+        ...
 
-        # Connection mode
-        self.use_listserver = True  # Default to listserver mode
+    # mouse events carry window coords; widgets work in virtual canvas coords
+    def _remap(self, event):
+        if event.type in (MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION):
+            vx, vy = self.viewport.window_to_virtual(*event.pos)
+            return pygame.event.Event(event.type,
+                                      {**event.dict, "pos": (int(vx), int(vy))})
+        return event
 
-        # Error message
-        self.error_message = ""
-
-        # Store clickable regions
-        self.field_rects = {}
-        self.mode_toggle_rect = None
-        self.connect_btn_rect = None
-
-    def _try_connect(self) -> dict:
-        """Attempt to connect and return credentials dict or None."""
-        if self.username and self.password:
-            return {
-                "username": self.username,
-                "password": self.password,
-                "use_listserver": self.use_listserver,
-                "host": self.host,
-                "port": int(self.port) if self.port.isdigit() else 14900,
-                "listserver_host": self.listserver_host,
-            }
-        else:
-            self.error_message = "Username and password required"
-            return None
-
-    def run(self) -> dict:
-        """Run the login screen. Returns dict with credentials or None if cancelled."""
-        running = True
-
-        while running:
+    def run(self):
+        self.build()
+        while not self._done:
             for event in pygame.event.get():
                 if event.type == QUIT:
                     return None
-
-                elif event.type == KEYDOWN:
+                if event.type == pygame.VIDEORESIZE:
+                    self.viewport.handle_resize(event.w, event.h)
+                    continue
+                if event.type == KEYDOWN:
                     if event.key == K_ESCAPE:
                         return None
-
-                    elif event.key == K_TAB:
-                        # Cycle through visible fields only
-                        visible_fields = ["username", "password"]
-                        if self.use_listserver:
-                            visible_fields.append("listserver")
-                        else:
-                            visible_fields.extend(["host", "port"])
-
-                        if self.active_field not in visible_fields:
-                            self.active_field = visible_fields[0]
-                        else:
-                            idx = visible_fields.index(self.active_field)
-                            if pygame.key.get_mods() & KMOD_SHIFT:
-                                self.active_field = visible_fields[(idx - 1) % len(visible_fields)]
-                            else:
-                                self.active_field = visible_fields[(idx + 1) % len(visible_fields)]
-
-                    elif event.key == K_RETURN:
-                        result = self._try_connect()
-                        if result:
-                            return result
-
-                    elif event.key == K_BACKSPACE:
-                        self._handle_backspace()
-
-                    elif event.key == K_F1:
-                        self.use_listserver = not self.use_listserver
-
-                    elif event.unicode and event.unicode.isprintable():
-                        self._handle_char(event.unicode)
-
-                elif event.type == MOUSEBUTTONDOWN:
-                    if event.button == 1:
-                        result = self._handle_click(event.pos)
-                        if result:
-                            return result
-
-            self._render()
+                    if event.key == K_TAB:
+                        self.ui.focus_next()
+                        continue
+                    self.on_key(event)
+                if self.ui.handle_event(self._remap(event)):
+                    continue
+            self.ui.update(self.viewport.mouse_pos())
+            self.canvas.fill(BG)
+            self._draw_extra()
+            self.ui.draw(self.canvas)
+            self.viewport.present()
             self.clock.tick(60)
+            if self._done:
+                return self._result
+        return self._result
 
-        return None
-
-    def _handle_backspace(self):
-        """Handle backspace key."""
-        if self.active_field == "username":
-            self.username = self.username[:-1]
-        elif self.active_field == "password":
-            self.password = self.password[:-1]
-        elif self.active_field == "host":
-            self.host = self.host[:-1]
-        elif self.active_field == "port":
-            self.port = self.port[:-1]
-        elif self.active_field == "listserver":
-            self.listserver_host = self.listserver_host[:-1]
-        self.error_message = ""
-
-    def _handle_char(self, char: str):
-        """Handle character input."""
-        self.error_message = ""
-        if self.active_field == "username" and len(self.username) < 30:
-            self.username += char
-        elif self.active_field == "password" and len(self.password) < 30:
-            self.password += char
-        elif self.active_field == "host" and len(self.host) < 50:
-            self.host += char
-        elif self.active_field == "port" and len(self.port) < 5 and char.isdigit():
-            self.port += char
-        elif self.active_field == "listserver" and len(self.listserver_host) < 50:
-            self.listserver_host += char
-
-    def _handle_click(self, pos) -> dict:
-        """Handle mouse click. Returns credentials dict if connect clicked, else None."""
-        x, y = pos
-
-        # Check field clicks
-        for field_name, rect in self.field_rects.items():
-            if rect.collidepoint(pos):
-                self.active_field = field_name
-                self.error_message = ""
-                return None
-
-        # Check mode toggle button
-        if self.mode_toggle_rect and self.mode_toggle_rect.collidepoint(pos):
-            self.use_listserver = not self.use_listserver
-            return None
-
-        # Check connect button
-        if self.connect_btn_rect and self.connect_btn_rect.collidepoint(pos):
-            return self._try_connect()
-
-        return None
-
-    def _render(self):
-        """Render the login screen."""
-        # Clear clickable regions
-        self.field_rects = {}
-
-        # Background
-        self.screen.fill((25, 35, 55))
-
-        # Draw decorative panel
-        panel_rect = pygame.Rect(60, 60, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 120)
-        pygame.draw.rect(self.screen, (35, 50, 75), panel_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (60, 90, 130), panel_rect, 2, border_radius=12)
-
-        # Title
-        title = self.font_title.render("pyreborn", True, (100, 180, 255))
-        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 85))
-
-        subtitle = self.font_small.render("Reborn Client", True, (150, 150, 180))
-        self.screen.blit(subtitle, (SCREEN_WIDTH // 2 - subtitle.get_width() // 2, 125))
-
-        # Layout Y positions with proper spacing
-        y_username = 165
-        y_password = 215
-        y_mode_toggle = 265
-        y_server_field = 305
-        y_connect_btn = 365
-        y_error = 420
-        y_help = 440
-
-        # Username field
-        self._render_field("Username:", self.username, y_username, "username")
-
-        # Password field
-        self._render_field("Password:", "*" * len(self.password), y_password, "password")
-
-        # Connection mode toggle
-        mode_text = "Listserver Mode" if self.use_listserver else "Direct Connection"
-        mode_color = (100, 200, 150) if self.use_listserver else (200, 150, 100)
-
-        self.mode_toggle_rect = pygame.Rect(self.FIELD_X, y_mode_toggle, 200, 28)
-        pygame.draw.rect(self.screen, (40, 55, 80), self.mode_toggle_rect, border_radius=5)
-        hover = self.mode_toggle_rect.collidepoint(pygame.mouse.get_pos())
-        border_col = (100, 150, 200) if hover else (60, 80, 110)
-        pygame.draw.rect(self.screen, border_col, self.mode_toggle_rect, 2, border_radius=5)
-
-        mode_label = self.font_small.render("[F1]", True, (120, 120, 140))
-        self.screen.blit(mode_label, (self.LABEL_X, y_mode_toggle + 5))
-        mode_surf = self.font_small.render(mode_text, True, mode_color)
-        self.screen.blit(mode_surf, (self.FIELD_X + 10, y_mode_toggle + 5))
-
-        # Host/port or listserver field
-        if self.use_listserver:
-            self._render_field("Listserver:", self.listserver_host, y_server_field, "listserver")
-        else:
-            self._render_field("Host:", self.host, y_server_field, "host", width=220)
-            self._render_field("Port:", self.port, y_server_field, "port", x_offset=240, width=80, label_offset=220)
-
-        # Connect button
-        btn_width = 180
-        btn_x = SCREEN_WIDTH // 2 - btn_width // 2
-        self.connect_btn_rect = pygame.Rect(btn_x, y_connect_btn, btn_width, 42)
-
-        has_creds = bool(self.username and self.password)
-        btn_hover = self.connect_btn_rect.collidepoint(pygame.mouse.get_pos())
-
-        if has_creds:
-            btn_color = (80, 180, 120) if btn_hover else (60, 140, 100)
-        else:
-            btn_color = (50, 50, 60)
-
-        pygame.draw.rect(self.screen, btn_color, self.connect_btn_rect, border_radius=8)
-        border_col = (120, 220, 160) if (has_creds and btn_hover) else (80, 120, 90)
-        pygame.draw.rect(self.screen, border_col, self.connect_btn_rect, 2, border_radius=8)
-
-        btn_text = self.font.render("Connect", True, (255, 255, 255) if has_creds else (100, 100, 100))
-        self.screen.blit(btn_text, (self.connect_btn_rect.centerx - btn_text.get_width() // 2,
-                                     self.connect_btn_rect.centery - btn_text.get_height() // 2))
-
-        # Error message
-        if self.error_message:
-            error_surf = self.font_small.render(self.error_message, True, (255, 100, 100))
-            self.screen.blit(error_surf, (SCREEN_WIDTH // 2 - error_surf.get_width() // 2, y_error))
-
-        # Help text
-        help_text = "Tab: Next field  |  Enter: Connect  |  F1: Toggle mode  |  Esc: Quit"
-        help_surf = self.font_small.render(help_text, True, (90, 90, 110))
-        self.screen.blit(help_surf, (SCREEN_WIDTH // 2 - help_surf.get_width() // 2, y_help))
-
-        pygame.display.flip()
-
-    def _render_field(self, label: str, value: str, y: int, field_name: str,
-                      x_offset: int = 0, width: int = None, label_offset: int = 0):
-        """Render an input field."""
-        if width is None:
-            width = self.FIELD_WIDTH
-
-        x = self.FIELD_X + x_offset
-
-        # Label
-        label_surf = self.font_small.render(label, True, (180, 180, 200))
-        self.screen.blit(label_surf, (self.LABEL_X + label_offset, y + 6))
-
-        # Input box
-        is_active = self.active_field == field_name
-        box_color = (50, 70, 100) if is_active else (35, 45, 65)
-        border_color = (100, 150, 255) if is_active else (60, 80, 110)
-
-        box_rect = pygame.Rect(x, y, width, 32)
-        self.field_rects[field_name] = box_rect
-
-        # Hover effect
-        if box_rect.collidepoint(pygame.mouse.get_pos()) and not is_active:
-            border_color = (80, 120, 180)
-
-        pygame.draw.rect(self.screen, box_color, box_rect, border_radius=5)
-        pygame.draw.rect(self.screen, border_color, box_rect, 2, border_radius=5)
-
-        # Text (truncate if too long)
-        display_text = value
-        max_chars = (width - 20) // 10  # Rough estimate
-        if len(display_text) > max_chars:
-            display_text = "..." + display_text[-(max_chars - 3):]
-
-        text_surf = self.font.render(display_text, True, (255, 255, 255))
-        self.screen.blit(text_surf, (x + 8, y + 5))
-
-        # Blinking cursor
-        if is_active:
-            cursor_x = x + 8 + text_surf.get_width() + 2
-            if cursor_x < x + width - 5:  # Don't draw cursor outside box
-                if pygame.time.get_ticks() % 1000 < 500:
-                    pygame.draw.line(self.screen, (255, 255, 255),
-                                   (cursor_x, y + 6), (cursor_x, y + 24), 2)
+    def _draw_extra(self):
+        ...
 
 
-class ServerSelectScreen:
-    """Pygame screen for selecting a server from the listserver."""
+class LoginScreen(_Screen):
+    """Credential entry with listserver/direct-connect toggle."""
+
+    caption = "pyreborn - Login"
+
+    def __init__(self):
+        super().__init__()
+        self.use_listserver = True
+
+    def build(self):
+        self.error = ui.Label("", role="small", color=(255, 110, 110),
+                              anchor=ui.MIDTOP, offset=(0, 0))
+
+        self.user_in = ui.TextInput(w=300, placeholder="Username", max_len=30,
+                                    on_enter=self._submit)
+        self.pass_in = ui.TextInput(w=300, placeholder="Password", password=True,
+                                    max_len=30, on_enter=self._submit)
+        self.user_in.focused = True
+
+        self.mode_btn = ui.Button(self._mode_text(), w=300, h=30,
+                                  on_click=self._toggle_mode,
+                                  bg=(40, 52, 78), bg_hover=(58, 74, 108))
+
+        self.ls_in = ui.TextInput(w=300, placeholder="Listserver host", max_len=50,
+                                  text="listserver.example.com", on_enter=self._submit)
+        self.host_in = ui.TextInput(w=300, placeholder="Host", max_len=50,
+                                    text="localhost", on_enter=self._submit)
+        self.port_in = ui.TextInput(w=300, placeholder="Port", max_len=5,
+                                    text="14900", on_enter=self._submit)
+
+        connect = ui.Button("Connect", w=300, h=40, on_click=self._submit,
+                            role="heading", bg=(48, 132, 92), bg_hover=(70, 176, 122))
+
+        panel = ui.Panel(w=360, h=400, anchor=ui.CENTER, bg=(32, 40, 62, 245),
+                         border=(70, 92, 134), radius=14, vstack=True,
+                         padding=24, spacing=10)
+        panel.add(
+            ui.Label("pyreborn", role="title", color=(120, 190, 255)),
+            ui.Label("Reborn Client", role="small", color=(150, 156, 184)),
+            self.user_in,
+            self.pass_in,
+            self.mode_btn,
+            self.ls_in,
+            self.host_in,
+            self.port_in,
+            connect,
+            self.error,
+        )
+        self.ui.root.add(panel)
+        self.ui.root.add(ui.Label(
+            "Tab: next field   Enter: connect   Esc: quit",
+            role="tiny", color=(110, 116, 140),
+            anchor=ui.MIDBOTTOM, offset=(0, -12)))
+        self._apply_mode()
+
+    def _mode_text(self):
+        return "Mode: Listserver" if self.use_listserver else "Mode: Direct connect"
+
+    def _toggle_mode(self):
+        self.use_listserver = not self.use_listserver
+        self.mode_btn.text = self._mode_text()
+        self._apply_mode()
+
+    def _apply_mode(self):
+        self.ls_in.visible = self.use_listserver
+        self.host_in.visible = not self.use_listserver
+        self.port_in.visible = not self.use_listserver
+
+    def _submit(self):
+        if not (self.user_in.text and self.pass_in.text):
+            self.error.text = "Username and password required"
+            return
+        port = self.port_in.text
+        self._result = {
+            "username": self.user_in.text,
+            "password": self.pass_in.text,
+            "use_listserver": self.use_listserver,
+            "host": self.host_in.text or "localhost",
+            "port": int(port) if port.isdigit() else 14900,
+            "listserver_host": self.ls_in.text,
+        }
+        self._done = True
+
+
+class ServerSelectScreen(_Screen):
+    """Scrollable, clickable server list backed by the listserver results."""
+
+    caption = "pyreborn - Server Select"
+    MAX_VISIBLE = 7
+    ROW_H = 40
+
+    # type_prefix -> (badge color)
+    TYPE_COLORS = {
+        "H ": (205, 150, 70), "P ": (255, 215, 0),
+        "3 ": (110, 200, 255), "U ": (120, 120, 130),
+    }
 
     def __init__(self, servers: list, username: str):
+        super().__init__()
         self.servers = servers
         self.username = username
-        self.selected_index = 0
-        self.scroll_offset = 0
-        self.max_visible = 10
+        self.selected = 0
+        self.scroll = 0
 
-        # Initialize pygame if not already
-        if not pygame.get_init():
-            pygame.init()
+    def build(self):
+        self.ui.root.add(
+            ui.Label("Select Server", role="title", anchor=ui.MIDTOP, offset=(0, 18)),
+            ui.Label(f"Logged in as {self.username}  ·  {len(self.servers)} servers",
+                     role="small", color=(150, 200, 255),
+                     anchor=ui.MIDTOP, offset=(0, 64)),
+            ui.Label("Up/Down: navigate   Enter: connect   Esc: cancel",
+                     role="tiny", color=(110, 116, 140),
+                     anchor=ui.MIDBOTTOM, offset=(0, -12)),
+        )
+        self.list_panel = ui.Panel(w=SCREEN_WIDTH - 60, h=self.MAX_VISIBLE * (self.ROW_H + 4),
+                                   anchor=ui.MIDTOP, offset=(0, 98),
+                                   vstack=True, padding=0, spacing=4, align=ui.CENTER)
+        self.ui.root.add(self.list_panel)
+        self.scroll_hint = ui.Label("", role="tiny", color=(110, 150, 200),
+                                    anchor=ui.MIDBOTTOM, offset=(0, -32))
+        self.ui.root.add(self.scroll_hint)
+        self._refresh_rows()
 
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("pyreborn - Server Select")
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 28)
-        self.font_small = pygame.font.Font(None, 22)
-        self.font_title = pygame.font.Font(None, 42)
+    def _refresh_rows(self):
+        self.list_panel.clear()
+        visible = self.servers[self.scroll:self.scroll + self.MAX_VISIBLE]
+        for i, server in enumerate(visible):
+            idx = self.scroll + i
+            self.list_panel.add(self._make_row(server, idx == self.selected, idx))
+        above = self.scroll > 0
+        below = self.scroll + self.MAX_VISIBLE < len(self.servers)
+        self.scroll_hint.text = ("^ more above   " if above else "") + \
+                                ("v more below" if below else "")
 
-    def run(self) -> Optional[ServerEntry]:
-        """Run the server selection screen. Returns selected server or None."""
-        running = True
+    def _make_row(self, server, selected, idx):
+        row = ui.Panel(w=SCREEN_WIDTH - 80, h=self.ROW_H,
+                       bg=(48, 64, 96) if selected else (30, 40, 60),
+                       border=(110, 160, 255) if selected else None,
+                       border_w=2, radius=6)
+        row.add(ui.Label(server.name, role="hud", color=(255, 255, 255),
+                         anchor=ui.TOPLEFT, offset=(12, 5)))
+        info = f"{server.player_count} players   {server.language}   {server.ip}:{server.port}"
+        row.add(ui.Label(info, role="tiny", color=(160, 166, 186),
+                         anchor=ui.TOPLEFT, offset=(12, 25)))
+        badge = server.type_prefix.strip()
+        if badge:
+            color = self.TYPE_COLORS.get(server.type_prefix, (120, 120, 130))
+            row.add(ui.Label(badge, role="small", color=color,
+                             anchor=ui.TOPRIGHT, offset=(-12, 5)))
 
-        while running:
-            for event in pygame.event.get():
-                if event.type == QUIT:
-                    return None
+        def pick():                      # click selects; click-again connects
+            if idx == self.selected:
+                self._choose()
+            else:
+                self.selected = idx
+                self._refresh_rows()
+        row.add(_ClickCatcher(SCREEN_WIDTH - 80, self.ROW_H, pick))
+        return row
 
-                elif event.type == KEYDOWN:
-                    if event.key == K_ESCAPE:
-                        return None
+    def on_key(self, event):
+        if not self.servers:
+            return
+        if event.key == K_UP:
+            self.selected = max(0, self.selected - 1)
+            if self.selected < self.scroll:
+                self.scroll = self.selected
+            self._refresh_rows()
+        elif event.key == K_DOWN:
+            self.selected = min(len(self.servers) - 1, self.selected + 1)
+            if self.selected >= self.scroll + self.MAX_VISIBLE:
+                self.scroll = self.selected - self.MAX_VISIBLE + 1
+            self._refresh_rows()
+        elif event.key in (K_RETURN, K_SPACE):
+            self._choose()
 
-                    elif event.key == K_UP:
-                        self.selected_index = max(0, self.selected_index - 1)
-                        # Scroll up if needed
-                        if self.selected_index < self.scroll_offset:
-                            self.scroll_offset = self.selected_index
+    def _choose(self):
+        if self.servers:
+            self._result = self.servers[self.selected]
+            self._done = True
 
-                    elif event.key == K_DOWN:
-                        self.selected_index = min(len(self.servers) - 1, self.selected_index + 1)
-                        # Scroll down if needed
-                        if self.selected_index >= self.scroll_offset + self.max_visible:
-                            self.scroll_offset = self.selected_index - self.max_visible + 1
 
-                    elif event.key == K_RETURN or event.key == K_SPACE:
-                        if self.servers:
-                            return self.servers[self.selected_index]
+class _ClickCatcher(ui.Widget):
+    """Transparent overlay that fires a callback when clicked (for list rows)."""
 
-                elif event.type == MOUSEBUTTONDOWN:
-                    if event.button == 1:  # Left click
-                        # Check if clicked on a server entry
-                        mouse_y = event.pos[1]
-                        entry_start_y = 120
-                        entry_height = 50
+    def __init__(self, w, h, on_click):
+        super().__init__(w, h, anchor=ui.TOPLEFT, offset=(0, 0))
+        self.on_click = on_click
 
-                        for i in range(min(self.max_visible, len(self.servers) - self.scroll_offset)):
-                            entry_y = entry_start_y + i * entry_height
-                            if entry_y <= mouse_y < entry_y + entry_height:
-                                clicked_index = self.scroll_offset + i
-                                if clicked_index == self.selected_index:
-                                    # Double-click effect - select
-                                    return self.servers[self.selected_index]
-                                else:
-                                    self.selected_index = clicked_index
-                                break
-
-            self._render()
-            self.clock.tick(60)
-
-        return None
-
-    def _render(self):
-        """Render the server selection screen."""
-        # Background
-        self.screen.fill((20, 30, 50))
-
-        # Title
-        title = self.font_title.render("Select Server", True, (255, 255, 255))
-        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 20))
-
-        # User info
-        user_text = self.font_small.render(f"Logged in as: {self.username}", True, (150, 200, 255))
-        self.screen.blit(user_text, (SCREEN_WIDTH // 2 - user_text.get_width() // 2, 60))
-
-        # Server count
-        count_text = self.font_small.render(f"{len(self.servers)} servers available", True, (150, 150, 150))
-        self.screen.blit(count_text, (SCREEN_WIDTH // 2 - count_text.get_width() // 2, 85))
-
-        # Server list
-        y = 120
-        visible_servers = self.servers[self.scroll_offset:self.scroll_offset + self.max_visible]
-
-        for i, server in enumerate(visible_servers):
-            actual_index = self.scroll_offset + i
-            is_selected = actual_index == self.selected_index
-
-            # Background for entry
-            bg_color = (50, 70, 100) if is_selected else (30, 40, 60)
-            pygame.draw.rect(self.screen, bg_color, (20, y, SCREEN_WIDTH - 40, 45), border_radius=5)
-
-            if is_selected:
-                # Selection border
-                pygame.draw.rect(self.screen, (100, 150, 255), (20, y, SCREEN_WIDTH - 40, 45), 2, border_radius=5)
-
-            # Server type indicator
-            type_colors = {
-                "": (100, 100, 100),      # Normal
-                "H ": (205, 127, 50),     # Bronze
-                "P ": (255, 215, 0),      # Gold
-                "3 ": (100, 200, 255),    # G3D
-                "U ": (100, 100, 100),    # Hidden
-            }
-            type_color = type_colors.get(server.type_prefix, (100, 100, 100))
-
-            # Type badge
-            if server.type_prefix.strip():
-                badge_text = server.type_prefix.strip()
-                badge = self.font_small.render(badge_text, True, type_color)
-                pygame.draw.rect(self.screen, (20, 25, 35), (30, y + 5, 25, 18), border_radius=3)
-                self.screen.blit(badge, (35, y + 6))
-
-            # Server name
-            name_x = 65 if server.type_prefix.strip() else 30
-            name = self.font.render(server.name, True, (255, 255, 255))
-            self.screen.blit(name, (name_x, y + 5))
-
-            # Server info line
-            info = f"{server.player_count} players  |  {server.language}  |  {server.ip}:{server.port}"
-            info_text = self.font_small.render(info, True, (150, 150, 150))
-            self.screen.blit(info_text, (30, y + 26))
-
-            y += 50
-
-        # Scroll indicators
-        if self.scroll_offset > 0:
-            arrow_up = self.font.render("More servers above", True, (100, 150, 200))
-            self.screen.blit(arrow_up, (SCREEN_WIDTH // 2 - arrow_up.get_width() // 2, 100))
-
-        if self.scroll_offset + self.max_visible < len(self.servers):
-            arrow_down = self.font.render("More servers below", True, (100, 150, 200))
-            self.screen.blit(arrow_down, (SCREEN_WIDTH // 2 - arrow_down.get_width() // 2, SCREEN_HEIGHT - 60))
-
-        # Instructions
-        help_text = "Up/Down: Navigate  |  Enter: Connect  |  Esc: Cancel"
-        help_surf = self.font_small.render(help_text, True, (100, 100, 100))
-        self.screen.blit(help_surf, (SCREEN_WIDTH // 2 - help_surf.get_width() // 2, SCREEN_HEIGHT - 30))
-
-        pygame.display.flip()
+    def _handle_event(self, event) -> bool:
+        if event.type == MOUSEBUTTONUP and event.button == 1 \
+                and self.rect.collidepoint(event.pos):
+            self.on_click()
+            return True
+        return False
 
 
 def show_loading_screen(message: str):
-    """Show a simple loading screen."""
+    """Show a simple loading screen (transient; not resizable)."""
     if not pygame.get_init():
         pygame.init()
-
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption("pyreborn")
-    font = pygame.font.Font(None, 36)
-
-    screen.fill((20, 30, 50))
-    text = font.render(message, True, (255, 255, 255))
-    screen.blit(text, (SCREEN_WIDTH // 2 - text.get_width() // 2, SCREEN_HEIGHT // 2 - 20))
+    fonts = FontManager()
+    screen.fill(BG)
+    text = fonts.at(36).render(message, True, (255, 255, 255))
+    screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
     pygame.display.flip()
-
-    # Process events to prevent "not responding"
     pygame.event.pump()
