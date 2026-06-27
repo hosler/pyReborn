@@ -4,6 +4,7 @@ Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import time
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -17,6 +18,7 @@ from pygame.locals import (
 )
 
 from .. import Client
+from .camera import Camera2D
 from ..gani import GaniParser, AnimationState, direction_from_delta
 from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
 from ..sounds import SoundManager, preload_common_sounds
@@ -141,36 +143,55 @@ class RenderMixin:
         # Position the camera before any world-space drawing.
         self._sync_camera()
 
-        # Clear screen
-        self.screen.fill((34, 139, 34))
+        # World + entities, optionally through a zoom layer (see _render_scene).
+        zoom = self.camera.zoom
+        if zoom == 1.0 or self.debug_mode:
+            self.screen.fill((34, 139, 34))
+            self._render_scene()
+        else:
+            self._render_scene_zoomed(zoom)
 
-        # Render world
+        # Screen-space overlays (never zoomed): sign popups, then the HUD.
+        self._check_and_render_signs()
+        self._render_ui()
+
+        # Scale the virtual canvas onto the (resizable) window and flip.
+        self.viewport.present()
+
+    def _render_scene(self):
+        """Draw all world-space layers to self.screen via self.camera."""
         self._render_world()
-
-        # Render debug overlay if enabled
         if self.debug_mode:
             self._render_debug_overlay()
-
-        # Render level chests (on the ground, behind entities)
-        self._render_chests()
-
-        # Render entities (sorted by Y for depth)
-        self._render_entities()
-
-        # Render combat effects (damage numbers, bombs, projectiles, explosions)
+        self._render_chests()                       # ground, behind entities
+        self._render_entities()                     # depth-sorted by Y
         self._render_damage_numbers()
         self._render_bombs()
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
         self._render_server_explosions()
 
-        # Render sign popups
-        self._check_and_render_signs()
+    def _render_scene_zoomed(self, zoom: float):
+        """Render the world layer at 1:1 into a smaller offscreen surface, then
+        scale it onto the canvas. One scale here zooms every world-space draw
+        uniformly, so the per-sprite blits don't each need a zoom factor."""
+        sw = math.ceil(SCREEN_WIDTH / zoom)
+        sh = math.ceil(SCREEN_HEIGHT / zoom)
+        scene = pygame.Surface((sw, sh))
+        scene.fill((34, 139, 34))
 
-        # Render UI
-        self._render_ui()
+        # Swap in a 1:1 camera centered where the real one is, sized to the scene.
+        canvas, real_cam = self.screen, self.camera
+        scene_cam = Camera2D(sw, sh, self.camera.tile_size)
+        scene_cam.set_center(*real_cam.center)
+        self.screen, self.camera = scene, scene_cam
+        try:
+            self._render_scene()
+        finally:
+            self.screen, self.camera = canvas, real_cam
 
-        # Scale the virtual canvas onto the (resizable) window and flip.
-        self.viewport.present()
+        # Nearest-neighbour scale keeps the pixel art crisp.
+        self.screen.blit(pygame.transform.scale(scene, (SCREEN_WIDTH, SCREEN_HEIGHT)),
+                         (0, 0))
     def _world_to_screen(self, world_x: float, world_y: float) -> Tuple[float, float]:
         """Convert world (render-frame) tile coordinates to screen pixels.
 

@@ -56,6 +56,10 @@ class InputMixin:
 
             elif event.type == MOUSEBUTTONDOWN and self.debug_mode:
                 self._handle_tile_click(event)
+
+            elif event.type == pygame.MOUSEWHEEL and not self.debug_mode:
+                # Zoom the world layer; the camera clamps to its min/max.
+                self.camera.zoom_by(1.1 ** event.y)
     def _handle_chat_input(self, event):
         """Handle chat input mode."""
         if event.key == K_RETURN:
@@ -89,10 +93,16 @@ class InputMixin:
             # Toggle inventory
             self.inventory_ui.toggle()
 
+        elif event.key == pygame.K_0:
+            # Reset zoom to 1:1.
+            self.camera.zoom = 1.0
+
         elif event.key == K_F1:
             # Toggle debug/tile editing mode
             self.debug_mode = not self.debug_mode
             if self.debug_mode:
+                # The tile editor picks by screen pixel, so it needs 1:1.
+                self.camera.zoom = 1.0
                 print("Debug mode ON - Use 1-7 to select type, click to apply:")
                 print("  1=Walkable, 2=Blocking, 3=Water, 4=Chair, 5=Bush, 6=Pot, 7=Rock")
             else:

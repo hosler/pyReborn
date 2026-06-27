@@ -129,6 +129,7 @@ class HUD:
         ("S or Space", "Swing sword"),
         ("D", "Use weapon"),
         ("Q", "Inventory"),
+        ("Wheel / 0", "Zoom / reset"),
         ("M", "Toggle minimap"),
         ("Enter", "Chat"),
         ("F1", "Debug / tile editor"),
