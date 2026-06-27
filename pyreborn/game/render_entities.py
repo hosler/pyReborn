@@ -37,11 +37,14 @@ class EntityRenderMixin:
         """Render all entities (players, NPCs) sorted by Y position."""
         entities = []
 
-        # Add local player - screen center (camera follows player)
+        # Add local player. The camera is centered on the player, so map the
+        # camera centre through it rather than hardcoding SCREEN_WIDTH/2 — the
+        # latter is only the screen middle on the full canvas, not on the smaller
+        # offscreen surface used while zoomed, which made the player slide when
+        # zooming.
         player = self.client.player
         local_y = self.visual_y % 64
-        px = SCREEN_WIDTH // 2
-        py = SCREEN_HEIGHT // 2
+        px, py = self.camera.world_to_screen(*self.camera.center)
         entities.append(('player', local_y, px, py, player))
 
         # Add other players - convert their local coords to world coords
