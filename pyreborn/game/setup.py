@@ -22,7 +22,6 @@ from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, 
 from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
-from ..gs1_interpreter import GS1Interpreter
 from ..player import Player
 from ..tiletypes import TileType, get_tile_type
 from .constants import (
@@ -115,6 +114,12 @@ class SetupMixin:
         self.gs1.on_play = on_play
         self.gs1.on_say = on_say
         self.gs1.on_message = on_message
+
+        # Route NPC touch events through the shared GS1 engine.
+        if getattr(self, "npc_handler", None) is not None:
+            self.npc_handler.on_playertouchsme = (
+                lambda npc_id, npc_data: self.gs1.trigger_npc_event(
+                    npc_id, "playertouchsme"))
     def _load_npc_scripts(self):
         """Load NPC scripts into the GS1 interpreter."""
         for npc_id, npc in self.client.npcs.items():

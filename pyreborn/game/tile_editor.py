@@ -22,7 +22,6 @@ from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, 
 from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
-from ..gs1_interpreter import GS1Interpreter
 from ..player import Player
 from ..tiletypes import TileType, get_tile_type
 from .constants import (

@@ -18,7 +18,7 @@ from .sprites import SpriteManager, TilesetManager, create_placeholder_sprite, c
 from .sounds import SoundManager, preload_common_sounds
 from .inventory_ui import InventoryUI, HeartDisplay
 from .npc_handler import NPCHandler
-from .gs1_interpreter import GS1Interpreter
+from .gs1_client import ClientGS1
 from .player import Player
 from .tiletypes import TileType, get_tile_type
 from .game.constants import (
@@ -96,8 +96,8 @@ class GameClient(
         # NPC handler for touch detection and script execution
         self.npc_handler = NPCHandler(self.client)
 
-        # GS1 interpreter for NPC scripts
-        self.gs1 = GS1Interpreter(self.client)
+        # GS1 interpreter for NPC scripts (shared engine, client-side host)
+        self.gs1 = ClientGS1(self.client)
         self._setup_gs1_callbacks()
 
         # UI components

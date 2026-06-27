@@ -189,12 +189,12 @@ class NPCHandler:
                     if direction != required_dir:
                         continue  # Skip - wrong direction
 
-                # Trigger the event
+                # Trigger the event. Prefer the wired GS1 engine; fall back to
+                # the built-in regex executor only when nothing is wired.
                 if self.on_playertouchsme:
                     self.on_playertouchsme(npc_id, npc_data)
-
-                # Execute playertouchsme script block
-                self._execute_playertouchsme(npc_id, script, direction)
+                else:
+                    self._execute_playertouchsme(npc_id, script, direction)
 
         self.touched_npcs = touched_now
         self.last_player_pos = (new_x, new_y)
