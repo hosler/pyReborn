@@ -38,26 +38,34 @@ class ActionsMixin:
         """(dx, dy) tile delta for a facing direction (0=up,1=left,2=down,3=right)."""
         return {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction, (0, 0))
     def _move(self, dx: int, dy: int):
-        """Move the player, checking for blocking tiles."""
-        # Calculate destination position. Check the actual step distance the
-        # client will move (matches Client.move's default step) so the player
-        # stops right at a wall instead of a full tile short of it.
-        step = MOVE_STEP
-        dest_x = self.client.x + dx * step
-        dest_y = self.client.y + dy * step
+        """Move the player, checking for blocking tiles.
 
-        # Check if destination is blocked (pass direction for directional checks)
-        if self._is_position_blocked(dest_x, dest_y, dx, dy):
-            # Can't move there - still update direction for visual feedback
-            direction = direction_from_delta(dx, dy)
-            self.player_anim.set_direction(direction)
+        If a diagonal move is blocked, slide along whichever axis is still free
+        so the player glides along walls instead of sticking to them.
+        """
+        step = MOVE_STEP
+        # Candidate moves: the full input first, then each single axis as a slide.
+        candidates = [(dx, dy)]
+        if dx != 0 and dy != 0:
+            candidates += [(dx, 0), (0, dy)]
+
+        mdx = mdy = 0
+        for cdx, cdy in candidates:
+            if not self._is_position_blocked(self.client.x + cdx * step,
+                                             self.client.y + cdy * step, cdx, cdy):
+                mdx, mdy = cdx, cdy
+                break
+
+        if mdx == 0 and mdy == 0:
+            # Fully blocked - still face where we tried to go.
+            self.player_anim.set_direction(direction_from_delta(dx, dy))
             return
 
-        # Move is allowed
-        self.client.move(dx, dy)
+        # Move is allowed (full or slid onto a free axis).
+        self.client.move(mdx, mdy)
 
-        # Update direction
-        direction = direction_from_delta(dx, dy)
+        # Face the direction we actually moved.
+        direction = direction_from_delta(mdx, mdy)
 
         # Check NPC touch after movement
         self.npc_handler.process_movement(self.client.x, self.client.y, direction)

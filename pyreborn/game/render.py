@@ -101,33 +101,35 @@ class RenderMixin:
                 continue
             anim.update(dt)
     def _update_visual_position(self, dt: float):
-        """Smoothly interpolate visual position toward actual position."""
+        """Track the authoritative position tightly.
+
+        The old exponential lerp left a constant steady-state gap of
+        walk_speed/lerp_speed (~0.4 tiles) between where the player actually was
+        and where they were drawn, which reads as floaty/laggy. Instead, chase
+        the target at follow_speed (well above walk_speed) and lock on once
+        within a frame's reach, so during normal movement the camera sits exactly
+        on the player (Preagonal snaps its camera to the player every frame) and
+        only a large correction eases in.
+        """
         target_x = self.client.x
         target_y = self.client.y
-
-        # Calculate distance to target
         dx = target_x - self.visual_x
         dy = target_y - self.visual_y
+        dist = math.hypot(dx, dy)
 
-        # Large gap = a warp/teleport, not walking: snap immediately so we don't
-        # slide across the whole level.
-        if abs(dx) > 2.0 or abs(dy) > 2.0:
+        # Warp/teleport: snap so we don't slide across the level.
+        if dist > 2.0:
             self.visual_x = target_x
             self.visual_y = target_y
             return
 
-        # Very close: snap to kill sub-pixel jitter.
-        if abs(dx) < 0.02 and abs(dy) < 0.02:
+        step = self.follow_speed * dt
+        if step >= dist:                 # within reach this frame: lock on
             self.visual_x = target_x
             self.visual_y = target_y
-            return
-
-        # Otherwise always lerp toward the target (exponential smoothing). This
-        # keeps the character gliding smoothly to a stop on key release instead
-        # of snapping forward.
-        lerp_factor = min(1.0, self.lerp_speed * dt)
-        self.visual_x += dx * lerp_factor
-        self.visual_y += dy * lerp_factor
+        else:
+            self.visual_x += dx / dist * step
+            self.visual_y += dy / dist * step
     def _sync_camera(self):
         """Point the camera at the player's GMAP-relative visual position.
 

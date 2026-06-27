@@ -162,10 +162,13 @@ class GameClient(
         self.is_moving = False
         self.is_swimming = False  # Track if player is in water
 
-        # Smooth movement - visual position interpolates toward actual position
+        # Smooth movement - visual position tracks the authoritative position.
         self.visual_x = 0.0
         self.visual_y = 0.0
-        self.lerp_speed = 18.0  # Speed of interpolation (higher = snappier)
+        # How fast the camera/local-player visual chases the real position. Kept
+        # well above walk_speed (8) so it locks on each frame (no floaty lag).
+        self.follow_speed = 24.0
+        self.lerp_speed = 18.0  # still used to ease *other* players' positions
 
         # Combat effects - floating damage numbers
         # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
