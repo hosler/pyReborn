@@ -216,11 +216,15 @@ class InputMixin:
                 steps += 1
             self.is_moving = True
         else:
+            # Only settle into a chair on the frame we *arrive* and stop (moving
+            # -> stopped). Firing every rest frame would instantly re-sit the
+            # player the moment they press A to stand, so they could never get up
+            # without walking off the chair.
+            just_stopped = self.is_moving
             self.is_moving = False
             self._move_accum = 0.0
-            # Settle into the chair if we've come to rest on one.
             player = self.client.player
-            if not player.is_sitting and not player.is_carrying():
+            if just_stopped and not player.is_sitting and not player.is_carrying():
                 fx, fy = self._player_feet()
                 if self._is_tile_chair(self._get_tile_at(fx, fy)):
                     if player.sit_down(player.direction):

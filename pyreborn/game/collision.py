@@ -152,8 +152,14 @@ class CollisionMixin:
         left, right = 0.5, 1.5
         top, bottom = 2.1, 2.9
 
-        for cx in (x + left, x + right):
-            for cy in (y + top, y + bottom):
+        # The box is half-open: its right/bottom edge sitting exactly on a tile
+        # boundary does NOT occupy the next tile. Without the epsilon, a feet edge
+        # flush against a wall (e.g. 35.0) floors into the wall tile and the
+        # player stops a step (~4px) short. Inset the far edges so you can move
+        # flush against walls.
+        EPS = 1e-3
+        for cx in (x + left, x + right - EPS):
+            for cy in (y + top, y + bottom - EPS):
                 if self._is_blocked_at(cx, cy):
                     return True
 
