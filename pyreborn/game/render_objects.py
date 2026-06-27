@@ -61,7 +61,7 @@ class LevelObjectsRenderMixin:
                     drew_any = True
 
         if not drew_any:
-            cache[opened] = None
+            # Tileset may not be ready yet — don't cache the miss, retry later.
             return None
 
         cache[opened] = surf
@@ -72,19 +72,18 @@ class LevelObjectsRenderMixin:
         if not chests:
             return
 
+        # Cull against the actual draw surface — while zoomed that's the smaller
+        # offscreen scene, not the full canvas, so SCREEN_WIDTH/HEIGHT are wrong.
+        surf_w, surf_h = self.screen.get_size()
         for (cx, cy), opened in chests.items():
             sprite = self._get_chest_sprite(bool(opened))
             if sprite is None:
                 continue
-            # Chest tile (cx, cy) is the top-left of its 2x2 footprint. The
-            # sprite is 3 tiles wide, so shift left half a tile to center it
-            # over the 2-wide footprint.
-            sprite_tiles_w = sprite.get_width() / TILE_SIZE
-            origin_x = cx - (sprite_tiles_w - 2) / 2.0
-            sx, sy = self._world_to_screen(origin_x, cy)
-            # Cull if fully off-screen
-            if sx < -sprite.get_width() or sx > SCREEN_WIDTH or \
-               sy < -sprite.get_height() or sy > SCREEN_HEIGHT:
+            # Chest tile (cx, cy) is the top-left of its 2x2 footprint, and the
+            # sprite is exactly 2 tiles wide, so it maps straight to that tile.
+            sx, sy = self._world_to_screen(cx, cy)
+            if sx < -sprite.get_width() or sx > surf_w or \
+               sy < -sprite.get_height() or sy > surf_h:
                 continue
             self.screen.blit(sprite, (int(sx), int(sy)))
     def _check_and_render_signs(self):

@@ -4,6 +4,7 @@ Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import time
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -109,6 +110,15 @@ class ActionsMixin:
             player.stand_up()
             self.player_anim.set_animation("idle", player.direction, force=True)
             self.current_anim_name = "idle"
+            return
+
+        # Open a chest in front of the player
+        chest = self._find_chest_in_front()
+        if chest is not None:
+            if not self.client.chests.get(chest, False):
+                cx, cy = chest
+                self.client.open_chest(cx, cy)
+                self.client.chests[chest] = True   # optimistic; server confirms
             return
 
         # Check for chair in front of player
@@ -375,6 +385,19 @@ class ActionsMixin:
         self.world_surface = None  # Force redraw
 
         print(f"Threw {thrown_type} in direction {direction} -> ({ox},{oy})!")
+    def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
+        """Return the (cx, cy) key of a chest whose 2x2 footprint the player is
+        facing, or None. Chests block, so the player stands adjacent and the
+        per-direction touch points land on the chest's tiles."""
+        chests = getattr(self.client, "chests", None)
+        if not chests:
+            return None
+        for tx, ty in self._touch_points(self.client.player.direction):
+            ftx, fty = math.floor(tx), math.floor(ty)
+            for (cx, cy) in chests:
+                if cx <= ftx <= cx + 1 and cy <= fty <= cy + 1:
+                    return (cx, cy)
+        return None
     def _find_adjacent_chair(self) -> Optional[Tuple[int, int, int]]:
         """Find a chair tile adjacent to the player in the direction they're facing.
 

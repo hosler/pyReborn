@@ -4,6 +4,7 @@ Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import time
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -176,8 +177,22 @@ class CollisionMixin:
             if x < 0 or x >= 64 or y < 0 or y >= 64:
                 return True
 
+        if self._chest_blocks(x, y):
+            return True
+
         tile_id = self._get_tile_at(x, y)
         return self._is_tile_blocking(tile_id)
+    def _chest_blocks(self, x: float, y: float) -> bool:
+        """True if (x, y) lies inside a chest's 2x2 footprint. Chests are solid
+        objects (open or closed), so they block walking like a wall."""
+        chests = getattr(self.client, "chests", None)
+        if not chests:
+            return False
+        tx, ty = math.floor(x), math.floor(y)
+        for (cx, cy) in chests:
+            if cx <= tx <= cx + 1 and cy <= ty <= cy + 1:
+                return True
+        return False
     def _check_water_at_position(self, x: float, y: float) -> bool:
         """Check if the position is in water."""
         tile_id = self._get_tile_at(x, y)
