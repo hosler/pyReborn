@@ -194,6 +194,8 @@ class SetupMixin:
 
     def _setup_gs1_callbacks(self):
         """Setup GS1 interpreter callbacks for visual/audio feedback."""
+        # action string -> last-sent time, to throttle repeated triggeractions.
+        self._triggeraction_sent = {}
         # Play sound/music callback (routes MIDI to streaming music).
         def on_play(sound_name):
             self._play_audio(sound_name)
@@ -238,7 +240,16 @@ class SetupMixin:
 
         # triggeraction x,y,action,... — forward to the server. This is how an
         # arena adds its gameplay weapons (gr.addweapon,-arenaSYS,-arenaGUI).
+        # THROTTLE duplicates: scripts like the arena's NPC 162 do
+        # `while(!hasweapon(X)) triggeraction gr.addweapon,X` — if the server
+        # never pushes X, that loop fires the same action endlessly and floods
+        # the server. Send a given action at most once per 5s.
         def on_triggeraction(x, y, action, npc_id):
+            now = time.time()
+            sent = self._triggeraction_sent
+            if now - sent.get(action, 0.0) < 5.0:
+                return
+            sent[action] = now
             try:
                 self.client.triggeraction(action, x, y, npc_id)
             except Exception:
