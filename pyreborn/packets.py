@@ -1706,8 +1706,10 @@ def build_triggeraction(x: float, y: float, action: str, npc_id: int = 0) -> byt
     """
     packet = bytearray()
 
-    # NPC ID (guint - 4 bytes)
-    packet.append(((npc_id >> 21) & 0x7F) + 32)
+    # NPC ID — GUInt, which on the wire is a 3-byte GInt (server reads
+    # readGUInt() == readGInt() == 3 bytes). Writing 4 bytes here shifted the
+    # x/y/action by one, so the server parsed a garbage action and silently
+    # ignored every triggeraction (gr.addweapon never added a weapon).
     packet.append(((npc_id >> 14) & 0x7F) + 32)
     packet.append(((npc_id >> 7) & 0x7F) + 32)
     packet.append((npc_id & 0x7F) + 32)
