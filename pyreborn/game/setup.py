@@ -2,6 +2,7 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
+import os
 import time
 import json
 import re
@@ -291,6 +292,9 @@ class SetupMixin:
         }
         def on_setplayerprop(code, value):
             if code == '#c':
+                if os.environ.get("PYREBORN_DEBUG"):
+                    import sys
+                    print(f"[chat] {value!r}", file=sys.stderr)
                 self.local_chat_text = value
                 self.local_chat_time = time.time()
                 self.client.player.chat = value
