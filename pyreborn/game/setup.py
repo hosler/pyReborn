@@ -338,6 +338,26 @@ class SetupMixin:
         except Exception:
             pass  # Silently ignore errors during event execution
 
+    def _load_new_npcs(self):
+        """NPCs stream in over several seconds on a slow server; the startup
+        _trigger_playerenters only ran the ones present then. Load + fire
+        playerenters on any NPC that arrived since, so it actually runs."""
+        new = []
+        for npc_id, npc in list(self.client.npcs.items()):
+            key = "npc_%s" % npc_id
+            script = npc.get('script', '')
+            if script and key not in self.gs1.scripts:
+                self.gs1.load_script(key, script, npc_id=npc_id,
+                                     x=npc.get('x', 0), y=npc.get('y', 0))
+                new.append(npc_id)
+        for npc_id in new:
+            try:
+                self.gs1.trigger_npc_event(npc_id, 'playerenters')
+            except Exception:
+                pass
+        if new:
+            self.npc_handler.update_npcs()     # pick up their collision shapes
+
     def _process_self_shoots(self):
         """Fire actionprojectile2 for projectiles WE shot (the shooter handles
         its own projectile; the server relay only reaches other players). Done

@@ -325,6 +325,9 @@ class GameClient(
             # Update client (process packets)
             self.client.update()
 
+            # Load + run NPCs that streamed in after startup (slow server).
+            self._load_new_npcs()
+
             # A GS1 setlevel2/serverwarp (e.g. arena entry) requested a warp;
             # perform it now, between events, not mid-script (re-entrant).
             self._process_pending_warp()
