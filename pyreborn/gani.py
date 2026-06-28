@@ -46,8 +46,9 @@ class Gani:
         """Get a specific frame for a direction."""
         if not self.directions:
             return None
-        # Handle single-direction animations
-        dir_idx = 0 if self.single_dir else min(direction, len(self.directions) - 1)
+        # Handle single-direction animations (direction may arrive as a float
+        # from GS1 `dir=N`; it indexes a list, so force int)
+        dir_idx = 0 if self.single_dir else min(int(direction), len(self.directions) - 1)
         if dir_idx >= len(self.directions):
             return None
         frames = self.directions[dir_idx]
@@ -315,6 +316,13 @@ class AnimationState:
 
     def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):
         """Set the current animation by name."""
+        # GS1 scripts set `dir` as a float (e.g. `dir = 2` -> 2.0); the frame
+        # tables are indexed by int, so coerce here for every caller.
+        if direction is not None:
+            try:
+                direction = int(direction) & 3
+            except (TypeError, ValueError):
+                direction = 0
         # Don't restart same animation unless forced
         if not force and self.gani and self.gani.name == name:
             if direction is not None and direction != self.direction:
