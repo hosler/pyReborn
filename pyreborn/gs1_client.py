@@ -159,8 +159,18 @@ class GS1ClientHost(Host):
             return float(self.rt.mouse_y)
         if name == "leftmousebutton":
             return 1.0 if self.rt.mouse_left else 0.0
-        if name == "isleader":          # true on the room host (who shot Bomb.Queue)
-            return 1.0 if self.rt.is_leader else 0.0
+        if name == "isleader":
+            # Standard Graal: true on the first/authority player in the level.
+            # Forced override wins (tests); otherwise we're leader iff no other
+            # player shares our level.
+            if self.rt.is_leader is not None:
+                return 1.0 if self.rt.is_leader else 0.0
+            cl = self.rt.client
+            lvl = to_str(getattr(cl, "level", "")) if cl else ""
+            for op in (getattr(cl, "players", {}) or {}).values():
+                if isinstance(op, dict) and to_str(op.get("level", lvl)) == lvl:
+                    return 0.0
+            return 1.0
         # tiles[x,y] — the level board tile id at (x,y); read-only. The room
         # editor reads this for wall detection (tiles[x,y] in {0x278,0x939}).
         if name == "tiles":
@@ -681,7 +691,10 @@ class ClientGS1:
         self.mouse_x = 0.0
         self.mouse_y = 0.0
         self.mouse_left = False
-        self.is_leader = False         # true on the client that hosts the room
+        # Leader = the first player in the level (NPC-authority client); a
+        # standard Graal builtin, not bomber-specific. None = auto-detect (we're
+        # leader iff alone in the level); set True/False to force (tests).
+        self.is_leader = None
         self.default_movement = True   # disabledefmovement: arena weapons drive movement
         self.keys_dir: set = set()
         self.keys_raw: set = set()
