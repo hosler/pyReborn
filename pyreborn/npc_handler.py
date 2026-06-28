@@ -18,6 +18,7 @@ which setup wires to ``gs1.trigger_npc_event`` — the one real GS1 engine
 regex-based fallback executor; that only ever diverged from the real engine.
 """
 
+import os
 import time
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
@@ -161,6 +162,10 @@ class NPCHandler:
         if self.on_playertouchsme:
             for npc_id in new_touches:
                 if 'playertouchsme' in self.npc_scripts.get(npc_id, ''):
+                    if os.environ.get("PYREBORN_DEBUG"):
+                        import sys
+                        print(f"[touch] NPC {npc_id} at player ({new_x:.1f},{new_y:.1f}) dir={direction}",
+                              file=sys.stderr)
                     self.on_playertouchsme(npc_id, self.client.npcs.get(npc_id, {}))
 
         self.touched_npcs = touched_now

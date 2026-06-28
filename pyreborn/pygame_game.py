@@ -284,6 +284,8 @@ class GameClient(
 
     def run(self):
         """Main game loop."""
+        import os as _os
+        self._dbg = bool(_os.environ.get("PYREBORN_DEBUG"))
         last_time = time.time()
         frame_count = 0
 
@@ -315,6 +317,17 @@ class GameClient(
             last_time = current_time
             # Clamp dt so a stall (e.g. window drag) can't teleport the player
             self._frame_dt = min(dt, 0.1)
+
+            # Behavioral heartbeat (PYREBORN_DEBUG=1): every ~2s log what the
+            # player is actually doing, to diagnose "stuff stopped working".
+            if self._dbg and frame_count % 120 == 0:
+                p = self.client.player
+                import sys as _sys
+                print(f"[hb] f={frame_count} lvl={self.client._current_level_name} "
+                      f"pos=({self.client.x:.1f},{self.client.y:.1f}) dir={p.direction} "
+                      f"moving={getattr(self,'is_moving',None)} sitting={getattr(p,'is_sitting',None)} "
+                      f"hearts={p.hearts} npcs={len(self.client.npcs)} scripts={len(self.gs1.scripts)}",
+                      file=_sys.stderr)
 
             # Handle events
             self._handle_events()
