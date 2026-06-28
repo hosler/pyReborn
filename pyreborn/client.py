@@ -54,6 +54,7 @@ from .packets import (
     build_attack_player,
     build_shoot,
     build_shoot_v1,
+    build_player_gattrib,
     build_triggeraction,
     build_npc_props,
     build_flag_set,
@@ -861,6 +862,20 @@ class Client:
 
         data = build_flag_del(flag_name)
         return self._protocol.send_packet(PacketID.PLI_FLAGDEL, data)
+
+    def set_gattrib(self, index: int, value: str) -> bool:
+        """Set gani attribute `index` (1..30, i.e. GS1 #P<index>) and send it to
+        the server, which relays it to other players (PLO_OTHERPLPROPS). Used by
+        Bomber Arena's room slot lists so players see each other in the queue."""
+        if not self.connected or not self._authenticated:
+            return False
+        # cache our own value so we read it back consistently
+        self.player.gattribs = getattr(self.player, 'gattribs', {})
+        self.player.gattribs[index] = value
+        data = build_player_gattrib(index, value)
+        if not data:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
     def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0) -> bool:
         """

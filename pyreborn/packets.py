@@ -78,6 +78,19 @@ _GATTRIB_IDS = {
          60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74]
     )
 }
+# attribute index (1..30) -> GATTRIB prop_id (inverse of _GATTRIB_IDS).
+_GATTRIB_PROP = {idx: pid for pid, idx in _GATTRIB_IDS.items()}
+
+
+def build_player_gattrib(index: int, value: str) -> bytes:
+    """Build PLI_PLAYERPROPS setting gani attribute `index` (1..30) to `value`.
+    These are #P1..#P30 in GS1 — Bomber Arena's room slot lists. String prop:
+    gchar(prop_id) + gchar(len) + chars."""
+    pid = _GATTRIB_PROP.get(index)
+    if pid is None:
+        return b""
+    vb = value.encode('latin-1', errors='replace')[:223]
+    return bytes([pid + 32, len(vb) + 32]) + vb
 
 
 def _read_string(data: bytes, pos: int):

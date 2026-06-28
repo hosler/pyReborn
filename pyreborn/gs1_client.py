@@ -144,6 +144,9 @@ class GS1ClientHost(Host):
             return float(len(self._player_list()))
         if name == "tokenscount":   # number of tokens from the last `tokenize`
             return float(len(getattr(ctx, "tokenize_tokens", []) or []))
+        if name == "timevar":       # server clock (bomber compares room flag times to this)
+            import time as _t
+            return _t.time()
         # players[i].x / players[i].y / players[i].account -> the i-th player.
         if name.startswith("players."):
             attr = name.split(".", 1)[1]
@@ -198,7 +201,15 @@ class GS1ClientHost(Host):
         if name in ("setcharprop", "setplayerprop") and len(args) >= 2:
             pk = _pcode(to_str(args[0]))
             if pk is not None:
-                rt._player_props[pk] = to_str(args[1])
+                val = to_str(args[1])
+                rt._player_props[pk] = val
+                # sync our gattrib to the server so other players see it (the
+                # bomber room queue shares slot lists this way)
+                try:
+                    if rt.client is not None:
+                        rt.client.set_gattrib(int(pk[1:]), val)
+                except Exception:
+                    pass
                 return
         if name in _NPC_WRITE and args:
             if isinstance(npc, dict):
@@ -431,7 +442,30 @@ class GS1ClientHost(Host):
                 return to_str(getattr(player, "chat", ""))
         pk = _pcode(code)            # #P1..#P30 player gattrib (room slot list)
         if pk is not None:
-            return to_str(self.rt._player_props.get(pk, ""))
+            ai = int(pk[1:])
+            idx = int(to_num(args[0])) if args else -1
+            if idx <= -1:
+                # merged list across all players (self + everyone else), DEDUPED
+                # by account — this is what HostTemp tokenizes to see who's
+                # queued. Each player's gattrib holds a copy of the list (the
+                # script appends the merge back), so dedup is essential.
+                seen, out = set(), []
+                vals = [self.rt._player_props.get(pk, "")]
+                for op in (getattr(self.rt.client, "players", {}) or {}).values():
+                    if isinstance(op, dict):
+                        vals.append(op.get(f"gattrib{ai}", ""))
+                for v in vals:
+                    for tok in str(v).replace(",", " ").split():
+                        if tok and tok not in seen:
+                            seen.add(tok)
+                            out.append(tok)
+                return ",".join(out)
+            if idx == 0:
+                return to_str(self.rt._player_props.get(pk, ""))
+            others = list((getattr(self.rt.client, "players", {}) or {}).values())
+            if 0 <= idx - 1 < len(others) and isinstance(others[idx - 1], dict):
+                return to_str(others[idx - 1].get(f"gattrib{ai}", ""))
+            return ""
         if code == "#L":
             return to_str(getattr(self.rt.client, "level", "")) if self.rt.client else ""
         if code == "#p":  # projectile param n during actionprojectile2
