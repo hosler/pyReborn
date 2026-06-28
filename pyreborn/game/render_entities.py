@@ -701,7 +701,14 @@ class EntityRenderMixin:
                     self.screen.blit(self.shadow_sprite, (screen_x, screen_y))
                     continue
             else:
-                img = anim.gani.defaults.get(layer, 'sprites.png')
+                # A sprite whose source is a literal image filename (e.g.
+                # itsasign2's SIGN1.GIF) uses it directly; only keyword layers
+                # (no extension) resolve through the gani defaults. Falling back
+                # to sprites.png here drew signs/furniture as garbled characters.
+                if '.' in layer:
+                    img = layer.lower()
+                else:
+                    img = anim.gani.defaults.get(layer, 'sprites.png')
 
             # Get sprite from sheet
             sprite = self.sprite_mgr.get_sprite(

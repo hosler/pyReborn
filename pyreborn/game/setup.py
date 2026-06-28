@@ -282,9 +282,26 @@ class SetupMixin:
         self.gs1.on_freezeplayer = on_freezeplayer
         self.gs1.on_toweapons = on_toweapons
         self.gs1.on_setminimap = on_setminimap
+        # setplayerprop #code,value — NPCs talk to you and change your look this
+        # way (e.g. NPC 64 sets #c,:Added: when you join a room). #c shows as a
+        # speech bubble over you; appearance codes update the local player.
+        _PLAYER_PROP = {
+            '#1': 'sword_image', '#2': 'shield_image', '#3': 'head_image',
+            '#8': 'body_image', '#n': 'nickname',
+        }
+        def on_setplayerprop(code, value):
+            if code == '#c':
+                self.local_chat_text = value
+                self.local_chat_time = time.time()
+                self.client.player.chat = value
+            elif code in _PLAYER_PROP:
+                setattr(self.client.player, _PLAYER_PROP[code], value)
+            # other codes (#P1-#P30 gattribs, ...) not modelled yet — ignore
+
         self.gs1.on_warp = on_warp
         self.gs1.on_triggeraction = on_triggeraction
         self.gs1.on_shoot = on_shoot
+        self.gs1.on_setplayerprop = on_setplayerprop
 
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the
