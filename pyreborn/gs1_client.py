@@ -171,6 +171,14 @@ class GS1ClientHost(Host):
 
         if name in _NOOP:
             return
+        # #P1..#P30 player gattribs (room slot lists). setcharprop/setplayerprop
+        # on a #P code targets the PLAYER, not the NPC — store it so the script
+        # can read it back via #P1(-1) etc.
+        if name in ("setcharprop", "setplayerprop") and len(args) >= 2:
+            pk = _pcode(to_str(args[0]))
+            if pk is not None:
+                rt._player_props[pk] = to_str(args[1])
+                return
         if name in _NPC_WRITE and args:
             if isinstance(npc, dict):
                 npc[_NPC_WRITE[name]] = to_str(args[0])
@@ -400,6 +408,9 @@ class GS1ClientHost(Host):
                 return to_str(getattr(player, "nickname", ""))
             if code == "#c":
                 return to_str(getattr(player, "chat", ""))
+        pk = _pcode(code)            # #P1..#P30 player gattrib (room slot list)
+        if pk is not None:
+            return to_str(self.rt._player_props.get(pk, ""))
         if code == "#L":
             return to_str(getattr(self.rt.client, "level", "")) if self.rt.client else ""
         if code == "#p":  # projectile param n during actionprojectile2
@@ -422,6 +433,13 @@ class GS1ClientHost(Host):
             except (ValueError, IndexError, TypeError):
                 return ""
         return ""
+
+
+def _pcode(code):
+    """#P1..#P30 player-gattrib code -> store key 'P1'..; else None."""
+    if code and code.startswith("#P") and code[2:].isdigit():
+        return code[1:]
+    return None
 
 
 def _num_or_str(v):
@@ -448,6 +466,10 @@ class ClientGS1:
         self._flags: dict = {}
         self._proj_params: list = []   # #p(n) during an actionprojectile2 event
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
+        # Player gattrib props #P1..#P30 (the bomber room slot lists live here).
+        # Stored locally so the local player sees them; full multiplayer sync
+        # (PLI/PLO player props) is a later step.
+        self._player_props: dict = {}
         self._host = GS1ClientHost(self)
         # callbacks (same surface the pygame client wires up)
         self.on_showimg = None
