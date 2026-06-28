@@ -299,6 +299,9 @@ class GameClient(
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()
+        # Remember which level the GS1 engine is loaded for so the loop's
+        # level-change detector only re-runs on an actual warp.
+        self._gs1_level = self.client._current_level_name
 
         # Let the login roster dump settle before announcing further joins.
         self.roster_ready_time = time.time() + 2.0
@@ -321,6 +324,13 @@ class GameClient(
 
             # Update client (process packets)
             self.client.update()
+
+            # A GS1 setlevel2/serverwarp (e.g. arena entry) requested a warp;
+            # perform it now, between events, not mid-script (re-entrant).
+            self._process_pending_warp()
+            # Reload the GS1 engine when we land in a new level (script warp,
+            # door, or server-initiated), once its NPCs have streamed in.
+            self._check_level_change()
 
             # Check for respawn (death -> alive transition)
             if hasattr(self, '_was_dead') and self._was_dead and self.client.player.hearts > 0:

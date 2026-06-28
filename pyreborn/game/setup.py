@@ -201,10 +201,18 @@ class SetupMixin:
                     except Exception:
                         pass
 
-        # setlevel2 / serverwarp — authoritative in Graal (milestone 2: send the
-        # warp to the server). Recorded for now; nothing in the lobby warps.
+        # setlevel2 / serverwarp — authoritative in Graal. Record it; the game
+        # loop performs the warp between events (see _process_pending_warp).
         def on_warp(level, x, y):
             self._pending_gs1_warp = (level, x, y)
+
+        # triggeraction x,y,action,... — forward to the server. This is how an
+        # arena adds its gameplay weapons (gr.addweapon,-arenaSYS,-arenaGUI).
+        def on_triggeraction(x, y, action, npc_id):
+            try:
+                self.client.triggeraction(action, x, y, npc_id)
+            except Exception:
+                pass
 
         self.gs1.on_play = on_play
         self.gs1.on_say = on_say
@@ -213,6 +221,7 @@ class SetupMixin:
         self.gs1.on_toweapons = on_toweapons
         self.gs1.on_setminimap = on_setminimap
         self.gs1.on_warp = on_warp
+        self.gs1.on_triggeraction = on_triggeraction
 
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the
@@ -231,10 +240,58 @@ class SetupMixin:
                 x, y = npc.get('x', 0), npc.get('y', 0)
                 self.gs1.load_script(f"npc_{npc_id}", script, npc_id=npc_id, x=x, y=y)
     def _trigger_playerenters(self):
-        """Trigger playerenters event on all loaded NPC scripts."""
-        for name, code in self.gs1.scripts.items():
-            if 'playerenters' in code.lower():
-                try:
-                    self.gs1.trigger_event('playerenters')
-                except Exception:
-                    pass  # Silently ignore errors during event execution
+        """Fire `playerenters` once across all loaded NPC scripts (trigger_event
+        with no name already runs every program; calling it per-script would run
+        the whole set N times and re-send each triggeraction/shoot)."""
+        try:
+            self.gs1.trigger_event('playerenters')
+        except Exception:
+            pass  # Silently ignore errors during event execution
+
+    def _process_pending_warp(self):
+        """Perform a GS1-requested warp (setlevel2/serverwarp) recorded by the
+        on_warp callback. Done here, between events, so we never mutate level
+        state in the middle of the script that asked for the warp."""
+        warp = getattr(self, '_pending_gs1_warp', None)
+        if not warp:
+            return
+        self._pending_gs1_warp = None
+        level, x, y = warp
+        if not level:
+            return
+        try:
+            self.client.warp_to_level(level, 30.0 if x is None else x,
+                                      30.0 if y is None else y)
+        except Exception:
+            pass
+
+    def _check_level_change(self):
+        """Reload the GS1 engine when the player lands in a new level (script
+        warp, door, or server-initiated), once that level's NPCs have streamed
+        in. warp_to_level clears NPCs, so reloading too early would run nothing."""
+        lvl = self.client._current_level_name
+        if not lvl or lvl == getattr(self, '_gs1_level', None):
+            return
+        now = time.time()
+        if getattr(self, '_level_change_pending', None) != lvl:
+            self._level_change_pending = lvl
+            self._level_change_at = now
+        # Give NPCs a beat to arrive, but don't hang on a genuinely empty level.
+        if not self.client.npcs and now - self._level_change_at < 0.6:
+            return
+        self._reload_level_scripts(lvl)
+
+    def _reload_level_scripts(self, lvl: str):
+        """Swap the GS1 engine + per-NPC render state over to the current level."""
+        self.gs1.clear()
+        self._load_npc_scripts()
+        self._trigger_playerenters()
+        self.npc_handler.update_npcs()
+        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual'):
+            cache = getattr(self, attr, None)
+            if isinstance(cache, dict):
+                cache.clear()
+        self.visual_x, self.visual_y = self.client.x, self.client.y
+        self.world_surface = None
+        self._gs1_level = lvl
+        self._level_change_pending = None

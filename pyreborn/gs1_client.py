@@ -295,8 +295,12 @@ class GS1ClientHost(Host):
             rt.on_setmap(to_str(args[0]), "", 0, 0)
             return
         if name == "triggeraction" and rt.on_triggeraction and len(args) >= 3:
-            rt.on_triggeraction(to_num(args[0]), to_num(args[1]),
-                                to_str(args[2]), npc_id)
+            # The action is everything after x,y joined with commas, e.g.
+            # `triggeraction 0,0,gr.addweapon,-arenaSYS,-arenaGUI` -> the server
+            # action "gr.addweapon,-arenaSYS,-arenaGUI". Dropping the tail would
+            # break gr.addweapon (the arena gameplay weapons never get added).
+            action = ",".join(to_str(a) for a in args[2:])
+            rt.on_triggeraction(to_num(args[0]), to_num(args[1]), action, npc_id)
             return
         if name in ("shoot", "shootarrow", "shootball", "shootfireball") and rt.on_shoot:
             rt.on_shoot(name, [to_str(a) for a in args])

@@ -570,6 +570,9 @@ class ActionsMixin:
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()
+        # Mark this level as the one the GS1 engine is loaded for so the loop's
+        # level-change detector doesn't redundantly reload it.
+        self._gs1_level = self.client._current_level_name
     def _get_non_edge_door(self) -> Optional[dict]:
         """Get door link at current position, ignoring edge links in GMAP mode."""
         link = self.client.check_link_collision()
