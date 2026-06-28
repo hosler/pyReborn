@@ -14,6 +14,9 @@ same ``scripts`` dict, ``load_script`` / ``trigger_event`` methods, and
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import traceback
 
 from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
@@ -21,6 +24,22 @@ from reborn_protocol.gs1.parser import parse
 from reborn_protocol.gs1.values import to_num, to_str
 
 logger = logging.getLogger(__name__)
+
+# Surface GS1 script errors (they're otherwise swallowed) so problems are
+# visible. Deduped so a per-frame failure doesn't spam. Set GS1_DEBUG=1 for a
+# full traceback on each unique error.
+_GS1_ERR_SEEN: set = set()
+_GS1_DEBUG = os.environ.get("GS1_DEBUG")
+
+
+def _report_gs1_error(where: str, exc: Exception):
+    sig = (where, type(exc).__name__, str(exc)[:160])
+    if sig in _GS1_ERR_SEEN:
+        return
+    _GS1_ERR_SEEN.add(sig)
+    print(f"[GS1] {where}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    if _GS1_DEBUG:
+        traceback.print_exc()
 
 # player-prefixed builtin -> attribute on the pyReborn Player
 PLAYER_ATTR = {
@@ -156,8 +175,8 @@ class GS1ClientHost(Host):
     def call_command(self, name, args, ctx) -> None:
         try:
             self._dispatch(name, args, ctx)
-        except Exception:
-            logger.debug("gs1 client command %s failed", name, exc_info=True)
+        except Exception as e:
+            _report_gs1_error(f"command {name}", e)
 
     @staticmethod
     def _imgs(npc):
@@ -589,5 +608,6 @@ class ClientGS1:
         ctx._is_weapon = is_weapon
         try:
             Interpreter(ctx).run_event(entry["prog"], event)
-        except Exception:
-            logger.debug("client GS1 event %s failed", event, exc_info=True)
+        except Exception as e:
+            who = entry.get("weapon_name") or f"npc_{entry['npc_id']}"
+            _report_gs1_error(f"event {event} on {who}", e)
