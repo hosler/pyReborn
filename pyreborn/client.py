@@ -734,7 +734,7 @@ class Client:
         return self._protocol.send_packet(PacketID.PLI_HURTPLAYER, data)
 
     def shoot(self, direction: Optional[int] = None, speed: int = 3,
-              gani: str = "arrow", gravity: int = 0) -> bool:
+              gani: str = "arrow", gravity: int = 0, params: str = "") -> bool:
         """
         Shoot a projectile (arrow, fireball, etc.).
 
@@ -743,6 +743,8 @@ class Client:
             speed: Projectile speed (1-127, default 3)
             gani: Projectile animation name (default "arrow")
             gravity: Gravity effect (0 for flat shot, 8 for arc)
+            params: Projectile param string (GS1 shoot params; the receiver reads
+                them via #p(n) in an actionprojectile2 handler)
 
         Returns:
             True if packet sent successfully
@@ -767,7 +769,7 @@ class Client:
 
         data = build_shoot(
             self.player.x, self.player.y, 0,
-            angle, speed, gani, "", gravity
+            angle, speed, gani, params, gravity
         )
         return self._protocol.send_packet(PacketID.PLI_SHOOT2, data)
 

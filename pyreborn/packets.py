@@ -906,38 +906,90 @@ def parse_playerwarp2(data: bytes) -> dict:
 def parse_weapon_add(data: bytes) -> dict:
     """
     Parse PLO_NPCWEAPONADD (packet 33) - weapon being added to player.
-    Format: +weaponname imagename!<script
 
-    Returns dict with:
-        name: weapon name (without + prefix)
-        image: weapon image
-        script: weapon GS1 script
+    Two wire formats exist:
+      - Structured (classic 2.22 + GServer-v2): ``(gchar)namelen, name,
+        (gchar)propid, value...`` where prop 0 = image (gchar len + str) and
+        prop 1 = SCRIPT (gshort len + raw). This is what real Graal servers send.
+      - Legacy text: ``+name image!<script`` (pygserver still emits this).
+
+    They're ambiguous for an 11-char name (namelen 11 -> '+'), so we try the
+    structured parse first and accept it only if it cleanly consumes the packet
+    and yields a whitespace-free name; otherwise fall back to the text format.
+
+    Returns dict with: name, image, script.
     """
+    structured = _parse_weapon_add_structured(data)
+    if structured is not None:
+        return structured
+    return _parse_weapon_add_text(data)
+
+
+def _parse_weapon_add_structured(data: bytes):
+    try:
+        n = len(data)
+        if n < 2:
+            return None
+        namelen = data[0] - 32
+        if namelen <= 0 or 1 + namelen > n:
+            return None
+        name = data[1:1 + namelen].decode('latin-1', errors='replace')
+        # A real weapon name has no spaces / script punctuation; if we see them
+        # we misread a text-format packet's length byte — bail to the text path.
+        if any(c in name for c in ' \t\n!<'):
+            return None
+        pos = 1 + namelen
+        image = ''
+        script = None
+        while pos < n:
+            prop = data[pos] - 32
+            pos += 1
+            if prop == 1:  # SCRIPT: gshort len + raw
+                if pos + 1 >= n:
+                    return None
+                slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+                pos += 2
+                if pos + slen > n:
+                    return None
+                script = data[pos:pos + slen].decode('latin-1', errors='replace')
+                pos += slen
+            elif prop in (0, 2, 3):  # image / other gchar-len string props
+                if pos >= n:
+                    return None
+                ln = data[pos] - 32
+                pos += 1
+                if ln < 0 or pos + ln > n:
+                    return None
+                val = data[pos:pos + ln].decode('latin-1', errors='replace')
+                pos += ln
+                if prop in (0, 2) and not image:
+                    image = val
+            else:
+                return None
+        if script is None:
+            return None
+        return {'name': name, 'image': image, 'script': script}
+    except Exception:
+        return None
+
+
+def _parse_weapon_add_text(data: bytes) -> dict:
+    """Legacy text weapon format: ``+name image!<script`` (pygserver)."""
     try:
         text = data.decode('latin-1', errors='replace')
-
-        # Format: +name image!<script  or  +name image script
         if not text.startswith('+'):
             return {}
-
-        # Remove + prefix
         text = text[1:]
-
-        # Find first space (separates name from rest)
         space_idx = text.find(' ')
         if space_idx == -1:
             return {'name': text, 'image': '', 'script': ''}
-
         name = text[:space_idx]
         rest = text[space_idx + 1:]
-
-        # Find script separator (!< or just find script start)
         script_sep = rest.find('!<')
         if script_sep != -1:
             image = rest[:script_sep]
-            script = rest[script_sep + 2:]  # Skip !<
+            script = rest[script_sep + 2:]
         else:
-            # Try to find 'if(' as script start
             if_idx = rest.lower().find('if(')
             if if_idx != -1:
                 image = rest[:if_idx].strip()
@@ -945,13 +997,8 @@ def parse_weapon_add(data: bytes) -> dict:
             else:
                 image = rest
                 script = ''
-
-        return {
-            'name': name,
-            'image': image.strip(),
-            'script': script
-        }
-    except:
+        return {'name': name, 'image': image.strip(), 'script': script}
+    except Exception:
         return {}
 
 

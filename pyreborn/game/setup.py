@@ -133,6 +133,18 @@ class SetupMixin:
                     self._pending_music = None
                     self.sound_mgr.play_music(filename, data=data)
 
+        # A weapon arrived (gr.addweapon, e.g. -arenaSYS/-arenaGUI on arena
+        # entry): load it into the GS1 engine and fire its playerenters so it
+        # activates immediately, like a real client adding a weapon.
+        def on_weapon_add(name, weapon):
+            script = weapon.get('script', '')
+            if script and getattr(self, 'gs1', None) is not None:
+                self.gs1.load_weapon(name, script)
+                try:
+                    self.gs1.trigger_event('playerenters', name=f'weapon_{name}')
+                except Exception:
+                    pass
+
         self.client.on_chat = on_chat
         self.client.on_pm = on_pm
         self.client.on_add_player = on_add_player
@@ -141,6 +153,7 @@ class SetupMixin:
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
         self.client.on_file = on_file
+        self.client.on_weapon_add = on_weapon_add
     def _play_audio(self, name: str):
         """Play a `play <file>` from an NPC script: stream MIDI/OGG music via
         mixer.music, or fire a one-shot sample. Music is downloaded from the
@@ -214,6 +227,17 @@ class SetupMixin:
             except Exception:
                 pass
 
+        # shoot — Bomber's room system uses projectiles as a message bus
+        # (setshootparams Bomb.Queue,... ; shoot ...,blank). Send it to the
+        # server, which relays it to players in the level as a projectile.
+        def on_shoot(kind, args, shoot_params):
+            try:
+                gani = next((a for a in args if a and a != 'blank'), 'blank')
+                params = ','.join(shoot_params)
+                self.client.shoot(gani=gani, params=params)
+            except Exception:
+                pass
+
         self.gs1.on_play = on_play
         self.gs1.on_say = on_say
         self.gs1.on_message = on_message
@@ -222,6 +246,7 @@ class SetupMixin:
         self.gs1.on_setminimap = on_setminimap
         self.gs1.on_warp = on_warp
         self.gs1.on_triggeraction = on_triggeraction
+        self.gs1.on_shoot = on_shoot
 
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the
@@ -239,6 +264,16 @@ class SetupMixin:
             if script:
                 x, y = npc.get('x', 0), npc.get('y', 0)
                 self.gs1.load_script(f"npc_{npc_id}", script, npc_id=npc_id, x=x, y=y)
+        self._load_weapon_scripts()
+
+    def _load_weapon_scripts(self):
+        """Load the player's weapon scripts (-validation, -arenaSYS, ...) into the
+        GS1 engine. They run client-side like NPCs and drive Bomber Arena's whole
+        room/game flow (actionprojectile2, setlevel2, ...)."""
+        for name, weapon in self.client.weapons.items():
+            script = weapon.get('script', '')
+            if script:
+                self.gs1.load_weapon(name, script)
     def _trigger_playerenters(self):
         """Fire `playerenters` once across all loaded NPC scripts (trigger_event
         with no name already runs every program; calling it per-script would run

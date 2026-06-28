@@ -64,7 +64,7 @@ _NOOP = frozenset({
     "disabledefmovement", "enableweapons", "disableweapons", "noplayerkilling",
     "showstats", "setcursor", "sleep", "stopmidi", "replaceani", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
-    "removetiledefs", "addtiledef2", "setshootparams", "serverwarp",
+    "removetiledefs", "addtiledef2", "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
 
@@ -98,6 +98,13 @@ class GS1ClientHost(Host):
                 return 1.0
         if isinstance(npc, dict) and name in NPC_ATTR:
             return _num_or_str(npc.get(NPC_ATTR[name], 0))
+        if name == "isweapon":
+            return 1.0 if getattr(ctx, "_is_weapon", False) else 0.0
+        if name == "weaponscount":
+            return float(len(getattr(self.rt.client, "weapons", {}) or {}))
+        if name == "playerscount":
+            players = getattr(self.rt.client, "players", None)
+            return float((len(players) if players else 0) + 1)  # + self
         return UNSET
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
@@ -135,6 +142,24 @@ class GS1ClientHost(Host):
         if name in _NPC_WRITE and args:
             if isinstance(npc, dict):
                 npc[_NPC_WRITE[name]] = to_str(args[0])
+            return
+
+        # -- player / game commands (work for weapon scripts too, where there
+        # is no NPC object) -------------------------------------------------
+        if name in ("setlevel2", "setlevel") and rt.on_warp and args:
+            x = to_num(args[1]) if len(args) > 1 else None
+            y = to_num(args[2]) if len(args) > 2 else None
+            rt.on_warp(to_str(args[0]), x, y)
+            return
+        if name == "freezeplayer":
+            if rt.on_freezeplayer:
+                rt.on_freezeplayer(to_num(args[0]) if args else 0.5)
+            return
+        if name == "setminimap" and rt.on_setminimap:
+            rt.on_setminimap([to_str(a) for a in args])
+            return
+        if name == "toweapons" and rt.on_toweapons and args:
+            rt.on_toweapons(to_str(args[0]))
             return
 
         # -- showimg / changeimg* layer system -----------------------------
@@ -240,24 +265,9 @@ class GS1ClientHost(Host):
                 npc["dontblock"] = True
                 rt.shapes.pop(npc_id, None)
                 return
-            if name == "freezeplayer":
-                if rt.on_freezeplayer:
-                    rt.on_freezeplayer(to_num(args[0]) if args else 0.5)
-                return
             if name == "destroy":
                 npc["visible"] = False
                 npc.pop("imgs", None)
-                return
-            if name in ("setlevel2", "setlevel") and rt.on_warp and args:
-                x = to_num(args[1]) if len(args) > 1 else None
-                y = to_num(args[2]) if len(args) > 2 else None
-                rt.on_warp(to_str(args[0]), x, y)
-                return
-            if name in ("setminimap",) and rt.on_setminimap:
-                rt.on_setminimap([to_str(a) for a in args])
-                return
-            if name == "toweapons" and rt.on_toweapons and args:
-                rt.on_toweapons(to_str(args[0]))
                 return
         # setimgpart name,x,y,w,h — show only a sub-rect of the sheet. Without
         # the rect the renderer blits the entire sheet (e.g. all of pics1.png).
@@ -302,8 +312,16 @@ class GS1ClientHost(Host):
             action = ",".join(to_str(a) for a in args[2:])
             rt.on_triggeraction(to_num(args[0]), to_num(args[1]), action, npc_id)
             return
-        if name in ("shoot", "shootarrow", "shootball", "shootfireball") and rt.on_shoot:
-            rt.on_shoot(name, [to_str(a) for a in args])
+        # setshootparams <name>,<p0>,<p1>,... — params the next `shoot` carries.
+        # Bomber's room system uses this as a player-to-player message bus.
+        if name == "setshootparams":
+            rt._shoot_params = [to_str(a) for a in args]
+            return
+        if name in ("shoot", "shootarrow", "shootball", "shootfireball"):
+            if rt.on_shoot:
+                # Pass the gani (penultimate-ish arg) and the queued shoot params.
+                rt.on_shoot(name, [to_str(a) for a in args], list(rt._shoot_params))
+            rt._shoot_params = []
             return
         # Collision shape: record geometry keyed by NPC so the touch handler
         # reads it from here instead of regex-parsing the script. Both forms
@@ -347,6 +365,10 @@ class GS1ClientHost(Host):
                 return to_str(getattr(player, "chat", ""))
         if code == "#L":
             return to_str(getattr(self.rt.client, "level", "")) if self.rt.client else ""
+        if code == "#p":  # projectile param n during actionprojectile2
+            idx = int(to_num(args[0])) if args else 0
+            pp = self.rt._proj_params
+            return to_str(pp[idx]) if 0 <= idx < len(pp) else ""
         if isinstance(npc, dict):
             if code == "#m":
                 return to_str(npc.get("gani", ""))
@@ -387,6 +409,8 @@ class ClientGS1:
         # shared non-NPC scopes + client-player GS1 flags
         self._shared = {"client": {}, "server": {}, "level": {}, "global": {}}
         self._flags: dict = {}
+        self._proj_params: list = []   # #p(n) during an actionprojectile2 event
+        self._shoot_params: list = []  # set by setshootparams, sent by shoot
         self._host = GS1ClientHost(self)
         # callbacks (same surface the pygame client wires up)
         self.on_showimg = None
@@ -416,9 +440,35 @@ class ClientGS1:
             "scopes": {"this": {}, "thiso": {}, "local": {}},
         }
 
+    def load_weapon(self, name, code):
+        """Load a player weapon script (e.g. -validation, -arenaSYS). Weapons
+        run client-side like NPCs but have no NPC object; `isweapon` reads true
+        and they're keyed off any NPC-touch path (npc_id -1)."""
+        key = f"weapon_{name}"
+        self.scripts[key] = code
+        try:
+            prog = parse(code)
+        except Exception:
+            logger.debug("failed to parse weapon GS1 script %s", name, exc_info=True)
+            prog = None
+        # Preserve a weapon's persistent this./local. scope across re-loads so a
+        # re-sent weapon doesn't lose its state mid-game.
+        old = self._progs.get(key)
+        scopes = old["scopes"] if old else {"this": {}, "thiso": {}, "local": {}}
+        self._progs[key] = {
+            "prog": prog, "npc_id": -1, "is_weapon": True,
+            "weapon_name": name, "scopes": scopes,
+        }
+
     def clear(self):
+        # Keep weapon progs across a level change (they belong to the player, not
+        # the level); only drop NPC scripts + per-NPC shapes.
+        weapons = {k: v for k, v in self._progs.items() if v.get("is_weapon")}
+        wscripts = {k: v for k, v in self.scripts.items() if k.startswith("weapon_")}
         self.scripts.clear()
+        self.scripts.update(wscripts)
         self._progs.clear()
+        self._progs.update(weapons)
         self.shapes.clear()
 
     def trigger_event(self, event, name=None):
@@ -433,6 +483,15 @@ class ClientGS1:
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
 
+    def fire_projectile(self, params):
+        """A projectile arrived: fire `actionprojectile2` across all scripts with
+        `#p(n)` bound to params[n] (params[0] = the shoot's name/first param)."""
+        self._proj_params = list(params)
+        try:
+            self.trigger_event("actionprojectile2")
+        finally:
+            self._proj_params = []
+
     def _run(self, entry, event):
         sc = entry["scopes"]
         scopes = {
@@ -441,13 +500,15 @@ class ClientGS1:
             "client": self._shared["client"], "server": self._shared["server"],
             "level": self._shared["level"], "global": self._shared["global"],
         }
+        is_weapon = entry.get("is_weapon", False)
         npc = None
-        if self.client is not None:
+        if not is_weapon and self.client is not None:
             npc = getattr(self.client, "npcs", {}).get(entry["npc_id"])
         vs = VarStore(scopes=scopes, player_flags=self._flags)
         player = getattr(self.client, "player", None) if self.client else None
         ctx = Context(self._host, vs, this_obj=npc, player=player)
         ctx._npc_id = entry["npc_id"]
+        ctx._is_weapon = is_weapon
         try:
             Interpreter(ctx).run_event(entry["prog"], event)
         except Exception:
