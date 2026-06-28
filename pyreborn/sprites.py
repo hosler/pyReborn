@@ -107,6 +107,11 @@ class SpriteManager:
     def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:
         """Load a sprite sheet from in-memory bytes (e.g. a file downloaded from
         the server) and cache it under `name`, so load_sheet(name) finds it."""
+        # Already known to be undecodable (some bomber assets, e.g.
+        # eye_bomb_blackhole*.png, arrive as non-image data) — don't re-decode
+        # or re-log every time the server re-sends them.
+        if name in self.sheet_cache and self.sheet_cache[name] is None:
+            return None
         import io
         try:
             surface = pygame.image.load(io.BytesIO(data), name)
@@ -118,6 +123,7 @@ class SpriteManager:
             return surface
         except Exception as e:
             print(f"Error loading downloaded sheet {name}: {e}")
+            self.sheet_cache[name] = None   # remember the miss; stop retrying
             return None
 
     def get_sprite(self, sheet_name: str, x: int, y: int,
