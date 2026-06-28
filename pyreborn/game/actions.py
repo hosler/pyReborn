@@ -482,6 +482,20 @@ class ActionsMixin:
         # Get selected weapon from inventory
         weapon = self.inventory_ui.get_selected_weapon(self.weapons)
         if weapon:
+            # A GS1-scripted weapon (a Graal weapon is an inventory NPC) handles
+            # its own fire: pressing D fires the weapon-fire event and the script
+            # does the work (drops a bomb, shoots, ...). This is how Bomber Arena
+            # weapons play. Fall through to the built-in actions only if the
+            # weapon has no script loaded.
+            prog_key = f"weapon_{weapon}"
+            gs1 = getattr(self, 'gs1', None)
+            if gs1 is not None and prog_key in getattr(gs1, '_progs', {}):
+                for ev in ('playerfires', 'weaponfired'):
+                    try:
+                        gs1.trigger_event(ev, name=prog_key)
+                    except Exception:
+                        pass
+                return
             # Use weapon-specific action
             if "bow" in weapon.lower():
                 self.client.shoot(self.client.player.direction)
