@@ -1597,6 +1597,31 @@ def build_attack_player(victim_id: int, hurt_dx: int, hurt_dy: int,
     return bytes(packet)
 
 
+def build_shoot_v1(x: float, y: float, z: float, angle: float, power: int,
+                   gani: str = "blank", params: str = "") -> bytes:
+    """Build the old PLI_SHOOT (packet 40) - shoot a projectile.
+
+    Classic servers (v2.22, e.g. Bomber Arena) only handle this form; they
+    ignore PLI_SHOOT2 (48), so the room-system projectiles never relay if you
+    send v2. Format mirrors GServer-v2 msgPLI_SHOOT:
+        gint(unused=0), gchar x, gchar y, gchar z, gchar sangle, gchar sanglez,
+        gchar power, gchar ganilen + gani, gchar paramslen + params.
+    Position is in 1/8-pixel units (gchar = tile*2); z is +50 biased.
+    """
+    import math
+    def gc(v):
+        return bytes([(int(v) % 224) + 32])
+    sangle = int((angle / (2 * math.pi)) * 220) % 224
+    p = bytearray()
+    p += bytes([32, 32, 32])                         # gint(0): unused shoot id
+    p += gc(int(x * 2)) + gc(int(y * 2)) + gc(int(z * 16 / 16) + 50)
+    p += gc(sangle) + gc(0) + gc(power)              # sangle, sanglez, power
+    gb = gani.encode('latin-1'); pb = params.encode('latin-1')
+    p += gc(len(gb)) + gb
+    p += gc(len(pb)) + pb
+    return bytes(p)
+
+
 def build_shoot(x: float, y: float, z: float, angle: float, speed: int,
                 gani: str = "arrow", params: str = "", gravity: int = 8) -> bytes:
     """

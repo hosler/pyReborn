@@ -53,6 +53,7 @@ from .packets import (
     build_hurt_response,
     build_attack_player,
     build_shoot,
+    build_shoot_v1,
     build_triggeraction,
     build_npc_props,
     build_flag_set,
@@ -772,6 +773,13 @@ class Client:
         }
         angle = angles.get(direction, 0)
 
+        # Classic servers (v2.x) only handle the old PLI_SHOOT (40); they ignore
+        # PLI_SHOOT2 (48), so projectiles — and Bomber Arena's room system — never
+        # relay. v6 clients use PLI_SHOOT2.
+        if str(self.version).startswith("2."):
+            data = build_shoot_v1(self.player.x, self.player.y, 0,
+                                  angle, speed, gani, params)
+            return self._protocol.send_packet(PacketID.PLI_SHOOT, data)
         data = build_shoot(
             self.player.x, self.player.y, 0,
             angle, speed, gani, params, gravity
