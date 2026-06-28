@@ -197,6 +197,18 @@ class EntityRenderMixin:
                 self._render_npc(entity[2], entity[3], entity[4], entity[5])
             elif entity[0] == 'baddy':
                 self._render_baddy(entity[2], entity[3], entity[4], entity[5])
+
+        # Weapon image layers — the arena bombs/vases/explosions (world coords)
+        # and HUD (screen coords) are painted by the arenaGUI/arenaSYS weapons,
+        # which have no NPC/player anchor. Draw the under-player band, then the
+        # over-player band (vis>=2), so the floor/bombs sit below and the HUD on
+        # top. (Depth-sorting world bombs against players is a later refinement.)
+        wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        if wimgs:
+            for store in list(wimgs.values()):
+                self._render_npc_layers(store, over=False)
+            for store in list(wimgs.values()):
+                self._render_npc_layers(store, over=True)
     def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
         """Render a baddy as a gani entity (Preagonal style). The server-reported
         mode picks the animation (walk/idle/hurt/dead), direction faces it, and a
@@ -545,6 +557,8 @@ class EntityRenderMixin:
             try:
                 if rec.get('text_is'):
                     self._render_showtext_rec(rec)
+                elif rec.get('gani'):
+                    self._render_showani_rec(rec)
                 elif rec.get('image'):
                     self._render_showimg_rec(rec)
             except Exception:
@@ -592,6 +606,28 @@ class EntityRenderMixin:
         sx, sy = self._layer_pos(rec)
         flags = pygame.BLEND_ADD if additive else 0
         self.screen.blit(sprite, (int(sx), int(sy)), special_flags=flags)
+
+    def _render_showani_rec(self, rec: dict):
+        """Draw a showani layer (an animated gani at a level/screen position) —
+        the arena paints bombs, vases and explosions this way. Each layer keeps
+        its own AnimationState so it advances independently."""
+        gani = rec.get('gani')
+        if not gani:
+            return
+        # showani may carry gani PARAMs after the name (e.g. the bomb passes
+        # "eye_bomber_bomb,50,eye_bombsprites-dec0.png,100"); the name is the
+        # part before the first comma.
+        gani = gani.split(',')[0].strip()
+        anim = rec.get('_anim')
+        if anim is None:
+            anim = rec['_anim'] = AnimationState(self.gani_parser)
+            anim.set_animation(gani, 0)
+        if anim.gani is None:
+            self._request_asset(gani + '.gani')
+            return
+        anim.update(getattr(self, '_frame_dt', 0.05))
+        sx, sy = self._layer_pos(rec)
+        self._render_animated_entity(int(sx), int(sy), anim, {})
 
     def _render_showtext_rec(self, rec: dict):
         text = rec.get('text', '')

@@ -186,17 +186,16 @@ class GS1ClientHost(Host):
                 return True
             return False
         # playerx/playery: the arena weapons drive movement by assigning these.
-        # Preserve the GMAP segment (client.x is a world coord; the value is the
-        # local 0-63 part) and mirror onto the player handle for the renderer.
-        if name in ("playerx", "playery") and self.rt.client is not None:
-            axis = name[-1]                          # 'x' or 'y'
-            cur = float(getattr(self.rt.client, axis, 0))
-            world = (int(cur) // 64) * 64 + to_num(value)
-            setattr(self.rt.client, axis, world)
+        # client.x/y are read-only and resolve to player.x/y, so write the player
+        # handle. Preserve the GMAP segment (the value is the local 0-63 part).
+        if name in ("playerx", "playery"):
             p = self._player
             if p is not None:
-                setattr(p, axis, world)
-            return True
+                axis = name[-1]                      # 'x' or 'y'
+                cur = float(getattr(p, axis, 0))
+                setattr(p, axis, (int(cur) // 64) * 64 + to_num(value))
+                return True
+            return False
         if isinstance(npc, dict) and name in NPC_ATTR:
             npc[NPC_ATTR[name]] = value
             return True
@@ -220,6 +219,19 @@ class GS1ClientHost(Host):
         if d is None:
             d = npc["imgs"] = {}
         return d
+
+    def _layer_store(self, ctx):
+        """The showimg/showani layer table for the running script: an NPC keeps
+        it on its dict; a weapon (no NPC obj, e.g. arenaGUI's bombs/vases/
+        explosions) keeps it in _weapon_imgs keyed by prog-key. The renderer
+        draws both. Returns None if there's nowhere to store (no NPC, no key)."""
+        npc = ctx.this_obj
+        if isinstance(npc, dict):
+            return self._imgs(npc)
+        key = getattr(ctx, "_prog_key", None)
+        if key is not None:
+            return self.rt._weapon_imgs.setdefault(key, {})
+        return None
 
     def _dispatch(self, name, args, ctx):
         rt, npc = self.rt, ctx.this_obj
@@ -293,10 +305,15 @@ class GS1ClientHost(Host):
         # NPCs paint floating images (lights, signs, furniture) addressed by a
         # numeric index; changeimg* then mutate that record. The renderer reads
         # npc['imgs'] each frame. Coords are level tiles (showimg) for index < ...
-        if isinstance(npc, dict):
+        # showimg/showani/changeimg*/showtext/hideimg layer system. NPCs store
+        # layers on npc['imgs']; weapons (no NPC obj — e.g. arenaGUI's bombs,
+        # vases and explosions) store them in _weapon_imgs. The renderer draws
+        # both. _layer_store resolves to the right table for the running script.
+        imgs = self._layer_store(ctx)
+        if imgs is not None:
             if name in ("showimg", "showimg2") and len(args) >= 2:
                 idx = int(to_num(args[0]))
-                rec = self._imgs(npc).setdefault(idx, {})
+                rec = imgs.setdefault(idx, {})
                 rec["image"] = to_str(args[1])
                 if len(args) >= 4:
                     rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
@@ -308,43 +325,44 @@ class GS1ClientHost(Host):
                 # renderer can animate furniture/effects. Pull the first string
                 # arg after the coords as the gani name (best-effort).
                 idx = int(to_num(args[0]))
-                rec = self._imgs(npc).setdefault(idx, {})
+                rec = imgs.setdefault(idx, {})
                 rec["x"], rec["y"] = to_num(args[1]), to_num(args[2])
                 gani = next((to_str(a) for a in args[3:] if isinstance(a, str) and a), "")
-                if gani:
+                if gani and gani != rec.get("gani"):
                     rec["gani"] = gani
+                    rec.pop("_anim", None)   # gani changed -> rebuild animation
                 rec["screen"] = (name == "showani2")
                 rec.setdefault("vis", 4)
                 return
             if name == "changeimgpart" and len(args) >= 5:
-                rec = self._imgs(npc).get(int(to_num(args[0])))
+                rec = imgs.get(int(to_num(args[0])))
                 if rec is not None:
                     rec["part"] = (int(to_num(args[1])), int(to_num(args[2])),
                                    int(to_num(args[3])), int(to_num(args[4])))
                 return
             if name == "changeimgcolors" and len(args) >= 5:
-                rec = self._imgs(npc).get(int(to_num(args[0])))
+                rec = imgs.get(int(to_num(args[0])))
                 if rec is not None:
                     rec["colors"] = tuple(to_num(a) for a in args[1:5])
                 return
             if name == "changeimgzoom" and len(args) >= 2:
-                rec = self._imgs(npc).get(int(to_num(args[0])))
+                rec = imgs.get(int(to_num(args[0])))
                 if rec is not None:
                     rec["zoom"] = to_num(args[1])
                 return
             if name == "changeimgvis" and len(args) >= 2:
-                rec = self._imgs(npc).get(int(to_num(args[0])))
+                rec = imgs.get(int(to_num(args[0])))
                 if rec is not None:
                     rec["vis"] = int(to_num(args[1]))
                 return
             if name == "changeimgmode" and len(args) >= 2:
-                rec = self._imgs(npc).get(int(to_num(args[0])))
+                rec = imgs.get(int(to_num(args[0])))
                 if rec is not None:
                     rec["mode"] = int(to_num(args[1]))
                 return
             if name == "showtext" and len(args) >= 6:
                 idx = int(to_num(args[0]))
-                self._imgs(npc)[idx] = {
+                imgs[idx] = {
                     "x": to_num(args[1]), "y": to_num(args[2]),
                     "font": to_str(args[3]), "style": to_str(args[4]),
                     "text": to_str(args[5]), "text_is": True, "vis": 4,
@@ -353,7 +371,7 @@ class GS1ClientHost(Host):
                 return
             if name == "showtext2" and len(args) >= 6:
                 idx = int(to_num(args[0]))
-                self._imgs(npc)[idx] = {
+                imgs[idx] = {
                     "x": to_num(args[1]), "y": to_num(args[2]),
                     "font": to_str(args[3]), "style": to_str(args[4]),
                     "text": to_str(args[5]), "text_is": True, "vis": 4,
@@ -363,15 +381,20 @@ class GS1ClientHost(Host):
             if name == "changeimgcolors":  # too few args: ignore
                 return
             if name in ("hideimg", "hidetext") and args:
-                self._imgs(npc).pop(int(to_num(args[0])), None)
+                imgs.pop(int(to_num(args[0])), None)
                 return
             if name == "hideimgs":
-                # hideimgs [start] — clear all layers at/after start (or all).
+                # hideimgs start,end — clear layers in [start, end] (the bomber
+                # uses this form, e.g. `hideimgs 300,304`). hideimgs start — from
+                # start onward. hideimgs — all.
                 start = int(to_num(args[0])) if args else None
-                imgs = self._imgs(npc)
-                for k in [k for k in imgs if start is None or k >= start]:
+                end = int(to_num(args[1])) if len(args) >= 2 else None
+                for k in [k for k in imgs
+                          if (start is None or k >= start)
+                          and (end is None or k <= end)]:
                     imgs.pop(k, None)
                 return
+        if isinstance(npc, dict):
             if name == "showpoly":  # polygons not drawn yet; store raw
                 if args:
                     npc.setdefault("polys", {})[int(to_num(args[0]))] = args[1:]
@@ -396,6 +419,10 @@ class GS1ClientHost(Host):
                 npc["visible"] = False
                 npc.pop("imgs", None)
                 return
+        # a weapon's destroy (e.g. arenaGUI in the lobby) drops its layers
+        if name == "destroy" and imgs is not None:
+            imgs.clear()
+            return
         # setimgpart name,x,y,w,h — show only a sub-rect of the sheet. Without
         # the rect the renderer blits the entire sheet (e.g. all of pics1.png).
         if name == "setimgpart" and isinstance(npc, dict) and len(args) >= 5:
@@ -652,6 +679,7 @@ class ClientGS1:
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
         self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
+        self._weapon_imgs: dict = {}      # prog-key -> showimg/showani layer table
         # Player gattrib props #P1..#P30 (the bomber room slot lists live here).
         # Stored locally so the local player sees them; full multiplayer sync
         # (PLI/PLO player props) is a later step.
@@ -717,6 +745,7 @@ class ClientGS1:
         self._progs.update(weapons)
         self.shapes.clear()
         self._shape_blocks.clear()
+        self._weapon_imgs.clear()       # weapon layers are per-level (bombs, HUD)
         # Normal movement is the per-level default; the arena weapon disables it
         # again on its playerenters. Prevents getting stuck if we leave the arena
         # without the weapon's enabledefmovement running.
