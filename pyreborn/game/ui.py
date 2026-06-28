@@ -347,6 +347,12 @@ class UIManager:
         self.root = Widget(root_w, root_h)
         self._root_rect = pygame.Rect(0, 0, root_w, root_h)
 
+    def resize(self, w: int, h: int):
+        """Re-anchor the widget tree to a new canvas size (window resize)."""
+        self.root.w = w
+        self.root.h = h
+        self._root_rect = pygame.Rect(0, 0, w, h)
+
     def _bind(self, w: Widget):
         if hasattr(w, "_fonts"):
             w._fonts = self.fonts

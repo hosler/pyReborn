@@ -22,10 +22,17 @@ import pygame
 class Viewport:
     def __init__(self, virtual_w: int, virtual_h: int,
                  window_w: int = 0, window_h: int = 0,
-                 caption: str = "", bg=(0, 0, 0)):
+                 caption: str = "", bg=(0, 0, 0),
+                 native: bool = False, on_resize=None):
         self.virtual_w = virtual_w
         self.virtual_h = virtual_h
         self.bg = bg
+        # native=True: draw straight to the window at its real resolution (the
+        # game uses this so it fills the whole window, with the world centred by
+        # the camera). native=False: keep a fixed virtual canvas and letterbox-
+        # scale it (the login/server-select screens use this).
+        self.native = native
+        self.on_resize = on_resize
 
         window_w = window_w or virtual_w
         window_h = window_h or virtual_h
@@ -34,12 +41,18 @@ class Viewport:
         if caption:
             pygame.display.set_caption(caption)
 
-        # Everything is drawn here, then scaled onto the window.
-        self.canvas = pygame.Surface((virtual_w, virtual_h)).convert()
+        if native:
+            # Draw straight to the window surface; no scaling.
+            self.canvas = self.window
+        else:
+            # Everything is drawn here, then scaled onto the window.
+            self.canvas = pygame.Surface((virtual_w, virtual_h)).convert()
 
         self._dest_rect = pygame.Rect(0, 0, window_w, window_h)
-        self._scale = 1.0
-        self._recompute_layout(window_w, window_h)
+        self._scale_x = 1.0
+        self._scale_y = 1.0
+        if not native:
+            self._recompute_layout(window_w, window_h)
 
     # -- window events ----------------------------------------------------
 
@@ -53,13 +66,21 @@ class Viewport:
         if self.window.get_size() == (w, h):
             return
         self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
-        self._recompute_layout(w, h)
+        if self.native:
+            # Canvas IS the window; hand the new size to the game so it can
+            # resize the camera/HUD to match.
+            self.canvas = self.window
+            if self.on_resize:
+                self.on_resize(w, h)
+        else:
+            self._recompute_layout(w, h)
 
     def _recompute_layout(self, w: int, h: int):
-        # Largest integer-friendly scale that fits both axes (aspect preserved).
-        self._scale = min(w / self.virtual_w, h / self.virtual_h)
-        dest_w = int(self.virtual_w * self._scale)
-        dest_h = int(self.virtual_h * self._scale)
+        # Largest scale that fits both axes (aspect preserved → letterbox).
+        scale = min(w / self.virtual_w, h / self.virtual_h)
+        self._scale_x = self._scale_y = scale
+        dest_w = int(self.virtual_w * scale)
+        dest_h = int(self.virtual_h * scale)
         self._dest_rect = pygame.Rect((w - dest_w) // 2, (h - dest_h) // 2,
                                       dest_w, dest_h)
 
@@ -67,10 +88,12 @@ class Viewport:
 
     def window_to_virtual(self, wx: float, wy: float) -> Tuple[float, float]:
         """Map a window/mouse pixel to virtual-canvas coordinates."""
-        if self._scale == 0:
+        if self.native:
+            return (float(wx), float(wy))   # canvas == window, 1:1
+        if self._scale_x == 0 or self._scale_y == 0:
             return (0.0, 0.0)
-        vx = (wx - self._dest_rect.x) / self._scale
-        vy = (wy - self._dest_rect.y) / self._scale
+        vx = (wx - self._dest_rect.x) / self._scale_x
+        vy = (wy - self._dest_rect.y) / self._scale_y
         return (vx, vy)
 
     def mouse_pos(self) -> Tuple[int, int]:
@@ -82,7 +105,11 @@ class Viewport:
     # -- present ----------------------------------------------------------
 
     def present(self):
-        """Scale the canvas onto the window and flip."""
+        """Show the frame. Native draws straight to the window; scaled mode
+        letterbox-scales the virtual canvas onto it."""
+        if self.native:
+            pygame.display.flip()
+            return
         self.window.fill(self.bg)
         if self._dest_rect.size == (self.virtual_w, self.virtual_h):
             self.window.blit(self.canvas, self._dest_rect)        # 1:1, no scale

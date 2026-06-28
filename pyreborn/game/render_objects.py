@@ -129,8 +129,8 @@ class LevelObjectsRenderMixin:
         # Create background box
         box_width = max_width + 20
         box_height = len(rendered_lines) * line_height + 20
-        box_x = (SCREEN_WIDTH - box_width) // 2
-        box_y = SCREEN_HEIGHT - box_height - 60  # Above the UI bar
+        box_x = (self.screen_w - box_width) // 2
+        box_y = self.screen_h - box_height - 60  # Above the UI bar
 
         # Draw box with border
         pygame.draw.rect(self.screen, (240, 230, 200), (box_x, box_y, box_width, box_height))

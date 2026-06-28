@@ -60,6 +60,29 @@ class SetupMixin:
             if len(self.chat_messages) > 10:
                 self.chat_messages.pop(0)
 
+        def on_pm(from_id, message):
+            # Show received private messages in the chat log, named by sender.
+            name = self._player_label(from_id)
+            self.chat_messages.append(f"[PM {name}] {message}")
+            if len(self.chat_messages) > 10:
+                self.chat_messages.pop(0)
+
+        def _roster_name(info):
+            return info.get('nickname') or info.get('account') or "?"
+
+        def on_add_player(pid, info):
+            # The server dumps the whole roster on login; only announce joins
+            # that arrive after that settles (roster_ready_time, set in run()).
+            if time.time() >= self.roster_ready_time:
+                self.chat_messages.append(f"-> {_roster_name(info)} entered")
+                if len(self.chat_messages) > 10:
+                    self.chat_messages.pop(0)
+
+        def on_del_player(pid, info):
+            self.chat_messages.append(f"<- {_roster_name(info)} left")
+            if len(self.chat_messages) > 10:
+                self.chat_messages.pop(0)
+
         def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
             # Spawn floating damage number at player position
             self.damage_numbers.append({
@@ -89,21 +112,49 @@ class SetupMixin:
             self.ghost_mode = enabled
 
         def on_file(filename: str, data: bytes):
-            """Cache a downloaded image so NPCs/players using it render properly
-            instead of falling back to the placeholder."""
+            """Cache a downloaded asset. Images go to the sprite cache; a music
+            file we were waiting on starts playing once it arrives."""
             if filename.lower().rsplit('.', 1)[-1] in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
+            elif self.sound_mgr.is_music(filename):
+                if filename == getattr(self, '_pending_music', None):
+                    self._pending_music = None
+                    self.sound_mgr.play_music(filename, data=data)
 
         self.client.on_chat = on_chat
+        self.client.on_pm = on_pm
+        self.client.on_add_player = on_add_player
+        self.client.on_del_player = on_del_player
         self.client.on_hurt = on_hurt
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
         self.client.on_file = on_file
+    def _play_audio(self, name: str):
+        """Play a `play <file>` from an NPC script: stream MIDI/OGG music via
+        mixer.music, or fire a one-shot sample. Music is downloaded from the
+        server if we don't have it yet, then started in on_file."""
+        if not name:
+            return
+        if self.sound_mgr.is_music(name):
+            if name == getattr(self, '_current_music_name', None):
+                return  # already playing/queued this track
+            self._current_music_name = name
+            if self.sound_mgr.play_music(name):       # on disk already
+                return
+            # Not local — ask the server for it; on_file plays it on arrival.
+            self._pending_music = name
+            try:
+                self.client.request_file(name)
+            except Exception:
+                pass
+        else:
+            self.sound_mgr.play(name)
+
     def _setup_gs1_callbacks(self):
         """Setup GS1 interpreter callbacks for visual/audio feedback."""
-        # Play sound callback
+        # Play sound/music callback (routes MIDI to streaming music).
         def on_play(sound_name):
-            self.sound_mgr.play(sound_name)
+            self._play_audio(sound_name)
 
         # Say/chat callback - sets NPC speech bubble
         def on_say(npc_id, message):
@@ -122,11 +173,15 @@ class SetupMixin:
         self.gs1.on_say = on_say
         self.gs1.on_message = on_message
 
-        # Route NPC touch events through the shared GS1 engine.
+        # Route NPC touch events through the shared GS1 engine, which runs the
+        # script (including its `play`/`triggeraction`/etc. side effects via the
+        # gs1.on_* callbacks above). The handler only does collision detection.
         if getattr(self, "npc_handler", None) is not None:
             self.npc_handler.on_playertouchsme = (
                 lambda npc_id, npc_data: self.gs1.trigger_npc_event(
                     npc_id, "playertouchsme"))
+            # The handler reads collision shapes the engine records on setshape.
+            self.npc_handler.gs1 = self.gs1
     def _load_npc_scripts(self):
         """Load NPC scripts into the GS1 interpreter."""
         for npc_id, npc in self.client.npcs.items():

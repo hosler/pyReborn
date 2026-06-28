@@ -6,6 +6,7 @@ Supports both TCP (native Python) and WebSocket (browser via Pyodide).
 In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
+import re
 import sys
 import time
 from typing import Optional, Callable, Dict, List, Tuple
@@ -37,6 +38,8 @@ from .packets import (
     parse_item_add,
     parse_item_del,
     parse_private_message,
+    parse_rc_add_player,
+    parse_rc_del_player,
     parse_baddy_props,
     parse_weapon_add,
     build_movement,
@@ -99,7 +102,7 @@ def _build_handled_plo_ids() -> set:
         "PLO_DEFAULTWEAPON", "PLO_STAFFGUILDS", "PLO_SERVERTEXT",
         "PLO_SETACTIVELEVEL", "PLO_UNKNOWN168", "PLO_GHOSTICON", "PLO_RPGWINDOW",
         "PLO_STATUSLIST", "PLO_UNKNOWN190", "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
-        "PLO_BIGMAP",
+        "PLO_BIGMAP", "PLO_ADDPLAYER", "PLO_DELPLAYER",
     ]
     ids = {PLO_NPCDEL}
     for n in names:
@@ -110,6 +113,29 @@ def _build_handled_plo_ids() -> set:
 
 
 HANDLED_PLO_IDS = _build_handled_plo_ids()
+
+
+def _eval_warp_coord(expr, player_x: float, player_y: float) -> Optional[float]:
+    """Resolve a level-link destination coordinate.
+
+    It's a plain number for most doors, but edge links use Graal expressions
+    that reference the player's current coordinate so a crossing is seamless:
+    "playerx", "playery", "playery-4", "playerx+0.5", etc. Returns the resolved
+    float, or None if it can't be parsed.
+    """
+    s = str(expr).strip().lower()
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    s = s.replace('playerx', repr(float(player_x))).replace('playery', repr(float(player_y)))
+    # Only allow arithmetic over the substituted numbers — no names/calls.
+    if re.fullmatch(r'[-+*/0-9.eE() ]+', s):
+        try:
+            return float(eval(s, {'__builtins__': {}}, {}))
+        except Exception:
+            return None
+    return None
 
 
 class Client:
@@ -141,6 +167,10 @@ class Client:
         self.port = port
         self.version = version
         self.proxy_url = proxy_url
+        # PLPROP_COLORS width: v6 clients get 8 (extended body colors), classic
+        # v2/v5 clients get 5. Wrong width misaligns the whole player-props
+        # packet (garbled level name, spawn stuck at 0,0). See parse_player_props.
+        self._colors_len = 8 if str(version).startswith("6") else 5
 
         # Use WebSocketProtocol in browser, regular Protocol otherwise
         if IS_BROWSER:
@@ -158,6 +188,7 @@ class Client:
 
         # Level data: 4096 tile IDs (64x64 grid) for current level
         self.tiles: List[int] = []
+        self._tiles_level_name = ""    # which level self.tiles currently holds
         self._raw_data_expected = 0
         self._raw_buffer = b""
 
@@ -186,9 +217,18 @@ class Client:
 
         # NPCs: maps npc_id -> npc dict with x, y, image, etc.
         self.npcs: Dict[int, dict] = {}
+        # Per-level NPC snapshots so re-entering a level we've already visited
+        # repopulates its NPCs even when the server only streams them on first
+        # entry. Maps level_name -> {npc_id: props}.
+        self._npc_cache: Dict[str, Dict[int, dict]] = {}
 
         # Other players: maps player_id -> player dict with x, y, nickname, account, etc.
+        # This is the IN-LEVEL set (from PLO_OTHERPLPROPS), used for rendering.
         self.players: Dict[int, dict] = {}
+        # Server-wide online roster from PLO_ADDPLAYER/PLO_DELPLAYER: the server
+        # dumps everyone on login and announces joins/leaves. Maps id -> dict
+        # with account/nickname/level/etc.
+        self.player_list: Dict[int, dict] = {}
 
         # Items on ground: maps (x, y) -> item_type string
         self.items: Dict[Tuple[float, float], str] = {}
@@ -219,6 +259,11 @@ class Client:
 
         # Private message callback: handler(from_player_id, message)
         self.on_pm: Optional[Callable[[int, str], None]] = None
+
+        # Online-roster callbacks: handler(player_id, info) on join (and the
+        # login dump), handler(player_id, info) on leave.
+        self.on_add_player: Optional[Callable[[int, dict], None]] = None
+        self.on_del_player: Optional[Callable[[int, dict], None]] = None
 
         # Baddy callback: handler(baddy_id, baddy_props)
         self.on_baddy: Optional[Callable[[int, dict], None]] = None
@@ -291,6 +336,7 @@ class Client:
         self.rpg_window_lines: List[str] = []   # PLO_RPGWINDOW (last window)
         self.default_weapon = 0             # PLO_DEFAULTWEAPON
         self.server_signature = 0           # PLO_SIGNATURE
+        self.disconnect_reason = ""         # last PLO_DISCMESSAGE text (e.g. login reject)
         self.ghost_icon = False             # PLO_GHOSTICON
         self.active_level = ""              # PLO_SETACTIVELEVEL routing target
         self.level_modtimes: Dict[str, int] = {}  # PLO_LEVELMODTIME per level
@@ -389,6 +435,7 @@ class Client:
 
         self.player.account = username
         self._login_time = time.time()
+        self.disconnect_reason = ""
 
         # Wait for authentication response
         start = time.time()
@@ -396,6 +443,11 @@ class Client:
             self.update(timeout=0.1)
             if self._authenticated:
                 return True
+            # Server rejected us (e.g. wrong version/password) — it sends a
+            # PLO_DISCMESSAGE and drops the link. Stop waiting out the full
+            # timeout; disconnect_reason holds why for the caller to surface.
+            if not self.connected:
+                return False
 
         return False
 
@@ -829,6 +881,21 @@ class Client:
         self._current_level_name = level_name
         self._pending_level_name = level_name
 
+        # If we've visited this level before, repopulate its board from cache
+        # immediately so the renderer doesn't draw the OLD level's tiles under
+        # the player while the server re-streams the board (the "warped before
+        # the new tiles render" glitch). First-visit levels stay flagged stale
+        # (tiles_level_name != current) so the client can show a loading state.
+        if level_name in self.levels:
+            self.tiles = self.levels[level_name]
+            self._tiles_level_name = level_name
+
+        # Restore any NPCs we cached for this level on a previous visit. If the
+        # server re-streams them, the fresh PLO_NPCPROPS just overwrites these.
+        cached_npcs = self._npc_cache.get(level_name)
+        if cached_npcs:
+            self.npcs.update(cached_npcs)
+
         # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
         return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
@@ -845,6 +912,12 @@ class Client:
         self.signs.clear()
         self.items.clear()
         self.baddies.clear()
+        # Snapshot NPCs per level before clearing so we can restore them if we
+        # come back and the server doesn't re-stream them (see _npc_cache).
+        for nid, npc in self.npcs.items():
+            lvl = npc.get('_level')
+            if lvl:
+                self._npc_cache.setdefault(lvl, {})[nid] = npc
         self.npcs.clear()
 
     def send_pm(self, player_id: int, message: str) -> bool:
@@ -1244,7 +1317,7 @@ class Client:
 
         # Player properties (our player data)
         elif packet_id == PacketID.PLO_PLAYERPROPS:
-            props = parse_player_props(data)
+            props = parse_player_props(data, self._colors_len)
 
             # The server tracks position as LOCAL coords (0-63) within the
             # player's current segment, not world coords. Convert to the client's
@@ -1350,6 +1423,23 @@ class Client:
             if pm_info and self.on_pm:
                 self.on_pm(pm_info.get('from_id', 0), pm_info.get('message', ''))
 
+        # PLO_ADDPLAYER (55) - online roster entry (login dump + joins)
+        elif packet_id == PacketID.PLO_ADDPLAYER:
+            info = parse_rc_add_player(data)
+            if info and 'id' in info:
+                pid = info['id']
+                is_new = pid not in self.player_list
+                self.player_list.setdefault(pid, {}).update(info)
+                if is_new and self.on_add_player:
+                    self.on_add_player(pid, self.player_list[pid])
+
+        # PLO_DELPLAYER (56) - player left the server
+        elif packet_id == PacketID.PLO_DELPLAYER:
+            pid = parse_rc_del_player(data)
+            info = self.player_list.pop(pid, None)
+            if info is not None and self.on_del_player:
+                self.on_del_player(pid, info)
+
         # PLO_BADDYPROPS (2) - baddy/enemy properties
         elif packet_id == PacketID.PLO_BADDYPROPS:
             props = parse_baddy_props(data)
@@ -1374,6 +1464,7 @@ class Client:
                 self.levels[level_for_tiles] = tiles
             # Always update self.tiles with the latest (for fallback rendering)
             self.tiles = tiles
+            self._tiles_level_name = level_for_tiles
             if self.on_level:
                 self.on_level(tiles)
 
@@ -1515,7 +1606,7 @@ class Client:
 
         # Other player properties
         elif packet_id == PacketID.PLO_OTHERPLPROPS:
-            props = parse_other_player(data)
+            props = parse_other_player(data, self._colors_len)
             if props and 'id' in props:
                 player_id = props['id']
                 # A non-empty CURCHAT prop is another player's chat bubble — the
@@ -1552,6 +1643,7 @@ class Client:
         # Disconnect message (packet 16) - server kicked us / is shutting down
         elif packet_id == PacketID.PLO_DISCMESSAGE:
             reason = data.decode('latin-1', errors='replace').strip()
+            self.disconnect_reason = reason
             if self.on_disconnect:
                 self.on_disconnect(reason)
             self.disconnect()
@@ -1752,14 +1844,17 @@ class Client:
         if not links:
             return None
 
-        # Sample the player's body down the centre column — head, mid, feet — not
-        # a single point. Walking *down* onto a link the feet reach it; walking
-        # *up* to a door (cave entrances sit on blocking tiles you can't stand on,
-        # only the head overlaps) the upper points reach it. A single point breaks
-        # one case or the other.
+        # Sample the player's body down the centre column — head, mid, feet, and
+        # the very bottom of the feet — not a single point. Walking *down* onto a
+        # link the feet reach it; walking *up* to a door (cave entrances sit on
+        # blocking tiles you can't stand on, only the head overlaps) the upper
+        # points reach it. The 3.0 sample matters for DOWNWARD edge/door links:
+        # collision stops the feet (py+3) at the link row, but the old max sample
+        # (2.5) fell half a tile short, so you'd jam against a downward warp and
+        # have to noclip through it.
         px, py = self.player.x, self.player.y
         local_x = (px + 1.0) % 64
-        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5)]
+        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5, 3.0)]
 
         for link in links:
             lx = link.get('x', 0)
@@ -1801,14 +1896,20 @@ class Client:
         dest_x = link.get('dest_x', '0')
         dest_y = link.get('dest_y', '0')
 
-        # Parse destination coordinates (link dest is LOCAL coords within the
-        # destination level).
-        try:
-            new_x = float(dest_x)
-            new_y = float(dest_y)
-        except ValueError:
-            new_x = 0.0
-            new_y = 0.0
+        # Destination coords (LOCAL within the destination level) may be a number
+        # OR a Graal expression referencing playerx/playery — used by edge links
+        # to keep the player's coordinate across a seamless crossing (e.g.
+        # "playery", "playerx-4"). Plain float() throws on those and the old code
+        # fell back to (0,0), so every such warp dumped the player in the corner.
+        px, py = self.player.x % 64, self.player.y % 64
+        new_x = _eval_warp_coord(dest_x, px, py)
+        new_y = _eval_warp_coord(dest_y, px, py)
+        # If an expression can't be evaluated, keep the current coordinate rather
+        # than slamming to 0 (much closer to correct for an edge crossing).
+        if new_x is None:
+            new_x = px
+        if new_y is None:
+            new_y = py
 
         # Warp through warp_to_level so the SERVER is notified (PLI_LEVELWARP)
         # and the destination's coordinate frame is handled correctly: a GMAP

@@ -131,14 +131,18 @@ class HUD:
         ("Q", "Inventory"),
         ("Wheel / 0", "Zoom / reset"),
         ("M", "Toggle minimap"),
+        ("N", "Noclip (walk through walls)"),
         ("Enter", "Chat"),
         ("F1", "Debug / tile editor"),
+        ("F2", "Unstick: warp to (30,30)"),
+        ("F7", "Player list / PM"),
+        ("F8", "Server list"),
         ("H", "Close this help"),
     ]
 
     def __init__(self, game):
         self.game = game
-        self.ui = UIManager(game.fonts, SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.ui = UIManager(game.fonts, game.screen_w, game.screen_h)
 
         # Always-on stat panel.
         self.ui.root.add(StatsPanel(game))
@@ -152,8 +156,9 @@ class HUD:
         self.badge_door = Badge(color=(255, 255, 100), visible=False)
         self.badge_carry = Badge(color=(100, 255, 100), visible=False)
         self.badge_sit = Badge(color=(255, 200, 100), visible=False)
+        self.badge_noclip = Badge(color=(255, 120, 120), visible=False)
         self.status.add(self.badge_swim, self.badge_door,
-                        self.badge_carry, self.badge_sit)
+                        self.badge_carry, self.badge_sit, self.badge_noclip)
         self.ui.root.add(self.status)
 
         # Top-right "H: Help" hint and centered ghost-mode banner.
@@ -185,6 +190,9 @@ class HUD:
         if player.is_sitting:
             self.badge_sit.text = "Sitting (press A to stand)"
 
+        self.badge_noclip.text = "NOCLIP (N)"
+        self.badge_noclip.visible = getattr(g, "noclip", False)
+
         self.ghost.visible = g.ghost_mode
 
         # The tile-editor draws its own readouts at the same left column, so hide
@@ -207,6 +215,10 @@ class HUD:
         if self.game.show_help and not (self.game.typing or self.game.debug_mode
                                         or self.game.inventory_ui.visible):
             self._draw_help_overlay(surf)
+        if self.game.show_player_list:
+            self._draw_player_list(surf)
+        if self.game.show_server_list:
+            self._draw_server_list(surf)
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):
@@ -221,10 +233,10 @@ class HUD:
         alpha = 255 if elapsed < g.dialogue_duration - 0.5 \
             else int(255 * (g.dialogue_duration - elapsed) / 0.5)
 
-        box_w = min(SCREEN_WIDTH - 40, 400)
+        box_w = min(g.screen_w - 40, 400)
         box_h = 60
-        box_x = (SCREEN_WIDTH - box_w) // 2
-        box_y = SCREEN_HEIGHT - 150
+        box_x = (g.screen_w - box_w) // 2
+        box_y = g.screen_h - 150
         box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
         pygame.draw.rect(box, (0, 0, 50, min(200, alpha)), (0, 0, box_w, box_h))
         pygame.draw.rect(box, (100, 100, 200, min(255, alpha)),
@@ -256,7 +268,7 @@ class HUD:
 
     def _draw_chat(self, surf):
         g = self.game
-        y = SCREEN_HEIGHT - 60
+        y = g.screen_h - 60
         for msg in reversed(g.chat_messages[-5:]):
             ts = g.font.render(msg[:60], True, (255, 255, 255))
             plate = pygame.Surface((ts.get_width() + 10, ts.get_height() + 4))
@@ -268,16 +280,16 @@ class HUD:
 
         if g.typing:
             pygame.draw.rect(surf, (0, 0, 0),
-                             (5, SCREEN_HEIGHT - 30, SCREEN_WIDTH - 10, 25))
+                             (5, g.screen_h - 30, g.screen_w - 10, 25))
             ts = g.font.render(f"> {g.chat_input}_", True, (255, 255, 0))
-            surf.blit(ts, (10, SCREEN_HEIGHT - 25))
+            surf.blit(ts, (10, g.screen_h - 25))
 
     def _draw_minimap(self, surf):
         g = self.game
         if not (g.minimap_visible and g.minimap_surface):
             return
         mw, mh = g.minimap_size
-        mx = SCREEN_WIDTH - mw - 10
+        mx = g.screen_w - mw - 10
         my = 10
         border = pygame.Rect(mx - 2, my - 2, mw + 4, mh + 4)
         pygame.draw.rect(surf, (100, 100, 100), border)
@@ -295,8 +307,8 @@ class HUD:
         g = self.game
         pad, line_h, w = 14, 22, 320
         h = pad * 2 + 28 + line_h * len(self.HELP_LINES)
-        x = (SCREEN_WIDTH - w) // 2
-        y = (SCREEN_HEIGHT - h) // 2
+        x = (g.screen_w - w) // 2
+        y = (g.screen_h - h) // 2
 
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.rect(panel, (0, 0, 0, 200), (0, 0, w, h), border_radius=8)
@@ -313,3 +325,57 @@ class HUD:
             surf.blit(g.font_small.render(desc, True, (225, 225, 225)),
                       (x + pad + 110, ty))
             ty += line_h
+
+    # -- F7 player list / F8 server list ----------------------------------
+    def _draw_list_overlay(self, surf, title, rows, sel, footer):
+        """Shared modal list: title, selectable rows (highlighted at `sel`), and
+        a footer hint. `rows` is a list of display strings."""
+        g = self.game
+        pad, line_h, w = 14, 22, 360
+        body = rows if rows else ["(none)"]
+        h = pad * 2 + 30 + line_h * len(body) + 24
+        x = (g.screen_w - w) // 2
+        y = (g.screen_h - h) // 2
+
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (0, 0, 0, 210), (0, 0, w, h), border_radius=8)
+        pygame.draw.rect(panel, (120, 120, 160, 255), (0, 0, w, h),
+                         width=2, border_radius=8)
+        surf.blit(panel, (x, y))
+
+        surf.blit(g.font.render(title, True, (255, 255, 255)), (x + pad, y + pad))
+        ty = y + pad + 30
+        for i, row in enumerate(body):
+            if rows and i == sel:
+                hl = pygame.Surface((w - pad * 2, line_h), pygame.SRCALPHA)
+                hl.fill((90, 90, 150, 180))
+                surf.blit(hl, (x + pad, ty - 2))
+            color = (255, 255, 255) if rows else (160, 160, 160)
+            surf.blit(g.font_small.render(row[:48], True, color), (x + pad + 4, ty))
+            ty += line_h
+        surf.blit(g.font_small.render(footer, True, (180, 180, 200)),
+                  (x + pad, ty + 4))
+
+    def _draw_player_list(self, surf):
+        g = self.game
+        players = g._other_players()
+        sel = min(g.player_list_sel, max(0, len(players) - 1))
+        rows = [label for _pid, label in players]
+        if g.pm_target_id is not None:
+            # Composing a PM: show the input line as the footer.
+            name = g._player_label(g.pm_target_id)
+            footer = f"PM {name}: {g.pm_input}_"
+        else:
+            footer = "Up/Down select · Enter to PM · F7/Esc close"
+        self._draw_list_overlay(surf, "Players", rows, sel, footer)
+
+    def _draw_server_list(self, surf):
+        g = self.game
+        sel = min(g.server_list_sel, max(0, len(g.servers) - 1))
+        rows = []
+        for s in g.servers:
+            name = getattr(s, "display_name", getattr(s, "name", "?"))
+            pc = getattr(s, "player_count", "")
+            rows.append(f"{name}  ({pc})" if pc != "" else str(name))
+        self._draw_list_overlay(surf, "Servers", rows, sel,
+                                "Up/Down select · Enter to connect · F8/Esc close")

@@ -35,6 +35,19 @@ class WorldRenderMixin:
 
     def _render_world(self):
         """Render the tile world."""
+        c = self.client
+        # On a first-visit (non-GMAP) level, the board streams in a few frames
+        # after the warp. Until it arrives, self.tiles still holds the OLD
+        # level's board — drawing it puts the player over the wrong tiles (the
+        # "warped before the new tiles render" glitch). Show a loading state
+        # instead. Cached levels are repopulated synchronously in warp_to_level,
+        # so this only triggers on genuinely-new levels.
+        in_gmap = c._current_level_name in c.gmap_grid.values()
+        if (not in_gmap and c._current_level_name
+                and c._tiles_level_name != c._current_level_name):
+            self._render_level_loading()
+            return
+
         world_surf = self._get_world_surface()
         if not world_surf:
             return
@@ -42,6 +55,12 @@ class WorldRenderMixin:
         # The world surface is indexed from render-frame tile (0, 0), so its
         # blit position is simply where the camera maps that tile.
         self.screen.blit(world_surf, self.camera.world_to_screen(0, 0))
+
+    def _render_level_loading(self):
+        """Brief overlay shown while a newly-entered level's board streams in."""
+        text = self.font.render("Loading level...", True, (235, 235, 235))
+        self.screen.blit(text, (self.screen_w // 2 - text.get_width() // 2,
+                                self.screen_h // 2 - text.get_height() // 2))
     def _get_world_surface(self) -> Optional[pygame.Surface]:
         """Get or create the world surface."""
         if not self.client.levels and not self.client.tiles:
@@ -78,7 +97,7 @@ class WorldRenderMixin:
             world_h = 64 * TILE_SIZE
 
         self.world_surface = pygame.Surface((world_w, world_h))
-        self.world_surface.fill((34, 139, 34))
+        self.world_surface.fill((0, 0, 0))
 
         # Render tiles
         if not in_gmap or not self.client.gmap_grid:

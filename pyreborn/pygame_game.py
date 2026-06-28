@@ -65,18 +65,22 @@ class GameClient(
         pygame.init()
         pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
 
-        # Resolution-independent rendering: all game/HUD drawing targets a fixed
-        # 640x480 virtual canvas (self.screen); the Viewport scales it onto a
-        # resizable window each frame. self.screen stays the canvas so the ~200
-        # existing self.screen.blit(...) call sites need no changes.
+        # Native rendering: the game draws straight to the window at its real
+        # resolution so it fills the whole window (the world is centred by the
+        # camera, with black around the level edges) rather than a scaled 640x480
+        # square. self.screen is the window surface; on resize _on_window_resize
+        # re-points it and resizes the camera/HUD. SCREEN_WIDTH/HEIGHT are just
+        # the initial size now — live layout uses self.screen_w/self.screen_h.
         self.viewport = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT,
-                                 caption=f"pyreborn - {client.player.account}")
+                                 caption=f"pyreborn - {client.player.account}",
+                                 native=True, on_resize=self._on_window_resize)
         self.screen = self.viewport.canvas
         self.clock = pygame.time.Clock()
 
         # Camera: single source of truth for world<->screen mapping, replacing
         # the offset math that used to be copy-pasted into every render method.
-        self.camera = Camera2D(SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE)
+        self.camera = Camera2D(self.screen.get_width(), self.screen.get_height(),
+                               TILE_SIZE)
 
         # Fonts: keyed/cached via FontManager. self.font / self.font_small remain
         # as aliases for the HUD and small roles the legacy render code uses.
@@ -164,10 +168,20 @@ class GameClient(
         self.current_anim_name = "idle"
         self.is_moving = False
         self.is_swimming = False  # Track if player is in water
+        # Link-warp guards. `_was_on_link`: True while standing on a warp link, so
+        # links only fire on the rising edge (stepping ON) — no bounce across
+        # overlapping links. `_link_arrival`: the spot a warp last dropped us;
+        # while within ~1.5 tiles of it, link warps stay suppressed even if the
+        # destination level's links stream in a few frames late — this is what
+        # stops the "warp loop" on downward crossings.
+        self._was_on_link = False
+        self._link_arrival = None
 
         # Smooth movement - visual position tracks the authoritative position.
         self.visual_x = 0.0
         self.visual_y = 0.0
+        # Player sprite top-left in render frame, set each frame by _sync_camera.
+        self._player_render_pos = (0.0, 0.0)
         # How fast the camera/local-player visual chases the real position. Kept
         # well above walk_speed (8) so it locks on each frame (no floaty lag).
         self.follow_speed = 24.0
@@ -199,6 +213,10 @@ class GameClient(
 
         # Debug/tile editing mode
         self.debug_mode = False
+        # Noclip: ignore client-side collision so the player can walk through
+        # walls. Mainly an escape hatch for bad server spawns (e.g. classic 2.22
+        # servers that warp you into a border-wall tile and leave you stuck).
+        self.noclip = False
         self.tile_corrections: Dict[int, int] = {}  # tile_id -> corrected TileType
         self.debug_selected_type = TileType.NONBLOCK  # Currently selected tile type for editing
         self._load_tile_corrections()
@@ -215,6 +233,24 @@ class GameClient(
         # Controls/help overlay (toggle with H)
         self.show_help = False
 
+        # Player list (F7) + private messaging.
+        self.show_player_list = False
+        self.player_list_sel = 0          # selected row in the player list
+        self.pm_target_id: Optional[int] = None  # player we're composing a PM to
+        self.pm_input = ""
+
+        # Server list (F8) for switching servers. `servers` is populated by the
+        # launcher (the listserver result); switch_server is set when the user
+        # picks one, and run() returns it so the launcher reconnects.
+        self.show_server_list = False
+        self.server_list_sel = 0
+        self.servers: List = []
+        self.switch_server = None
+
+        # Suppress "X entered" spam from the login roster dump: join
+        # announcements only fire after this time (set when the loop starts).
+        self.roster_ready_time = float('inf')
+
         # Removed tiles tracking (for pickup/throw mechanics)
         # Maps (level_name, x, y) -> original_tile_id
         self.removed_tiles: Dict[Tuple[str, int, int], int] = {}
@@ -225,6 +261,26 @@ class GameClient(
         # Setup callbacks
         self._setup_callbacks()
 
+    # Live canvas dimensions. With native rendering the window is the canvas, so
+    # all layout/centering reads these instead of the fixed SCREEN_WIDTH/HEIGHT.
+    @property
+    def screen_w(self) -> int:
+        return self.screen.get_width()
+
+    @property
+    def screen_h(self) -> int:
+        return self.screen.get_height()
+
+    def _on_window_resize(self, w: int, h: int):
+        """Window resized (native mode): re-point self.screen at the new window
+        surface and resize the camera + HUD so the world stays centred and the
+        HUD re-anchors to the new corners."""
+        self.screen = self.viewport.canvas
+        self.camera.resize(w, h)
+        if getattr(self, "hud", None) is not None:
+            self.hud.ui.resize(w, h)
+        if getattr(self, "inventory_ui", None) is not None:
+            self.inventory_ui.screen = self.screen
 
     def run(self):
         """Main game loop."""
@@ -238,9 +294,14 @@ class GameClient(
         # Check initial swimming state
         self._update_swimming_state()
 
-        # Load NPC scripts and trigger playerenters events
+        # Load + run NPC scripts, then snapshot collision shapes the engine
+        # recorded during playerenters (setshape/setshape2).
         self._load_npc_scripts()
         self._trigger_playerenters()
+        self.npc_handler.update_npcs()
+
+        # Let the login roster dump settle before announcing further joins.
+        self.roster_ready_time = time.time() + 2.0
 
         print(f"Starting game loop. running={self.running}, connected={self.client.connected}")
 
@@ -291,4 +352,8 @@ class GameClient(
         print(f"Game loop exited after {frame_count} frames. running={self.running}, connected={self.client.connected}")
         self.client.disconnect()
         pygame.quit()
+
+        # If the player picked another server from the F8 list, hand it back to
+        # the launcher so it can reconnect. None = normal quit.
+        return self.switch_server
 

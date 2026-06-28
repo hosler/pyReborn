@@ -72,13 +72,17 @@ class SpriteManager:
         Returns:
             pygame.Surface or None if not found
         """
-        # Check cache
+        # Check cache (a cached None is a remembered miss — see below)
         if name in self.sheet_cache:
             return self.sheet_cache[name]
 
         # Find file
         file_path = self.find_file(name)
         if not file_path:
+            # Cache the miss so we don't stat the disk for this name every frame
+            # (huge cost with many NPCs whose images are still downloading). When
+            # the file arrives, on_file -> load_bytes overwrites this None.
+            self.sheet_cache[name] = None
             return None
 
         # Load image
@@ -93,6 +97,7 @@ class SpriteManager:
             return surface
         except Exception as e:
             print(f"Error loading sprite sheet {name}: {e}")
+            self.sheet_cache[name] = None   # don't retry an unloadable file each frame
             return None
 
     def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:

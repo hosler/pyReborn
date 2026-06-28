@@ -173,6 +173,10 @@ class CollisionMixin:
         a standalone level, including interior levels (houses/caves) reached via
         a door while a GMAP is still loaded.
         """
+        # Noclip escape hatch: nothing blocks (used to walk out of a bad spawn).
+        if getattr(self, "noclip", False):
+            return False
+
         if self.client.in_gmap_segment:
             # Clamp to the full GMAP world: inner segment boundaries stitch
             # together, but the outer perimeter has no neighbour to walk into.

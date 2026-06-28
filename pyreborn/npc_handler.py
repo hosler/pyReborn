@@ -10,11 +10,14 @@ In Reborn, many NPC events are client-side:
 This module provides:
 1. NPC shape parsing from scripts (setshape, setshape2)
 2. Collision detection between player and NPC shapes
-3. Event triggering (playertouchsme, playerenters)
-4. Integration with GS1 interpreter
+3. Dispatching touch events to the GS1 engine
+
+It does NOT interpret scripts itself. Touch detection fires `on_playertouchsme`,
+which setup wires to ``gs1.trigger_npc_event`` — the one real GS1 engine
+(``reborn_protocol.gs1``) evaluates the script and its conditions. There is no
+regex-based fallback executor; that only ever diverged from the real engine.
 """
 
-import re
 import time
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
@@ -66,68 +69,45 @@ class NPCShape:
         return False
 
 
-def parse_npc_shape(script: str) -> Optional[NPCShape]:
-    """Parse setshape or setshape2 from NPC script.
-
-    setshape type,width,height;
-    setshape2 width,height,{flags...};
-    """
-    # Try setshape2 first (more detailed)
-    match = re.search(r'setshape2\s+(\d+)\s*,\s*(\d+)\s*,\s*\{([^}]*)\}', script)
-    if match:
-        width = int(match.group(1))
-        height = int(match.group(2))
-        flags_str = match.group(3)
-        flags = [int(f.strip()) for f in flags_str.split(',') if f.strip()]
-        return NPCShape(x=0, y=0, width=width, height=height, solid_flags=flags)
-
-    # Try setshape
-    match = re.search(r'setshape\s+(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', script)
-    if match:
-        # type, width, height - type 1 is solid
-        shape_type = int(match.group(1))
-        width = int(match.group(2))
-        height = int(match.group(3))
-        if shape_type == 1:  # Solid shape
-            # All tiles are solid
-            flags = [22] * (width * height)
-        else:
-            flags = []
-        return NPCShape(x=0, y=0, width=width, height=height, solid_flags=flags)
-
-    return None
-
-
 class NPCHandler:
-    """Handles NPC collision detection and event triggering."""
+    """Handles NPC collision detection and dispatches touch events.
+
+    Collision shapes come from the GS1 engine: when an NPC script runs
+    setshape/setshape2, the GS1 host records (width, height, flags) keyed by
+    npc_id (see ClientGS1.shapes). `update_npcs` reads that geometry — nothing
+    here parses scripts.
+    """
 
     def __init__(self, client):
         self.client = client
+        self.gs1 = None  # ClientGS1; set by the game client. Source of shapes.
         self.npc_shapes: Dict[int, NPCShape] = {}  # npc_id -> shape
         self.npc_scripts: Dict[int, str] = {}  # npc_id -> script
         self.last_player_pos: Tuple[float, float] = (0, 0)
         self.touched_npcs: Set[int] = set()  # NPCs currently being touched
 
-        # Callbacks
+        # Touch event sink. Wired to the GS1 engine (gs1.trigger_npc_event) in
+        # setup; this handler only does collision detection and hands the event
+        # off — it does NOT interpret scripts itself.
         self.on_playertouchsme: Optional[callable] = None  # (npc_id, npc_data) -> None
-        self.on_triggeraction: Optional[callable] = None  # (action, x, y) -> None
 
     def update_npcs(self):
-        """Update NPC shapes from client's NPC data."""
+        """Refresh per-NPC scripts and collision shapes.
+
+        Shape geometry is whatever the GS1 engine recorded when the NPC's script
+        ran setshape/setshape2 (positioned at the NPC's current x/y); call this
+        after triggering playerenters so those shapes exist.
+        """
+        shapes = getattr(self.gs1, "shapes", {}) if self.gs1 is not None else {}
         for npc_id, npc_data in self.client.npcs.items():
-            script = npc_data.get('script', '')
-            x = npc_data.get('x', 0)
-            y = npc_data.get('y', 0)
+            self.npc_scripts[npc_id] = npc_data.get('script', '')
 
-            # Store script
-            self.npc_scripts[npc_id] = script
-
-            # Parse shape if present
-            shape = parse_npc_shape(script)
-            if shape:
-                shape.x = x
-                shape.y = y
-                self.npc_shapes[npc_id] = shape
+            geom = shapes.get(npc_id)
+            if geom:
+                w, h, flags = geom
+                self.npc_shapes[npc_id] = NPCShape(
+                    x=npc_data.get('x', 0), y=npc_data.get('y', 0),
+                    width=w, height=h, solid_flags=list(flags))
 
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.
@@ -175,120 +155,16 @@ class NPCHandler:
         # Find newly touched NPCs (ones we weren't touching before)
         new_touches = touched_now - self.touched_npcs
 
-        # Trigger playertouchsme for new touches
-        for npc_id in new_touches:
-            npc_data = self.client.npcs.get(npc_id, {})
-            script = self.npc_scripts.get(npc_id, '')
-
-            # Check if script has playertouchsme with direction check
-            if 'playertouchsme' in script:
-                # Check for direction requirement (e.g., "playerdir == 0")
-                dir_check = re.search(r'playerdir\s*==\s*(\d)', script)
-                if dir_check:
-                    required_dir = int(dir_check.group(1))
-                    if direction != required_dir:
-                        continue  # Skip - wrong direction
-
-                # Trigger the event. Prefer the wired GS1 engine; fall back to
-                # the built-in regex executor only when nothing is wired.
-                if self.on_playertouchsme:
-                    self.on_playertouchsme(npc_id, npc_data)
-                else:
-                    self._execute_playertouchsme(npc_id, script, direction)
+        # Hand each newly-touched NPC's event to the GS1 engine, which evaluates
+        # the script's own conditions (playerdir, etc.) authoritatively. We don't
+        # pre-filter on direction or re-parse the script here.
+        if self.on_playertouchsme:
+            for npc_id in new_touches:
+                if 'playertouchsme' in self.npc_scripts.get(npc_id, ''):
+                    self.on_playertouchsme(npc_id, self.client.npcs.get(npc_id, {}))
 
         self.touched_npcs = touched_now
         self.last_player_pos = (new_x, new_y)
-
-    def _execute_playertouchsme(self, npc_id: int, script: str, player_dir: int):
-        """Execute the playertouchsme block of an NPC script."""
-        # Find playertouchsme block
-        pattern = r'if\s*\(playertouchsme[^)]*\)\s*\{'
-        match = re.search(pattern, script, re.IGNORECASE)
-        if not match:
-            return
-
-        # Extract block body
-        start = match.end()
-        brace_count = 1
-        pos = start
-        while pos < len(script) and brace_count > 0:
-            if script[pos] == '{':
-                brace_count += 1
-            elif script[pos] == '}':
-                brace_count -= 1
-            pos += 1
-
-        body = script[start:pos-1].replace('§', '\n')
-
-        # Execute relevant commands
-        self._execute_script_body(npc_id, body, player_dir)
-
-    def _execute_script_body(self, npc_id: int, body: str, player_dir: int):
-        """Execute script body, looking for triggeraction commands."""
-        # Split by semicolon and newline
-        lines = re.split(r'[;\n]', body)
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Look for triggeraction
-            match = re.match(r'triggeraction\s+([^;]+)', line, re.IGNORECASE)
-            if match:
-                args_str = match.group(1)
-                # Parse: x,y,action,params...
-                # e.g., "0,0,gr.addweapon,-validation"
-                parts = [p.strip() for p in args_str.split(',')]
-                if len(parts) >= 3:
-                    x = float(parts[0]) if parts[0].replace('.', '').replace('-', '').isdigit() else self.client.x
-                    y = float(parts[1]) if parts[1].replace('.', '').replace('-', '').isdigit() else self.client.y
-                    action = ','.join(parts[2:])
-                    print(f"  [TRIGGER] {action} at ({x}, {y})")
-                    if self.on_triggeraction:
-                        self.on_triggeraction(action, x, y)
-                    else:
-                        # Send to server
-                        self.client.triggeraction(action, x, y, npc_id)
-
-            # Look for setplayerprop #c (chat message)
-            match = re.match(r'setplayerprop\s+#c\s*,\s*([^;]+)', line, re.IGNORECASE)
-            if match:
-                message = match.group(1).strip()
-                print(f"  [CHAT] {message}")
-
-            # Look for play (sound)
-            match = re.match(r'play\s+([^;]+)', line, re.IGNORECASE)
-            if match:
-                sound = match.group(1).strip()
-                print(f"  [PLAY] {sound}")
-
-    def trigger_playerenters(self):
-        """Trigger playerenters for all NPCs in current level."""
-        self.update_npcs()
-        for npc_id, script in self.npc_scripts.items():
-            if 'playerenters' in script.lower():
-                self._execute_playerenters(npc_id, script)
-
-    def _execute_playerenters(self, npc_id: int, script: str):
-        """Execute playerenters block of an NPC script."""
-        pattern = r'if\s*\([^)]*playerenters[^)]*\)\s*\{'
-        match = re.search(pattern, script, re.IGNORECASE)
-        if not match:
-            return
-
-        start = match.end()
-        brace_count = 1
-        pos = start
-        while pos < len(script) and brace_count > 0:
-            if script[pos] == '{':
-                brace_count += 1
-            elif script[pos] == '}':
-                brace_count -= 1
-            pos += 1
-
-        body = script[start:pos-1].replace('§', '\n')
-        self._execute_script_body(npc_id, body, 2)  # Default direction
 
 
 def test_npc_handler():
@@ -314,15 +190,21 @@ play sen_select.wav;
             self.x = 25.0
             self.y = 19.0
 
-        def triggeraction(self, action, x, y, npc_id):
-            print(f"  [SERVER] triggeraction: {action} at ({x}, {y}) npc={npc_id}")
-
     client = MockClient()
     handler = NPCHandler(client)
 
+    # Shapes come from the GS1 engine: load the script, run playerenters (which
+    # executes setshape2), then snapshot — same flow as the live client.
+    from .gs1_client import ClientGS1
+    gs1 = ClientGS1(client)
+    for nid, npc in client.npcs.items():
+        gs1.load_script(f"npc_{nid}", npc['script'], npc_id=nid)
+    gs1.trigger_event('playerenters')
+    handler.gs1 = gs1
+
     print("=== Updating NPCs ===")
     handler.update_npcs()
-    print(f"Shapes parsed: {len(handler.npc_shapes)}")
+    print(f"Shapes from GS1 host: {len(handler.npc_shapes)}")
     for npc_id, shape in handler.npc_shapes.items():
         print(f"  NPC {npc_id}: ({shape.x}, {shape.y}) {shape.width}x{shape.height}")
         touchable = shape.get_touchable_tiles()
@@ -343,15 +225,18 @@ play sen_select.wav;
         print(f"  {desc}")
         print(f"    -> Touched NPCs: {touched}")
 
-    # Test movement and event triggering
-    print("\n=== Testing movement and events ===")
-    print("Starting at (25, 20), moving up...")
+    # Test movement -> touch event dispatch (the GS1 engine would run the
+    # script; here we just confirm the handler fires the callback once on enter).
+    print("\n=== Testing movement and touch dispatch ===")
+    fired = []
+    handler.on_playertouchsme = lambda npc_id, npc_data: fired.append(npc_id)
     handler.last_player_pos = (25, 20)
     handler.touched_npcs = set()
 
     for y in [19, 18, 17]:
         print(f"\nMoving to (25, {y}) facing up...")
         handler.process_movement(25, y, 0)
+    print(f"  -> playertouchsme fired for NPCs: {fired}")
 
 
 if __name__ == "__main__":

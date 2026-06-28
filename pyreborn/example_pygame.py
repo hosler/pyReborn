@@ -40,6 +40,7 @@ Game Controls:
 
 import sys
 import os
+import re
 
 try:
     import pygame
@@ -53,6 +54,17 @@ from .pygame_screens import LoginScreen, ServerSelectScreen, show_loading_screen
 from .pygame_game import GameClient
 
 
+def version_for(server, default):
+    """Map a listserver entry's reported version to a client protocol version.
+    "G3D*" -> 6.037, "2.*" -> 2.22; otherwise keep the default."""
+    v = getattr(server, "version", "") or ""
+    if v.startswith("G3D"):
+        return "6.037"
+    if v.startswith("2."):
+        return "2.22"
+    return default
+
+
 def main():
     """Main entry point."""
     # Check for command line arguments
@@ -64,6 +76,7 @@ def main():
     host = "localhost"
     port = 14900
     version = "6.037"  # Default version, can be overridden with --version
+    servers = []        # listserver result, passed to the game for the F8 switcher
 
     if len(sys.argv) >= 3:
         # Credentials provided via command line
@@ -127,6 +140,7 @@ def main():
 
         print(f"Login successful! {response.status}")
         print(f"Found {len(response.servers)} servers")
+        servers = response.servers  # keep for the in-game F8 server switcher
 
         if not response.servers:
             print("No servers available!")
@@ -146,57 +160,93 @@ def main():
         host = selected_server.ip
         port = selected_server.port
 
-        # Use server's reported version to determine client version
-        # Server version like "2.22-01" maps to client version "2.22"
-        # Server version like "G3D" maps to client version "6.037"
+        # Use server's reported version to determine client version.
+        version = version_for(selected_server, version)
         if selected_server.version:
-            if selected_server.version.startswith("G3D"):
-                version = "6.037"
-            elif selected_server.version.startswith("2."):
-                version = "2.22"
             print(f"Using version {version} (server reports: {selected_server.version})")
 
         # Clean up pygame for re-init by GameClient
         pygame.quit()
 
-    # Connect to game server
-    print(f"Connecting to {host}:{port} (version {version})...")
-    client = Client(host, port, version=version)
+    # Connect to game server. The listserver reports the SERVER software build
+    # (e.g. "Beta 4.0.0"), not the client protocol it accepts, so our guessed
+    # `version` may be wrong. When the server rejects it, it tells us what it
+    # wants ("Allowed: 2.22") — parse that and retry once with the right version.
+    def connect_and_login(ver):
+        print(f"Connecting to {host}:{port} (version {ver})...")
+        cl = Client(host, port, version=ver)
+        if not cl.connect():
+            # Don't hard-exit: an unreachable host (e.g. a listserver entry with
+            # a "$AUTO" placeholder IP) must let the caller recover, not kill the
+            # whole session mid server-switch.
+            return None, "could not connect"
+        print(f"Logging in as {username}...")
+        if cl.login(username, password, timeout=30.0):
+            return cl, None
+        reason = cl.disconnect_reason
+        cl.disconnect()
+        return None, reason
 
-    if not client.connect():
-        print("Failed to connect!")
-        sys.exit(1)
+    # Connect → play → maybe switch servers (F8) → reconnect, until quit.
+    while True:
+        client, reason = connect_and_login(version)
+        if client is None and reason and "version" in reason.lower():
+            m = re.search(r'(\d+\.\d+\d*)', reason)
+            if m and m.group(1) != version:
+                version = m.group(1)
+                print(f"Server requires client version {version}; retrying...")
+                client, reason = connect_and_login(version)
 
-    print(f"Logging in as {username}...")
-    if not client.login(username, password, timeout=30.0):
-        print("Login failed!")
-        client.disconnect()
-        sys.exit(1)
+        if client is None:
+            print(f"Login failed: {reason}" if reason else
+                  "Login failed! (no response — wrong password or server unreachable)")
+            # Recover: if we came in via the listserver, let the player pick a
+            # different server instead of crashing. Otherwise there's nowhere to
+            # fall back to, so exit.
+            if servers:
+                pick = ServerSelectScreen(servers, username).run()
+                pygame.quit()
+                if not pick:
+                    break
+                host, port = pick.ip, pick.port
+                version = version_for(pick, version)
+                print(f"Trying {pick.display_name} ({host}:{port}, version {version})...")
+                continue
+            sys.exit(1)
 
-    print(f"Logged in! Level: {client.level}, Position: ({client.x:.1f}, {client.y:.1f})")
+        print(f"Logged in! Level: {client.level}, Position: ({client.x:.1f}, {client.y:.1f})")
 
-    # Load GMAP if available
-    gmap_name = client.level if client.level.endswith('.gmap') else None
-    if gmap_name:
-        cache_path = f"cache/levels/{host}_{port}/{gmap_name}"
-        if os.path.exists(cache_path):
-            with open(cache_path) as f:
-                client.load_gmap(f.read())
-            client._gmap_base_level = client._current_level_name
-            print(f"Loaded GMAP: {client.gmap_width}x{client.gmap_height} grid")
+        # Load GMAP if available
+        gmap_name = client.level if client.level.endswith('.gmap') else None
+        if gmap_name:
+            cache_path = f"cache/levels/{host}_{port}/{gmap_name}"
+            if os.path.exists(cache_path):
+                with open(cache_path) as f:
+                    client.load_gmap(f.read())
+                client._gmap_base_level = client._current_level_name
+                print(f"Loaded GMAP: {client.gmap_width}x{client.gmap_height} grid")
 
-            # Request adjacent levels
-            count = client.request_adjacent_levels()
-            print(f"Requesting {count} adjacent levels...")
-            for _ in range(30):
-                client.update(timeout=0.1)
-            print(f"Loaded {len(client.levels)} levels")
+                # Request adjacent levels
+                count = client.request_adjacent_levels()
+                print(f"Requesting {count} adjacent levels...")
+                for _ in range(30):
+                    client.update(timeout=0.1)
+                print(f"Loaded {len(client.levels)} levels")
 
-    # Create and run game client
-    print("\nStarting game client...")
-    print("Controls: Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory")
-    game = GameClient(client)
-    game.run()
+        # Create and run game client
+        print("\nStarting game client...")
+        print("Controls: Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory, F7=Players, F8=Servers")
+        game = GameClient(client)
+        game.servers = servers      # populate the in-game F8 server switcher
+        switch = game.run()
+
+        if not switch:
+            break  # normal quit
+
+        # F8: reconnect to the chosen server.
+        host, port = switch.ip, switch.port
+        version = version_for(switch, version)
+        print(f"\nSwitching to {switch.display_name} ({host}:{port}, version {version})...")
 
     print("Disconnected.")
 

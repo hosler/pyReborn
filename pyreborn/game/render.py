@@ -87,19 +87,43 @@ class RenderMixin:
                 self.player_anim.set_animation("idle", self.client.player.direction)
                 self.current_anim_name = "idle"
 
-        # Update other player animations
+        # Update other players / NPCs / baddies. Their gani sounds (sword
+        # swings, NPC effects, ...) are played positionally so the world has
+        # audible life beyond the local player — Preagonal attenuates these by
+        # distance from the listener; we add a stereo pan on top.
         for pid, anim in list(self.other_player_anims.items()):
             if pid not in self.client.players:
                 del self.other_player_anims[pid]
                 continue
-            anim.update(dt)
+            self._play_entity_sounds(anim.update(dt), self.other_player_visual.get(pid))
 
-        # Update NPC animations
         for npc_id, anim in list(self.npc_anims.items()):
             if npc_id not in self.client.npcs:
                 del self.npc_anims[npc_id]
                 continue
+            self._play_entity_sounds(anim.update(dt), self.npc_visual.get(npc_id))
+
+        # Baddy anims were created on first draw but never advanced, leaving
+        # them frozen on frame 0. Advance them here too. (Baddies aren't tracked
+        # in a visual dict, so their sounds aren't positioned — they sit in the
+        # local player's segment anyway.)
+        for bid, anim in list(self.baddy_anims.items()):
+            if bid not in self.client.baddies:
+                del self.baddy_anims[bid]
+                continue
             anim.update(dt)
+
+    def _play_entity_sounds(self, sounds, world_pos):
+        """Play an entity's gani sounds attenuated/panned by its distance from
+        the local player. world_pos is the entity's (x, y) in world tiles, or
+        None if its on-screen position isn't known yet (skip — sound on the
+        very first frame an entity appears is imperceptible)."""
+        if not sounds or world_pos is None:
+            return
+        dx = world_pos[0] - self.visual_x
+        dy = world_pos[1] - self.visual_y
+        for sound in sounds:
+            self.sound_mgr.play_positional(sound, dx, dy)
     def _update_visual_position(self, dt: float):
         """Track the authoritative position tightly.
 
@@ -130,6 +154,14 @@ class RenderMixin:
         else:
             self.visual_x += dx / dist * step
             self.visual_y += dy / dist * step
+    # The camera aims at the player's body centre, not the sprite's top-left,
+    # so the character sits at screen centre instead of reading low-and-right of
+    # it. Mirrors Preagonal centring on PixelX+24,PixelY+32. The sprite bounding
+    # box is 2 tiles wide with feet at (+1, +3) tiles, so the torso is ~1 tile
+    # right and ~1.5 tiles down from the top-left.
+    CAMERA_BODY_DX = 1.0
+    CAMERA_BODY_DY = 1.5
+
     def _sync_camera(self):
         """Point the camera at the player's GMAP-relative visual position.
 
@@ -138,7 +170,23 @@ class RenderMixin:
         """
         gmap_visual_x = self.visual_x - self.client._gmap_offset_x * 64
         gmap_visual_y = self.visual_y - self.client._gmap_offset_y * 64
-        self.camera.set_center(gmap_visual_x, gmap_visual_y)
+        # Remember the sprite's top-left (render frame) so _render_entities can
+        # draw the local player through the camera like every other entity,
+        # rather than pinning it to the camera centre (which is now the body).
+        self._player_render_pos = (gmap_visual_x, gmap_visual_y)
+
+        # Bound the camera to the world extent. With the window now larger than a
+        # single 64x64 level, this CENTRES that level (Camera2D centres any world
+        # smaller than the viewport) with black around it; a GMAP larger than the
+        # window scroll-clamps to its perimeter instead of revealing the void.
+        if self.client.in_gmap_segment:
+            self.camera.set_bounds(0, 0, self.client.gmap_width * 64,
+                                   self.client.gmap_height * 64)
+        else:
+            self.camera.set_bounds(0, 0, 64, 64)
+
+        self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
+                               gmap_visual_y + self.CAMERA_BODY_DY)
 
     def _render(self):
         """Render the game."""
@@ -148,7 +196,7 @@ class RenderMixin:
         # World + entities, optionally through a zoom layer (see _render_scene).
         zoom = self.camera.zoom
         if zoom == 1.0 or self.debug_mode:
-            self.screen.fill((34, 139, 34))
+            self.screen.fill((0, 0, 0))
             self._render_scene()
         else:
             self._render_scene_zoomed(zoom)
@@ -176,10 +224,10 @@ class RenderMixin:
         """Render the world layer at 1:1 into a smaller offscreen surface, then
         scale it onto the canvas. One scale here zooms every world-space draw
         uniformly, so the per-sprite blits don't each need a zoom factor."""
-        sw = math.ceil(SCREEN_WIDTH / zoom)
-        sh = math.ceil(SCREEN_HEIGHT / zoom)
+        sw = math.ceil(self.screen_w / zoom)
+        sh = math.ceil(self.screen_h / zoom)
         scene = pygame.Surface((sw, sh))
-        scene.fill((34, 139, 34))
+        scene.fill((0, 0, 0))
 
         # Swap in a 1:1 camera centered where the real one is, sized to the scene.
         canvas, real_cam = self.screen, self.camera
@@ -192,7 +240,7 @@ class RenderMixin:
             self.screen, self.camera = canvas, real_cam
 
         # Nearest-neighbour scale keeps the pixel art crisp.
-        self.screen.blit(pygame.transform.scale(scene, (SCREEN_WIDTH, SCREEN_HEIGHT)),
+        self.screen.blit(pygame.transform.scale(scene, (self.screen_w, self.screen_h)),
                          (0, 0))
     def _world_to_screen(self, world_x: float, world_y: float) -> Tuple[float, float]:
         """Convert world (render-frame) tile coordinates to screen pixels.
@@ -255,9 +303,9 @@ class RenderMixin:
                 screen_x, screen_y = self.camera.world_to_screen(tx, ty)
 
                 # Skip if off screen
-                if screen_x < -TILE_SIZE or screen_x > SCREEN_WIDTH:
+                if screen_x < -TILE_SIZE or screen_x > self.screen_w:
                     continue
-                if screen_y < -TILE_SIZE or screen_y > SCREEN_HEIGHT:
+                if screen_y < -TILE_SIZE or screen_y > self.screen_h:
                     continue
 
                 # Draw overlay based on tile type

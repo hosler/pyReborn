@@ -43,6 +43,37 @@ class ActionsMixin:
         If a diagonal move is blocked, slide along whichever axis is still free
         so the player glides along walls instead of sticking to them.
         """
+        player = self.client.player
+
+        # Press a direction INTO an adjacent object to interact, the classic
+        # Graal way (no separate action key): a chest in front opens, a chair in
+        # front seats you. Face the pressed direction first so the in-front
+        # probes look the right way.
+        facing = direction_from_delta(dx, dy)
+        player.direction = facing
+        self.player_anim.set_direction(facing)
+
+        chest = self._find_chest_in_front()
+        if chest is not None:
+            if not self.client.chests.get(chest, False):
+                cx, cy = chest
+                self.client.open_chest(cx, cy)
+                self.client.chests[chest] = True   # optimistic; server confirms
+            return
+
+        if not player.is_sitting and not player.is_carrying():
+            # Front tiles only: a chair under our own feet must not re-seat us
+            # the instant we stand up and step off it.
+            chair = self._find_adjacent_chair(include_feet=False)
+            if chair is not None:
+                self._sit_on_chair(chair[0], chair[1], facing)
+                return
+
+        # Seated players don't walk (input stands them up first on a fresh press);
+        # guard here too since _move runs several times per frame.
+        if player.is_sitting:
+            return
+
         step = MOVE_STEP
         # Candidate moves: the full input first, then each single axis as a slide.
         candidates = [(dx, dy)]
@@ -62,9 +93,7 @@ class ActionsMixin:
             # Cave/door entrances sit on solid tiles you can't step onto, so
             # walking into them blocks. Treat pushing into a warp link as
             # entering it (the body-sample detection sees the overlapped door).
-            door_link = self._get_non_edge_door()
-            if door_link:
-                self._use_door_link(door_link)
+            self._try_link_warp()
             return
 
         # Move is allowed (full or slid onto a free axis).
@@ -93,10 +122,8 @@ class ActionsMixin:
             self.player_anim.set_animation(move_anim, direction)
             self.current_anim_name = move_anim
 
-        # Check for door link at new position (auto-warp on walk-into)
-        door_link = self._get_non_edge_door()
-        if door_link:
-            self._use_door_link(door_link)
+        # Check for door/edge link at new position (auto-warp on walk-into).
+        self._try_link_warp()
     def _swing_sword(self):
         """Swing sword attack."""
         self.client.sword_attack(self.client.player.direction)
@@ -139,10 +166,8 @@ class ActionsMixin:
         chair_tile = self._find_adjacent_chair()
         if chair_tile is not None:
             tx, ty, tile_id = chair_tile
-            # Sit down facing direction of chair
-            if player.sit_down(player.direction):
-                self.player_anim.set_animation("sit", player.direction, force=True)
-                self.current_anim_name = "sit"
+            self._sit_on_chair(tx, ty, player.direction)
+            if player.is_sitting:
                 return
 
         # Check for sign NPC nearby
@@ -412,22 +437,46 @@ class ActionsMixin:
                 if cx <= ftx <= cx + 1 and cy <= fty <= cy + 1:
                     return (cx, cy)
         return None
-    def _find_adjacent_chair(self) -> Optional[Tuple[int, int, int]]:
-        """Find a chair tile adjacent to the player in the direction they're facing.
+    def _find_adjacent_chair(self, include_feet: bool = True) -> Optional[Tuple[int, int, int]]:
+        """Find a chair tile in front of the player (and, by default, under their
+        feet).
 
         Returns (tile_x, tile_y, tile_id) if chair found, None otherwise.
+
+        Pass include_feet=False to ignore the tile the player is standing on —
+        the walk-into-sit path needs this so the chair you're already seated on
+        doesn't immediately re-seat you the moment you stand up to leave.
         """
         player = self.client.player
 
-        # Check the per-direction touch points in front of the player, plus the
-        # feet tile itself, so sitting works whether you walk onto or face a chair.
-        candidates = self._touch_points(player.direction) + [self._player_feet()]
+        candidates = list(self._touch_points(player.direction))
+        if include_feet:
+            candidates.append(self._player_feet())
         for cx, cy in candidates:
             tile_id = self._get_tile_at(cx, cy)
             if self._is_tile_chair(tile_id):
                 return (int(cx), int(cy), tile_id)
 
         return None
+    def _sit_on_chair(self, ctx: int, cty: int, direction: int):
+        """Seat the player on the chair tile at (ctx, cty).
+
+        Snap the player so their feet rest on the seat; the visual-position lerp
+        then slides them onto it instead of them standing on the chair. Broadcast
+        the sit gani so the server (and other players) see it and our snapped
+        position syncs."""
+        player = self.client.player
+        if player.is_carrying() or player.is_sitting:
+            return
+        # Align the feet (PLAYER_FEET offset from the sprite top-left) to the
+        # centre of the chair tile.
+        player.x = ctx + 0.5 - self.PLAYER_FEET_DX
+        player.y = cty + 0.5 - self.PLAYER_FEET_DY
+        player.direction = direction
+        if player.sit_down(direction):
+            self.player_anim.set_animation("sit", direction, force=True)
+            self.current_anim_name = "sit"
+            self.client.set_animation("sit")
     def _use_weapon(self):
         """Use the currently equipped weapon."""
         # Get selected weapon from inventory
@@ -471,6 +520,43 @@ class ActionsMixin:
     def _cycle_weapon(self):
         """Cycle through available weapons."""
         self.inventory_ui.cycle_weapon(self.weapons)
+    def _try_link_warp(self) -> bool:
+        """Warp through a link under the player, but only on the rising edge of
+        touching it.
+
+        After a warp you arrive standing ON a link — often the return link, or,
+        in crusty hand-built levels, smack in the middle of an overlapping one.
+        Firing every frame you're on a link would bounce you straight back, so a
+        link only triggers when you first step onto it (was-off -> now-on); while
+        you stay on links (walking out across an overlap) nothing re-fires."""
+        # Expire the post-warp suppression once we've physically moved away from
+        # where the last warp dropped us (distance, NOT link-load state — the new
+        # level's links can arrive a few frames late, and clearing on "no link
+        # right now" would re-arm a return warp and loop).
+        if self._link_arrival is not None:
+            ax, ay = self._link_arrival
+            if abs(self.client.x - ax) >= 1.5 or abs(self.client.y - ay) >= 1.5:
+                self._link_arrival = None
+
+        link = self._get_non_edge_door()
+        on_link = link is not None
+        if not on_link:
+            self._was_on_link = False
+            return False
+        # Still sitting near a recent warp arrival: don't re-fire (covers the
+        # return link, an overlapping link we landed in, and late-loading links).
+        if self._link_arrival is not None:
+            self._was_on_link = True
+            return False
+        if not self._was_on_link:
+            # Rising edge: stepped onto a link. Mark on-link + record the arrival
+            # point BEFORE warping isn't possible (use_link moves us), so set the
+            # latch first, then stamp arrival from the post-warp position.
+            self._was_on_link = True
+            self._use_door_link(link)
+            self._link_arrival = (self.client.x, self.client.y)
+            return True
+        return False
     def _use_door_link(self, door_link: dict):
         """Use a door link to warp to another level."""
         self.client.use_link(door_link)
@@ -479,10 +565,11 @@ class ActionsMixin:
         self.visual_y = self.client.y
         # Force world surface redraw
         self.world_surface = None
-        # Load and trigger NPC scripts for new level
+        # Load + run NPC scripts through the GS1 engine, THEN snapshot collision
+        # shapes — setshape runs during playerenters, so shapes only exist after.
         self._load_npc_scripts()
         self._trigger_playerenters()
-        self.npc_handler.trigger_playerenters()
+        self.npc_handler.update_npcs()
     def _get_non_edge_door(self) -> Optional[dict]:
         """Get door link at current position, ignoring edge links in GMAP mode."""
         link = self.client.check_link_collision()

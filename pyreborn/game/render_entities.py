@@ -30,22 +30,67 @@ from .constants import (
 )
 
 
+# Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
+# enum. Preagonal renders baddies as gani entities rather than blitting a raw
+# sprite sheet, so we drive the animation from the server-reported mode: they
+# walk while hunting, recoil when hurt, and flop over when dead.
+_BADDY_MODE_GANI = {
+    0: "walk",   # WALK
+    1: "idle",   # LOOK
+    2: "walk",   # HUNT
+    3: "hurt",   # HURT
+    4: "hurt",   # BUMPED
+    5: "dead",   # DIE
+    6: "walk",   # SWAMPSHOT
+    7: "walk",   # HAREJUMP
+    8: "walk",   # OCTOSHOT
+    9: "dead",   # DEAD
+}
+
+# Per-type head over body.png, the way Preagonal's classic_baddy_graanch ganis
+# dress a baddy as a humanoid (head19.png + body.png). Keyed by the canonical
+# GServer-v2 BaddyType so the ten stock baddies read as distinct enemies.
+_BADDY_HEADS = {
+    0: "head19.png",  # graysoldier
+    1: "head20.png",  # bluesoldier
+    2: "head22.png",  # redsoldier
+    3: "head20.png",  # shootingsoldier
+    4: "head17.png",  # swampsoldier
+    5: "head14.png",  # frog / hare
+    6: "head9.png",   # octopus
+    7: "head23.png",  # goldenwarrior
+    8: "head24.png",  # lizardon
+    9: "head25.png",  # dragon
+}
+_BADDY_DEFAULT_HEAD = "head19.png"
+
+
 class EntityRenderMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _entity_on_screen(self, px: float, py: float, margin: int = 96) -> bool:
+        """True if a sprite at screen pixel (px, py) is near enough the canvas to
+        be worth drawing. Levels can carry dozens of NPCs spread across 64x64;
+        culling the off-screen ones skips their load_sheet/blit work entirely.
+        Bounds come from self.screen so it adapts to the zoom scene surface."""
+        w, h = self.screen.get_size()
+        return -margin <= px <= w + margin and -margin <= py <= h + margin
 
     def _render_entities(self):
         """Render all entities (players, NPCs) sorted by Y position."""
         entities = []
 
-        # Add local player. The camera is centered on the player, so map the
-        # camera centre through it rather than hardcoding SCREEN_WIDTH/2 — the
-        # latter is only the screen middle on the full canvas, not on the smaller
-        # offscreen surface used while zoomed, which made the player slide when
-        # zooming.
+        # Add local player. Draw it through the camera at its true render-frame
+        # top-left (set by _sync_camera) — same transform every other entity
+        # uses — so it stays correct under zoom and the camera can aim at the
+        # body centre without dragging the sprite off its real position.
         player = self.client.player
-        local_y = self.visual_y % 64
-        px, py = self.camera.world_to_screen(*self.camera.center)
-        entities.append(('player', local_y, px, py, player))
+        # Depth-sort key must be in the SAME frame as every other entity (world
+        # tiles). Other players/NPCs use world Y, so taking the local player's
+        # %64 here made them sort behind everyone in a gmap. visual_y is already
+        # world-frame.
+        px, py = self.camera.world_to_screen(*self._player_render_pos)
+        entities.append(('player', self.visual_y, px, py, player))
 
         # Add other players - convert their local coords to world coords
         for pid, pdata in self.client.players.items():
@@ -92,7 +137,8 @@ class EntityRenderMixin:
                     self.other_player_visual[pid] = (vx, vy)
 
                 opx, opy = self.camera.world_to_screen(vx, vy)
-                entities.append(('other', vy, opx, opy, pdata, pid))
+                if self._entity_on_screen(opx, opy):
+                    entities.append(('other', vy, opx, opy, pdata, pid))
 
         # Add NPCs - use world coords if available (for GMAP), else local
         for npc_id, npc in self.client.npcs.items():
@@ -112,7 +158,8 @@ class EntityRenderMixin:
                     self.npc_visual[npc_id] = (vx, vy)
 
                 npx, npy = self.camera.world_to_screen(vx, vy)
-                entities.append(('npc', vy, npx, npy, npc, npc_id))
+                if self._entity_on_screen(npx, npy):
+                    entities.append(('npc', vy, npx, npy, npc, npc_id))
 
         # Add baddies (enemies). Their x/y are local to the current segment, so
         # fold in that segment's gmap offset to line them up with the world.
@@ -129,7 +176,8 @@ class EntityRenderMixin:
                 continue
             wx, wy = bx + seg_off_x, by + seg_off_y
             sx, sy = self.camera.world_to_screen(wx, wy)
-            entities.append(('baddy', wy, sx, sy, baddy, bid))
+            if self._entity_on_screen(sx, sy):
+                entities.append(('baddy', wy, sx, sy, baddy, bid))
 
         # Sort by Y for depth
         entities.sort(key=lambda e: e[1])
@@ -145,23 +193,34 @@ class EntityRenderMixin:
             elif entity[0] == 'baddy':
                 self._render_baddy(entity[2], entity[3], entity[4], entity[5])
     def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
-        """Render a baddy. Uses its gani/image if present, else a clear enemy
-        marker so they aren't invisible (and lethal)."""
-        gani_name = baddy.get('gani') or baddy.get('ani')
-        image_name = baddy.get('image')
-        if gani_name:
-            anim = self.baddy_anims.get(baddy_id)
-            if anim is None:
-                anim = AnimationState(self.gani_parser)
-                anim.set_animation(gani_name, baddy.get('direction', 2))
-                self.baddy_anims[baddy_id] = anim
-            self._render_animated_entity(x, y, anim, {})
-            return
-        if image_name:
-            sprite = self.sprite_mgr.load_sheet(image_name)
-            if sprite:
-                self.screen.blit(sprite, (x, y))
+        """Render a baddy as a gani entity (Preagonal style). The server-reported
+        mode picks the animation (walk/idle/hurt/dead), direction faces it, and a
+        per-type head over body.png makes the enemy readable. Falls back to a red
+        marker only if the gani system can't produce a frame."""
+        mode = baddy.get('mode', 2)
+        direction = baddy.get('direction', 2)
+
+        # Prefer a server-supplied gani; otherwise drive one from the mode.
+        gani_name = (baddy.get('gani') or baddy.get('ani')
+                     or _BADDY_MODE_GANI.get(mode, "walk"))
+
+        anim = self.baddy_anims.get(baddy_id)
+        if anim is None:
+            anim = AnimationState(self.gani_parser)
+            self.baddy_anims[baddy_id] = anim
+        # set_animation no-ops when the name is unchanged, so this is cheap to
+        # call every frame; it also keeps the facing direction in sync.
+        anim.set_animation(gani_name, direction)
+
+        if anim.gani is not None:
+            # Hurt baddies blink so a hit reads even when the mode reverts fast.
+            if mode == 3 and int(time.time() * 10) % 2 == 0:
                 return
+            head = _BADDY_HEADS.get(baddy.get('type', 0), _BADDY_DEFAULT_HEAD)
+            self._render_animated_entity(x, y, anim,
+                                         {'head_image': head, 'body_image': 'body.png'})
+            return
+
         # Fallback marker: a red body so the enemy is visible.
         body = pygame.Surface((24, 24), pygame.SRCALPHA)
         pygame.draw.circle(body, (200, 40, 40), (12, 12), 11)
@@ -401,8 +460,15 @@ class EntityRenderMixin:
             self._render_animated_entity(x, y, anim, {})
 
         elif image_name:
-            # Static sprite - position at top-left of NPC coords (no offset)
-            sprite = self.sprite_mgr.load_sheet(image_name)
+            # Static sprite - position at top-left of NPC coords (no offset).
+            # Classic "object" NPCs share a tilesheet (pics1.png etc.) and carry
+            # an IMAGEPART rect selecting their sub-region; honor it so we don't
+            # blit the whole sheet.
+            part = npc.get('imagepart')
+            if part and part[2] > 0 and part[3] > 0:
+                sprite = self.sprite_mgr.get_sprite(image_name, *part)
+            else:
+                sprite = self.sprite_mgr.load_sheet(image_name)
             if sprite:
                 # Apply visual effects for light NPCs
                 if is_light or coloreffect:
@@ -410,12 +476,16 @@ class EntityRenderMixin:
                 else:
                     self.screen.blit(sprite, (x, y))
             else:
-                # Not cached locally — ask the server for it (once); meanwhile
-                # show the placeholder. on_file caches it when it arrives.
+                # Not cached locally — ask the server for it (once). Stay
+                # INVISIBLE until it arrives (real Graal does), rather than
+                # littering the level with green blobs; on_file caches it and it
+                # pops in. Show the marker only in debug mode.
                 self._request_asset(image_name)
-                self.screen.blit(self.npc_placeholder, (x, y))
-        else:
-            # Placeholder
+                if self.debug_mode:
+                    self.screen.blit(self.npc_placeholder, (x, y))
+        elif self.debug_mode:
+            # No image and no gani: a script-only NPC (trigger/controller) that
+            # is meant to be invisible. Only flag it in debug mode.
             self.screen.blit(self.npc_placeholder, (x, y))
 
         # Render NPC chat bubble if active (and not timed out)

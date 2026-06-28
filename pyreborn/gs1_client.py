@@ -39,9 +39,10 @@ NPC_ATTR = {
     "x": "x", "y": "y", "dir": "direction", "image": "image", "ani": "gani",
     "nick": "nickname", "message": "message",
 }
-# command -> NPC dict key it writes (so the renderer reflects the change)
+# command -> NPC dict key it writes (so the renderer reflects the change).
+# Image commands are handled explicitly in _dispatch (they also manage the
+# imagepart sub-rect), so they're not listed here.
 _NPC_WRITE = {
-    "setimg": "image", "setgif": "image", "setimgpart": "image",
     "setani": "gani", "setcharani": "gani", "setnick": "nickname",
 }
 
@@ -103,6 +104,18 @@ class GS1ClientHost(Host):
             if isinstance(npc, dict):
                 npc[_NPC_WRITE[name]] = to_str(args[0])
             return
+        # setimgpart name,x,y,w,h — show only a sub-rect of the sheet. Without
+        # the rect the renderer blits the entire sheet (e.g. all of pics1.png).
+        if name == "setimgpart" and isinstance(npc, dict) and len(args) >= 5:
+            npc["image"] = to_str(args[0])
+            npc["imagepart"] = (int(to_num(args[1])), int(to_num(args[2])),
+                                int(to_num(args[3])), int(to_num(args[4])))
+            return
+        # setimg/setgif set the whole image; clear any prior sub-rect.
+        if name in ("setimg", "setgif") and isinstance(npc, dict) and args:
+            npc["image"] = to_str(args[0])
+            npc.pop("imagepart", None)
+            return
         if name in ("message", "say2", "say"):
             text = to_str(args[0]) if args else ""
             if isinstance(npc, dict):
@@ -133,6 +146,23 @@ class GS1ClientHost(Host):
         if name in ("shoot", "shootarrow", "shootball", "shootfireball") and rt.on_shoot:
             rt.on_shoot(name, [to_str(a) for a in args])
             return
+        # Collision shape: record geometry keyed by NPC so the touch handler
+        # reads it from here instead of regex-parsing the script. Both forms
+        # store (width, height, per-tile flags) — 22 == solid/touchable.
+        if name == "setshape2" and len(args) >= 3:
+            w, h = int(to_num(args[0])), int(to_num(args[1]))
+            flags = ([int(to_num(f)) for f in args[2]]
+                     if isinstance(args[2], (list, tuple)) else [])
+            rt.shapes[npc_id] = (w, h, flags)
+            return
+        if name == "setshape" and len(args) >= 3:
+            # setshape type,width,height — type 1 is a fully-solid box.
+            stype = int(to_num(args[0]))
+            w, h = int(to_num(args[1])), int(to_num(args[2]))
+            flags = [22] * (w * h) if stype == 1 else []
+            rt.shapes[npc_id] = (w, h, flags)
+            return
+
         if name == "hide" and isinstance(npc, dict):
             npc["visible"] = False
         elif name == "show" and isinstance(npc, dict):
@@ -174,6 +204,9 @@ class ClientGS1:
         self.client = client
         self.scripts: dict = {}        # name -> raw code (back-compat)
         self._progs: dict = {}         # name -> entry dict
+        # npc_id -> (width, height, flags) recorded when setshape/setshape2 runs.
+        # The NPC touch handler reads collision geometry from here.
+        self.shapes: dict = {}
         # shared non-NPC scopes + client-player GS1 flags
         self._shared = {"client": {}, "server": {}, "level": {}, "global": {}}
         self._flags: dict = {}
@@ -205,6 +238,7 @@ class ClientGS1:
     def clear(self):
         self.scripts.clear()
         self._progs.clear()
+        self.shapes.clear()
 
     def trigger_event(self, event, name=None):
         names = [name] if name is not None else list(self._progs)

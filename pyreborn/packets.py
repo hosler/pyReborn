@@ -49,7 +49,8 @@ del _enum, _prefix, _member
 # Fixed-size numeric props: prop_id -> payload byte count.
 _PROP_FIXED_BYTES = {
     1: 1, 2: 1, 3: 3, 4: 1, 5: 1, 6: 1, 7: 1,   # power/rupees/arrows/bombs/gloves
-    13: 8,                                        # COLORS (new-world = 8, classic = 5)
+    # 13 (COLORS) is version-dependent (classic v2/v5 = 5 bytes, v6 extended = 8)
+    # so it's handled via the colors_len arg in _prop_payload_len, not here.
     14: 2,                                        # ID (gshort)
     15: 1, 16: 1, 17: 1, 18: 1, 19: 1,           # X / Y / SPRITE / STATUS / CARRYSPRITE
     22: 1, 24: 3, 25: 2, 26: 1, 27: 3, 28: 3,    # horsebushes/carrynpc/apcounter/mp/kills/deaths
@@ -147,9 +148,16 @@ def _read_headgif(data: bytes, pos: int):
     return data[pos:end].decode('latin-1', errors='replace'), end
 
 
-def _prop_payload_len(prop_id: int, data: bytes, pos: int) -> int:
+def _prop_payload_len(prop_id: int, data: bytes, pos: int, colors_len: int = 5) -> int:
     """Number of payload bytes a player-prop occupies (prop-id byte already consumed).
-    Used to keep the stream aligned for props the caller does not decode itself."""
+    Used to keep the stream aligned for props the caller does not decode itself.
+
+    colors_len is the width of PLPROP_COLORS (13): 5 for classic/v2.22 clients, 8
+    for v6 clients with extended body colors. Getting this wrong misaligns every
+    prop after COLORS (garbled level name, lost X/Y), so it must match the version.
+    """
+    if prop_id == 13:       # COLORS
+        return colors_len
     fixed = _PROP_FIXED_BYTES.get(prop_id)
     if fixed is not None:
         return fixed
@@ -468,7 +476,16 @@ def parse_npc_props(data: bytes) -> dict:
         elif prop_id == 16:  # HURTDXDY - 2 bytes
             pos += 2
 
-        elif prop_id == 34:  # IMAGEPART - short,short,char,char = 6 bytes
+        elif prop_id == 34:  # IMAGEPART - PropertyImagePart: gushort x, gushort
+            # y, gchar w, gchar h (6 bytes). Classic "object" NPCs set image to a
+            # tilesheet (e.g. pics1.png) and use this rect to pick the sub-region
+            # to draw; without it the renderer blits the whole sheet.
+            if pos + 5 < n:
+                px = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+                py = ((data[pos + 2] - 32) << 7) + (data[pos + 3] - 32)
+                pw = data[pos + 4] - 32
+                ph = data[pos + 5] - 32
+                props['imagepart'] = (px, py, pw, ph)
             pos += 6
 
         elif prop_id == 74:  # CLASS - PropertyLongString: gshort len + raw
@@ -659,10 +676,13 @@ def parse_rawdata(data: bytes) -> int:
     return reader.read_gint3()
 
 
-def parse_other_player(data: bytes) -> dict:
+def parse_other_player(data: bytes, colors_len: int = 5) -> dict:
     """
     Parse PLO_OTHERPLPROPS (8).
     Format: gshort(player_id) + props...
+
+    colors_len: byte width of PLPROP_COLORS (5 classic / 8 v6 extended); wrong
+    value misaligns every prop after COLORS.
     """
     if len(data) < 2:
         return {}
@@ -759,7 +779,7 @@ def parse_other_player(data: bytes) -> dict:
         else:
             # Everything else (incl. COLORS/EFFECTCOLORS/CARRYNPC/numeric stats):
             # consume the correct number of bytes to keep the stream aligned.
-            pos += _prop_payload_len(prop_id, data, pos)
+            pos += _prop_payload_len(prop_id, data, pos, colors_len)
 
     return props
 
@@ -935,10 +955,13 @@ def parse_weapon_add(data: bytes) -> dict:
         return {}
 
 
-def parse_player_props(data: bytes) -> Dict[str, Any]:
+def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
     """
     Parse PLO_PLAYERPROPS (packet 9) - returns dict of properties.
     Simplified parser that extracts essential properties only.
+
+    colors_len: byte width of PLPROP_COLORS (5 for classic/v2.22, 8 for v6
+    extended body colors). Wrong value misaligns everything after COLORS.
     """
     props = {}
     pos = 0
@@ -1064,7 +1087,7 @@ def parse_player_props(data: bytes) -> Dict[str, Any]:
         else:
             # Everything else (COLORS/EFFECTCOLORS/numeric stats/OSTYPE/etc.):
             # consume the correct number of bytes to keep the stream aligned.
-            pos += _prop_payload_len(prop_id, data, pos)
+            pos += _prop_payload_len(prop_id, data, pos, colors_len)
 
     return props
 
@@ -2060,21 +2083,37 @@ def parse_rc_max_upload_size(data: bytes) -> int:
     return PacketReader(data).read_gint5()
 
 
+# PLO_ADDPLAYER prop tail (GServer-v2 Player.cpp): propid -> field/width.
+_ADDPLAYER_STR_PROPS = {0: 'nickname', 20: 'level', 34: 'account', 82: 'community'}
+_ADDPLAYER_BYTE_PROPS = {53: 'status', 81: 'category'}
+
+
 def parse_rc_add_player(data: bytes) -> dict:
     """
-    Parse PLO_ADDPLAYER (55) - RC/NC playerlist entry.
+    Parse PLO_ADDPLAYER (55) - a player-list entry (used both by RC and by the
+    client's global online-player list).
 
-    Server layout (Player.cpp): gshort(id) gchar(namelen) name + a stream of
-    ``gchar(propid) <serialized>`` prop pairs (CURLEVEL/PLAYERLISTSTATUS/
-    NICKNAME/COMMUNITYNAME). We decode the positional id + account name (the
-    reliable part); the variable-width prop tail is kept raw.
+    Layout (Player.cpp): gshort(id) gchar(namelen) name, then a stream of
+    ``gchar(propid) <serialized>`` pairs — CURLEVEL/PLAYERLISTSTATUS/NICKNAME/
+    COMMUNITYNAME for client lists. We decode the id + account plus the known
+    props; an unrecognised propid (unknown width) stops the scan rather than
+    misaligning.
     """
     if len(data) < 3:
         return {}
     reader = PacketReader(data)
     pid = reader.read_gshort()
     account = reader.read_gstring()
-    return {'id': pid, 'account': account, 'rest': reader.remaining()}
+    out = {'id': pid, 'account': account}
+    while reader.has_data():
+        prop = reader.read_gchar()
+        if prop in _ADDPLAYER_STR_PROPS:
+            out[_ADDPLAYER_STR_PROPS[prop]] = reader.read_gstring()
+        elif prop in _ADDPLAYER_BYTE_PROPS:
+            out[_ADDPLAYER_BYTE_PROPS[prop]] = reader.read_gchar()
+        else:
+            break
+    return out
 
 
 def parse_rc_del_player(data: bytes) -> int:
