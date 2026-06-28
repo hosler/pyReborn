@@ -973,6 +973,37 @@ def _parse_weapon_add_structured(data: bytes):
         return None
 
 
+def parse_shoot(data: bytes, v2: bool) -> dict:
+    """Parse a relayed projectile (PLO_SHOOT=40 v1 / PLO_SHOOT2=48 v2).
+
+    Wire format mirrors GServer-v2 ShootPacketWrapper::constructShootV1/V2,
+    prefixed by the shooter id (gshort). We only need the gani + the GS1 shoot
+    params (the CSV string set by setshootparams), which a receiving weapon reads
+    via #p(n) in an actionprojectile2 handler.
+
+    Returns {shooter, gani, params, x, y} (params is the raw CSV string).
+    """
+    try:
+        r = PacketReader(data)
+        shooter = r.read_gshort()        # >> (short) m_id
+        if v2:
+            x = r.read_gshort(); y = r.read_gshort(); _z = r.read_gshort()
+            r.read_byte(); r.read_byte()                 # offsetx/offsety (+32)
+            r.read_gchar(); r.read_gchar()               # sangle, sanglez
+            r.read_gchar(); r.read_gchar()               # power, gravity
+            gani = r.read_gstring_short()                # gshort len + gani
+        else:
+            r.read_gint3()                               # GInt source
+            x = r.read_gchar(); y = r.read_gchar(); r.read_gchar()  # x,y,z
+            r.read_gchar(); r.read_gchar(); r.read_gchar()          # sangle,sanglez,power
+            gani = r.read_gstring()                      # gchar len + gani
+        params = r.read_gstring()                        # gchar len + params (CSV)
+        return {'shooter': shooter, 'gani': gani, 'params': params,
+                'x': x, 'y': y}
+    except Exception:
+        return {}
+
+
 def _parse_weapon_add_text(data: bytes) -> dict:
     """Legacy text weapon format: ``+name image!<script`` (pygserver)."""
     try:

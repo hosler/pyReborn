@@ -152,8 +152,25 @@ class SetupMixin:
         self.client.on_hurt = on_hurt
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
+        # A relayed projectile (another player's shoot) — fire actionprojectile2
+        # so weapons react (Bomber Arena's room system is built on this). #p(n)
+        # maps to event args: per GServer-v2 mc_p, #p(0) is the first param after
+        # the event name. The arena room-join reads the Bomb.Queue tag at #p(2)
+        # and the room+account at #p(3), so the two leading slots are the shooter
+        # and gani. NOTE: this prefix is inferred, not yet confirmed against a
+        # real 2-player relayed packet — tune once one is captured.
+        def on_projectile(info):
+            if getattr(self, 'gs1', None) is None:
+                return
+            csv = info.get('params', '') or ''
+            params = csv.split(',') if csv else []
+            shooter = str(info.get('shooter', ''))
+            gani = info.get('gani', '') or ''
+            self.gs1.fire_projectile([shooter, gani] + params)
+
         self.client.on_file = on_file
         self.client.on_weapon_add = on_weapon_add
+        self.client.on_projectile = on_projectile
     def _play_audio(self, name: str):
         """Play a `play <file>` from an NPC script: stream MIDI/OGG music via
         mixer.music, or fire a one-shot sample. Music is downloaded from the

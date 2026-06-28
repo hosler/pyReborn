@@ -103,6 +103,7 @@ def _build_handled_plo_ids() -> set:
         "PLO_SETACTIVELEVEL", "PLO_UNKNOWN168", "PLO_GHOSTICON", "PLO_RPGWINDOW",
         "PLO_STATUSLIST", "PLO_UNKNOWN190", "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
         "PLO_BIGMAP", "PLO_ADDPLAYER", "PLO_DELPLAYER",
+        "PLO_SHOOT", "PLO_SHOOT2",
     ]
     ids = {PLO_NPCDEL}
     for n in names:
@@ -270,6 +271,10 @@ class Client:
 
         # Weapon added callback: handler(weapon_name, weapon_data)
         self.on_weapon_add: Optional[Callable[[str, dict], None]] = None
+        # A relayed projectile arrived (another player's shoot). handler(info)
+        # where info = {shooter, gani, params, x, y}; params is the GS1 shoot
+        # param CSV that a weapon reads via #p(n) in actionprojectile2.
+        self.on_projectile: Optional[Callable[[dict], None]] = None
 
         # File callback: handler(filename, data) - called when file is received
         self.on_file: Optional[Callable[[str, bytes], None]] = None
@@ -1375,6 +1380,14 @@ class Client:
                 # Callback for weapon added
                 if self.on_weapon_add:
                     self.on_weapon_add(weapon['name'], weapon)
+
+        # PLO_SHOOT (175) / PLO_SHOOT2 (191) - a projectile was relayed to us.
+        # Same id across versions; classic uses SHOOT (v1 wire), 6.037 SHOOT2.
+        elif packet_id in (PacketID.PLO_SHOOT, PacketID.PLO_SHOOT2):
+            from .packets import parse_shoot
+            info = parse_shoot(data, v2=(packet_id == PacketID.PLO_SHOOT2))
+            if info and self.on_projectile:
+                self.on_projectile(info)
 
         # PLO_HURTPLAYER (40) - player hurt/damage notification
         elif packet_id == PacketID.PLO_HURTPLAYER:
