@@ -248,10 +248,20 @@ class SetupMixin:
         # (setshootparams Bomb.Queue,... ; shoot ...,blank). Send it to the
         # server, which relays it to players in the level as a projectile.
         def on_shoot(kind, args, shoot_params):
+            gani = next((a for a in args if a and a != 'blank'), 'blank')
+            # The shooter also processes its OWN projectile client-side (the
+            # server relay only reaches other players); queue our own
+            # actionprojectile2 so e.g. the host of a Bomber room — who shot the
+            # Bomb.Queue — reacts to it and warps in. Queued first (before the
+            # network send, which may throw) and deferred so we don't re-enter
+            # the GS1 engine mid-shoot.
+            me = str(getattr(self.client.player, 'id', '') or
+                     getattr(self.client.player, 'account', ''))
+            if not hasattr(self, '_pending_self_shoots'):
+                self._pending_self_shoots = []
+            self._pending_self_shoots.append([me, gani] + list(shoot_params))
             try:
-                gani = next((a for a in args if a and a != 'blank'), 'blank')
-                params = ','.join(shoot_params)
-                self.client.shoot(gani=gani, params=params)
+                self.client.shoot(gani=gani, params=','.join(shoot_params))
             except Exception:
                 pass
 
@@ -299,6 +309,20 @@ class SetupMixin:
             self.gs1.trigger_event('playerenters')
         except Exception:
             pass  # Silently ignore errors during event execution
+
+    def _process_self_shoots(self):
+        """Fire actionprojectile2 for projectiles WE shot (the shooter handles
+        its own projectile; the server relay only reaches other players). Done
+        between events so we never re-enter the GS1 engine mid-shoot."""
+        pending = getattr(self, '_pending_self_shoots', None)
+        if not pending:
+            return
+        self._pending_self_shoots = []
+        for params in pending:
+            try:
+                self.gs1.fire_projectile(params)
+            except Exception:
+                pass
 
     def _process_pending_warp(self):
         """Perform a GS1-requested warp (setlevel2/serverwarp) recorded by the

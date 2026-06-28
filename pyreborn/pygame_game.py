@@ -328,6 +328,8 @@ class GameClient(
             # A GS1 setlevel2/serverwarp (e.g. arena entry) requested a warp;
             # perform it now, between events, not mid-script (re-entrant).
             self._process_pending_warp()
+            # Fire actionprojectile2 for projectiles we shot ourselves.
+            self._process_self_shoots()
             # Reload the GS1 engine when we land in a new level (script warp,
             # door, or server-initiated), once its NPCs have streamed in.
             self._check_level_change()
