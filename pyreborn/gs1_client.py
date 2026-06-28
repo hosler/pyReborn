@@ -123,6 +123,8 @@ class GS1ClientHost(Host):
             return float(len(getattr(self.rt.client, "weapons", {}) or {}))
         if name == "playerscount":
             return float(len(self._player_list()))
+        if name == "tokenscount":   # number of tokens from the last `tokenize`
+            return float(len(getattr(ctx, "tokenize_tokens", []) or []))
         # players[i].x / players[i].y / players[i].account -> the i-th player.
         if name.startswith("players."):
             attr = name.split(".", 1)[1]
