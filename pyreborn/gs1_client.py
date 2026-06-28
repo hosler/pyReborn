@@ -83,6 +83,25 @@ class GS1ClientHost(Host):
     def _player(self):
         return getattr(self.rt.client, "player", None) if self.rt.client else None
 
+    def _player_list(self):
+        """All players the client knows: index 0 is us, then everyone else. Used
+        by NPC scripts (players[i].x, #a(i), playerscount) for proximity checks
+        and the room-join state machine."""
+        cl = self.rt.client
+        if cl is None:
+            return []
+        p = getattr(cl, "player", None)
+        out = [{"x": float(getattr(cl, "x", 0)), "y": float(getattr(cl, "y", 0)),
+                "account": getattr(p, "account", ""),
+                "nickname": getattr(p, "nickname", "")}]
+        for op in getattr(cl, "players", {}).values():
+            if isinstance(op, dict):
+                out.append({"x": float(op.get("x", 0) or 0),
+                            "y": float(op.get("y", 0) or 0),
+                            "account": op.get("account", ""),
+                            "nickname": op.get("nickname", "")})
+        return out
+
     # -- built-in attribute access ----------------------------------------
     def get_builtin(self, name, indices, ctx):
         player = self._player
@@ -103,12 +122,25 @@ class GS1ClientHost(Host):
         if name == "weaponscount":
             return float(len(getattr(self.rt.client, "weapons", {}) or {}))
         if name == "playerscount":
-            players = getattr(self.rt.client, "players", None)
-            return float((len(players) if players else 0) + 1)  # + self
+            return float(len(self._player_list()))
+        # players[i].x / players[i].y / players[i].account -> the i-th player.
+        if name.startswith("players."):
+            attr = name.split(".", 1)[1]
+            pl = self._player_list()
+            i = int(indices[0]) if indices else 0
+            return _num_or_str(pl[i].get(attr, 0)) if 0 <= i < len(pl) else 0.0
         return UNSET
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
         npc = ctx.this_obj
+        # `timeout = N` schedules the NPC's `timeout` event N seconds out. Most
+        # bomber NPCs drive their logic this way (proximity checks, the room-join
+        # processing, animations); the game loop fires it via process_timeouts.
+        if name == "timeout":
+            if isinstance(npc, dict):
+                npc["_timeout"] = max(0.0, to_num(value))
+                return True
+            return False
         if isinstance(npc, dict) and name in NPC_ATTR:
             npc[NPC_ATTR[name]] = value
             return True
@@ -358,6 +390,11 @@ class GS1ClientHost(Host):
         npc = ctx.this_obj
         if player is not None:
             if code == "#a":
+                # #a(i) -> the i-th player's account; bare #a -> ours.
+                if args:
+                    pl = self._player_list()
+                    i = int(to_num(args[0]))
+                    return to_str(pl[i].get("account", "")) if 0 <= i < len(pl) else ""
                 return to_str(getattr(player, "account", ""))
             if code == "#n":
                 return to_str(getattr(player, "nickname", ""))
@@ -482,6 +519,23 @@ class ClientGS1:
         for entry in self._progs.values():
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
+
+    def process_timeouts(self, dt):
+        """Count down each NPC's pending `timeout` and fire its `timeout` event
+        when it elapses (the event handler typically re-arms it). This is what
+        drives proximity checks, the room-join state machine, etc."""
+        if self.client is None:
+            return
+        for npc_id, npc in list(getattr(self.client, "npcs", {}).items()):
+            t = npc.get("_timeout")
+            if t is None:
+                continue
+            t -= dt
+            if t <= 0:
+                npc["_timeout"] = None      # event handler may re-arm it
+                self.trigger_npc_event(npc_id, "timeout")
+            else:
+                npc["_timeout"] = t
 
     def fire_projectile(self, params):
         """A projectile arrived: fire `actionprojectile2` across all scripts with

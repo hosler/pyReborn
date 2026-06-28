@@ -89,7 +89,12 @@ class ActionsMixin:
 
         if mdx == 0 and mdy == 0:
             # Fully blocked - still face where we tried to go.
-            self.player_anim.set_direction(direction_from_delta(dx, dy))
+            blocked_dir = direction_from_delta(dx, dy)
+            self.player_anim.set_direction(blocked_dir)
+            # You touch an NPC by walking INTO it; if a wall behind it stops the
+            # move, fire touch detection anyway at the direction we pressed so the
+            # NPC's playertouchsme still runs (room-join NPC, signs, ...).
+            self.npc_handler.process_movement(self.client.x, self.client.y, blocked_dir)
             # Cave/door entrances sit on solid tiles you can't step onto, so
             # walking into them blocks. Treat pushing into a warp link as
             # entering it (the body-sample detection sees the overlapped door).
