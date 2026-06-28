@@ -161,6 +161,15 @@ class GS1ClientHost(Host):
             return 1.0 if self.rt.mouse_left else 0.0
         if name == "isleader":          # true on the room host (who shot Bomb.Queue)
             return 1.0 if self.rt.is_leader else 0.0
+        # tiles[x,y] — the level board tile id at (x,y); read-only. The room
+        # editor reads this for wall detection (tiles[x,y] in {0x278,0x939}).
+        if name == "tiles":
+            tiles = getattr(self.rt.client, "tiles", None) if self.rt.client else None
+            if tiles and len(indices) >= 2:
+                x, y = int(indices[0]), int(indices[1])
+                if 0 <= x < 64 and 0 <= y < 64 and y * 64 + x < len(tiles):
+                    return float(tiles[y * 64 + x])
+            return 0.0
         # players[i].x / players[i].y / players[i].account -> the i-th player.
         if name.startswith("players."):
             attr = name.split(".", 1)[1]
