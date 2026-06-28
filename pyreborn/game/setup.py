@@ -119,6 +119,10 @@ class SetupMixin:
             ext = filename.lower().rsplit('.', 1)[-1]
             if ext in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
+                # A custom tileset image (addtiledef2) just arrived — drop the
+                # tile cache so blocks re-render with it instead of the default.
+                if filename in self.tileset_mgr.tiledefs.values():
+                    self.tileset_mgr.clear_cache()
             elif ext == 'gani':
                 # The server streams gani scripts on demand; cache the parsed
                 # animation so NPCs/players using it stop falling back to the
@@ -314,10 +318,25 @@ class SetupMixin:
                 setattr(self.client.player, _PLAYER_PROP[code], value)
             # other codes (#P1-#P30 gattribs, ...) not modelled yet — ignore
 
+        # addtiledef2/removetiledefs — remap tile-blocks to custom tileset images
+        # (Bomber Arena's chocolate tiles). Point the tileset manager at the
+        # image (downloading it if needed) so the board renders with it.
+        def on_tiledef(block, image):
+            if block is None:
+                self.tileset_mgr.clear_tiledefs()
+                return
+            self.tileset_mgr.set_tiledef(block, image)
+            if not self.sprite_mgr.has_sheet(image):
+                try:
+                    self.client.request_file(image)
+                except Exception:
+                    pass
+
         self.gs1.on_warp = on_warp
         self.gs1.on_triggeraction = on_triggeraction
         self.gs1.on_shoot = on_shoot
         self.gs1.on_setplayerprop = on_setplayerprop
+        self.gs1.on_tiledef = on_tiledef
 
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the
@@ -424,6 +443,10 @@ class SetupMixin:
     def _reload_level_scripts(self, lvl: str):
         """Swap the GS1 engine + per-NPC render state over to the current level."""
         self.gs1.clear()
+        # Tileset remaps (addtiledef2) are per-level; the new level's NPCs
+        # re-add them on playerenters (the arena's NPC162 does removetiledefs +
+        # addtiledef2). Drop them so the arena's chocolate tiles don't leak.
+        self.tileset_mgr.clear_tiledefs()
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()

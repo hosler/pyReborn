@@ -84,7 +84,7 @@ _NOOP = frozenset({
     "enableweapons", "disableweapons", "noplayerkilling",
     "showstats", "setcursor", "sleep", "stopmidi", "replaceani", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
-    "removetiledefs", "addtiledef2", "serverwarp",
+    "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
 
@@ -235,6 +235,20 @@ class GS1ClientHost(Host):
             return
         if name == "enabledefmovement":
             rt.default_movement = True
+            return
+        # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — remap a tile-block
+        # to a custom tileset image (Bomber Arena's chocolate tiles). The block
+        # is xoffset/256 (8 images x 256px build the level's 2048px tileset).
+        # removetiledefs reverts to the default tileset.
+        if name == "addtiledef2":
+            if len(args) >= 3 and rt.on_tiledef:
+                image = to_str(args[0])
+                block = int(to_num(args[2])) // 256
+                rt.on_tiledef(block, image)
+            return
+        if name == "removetiledefs":
+            if rt.on_tiledef:
+                rt.on_tiledef(None, None)   # None block = clear all
             return
         # #P1..#P30 player gattribs (room slot lists). setcharprop/setplayerprop
         # on a #P code targets the PLAYER, not the NPC — store it so the script
@@ -658,6 +672,7 @@ class ClientGS1:
         self.on_warp = None
         self.on_setminimap = None
         self.on_toweapons = None
+        self.on_tiledef = None
 
     def load_script(self, name, code, npc_id=0, x=0, y=0):
         self.scripts[name] = code

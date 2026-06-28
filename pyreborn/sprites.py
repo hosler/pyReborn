@@ -100,6 +100,10 @@ class SpriteManager:
             self.sheet_cache[name] = None   # don't retry an unloadable file each frame
             return None
 
+    def has_sheet(self, name: str) -> bool:
+        """True if `name` is loaded in the cache (a cached None miss is not)."""
+        return self.sheet_cache.get(name) is not None
+
     def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:
         """Load a sprite sheet from in-memory bytes (e.g. a file downloaded from
         the server) and cache it under `name`, so load_sheet(name) finds it."""
@@ -219,6 +223,22 @@ class TilesetManager:
         self.sprite_mgr = sprite_manager
         self.tile_cache: Dict[Tuple[str, int], pygame.Surface] = {}
         self.default_tileset = "dustynewpics1.png"
+        # Per-block tileset overrides set by GS1 addtiledef2 (Bomber Arena's
+        # chocolate tiles). Maps a Graal tile-block (tile_id // 512) to its own
+        # 256x512 image; the whole level tileset is these blocks side by side.
+        self.tiledefs: Dict[int, str] = {}
+
+    def set_tiledef(self, block: int, image: str):
+        """addtiledef2: use `image` for tile-block `block` (tile_id // 512)."""
+        if self.tiledefs.get(block) != image:
+            self.tiledefs[block] = image
+            self.tile_cache.clear()
+
+    def clear_tiledefs(self):
+        """removetiledefs / level change: revert to the default tileset."""
+        if self.tiledefs:
+            self.tiledefs.clear()
+            self.tile_cache.clear()
 
     def get_tile(self, tile_id: int, tileset: Optional[str] = None) -> Optional[pygame.Surface]:
         """
@@ -231,7 +251,22 @@ class TilesetManager:
         Returns:
             pygame.Surface or None
         """
+        # A per-block tiledef (addtiledef2) wins over the default tileset. The
+        # block image is one Graal block: 16 cols x 32 rows of 16px tiles, so
+        # the tile sits at its LOCAL position within the 256x512 image.
         if tileset is None:
+            tdef = self.tiledefs.get(tile_id // 512)
+            if tdef is not None:
+                cache_key = (tdef, tile_id)
+                if cache_key in self.tile_cache:
+                    return self.tile_cache[cache_key]
+                px = (tile_id % 16) * self.TILE_SIZE
+                py = ((tile_id // 16) % 32) * self.TILE_SIZE
+                tile = self.sprite_mgr.get_sprite(tdef, px, py,
+                                                  self.TILE_SIZE, self.TILE_SIZE)
+                if tile:                       # image not downloaded yet -> None,
+                    self.tile_cache[cache_key] = tile  # fall through to default
+                    return tile
             tileset = self.default_tileset
 
         cache_key = (tileset, tile_id)
