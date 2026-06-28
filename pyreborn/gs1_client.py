@@ -22,6 +22,7 @@ from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.parser import parse
 from reborn_protocol.gs1.values import to_num, to_str
+from .tiletypes import is_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +80,8 @@ _CHARPROP_NPC = {
 # don't model, or world side-effects irrelevant to drawing the lobby). Swallowed
 # silently so a script full of them still runs its visible commands.
 _NOOP = frozenset({
-    "timereverywhere", "enablefeatures", "enabledefmovement",
-    "disabledefmovement", "enableweapons", "disableweapons", "noplayerkilling",
+    "timereverywhere", "enablefeatures",
+    "enableweapons", "disableweapons", "noplayerkilling",
     "showstats", "setcursor", "sleep", "stopmidi", "replaceani", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
     "removetiledefs", "addtiledef2", "serverwarp",
@@ -147,6 +148,19 @@ class GS1ClientHost(Host):
         if name == "timevar":       # server clock (bomber compares room flag times to this)
             import time as _t
             return _t.time()
+        # arena GUI/screen + game-role builtins (read-only)
+        if name == "screenwidth":
+            return float(self.rt.screen_w)
+        if name == "screenheight":
+            return float(self.rt.screen_h)
+        if name == "mousescreenx":
+            return float(self.rt.mouse_x)
+        if name == "mousescreeny":
+            return float(self.rt.mouse_y)
+        if name == "leftmousebutton":
+            return 1.0 if self.rt.mouse_left else 0.0
+        if name == "isleader":          # true on the room host (who shot Bomb.Queue)
+            return 1.0 if self.rt.is_leader else 0.0
         # players[i].x / players[i].y / players[i].account -> the i-th player.
         if name.startswith("players."):
             attr = name.split(".", 1)[1]
@@ -164,7 +178,25 @@ class GS1ClientHost(Host):
             if isinstance(npc, dict):
                 npc["_timeout"] = max(0.0, to_num(value))
                 return True
+            # weapon context (no NPC): re-arm the weapon's timeout event so its
+            # per-frame gameplay loop keeps running (arenaGUI/arenaSYS do this).
+            key = getattr(ctx, "_prog_key", None)
+            if key is not None:
+                self.rt._weapon_timeouts[key] = max(0.0, to_num(value))
+                return True
             return False
+        # playerx/playery: the arena weapons drive movement by assigning these.
+        # Preserve the GMAP segment (client.x is a world coord; the value is the
+        # local 0-63 part) and mirror onto the player handle for the renderer.
+        if name in ("playerx", "playery") and self.rt.client is not None:
+            axis = name[-1]                          # 'x' or 'y'
+            cur = float(getattr(self.rt.client, axis, 0))
+            world = (int(cur) // 64) * 64 + to_num(value)
+            setattr(self.rt.client, axis, world)
+            p = self._player
+            if p is not None:
+                setattr(p, axis, world)
+            return True
         if isinstance(npc, dict) and name in NPC_ATTR:
             npc[NPC_ATTR[name]] = value
             return True
@@ -194,6 +226,15 @@ class GS1ClientHost(Host):
         npc_id = getattr(ctx, "_npc_id", 0)
 
         if name in _NOOP:
+            return
+        # disable/enable the engine's built-in WASD/arrow movement. The arena
+        # weapons (arenaSYS) disable it and move the player themselves via
+        # keydown()+playerx; the input layer checks rt.default_movement.
+        if name == "disabledefmovement":
+            rt.default_movement = False
+            return
+        if name == "enabledefmovement":
+            rt.default_movement = True
             return
         # #P1..#P30 player gattribs (room slot lists). setcharprop/setplayerprop
         # on a #P code targets the PLAYER, not the NPC — store it so the script
@@ -423,6 +464,30 @@ class GS1ClientHost(Host):
 
     # -- functions / message codes ----------------------------------------
     def call_function(self, name, args, ctx):
+        if name == "onwall":
+            x = int(to_num(args[0])) if args else 0
+            y = int(to_num(args[1])) if len(args) > 1 else 0
+            return 1.0 if self.rt.is_wall(x, y) else 0.0
+        if name == "onwall2":
+            # onwall2(x,y,layer) — we only model the base board layer
+            x = int(to_num(args[0])) if args else 0
+            y = int(to_num(args[1])) if len(args) > 1 else 0
+            return 1.0 if self.rt.is_wall(x, y) else 0.0
+        if name == "keydown":
+            i = int(to_num(args[0])) if args else -1
+            return 1.0 if i in self.rt.keys_dir else 0.0
+        if name == "keydown2":
+            # keydown2(keycode[, edge]) — edge true = just-pressed this frame
+            code = int(to_num(args[0])) if args else -1
+            edge = len(args) > 1 and to_num(args[1]) != 0
+            if edge:
+                held = code in self.rt.keys_raw and code not in self.rt._keys_raw_prev
+            else:
+                held = code in self.rt.keys_raw
+            return 1.0 if held else 0.0
+        if name == "hasweapon":
+            wname = to_str(args[0]) if args else ""
+            return 1.0 if wname in (getattr(self.rt.client, "weapons", {}) or {}) else 0.0
         return UNSET
 
     def message_code(self, code, args, ctx) -> str:
@@ -557,6 +622,22 @@ class ClientGS1:
         self._flags: dict = {}
         self._proj_params: list = []   # #p(n) during an actionprojectile2 event
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
+        # Input / screen / game-role state the arena weapons read via builtins.
+        # The pygame input layer populates these each frame; headless tests set
+        # them directly. keys_dir holds held arrow/action indices (0=up 1=left
+        # 2=down 3=right 4=action/D); keys_raw holds raw keycodes for keydown2.
+        self.screen_w = 800
+        self.screen_h = 600
+        self.mouse_x = 0.0
+        self.mouse_y = 0.0
+        self.mouse_left = False
+        self.is_leader = False         # true on the client that hosts the room
+        self.default_movement = True   # disabledefmovement: arena weapons drive movement
+        self.keys_dir: set = set()
+        self.keys_raw: set = set()
+        self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
+        self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
+        self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
         # Player gattrib props #P1..#P30 (the bomber room slot lists live here).
         # Stored locally so the local player sees them; full multiplayer sync
         # (PLI/PLO player props) is a later step.
@@ -586,7 +667,7 @@ class ClientGS1:
             logger.debug("failed to parse client GS1 script %s", name, exc_info=True)
             prog = None
         self._progs[name] = {
-            "prog": prog, "npc_id": npc_id,
+            "prog": prog, "npc_id": npc_id, "_key": name,
             "scopes": {"this": {}, "thiso": {}, "local": {}},
         }
 
@@ -606,7 +687,7 @@ class ClientGS1:
         old = self._progs.get(key)
         scopes = old["scopes"] if old else {"this": {}, "thiso": {}, "local": {}}
         self._progs[key] = {
-            "prog": prog, "npc_id": -1, "is_weapon": True,
+            "prog": prog, "npc_id": -1, "is_weapon": True, "_key": key,
             "weapon_name": name, "scopes": scopes,
         }
 
@@ -620,6 +701,11 @@ class ClientGS1:
         self._progs.clear()
         self._progs.update(weapons)
         self.shapes.clear()
+        self._shape_blocks.clear()
+        # Normal movement is the per-level default; the arena weapon disables it
+        # again on its playerenters. Prevents getting stuck if we leave the arena
+        # without the weapon's enabledefmovement running.
+        self.default_movement = True
 
     def trigger_event(self, event, name=None):
         names = [name] if name is not None else list(self._progs)
@@ -632,6 +718,27 @@ class ClientGS1:
         for entry in self._progs.values():
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
+
+    def is_wall(self, x, y):
+        """Collision test at world tile (x, y) for onwall(). Checks the current
+        level board (a blocking tile id), plus any dynamic collision rects set
+        via setshape2 (the arena's falling sudden-death choc blocks)."""
+        ix, iy = int(x), int(y)
+        if 0 <= ix < 64 and 0 <= iy < 64:
+            tiles = getattr(self.client, "tiles", None) if self.client else None
+            if tiles and len(tiles) >= 64 * 64:
+                try:
+                    if is_blocking(tiles[iy * 64 + ix]):
+                        return True
+                except (IndexError, TypeError):
+                    pass
+        # dynamic shapes (setshape2) recorded as world-tile blocking cells
+        return (ix, iy) in self._shape_blocks
+
+    def advance_input_frame(self):
+        """Snapshot raw keys so keydown2(code, edge=true) reports just-pressed.
+        Call once per game-loop iteration after handling input."""
+        self._keys_raw_prev = set(self.keys_raw)
 
     def process_timeouts(self, dt):
         """Count down each NPC's pending `timeout` and fire its `timeout` event
@@ -649,6 +756,20 @@ class ClientGS1:
                 self.trigger_npc_event(npc_id, "timeout")
             else:
                 npc["_timeout"] = t
+        # weapons drive their per-frame gameplay loop the same way (arenaGUI /
+        # arenaSYS re-arm `timeout = 0.05` each frame); they have no NPC dict so
+        # their countdown lives in _weapon_timeouts keyed by prog-key.
+        for key in list(self._weapon_timeouts):
+            entry = self._progs.get(key)
+            if entry is None or entry["prog"] is None:
+                self._weapon_timeouts.pop(key, None)
+                continue
+            t = self._weapon_timeouts[key] - dt
+            if t <= 0:
+                del self._weapon_timeouts[key]   # event handler may re-arm it
+                self._run(entry, "timeout")
+            else:
+                self._weapon_timeouts[key] = t
 
     def fire_projectile(self, params):
         """A projectile arrived: fire `actionprojectile2` across all scripts with
@@ -676,6 +797,7 @@ class ClientGS1:
         ctx = Context(self._host, vs, this_obj=npc, player=player)
         ctx._npc_id = entry["npc_id"]
         ctx._is_weapon = is_weapon
+        ctx._prog_key = entry.get("_key")
         try:
             Interpreter(ctx).run_event(entry["prog"], event)
         except Exception as e:

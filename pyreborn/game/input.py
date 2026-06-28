@@ -233,25 +233,69 @@ class InputMixin:
             # Toggle noclip — walk through walls to escape a bad server spawn.
             self.noclip = not self.noclip
             print(f"Noclip {'ON' if self.noclip else 'OFF'}")
+    def _clear_gs1_input(self):
+        """Drop all held keys from the GS1 engine (input is blocked this frame)."""
+        gs1 = getattr(self, 'gs1', None)
+        if gs1 is not None:
+            gs1.keys_dir = set()
+            gs1.keys_raw = set()
+
+    def _feed_gs1_input(self, keys):
+        """Mirror pygame keyboard/mouse + screen size into the GS1 engine so
+        weapon scripts (arenaSYS reads keydown()/playerx, arenaGUI reads the
+        mouse + screen) can drive arena gameplay. keydown indices: 0=up 1=left
+        2=down 3=right 4=action(D)."""
+        gs1 = getattr(self, 'gs1', None)
+        if gs1 is None:
+            return
+        gs1.screen_w = self.screen.get_width()
+        gs1.screen_h = self.screen.get_height()
+        mx, my = pygame.mouse.get_pos()
+        gs1.mouse_x, gs1.mouse_y = float(mx), float(my)
+        gs1.mouse_left = bool(pygame.mouse.get_pressed()[0])
+        d = set()
+        if keys[K_UP]:
+            d.add(0)
+        if keys[K_LEFT]:
+            d.add(1)
+        if keys[K_DOWN]:
+            d.add(2)
+        if keys[K_RIGHT]:
+            d.add(3)
+        if keys[K_d]:
+            d.add(4)
+        gs1.keys_dir = d
+        gs1.keys_raw = {i for i in range(len(keys)) if keys[i]}
+
     def _handle_input(self, current_time: float):
         """Handle held key input."""
         if (self.typing or self.inventory_ui.visible or self.show_player_list
                 or self.show_server_list or self.pm_target_id is not None):
+            self._clear_gs1_input()
             return
 
         # A GS1 `freezeplayer N` (e.g. talking to a lobby NPC) locks input until
         # the timer expires.
         if current_time < getattr(self, '_frozen_until', 0.0):
             self.is_moving = False
+            self._clear_gs1_input()
             return
 
         # Dead players can't move or act until the server respawns them (it
         # restores hearts after a short delay); the death gani plays meanwhile.
         if self.client.player.hearts <= 0:
             self.is_moving = False
+            self._clear_gs1_input()
             return
 
         keys = pygame.key.get_pressed()
+        self._feed_gs1_input(keys)
+
+        # Arena mode: a weapon called disabledefmovement and drives movement +
+        # bomb placement itself by reading keydown()/playerx. Don't run the
+        # built-in WASD movement or D-weapon handling — just feed it the keys.
+        if not self.gs1.default_movement:
+            return
 
         # Check for combined key actions first
         a_held = keys[K_a]
