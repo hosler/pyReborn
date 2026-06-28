@@ -490,6 +490,41 @@ class GS1ClientHost(Host):
         return ""
 
 
+class _ServerFlagScope(dict):
+    """The GS1 `server.` scope backed by real server flags. Writing a flag
+    (setstring server.X) sends PLI_FLAGSET so other players see it; received
+    PLO_FLAGSET values are merged via recv(). Bomber's room roster lives here
+    (server.bombrm_NN) — the member reads it to find the host's room."""
+
+    def __init__(self, rt):
+        super().__init__()
+        self._rt = rt
+        self._sent = {}
+
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v)
+        cl = self._rt.client
+        if cl is None:
+            return
+        sv = v if isinstance(v, str) else to_str(v)
+        if self._sent.get(k) == sv:        # dedup: don't resend unchanged flags
+            return
+        self._sent[k] = sv
+        # On the wire global flags are named with the "server." prefix
+        # (server.bombrm_NN); the GS1 scope keys them without it.
+        try:
+            cl.set_flag("server." + str(k), sv)
+        except Exception:
+            pass
+
+    def recv(self, k, v):
+        """Set a flag value received from the server (don't echo it back). The
+        wire name carries a "server." prefix; strip it to the scope key."""
+        k = k[7:] if str(k).startswith("server.") else k
+        super().__setitem__(k, v)
+        self._sent[k] = v
+
+
 def _pcode(code):
     """#P1..#P30 player-gattrib code -> store key 'P1'..; else None."""
     if code and code.startswith("#P") and code[2:].isdigit():
@@ -517,7 +552,8 @@ class ClientGS1:
         # The NPC touch handler reads collision geometry from here.
         self.shapes: dict = {}
         # shared non-NPC scopes + client-player GS1 flags
-        self._shared = {"client": {}, "server": {}, "level": {}, "global": {}}
+        self._shared = {"client": {}, "server": _ServerFlagScope(self),
+                        "level": {}, "global": {}}
         self._flags: dict = {}
         self._proj_params: list = []   # #p(n) during an actionprojectile2 event
         self._shoot_params: list = []  # set by setshootparams, sent by shoot

@@ -169,9 +169,21 @@ class SetupMixin:
             gani = info.get('gani', '') or ''
             self.gs1.fire_projectile([shooter, gani] + params)
 
+        # A server flag arrived (PLO_FLAGSET) — feed it into the GS1 server
+        # scope so scripts read it (bomber's room roster server.bombrm_NN).
+        def on_flag(name, value):
+            gs1 = getattr(self, 'gs1', None)
+            if gs1 is not None:
+                gs1._shared['server'].recv(name, value)
+
         self.client.on_file = on_file
         self.client.on_weapon_add = on_weapon_add
         self.client.on_projectile = on_projectile
+        self.client.on_flag = on_flag
+        # flags received before the GS1 engine existed
+        if getattr(self, 'gs1', None) is not None:
+            for _fn, _fv in (self.client.global_flags or {}).items():
+                self.gs1._shared['server'].recv(_fn, _fv)
     def _play_audio(self, name: str):
         """Play a `play <file>` from an NPC script: stream MIDI/OGG music via
         mixer.music, or fire a one-shot sample. Music is downloaded from the
