@@ -30,6 +30,11 @@ from .constants import (
 )
 
 
+def _c255(v: float) -> int:
+    """Clamp a 0..1 GS1 colour/alpha multiplier to a 0..255 byte."""
+    return max(0, min(255, int(float(v) * 255)))
+
+
 # Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
 # enum. Preagonal renders baddies as gani entities rather than blitting a raw
 # sprite sheet, so we drive the animation from the server-reported mode: they
@@ -437,8 +442,23 @@ class EntityRenderMixin:
             pass
     def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
         """Render an NPC."""
+        # destroy / hide make the NPC (and its layers) vanish entirely.
+        if npc.get('visible') is False:
+            return
+
+        # GS1 showimg/showtext layers this NPC painted (lights, signs, text).
+        # Split around the base sprite by their changeimgvis layer.
+        imgs = npc.get('imgs')
+        if imgs:
+            self._render_npc_layers(imgs, over=False)
+
         gani_name = npc.get('gani', npc.get('animation'))
+        if gani_name:
+            gani_name = gani_name.split(',')[0].strip()  # setcharani arg keeps a ','
         image_name = npc.get('image')
+        is_character = npc.get('is_character')
+        if is_character and not gani_name:
+            gani_name = 'idle'  # a showcharacter with no ani idles
 
         # Parse and cache visual effects from NPC script and image
         if npc_id not in self.npc_effects:
@@ -457,9 +477,25 @@ class EntityRenderMixin:
                 self.npc_anims[npc_id] = anim
 
             anim = self.npc_anims[npc_id]
-            self._render_animated_entity(x, y, anim, {})
+            anim.set_animation(gani_name, npc.get('direction', 2))  # cheap no-op if unchanged
+            if anim.gani is None:
+                # The gani isn't downloaded yet — ask for it and stay invisible
+                # (like the missing-image path), rather than drawing the magenta
+                # placeholder. It pops in once on_file caches it.
+                self._request_asset(gani_name + '.gani')
+            else:
+                # A character NPC composites head/body/colours like a player.
+                equip = {}
+                if is_character:
+                    equip = {
+                        'body_image': npc.get('body_image') or 'body.png',
+                        'head_image': npc.get('head_image') or 'head0.png',
+                        'sword_image': npc.get('sword_image') or 'sword1.png',
+                        'shield_image': npc.get('shield_image') or 'shield1.png',
+                    }
+                self._render_animated_entity(x, y, anim, equip)
 
-        elif image_name:
+        elif image_name and not is_character:
             # Static sprite - position at top-left of NPC coords (no offset).
             # Classic "object" NPCs share a tilesheet (pics1.png etc.) and carry
             # an IMAGEPART rect selecting their sub-region; honor it so we don't
@@ -488,11 +524,105 @@ class EntityRenderMixin:
             # is meant to be invisible. Only flag it in debug mode.
             self.screen.blit(self.npc_placeholder, (x, y))
 
+        if imgs:
+            self._render_npc_layers(imgs, over=True)
+
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
             text, chat_time = self.npc_chat_texts[npc_id]
             if time.time() - chat_time < self.chat_bubble_duration:
                 self._render_speech_bubble(x, y, text)
+
+    # -- GS1 showimg / showtext layers -------------------------------------
+    def _render_npc_layers(self, imgs: dict, over: bool):
+        """Draw an NPC's GS1 image/text layers. ``changeimgvis`` (vis) is the
+        depth: layers at vis>=2 draw in front of the NPC sprite, the rest behind.
+        Drawn in index order within each band so overlapping layers stack right."""
+        for idx in sorted(imgs):
+            rec = imgs[idx]
+            if (rec.get('vis', 4) >= 2) != over:
+                continue
+            try:
+                if rec.get('text_is'):
+                    self._render_showtext_rec(rec)
+                elif rec.get('image'):
+                    self._render_showimg_rec(rec)
+            except Exception:
+                pass  # a bad layer must never break the frame
+
+    def _layer_pos(self, rec):
+        """Screen position of a layer: showimg2/showtext2 are already in screen
+        pixels; otherwise the coords are world tiles."""
+        if rec.get('screen'):
+            return rec.get('x', 0.0), rec.get('y', 0.0)
+        return self.camera.world_to_screen(rec.get('x', 0.0), rec.get('y', 0.0))
+
+    def _render_showimg_rec(self, rec: dict):
+        image = rec['image']
+        part = rec.get('part')
+        if part and part[2] > 0 and part[3] > 0:
+            sprite = self.sprite_mgr.get_sprite(image, *part)
+        else:
+            sprite = self.sprite_mgr.load_sheet(image)
+        if not sprite:
+            self._request_asset(image)
+            return
+        # Image pixels are 1:1 with the world at base zoom (16 px/tile); the
+        # showimg `zoom` arg multiplies on top of the camera scale.
+        factor = (self.camera.scale / float(TILE_SIZE)) * (rec.get('zoom') or 1.0)
+        if factor <= 0:
+            return
+        w = max(1, int(sprite.get_width() * factor))
+        h = max(1, int(sprite.get_height() * factor))
+        sprite = pygame.transform.scale(sprite, (w, h))
+
+        colors = rec.get('colors')
+        additive = rec.get('mode') == 1 or 'light' in image.lower()
+        if colors:
+            r, g, b, a = colors
+            sprite = sprite.copy()
+            if additive:
+                # fold alpha into the colour so additive blending dims it
+                mult = (_c255(r * a), _c255(g * a), _c255(b * a), 255)
+                sprite.fill(mult, special_flags=pygame.BLEND_RGB_MULT)
+            else:
+                sprite.fill((_c255(r), _c255(g), _c255(b), 255),
+                            special_flags=pygame.BLEND_RGB_MULT)
+                sprite.set_alpha(_c255(a))
+        sx, sy = self._layer_pos(rec)
+        flags = pygame.BLEND_ADD if additive else 0
+        self.screen.blit(sprite, (int(sx), int(sy)), special_flags=flags)
+
+    def _render_showtext_rec(self, rec: dict):
+        text = rec.get('text', '')
+        if not text:
+            return
+        style = rec.get('style', '') or ''
+        size = max(8, int(16 * (rec.get('zoom') or 1.0) * (self.camera.scale / float(TILE_SIZE))))
+        font = self._showtext_font(rec.get('font', '') or 'Arial', size, 'b' in style)
+        colors = rec.get('colors')
+        col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2])) if colors else (255, 255, 255)
+        surf = font.render(text, True, col)
+        if colors and len(colors) > 3:
+            surf.set_alpha(_c255(colors[3]))
+        sx, sy = self._layer_pos(rec)
+        if 'c' in style:  # horizontally centred on the anchor
+            sx -= surf.get_width() / 2.0
+        self.screen.blit(surf, (int(sx), int(sy)))
+
+    def _showtext_font(self, name: str, size: int, bold: bool):
+        cache = getattr(self, '_showtext_fonts', None)
+        if cache is None:
+            cache = self._showtext_fonts = {}
+        key = (name.lower(), size, bold)
+        font = cache.get(key)
+        if font is None:
+            try:
+                font = pygame.font.SysFont(name, size, bold=bold)
+            except Exception:
+                font = pygame.font.Font(None, size)
+            cache[key] = font
+        return font
     def _render_light_sprite(self, sprite: pygame.Surface, x: float, y: float,
                               is_light: bool, coloreffect: Optional[Tuple[float, float, float, float]]):
         """Render a sprite with light effects (additive blending, alpha).

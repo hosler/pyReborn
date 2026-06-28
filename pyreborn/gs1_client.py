@@ -46,6 +46,28 @@ _NPC_WRITE = {
     "setani": "gani", "setcharani": "gani", "setnick": "nickname",
 }
 
+# setcharprop / setplayerprop message-code target -> NPC dict key. These mirror
+# a Graal player's appearance slots (#2 shield, #3 head, #8 body, colours, ...).
+# A character NPC (showcharacter) is then composited like a player.
+_CHARPROP_NPC = {
+    "#1": "sword_image", "#2": "shield_image", "#3": "head_image",
+    "#8": "body_image", "#n": "nickname", "#c": "message",
+    "#C0": "color0", "#C1": "color1", "#C2": "color2",
+    "#C3": "color3", "#C4": "color4",
+}
+
+# Commands that just toggle/ignore for client rendering (input/feature state we
+# don't model, or world side-effects irrelevant to drawing the lobby). Swallowed
+# silently so a script full of them still runs its visible commands.
+_NOOP = frozenset({
+    "timereverywhere", "enablefeatures", "enabledefmovement",
+    "disabledefmovement", "enableweapons", "disableweapons", "noplayerkilling",
+    "showstats", "setcursor", "sleep", "stopmidi", "replaceani", "seteffectmode",
+    "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
+    "removetiledefs", "addtiledef2", "setshootparams", "serverwarp",
+    "deletestring", "insertstring", "replacestring",
+})
+
 
 class GS1ClientHost(Host):
     """Host bridging GS1 to the live pyReborn client (local player + NPC dict).
@@ -96,14 +118,147 @@ class GS1ClientHost(Host):
         except Exception:
             logger.debug("gs1 client command %s failed", name, exc_info=True)
 
+    @staticmethod
+    def _imgs(npc):
+        """The NPC's showimg layer table (index -> record), created on demand."""
+        d = npc.get("imgs")
+        if d is None:
+            d = npc["imgs"] = {}
+        return d
+
     def _dispatch(self, name, args, ctx):
         rt, npc = self.rt, ctx.this_obj
         npc_id = getattr(ctx, "_npc_id", 0)
 
+        if name in _NOOP:
+            return
         if name in _NPC_WRITE and args:
             if isinstance(npc, dict):
                 npc[_NPC_WRITE[name]] = to_str(args[0])
             return
+
+        # -- showimg / changeimg* layer system -----------------------------
+        # NPCs paint floating images (lights, signs, furniture) addressed by a
+        # numeric index; changeimg* then mutate that record. The renderer reads
+        # npc['imgs'] each frame. Coords are level tiles (showimg) for index < ...
+        if isinstance(npc, dict):
+            if name in ("showimg", "showimg2") and len(args) >= 2:
+                idx = int(to_num(args[0]))
+                rec = self._imgs(npc).setdefault(idx, {})
+                rec["image"] = to_str(args[1])
+                if len(args) >= 4:
+                    rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
+                rec["screen"] = (name == "showimg2")
+                rec.setdefault("vis", 4)
+                return
+            if name in ("showani", "showani2") and len(args) >= 3:
+                # showani index,x,y,...,gani,... — record gani + position so the
+                # renderer can animate furniture/effects. Pull the first string
+                # arg after the coords as the gani name (best-effort).
+                idx = int(to_num(args[0]))
+                rec = self._imgs(npc).setdefault(idx, {})
+                rec["x"], rec["y"] = to_num(args[1]), to_num(args[2])
+                gani = next((to_str(a) for a in args[3:] if isinstance(a, str) and a), "")
+                if gani:
+                    rec["gani"] = gani
+                rec["screen"] = (name == "showani2")
+                rec.setdefault("vis", 4)
+                return
+            if name == "changeimgpart" and len(args) >= 5:
+                rec = self._imgs(npc).get(int(to_num(args[0])))
+                if rec is not None:
+                    rec["part"] = (int(to_num(args[1])), int(to_num(args[2])),
+                                   int(to_num(args[3])), int(to_num(args[4])))
+                return
+            if name == "changeimgcolors" and len(args) >= 5:
+                rec = self._imgs(npc).get(int(to_num(args[0])))
+                if rec is not None:
+                    rec["colors"] = tuple(to_num(a) for a in args[1:5])
+                return
+            if name == "changeimgzoom" and len(args) >= 2:
+                rec = self._imgs(npc).get(int(to_num(args[0])))
+                if rec is not None:
+                    rec["zoom"] = to_num(args[1])
+                return
+            if name == "changeimgvis" and len(args) >= 2:
+                rec = self._imgs(npc).get(int(to_num(args[0])))
+                if rec is not None:
+                    rec["vis"] = int(to_num(args[1]))
+                return
+            if name == "changeimgmode" and len(args) >= 2:
+                rec = self._imgs(npc).get(int(to_num(args[0])))
+                if rec is not None:
+                    rec["mode"] = int(to_num(args[1]))
+                return
+            if name == "showtext" and len(args) >= 6:
+                idx = int(to_num(args[0]))
+                self._imgs(npc)[idx] = {
+                    "x": to_num(args[1]), "y": to_num(args[2]),
+                    "font": to_str(args[3]), "style": to_str(args[4]),
+                    "text": to_str(args[5]), "text_is": True, "vis": 4,
+                    "screen": False,
+                }
+                return
+            if name == "showtext2" and len(args) >= 6:
+                idx = int(to_num(args[0]))
+                self._imgs(npc)[idx] = {
+                    "x": to_num(args[1]), "y": to_num(args[2]),
+                    "font": to_str(args[3]), "style": to_str(args[4]),
+                    "text": to_str(args[5]), "text_is": True, "vis": 4,
+                    "screen": True,
+                }
+                return
+            if name == "changeimgcolors":  # too few args: ignore
+                return
+            if name in ("hideimg", "hidetext") and args:
+                self._imgs(npc).pop(int(to_num(args[0])), None)
+                return
+            if name == "hideimgs":
+                # hideimgs [start] — clear all layers at/after start (or all).
+                start = int(to_num(args[0])) if args else None
+                imgs = self._imgs(npc)
+                for k in [k for k in imgs if start is None or k >= start]:
+                    imgs.pop(k, None)
+                return
+            if name == "showpoly":  # polygons not drawn yet; store raw
+                if args:
+                    npc.setdefault("polys", {})[int(to_num(args[0]))] = args[1:]
+                return
+            if name == "showcharacter":
+                npc["is_character"] = True
+                return
+            if name == "setcharprop" and len(args) >= 2:
+                code = to_str(args[0])
+                key = _CHARPROP_NPC.get(code)
+                if key is not None:
+                    npc[key] = to_str(args[1])
+                return
+            if name in ("drawoverplayer", "drawunderplayer"):
+                npc["draw_layer"] = "over" if name == "drawoverplayer" else "under"
+                return
+            if name == "dontblock":
+                npc["dontblock"] = True
+                rt.shapes.pop(npc_id, None)
+                return
+            if name == "freezeplayer":
+                if rt.on_freezeplayer:
+                    rt.on_freezeplayer(to_num(args[0]) if args else 0.5)
+                return
+            if name == "destroy":
+                npc["visible"] = False
+                npc.pop("imgs", None)
+                return
+            if name in ("setlevel2", "setlevel") and rt.on_warp and args:
+                x = to_num(args[1]) if len(args) > 1 else None
+                y = to_num(args[2]) if len(args) > 2 else None
+                rt.on_warp(to_str(args[0]), x, y)
+                return
+            if name in ("setminimap",) and rt.on_setminimap:
+                rt.on_setminimap([to_str(a) for a in args])
+                return
+            if name == "toweapons" and rt.on_toweapons and args:
+                rt.on_toweapons(to_str(args[0]))
+                return
         # setimgpart name,x,y,w,h — show only a sub-rect of the sheet. Without
         # the rect the renderer blits the entire sheet (e.g. all of pics1.png).
         if name == "setimgpart" and isinstance(npc, dict) and len(args) >= 5:
@@ -178,6 +333,7 @@ class GS1ClientHost(Host):
 
     def message_code(self, code, args, ctx) -> str:
         player = self._player
+        npc = ctx.this_obj
         if player is not None:
             if code == "#a":
                 return to_str(getattr(player, "account", ""))
@@ -185,6 +341,23 @@ class GS1ClientHost(Host):
                 return to_str(getattr(player, "nickname", ""))
             if code == "#c":
                 return to_str(getattr(player, "chat", ""))
+        if code == "#L":
+            return to_str(getattr(self.rt.client, "level", "")) if self.rt.client else ""
+        if isinstance(npc, dict):
+            if code == "#m":
+                return to_str(npc.get("gani", ""))
+            if code == "#f":
+                return to_str(npc.get("image", ""))
+            # character-appearance codes read back what setcharprop stored
+            key = _CHARPROP_NPC.get(code)
+            if key is not None:
+                return to_str(npc.get(key, ""))
+        if code == "#w" and args and self.rt.client is not None:
+            names = list(getattr(self.rt.client, "weapons", {}) or {})
+            try:
+                return names[int(float(args[0]))]
+            except (ValueError, IndexError, TypeError):
+                return ""
         return ""
 
 
@@ -222,6 +395,10 @@ class ClientGS1:
         self.on_triggeraction = None
         self.on_setplayerprop = None
         self.on_shoot = None
+        self.on_freezeplayer = None
+        self.on_warp = None
+        self.on_setminimap = None
+        self.on_toweapons = None
 
     def load_script(self, name, code, npc_id=0, x=0, y=0):
         self.scripts[name] = code

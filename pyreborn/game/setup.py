@@ -112,10 +112,22 @@ class SetupMixin:
             self.ghost_mode = enabled
 
         def on_file(filename: str, data: bytes):
-            """Cache a downloaded asset. Images go to the sprite cache; a music
-            file we were waiting on starts playing once it arrives."""
-            if filename.lower().rsplit('.', 1)[-1] in ('png', 'gif', 'bmp', 'mng'):
+            """Cache a downloaded asset. Images go to the sprite cache, ganis to
+            the gani parser's cache; a music file we were waiting on starts
+            playing once it arrives."""
+            ext = filename.lower().rsplit('.', 1)[-1]
+            if ext in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
+            elif ext == 'gani':
+                # The server streams gani scripts on demand; cache the parsed
+                # animation so NPCs/players using it stop falling back to the
+                # missing-asset placeholder. Keyed by the bare name (no .gani).
+                name = filename[:-5] if filename.lower().endswith('.gani') else filename
+                try:
+                    self.gani_parser.cache[name] = self.gani_parser.parse_content(
+                        data.decode('latin-1'), name)
+                except Exception:
+                    pass
             elif self.sound_mgr.is_music(filename):
                 if filename == getattr(self, '_pending_music', None):
                     self._pending_music = None
@@ -169,9 +181,38 @@ class SetupMixin:
             # Could apply screen tint effect here
             pass
 
+        # freezeplayer N — lock local input for N seconds (NPC dialogue, etc).
+        def on_freezeplayer(seconds):
+            self._frozen_until = time.time() + max(0.0, float(seconds or 0))
+
+        # toweapons <name> — script wants this weapon present locally; make sure
+        # it's registered so #w()/weapon logic see it (server also streams it).
+        def on_toweapons(name):
+            if name and name not in self.client.weapons:
+                self.client.weapons[name] = {'name': name, 'image': '', 'script': ''}
+
+        # setminimap img,txt,... — remember the minimap source + fetch the file.
+        def on_setminimap(args):
+            self._gs1_minimap = args
+            for a in args:
+                if isinstance(a, str) and '.' in a:
+                    try:
+                        self.client.request_file(a)
+                    except Exception:
+                        pass
+
+        # setlevel2 / serverwarp — authoritative in Graal (milestone 2: send the
+        # warp to the server). Recorded for now; nothing in the lobby warps.
+        def on_warp(level, x, y):
+            self._pending_gs1_warp = (level, x, y)
+
         self.gs1.on_play = on_play
         self.gs1.on_say = on_say
         self.gs1.on_message = on_message
+        self.gs1.on_freezeplayer = on_freezeplayer
+        self.gs1.on_toweapons = on_toweapons
+        self.gs1.on_setminimap = on_setminimap
+        self.gs1.on_warp = on_warp
 
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the

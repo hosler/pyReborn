@@ -239,6 +239,12 @@ class InputMixin:
                 or self.show_server_list or self.pm_target_id is not None):
             return
 
+        # A GS1 `freezeplayer N` (e.g. talking to a lobby NPC) locks input until
+        # the timer expires.
+        if current_time < getattr(self, '_frozen_until', 0.0):
+            self.is_moving = False
+            return
+
         # Dead players can't move or act until the server respawns them (it
         # restores hearts after a short delay); the death gani plays meanwhile.
         if self.client.player.hearts <= 0:
