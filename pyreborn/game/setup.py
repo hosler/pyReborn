@@ -217,6 +217,13 @@ class SetupMixin:
         def on_play(sound_name):
             self._play_audio(sound_name)
 
+        # stopmidi/stopsong — stop streaming music and clear the dedup name so a
+        # later play (even of the same track) starts fresh.
+        def on_stopmusic():
+            self.sound_mgr.stop_music()
+            self._current_music_name = None
+            self._pending_music = None
+
         # Say/chat callback - sets NPC speech bubble
         def on_say(npc_id, message):
             self.npc_chat_texts[npc_id] = (message, time.time())
@@ -294,6 +301,7 @@ class SetupMixin:
                 pass
 
         self.gs1.on_play = on_play
+        self.gs1.on_stopmusic = on_stopmusic
         self.gs1.on_say = on_say
         self.gs1.on_message = on_message
         self.gs1.on_freezeplayer = on_freezeplayer

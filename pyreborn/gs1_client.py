@@ -82,7 +82,7 @@ _CHARPROP_NPC = {
 _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "enableweapons", "disableweapons", "noplayerkilling",
-    "showstats", "setcursor", "sleep", "stopmidi", "replaceani", "seteffectmode",
+    "showstats", "setcursor", "sleep", "replaceani", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
@@ -464,6 +464,9 @@ class GS1ClientHost(Host):
         if name in ("play", "play2", "playlooped") and args and rt.on_play:
             rt.on_play(to_str(args[0]))
             return
+        if name in ("stopmidi", "stopsong") and rt.on_stopmusic:
+            rt.on_stopmusic()
+            return
         if name in ("showimg", "showimg2") and rt.on_showimg and len(args) >= 4:
             rt.on_showimg(int(to_num(args[0])), to_str(args[1]),
                           to_num(args[2]), to_num(args[3]))
@@ -713,6 +716,7 @@ class ClientGS1:
         self.on_showimg = None
         self.on_hideimg = None
         self.on_play = None
+        self.on_stopmusic = None
         self.on_say = None
         self.on_message = None
         self.on_setmap = None

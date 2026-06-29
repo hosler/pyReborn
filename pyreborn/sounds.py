@@ -230,8 +230,12 @@ class SoundManager:
         self.initialize()
         if not self._initialized:
             return False
-        if name == self._current_music and pygame.mixer.music.get_busy():
-            return True   # already playing this track
+        if name == self._current_music:
+            return True   # same track already selected — ignore (don't restart).
+            # Scripts re-request the current track every frame (e.g. bomber NPC
+            # 75's radio); only a different track or stop_music() reloads. (Don't
+            # gate on get_busy(): a momentary gap at a loop boundary must not
+            # cause a reload/restart.)
         if name in self._music_failed:
             return False
 
