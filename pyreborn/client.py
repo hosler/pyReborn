@@ -908,6 +908,15 @@ class Client:
                     self.player.x = gx * 64 + x
                     self.player.y = gy * 64 + y
                     break
+        # Leaving a standalone (non-GMAP) level: drop the other players from it.
+        # The server streams the new level's players fresh; without this, players
+        # from old levels linger and inflate playerscount (e.g. the Bomber arena
+        # host then thinks the room is full and never settles to host it). GMAP
+        # segment hops keep the roster (you see players across the whole gmap).
+        if (level_name != self._current_level_name
+                and level_name not in self.gmap_grid):
+            self.players.clear()
+
         self._current_level_name = level_name
         self._pending_level_name = level_name
 
