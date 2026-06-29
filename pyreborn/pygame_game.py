@@ -346,6 +346,10 @@ class GameClient(
             self._process_pending_warp()
             # Fire actionprojectile2 for projectiles we shot ourselves.
             self._process_self_shoots()
+            # Resume scripts suspended on `sleep` whose timer elapsed (NPC 162
+            # waiting for players, countdowns, ...). Drained before timeouts so a
+            # finishing coroutine can re-arm its timeout this frame.
+            self.gs1.process_coroutines(self._frame_dt)
             # Drive NPC + weapon `timeout` events (proximity checks, room-join
             # logic, the arena's per-frame bomb gameplay loop).
             self.gs1.process_timeouts(self._frame_dt)

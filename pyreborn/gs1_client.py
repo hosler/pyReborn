@@ -702,6 +702,8 @@ class ClientGS1:
         self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
         self._weapon_imgs: dict = {}      # prog-key -> showimg/showani layer table
+        self._coros: list = []            # suspended script coroutines (sleep)
+        self._active_coro_keys: set = set()  # prog-keys with a live coroutine
         # Player gattrib props #P1..#P30 (the bomber room slot lists live here).
         # Stored locally so the local player sees them; full multiplayer sync
         # (PLI/PLO player props) is a later step.
@@ -768,6 +770,8 @@ class ClientGS1:
         self.shapes.clear()
         self._shape_blocks.clear()
         self._weapon_imgs.clear()       # weapon layers are per-level (bombs, HUD)
+        self._coros.clear()             # abandon suspended scripts from old level
+        self._active_coro_keys.clear()
         # Normal movement is the per-level default; the arena weapon disables it
         # again on its playerenters. Prevents getting stuck if we leave the arena
         # without the weapon's enabledefmovement running.
@@ -847,6 +851,14 @@ class ClientGS1:
             self._proj_params = []
 
     def _run(self, entry, event):
+        key = entry.get("_key")
+        # Serialize per script: GS1 runs a script's events one at a time. If a
+        # previous event is still suspended on a `sleep`, don't start another
+        # (the suspended one re-arms `timeout` when it finishes). This is what
+        # lets NPC 162 sit in `while(playerscount<2){sleep}` without the
+        # per-frame timeout firing a second copy.
+        if key is not None and key in self._active_coro_keys:
+            return
         sc = entry["scopes"]
         scopes = {
             "this": sc["this"], "thiso": sc["thiso"], "local": sc["local"],
@@ -863,9 +875,57 @@ class ClientGS1:
         ctx = Context(self._host, vs, this_obj=npc, player=player)
         ctx._npc_id = entry["npc_id"]
         ctx._is_weapon = is_weapon
-        ctx._prog_key = entry.get("_key")
+        ctx._prog_key = key
+        interp = Interpreter(ctx)
+        interp._coro = True                # `sleep` suspends; we pump it below
+        gen = interp.iter_event(entry["prog"], event)
+        self._drive(gen, ctx, key, entry, event)
+
+    def _drive(self, gen, ctx, key, entry, event):
+        """Pump a script generator until it suspends on a `sleep` or finishes.
+        A suspended generator is parked in _coros and resumed by
+        process_coroutines once its sleep elapses."""
+        ctx.steps = 0          # fresh step budget per slice; sleeps don't count
         try:
-            Interpreter(ctx).run_event(entry["prog"], event)
+            delay = next(gen)
+        except StopIteration:
+            if key is not None:
+                self._active_coro_keys.discard(key)
+            return
         except Exception as e:
+            if key is not None:
+                self._active_coro_keys.discard(key)
             who = entry.get("weapon_name") or f"npc_{entry['npc_id']}"
             _report_gs1_error(f"event {event} on {who}", e)
+            return
+        if key is not None:
+            self._active_coro_keys.add(key)
+        self._coros.append({"gen": gen, "ctx": ctx, "key": key,
+                            "entry": entry, "event": event,
+                            "remaining": float(delay)})
+
+    def process_coroutines(self, dt):
+        """Resume suspended scripts whose `sleep` has elapsed. Driven once per
+        frame by the game loop (alongside process_timeouts)."""
+        if not self._coros:
+            return
+        still = []
+        for c in self._coros:
+            c["remaining"] -= dt
+            if c["remaining"] > 0:
+                still.append(c)
+                continue
+            c["ctx"].steps = 0
+            try:
+                c["remaining"] = float(next(c["gen"]))
+                still.append(c)
+            except StopIteration:
+                if c["key"] is not None:
+                    self._active_coro_keys.discard(c["key"])
+            except Exception as e:
+                if c["key"] is not None:
+                    self._active_coro_keys.discard(c["key"])
+                ent = c["entry"]
+                who = ent.get("weapon_name") or f"npc_{ent['npc_id']}"
+                _report_gs1_error(f"event {c['event']} on {who}", e)
+        self._coros = still
