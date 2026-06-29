@@ -145,9 +145,13 @@ class GS1ClientHost(Host):
             return float(len(self._player_list()))
         if name == "tokenscount":   # number of tokens from the last `tokenize`
             return float(len(getattr(ctx, "tokenize_tokens", []) or []))
-        if name == "timevar":       # server clock (bomber compares room flag times to this)
+        if name == "timevar":
+            # Graal server clock (GServer-v2 Server::calculateNWTime): integer
+            # ticks of 5 seconds since 2001-02-01 17:33:34 UTC. The bomber room
+            # timers (server.bombrm_NN) are in this scale; raw unix seconds were
+            # out of scale + decimal, which broke the room-timer comparisons.
             import time as _t
-            return _t.time()
+            return float(int((_t.time() - 981048814) / 5))
         # arena GUI/screen + game-role builtins (read-only)
         if name == "screenwidth":
             return float(self.rt.screen_w)
