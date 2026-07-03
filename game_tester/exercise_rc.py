@@ -79,7 +79,69 @@ def run_rc_battery(rc: RCClient, host: str, port: int,
     _step(notes, "account_lifecycle",
           lambda: _account_lifecycle(rc, notes, verbose), verbose)
 
+    # --- write-side ops (tier 6) confined to throwaway state ---------------
+    _step(notes, "write_side_ops",
+          lambda: _write_side_ops(rc, notes, verbose), verbose)
+
     return notes
+
+
+def _write_side_ops(rc: RCClient, notes: List[str], verbose: bool):
+    """Exercise the tier-6 RC write-side builders against throwaway state
+    ONLY: a fresh throwaway account (rights/account-set/props-set2/reset), a
+    file uploaded to and deleted from a QA scratch area, and the deprecated
+    no-op setters. Never alters suite accounts, server options or server
+    flags (SERVEROPTIONSSET/FOLDERCONFIGSET/SERVERFLAGSSET replace state
+    wholesale - their builders are byte-validated but NOT sent)."""
+    acct = THROWAWAY + "_w"
+    try:
+        # Account lifecycle target for the write ops.
+        rc.create_account(acct, "qa_pass_123", "qa@example.invalid"); _pump(rc, 0.6)
+
+        # ACCOUNTSET: tweak email/ban metadata on the throwaway.
+        rc.set_account(acct, email="qa_w@example.invalid",
+                       banned=False, load_only=False); _pump(rc)
+
+        # PLAYERRIGHTSSET: grant a harmless right set + folder rights.
+        rc.set_player_rights(acct, 0x1, "*.*.*.*", ("world/*",)); _pump(rc)
+        rc.get_player_rights(acct); _pump(rc)
+
+        # PLAYERPROPSSET2: replace the throwaway's (empty) state.
+        rc.set_player_props_by_name(acct, world="", props=b"",
+                                    flags=(("qa_flag", "1"),),
+                                    chests=(), weapons=("bomb",)); _pump(rc)
+
+        # PLAYERPROPSRESET: reset the throwaway to defaultaccount.
+        rc.reset_player_props(acct); _pump(rc)
+
+        # Deprecated no-op setters (server discards; builders still round-trip).
+        rc.set_respawn_time(15); _pump(rc, 0.1)
+        rc.set_horse_life(30); _pump(rc, 0.1)
+        rc.set_ap_increment(60); _pump(rc, 0.1)
+        rc.set_baddy_respawn(60); _pump(rc, 0.1)
+        rc.list_rcs(); _pump(rc, 0.1)
+        rc.disconnect_rc(0); _pump(rc, 0.1)
+        rc.apply_reason(acct, "qa reason"); _pump(rc, 0.1)
+
+        # NPC-server query (harmless read; reply is PLO_NPCSERVERADDR).
+        rc.npcserver_query("location"); _pump(rc)
+
+        # File browser write ops in a scratch flow: upload into world/,
+        # move it around, then delete it.
+        rc.filebrowser_start(); _pump(rc)
+        rc.filebrowser_cd("world"); _pump(rc)
+        rc.filebrowser_upload("qa_rc_upload.txt", b"qa rc upload fixture\n"); _pump(rc)
+        rc.filebrowser_delete("qa_rc_upload.txt"); _pump(rc)
+        # Large-file chunked upload of a small file (valid: START + chunks + END).
+        rc.filebrowser_largefile_start("qa_rc_bigupload.txt"); _pump(rc, 0.1)
+        rc.filebrowser_upload("qa_rc_bigupload.txt", b"chunk1-"); _pump(rc, 0.1)
+        rc.filebrowser_upload("qa_rc_bigupload.txt", b"chunk2"); _pump(rc, 0.1)
+        rc.filebrowser_largefile_end("qa_rc_bigupload.txt"); _pump(rc)
+        rc.filebrowser_delete("qa_rc_bigupload.txt"); _pump(rc)
+        rc.filebrowser_end(); _pump(rc)
+    finally:
+        rc.delete_account(acct)
+        _pump(rc, 0.6)
 
 
 def _online_player_ops(rc: RCClient, host: str, port: int,

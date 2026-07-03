@@ -182,6 +182,8 @@ captured_*.bin
 # Development files
 debug_*.py
 test_*.py
+# the scratch-file pattern above must not swallow real QA modules
+!game_tester/test_*.py
 analyze_*.py
 trace_*.py
 capture_*.py

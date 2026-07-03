@@ -182,6 +182,17 @@ Examples:
                        help="Run the NC (npc-control) packet-coverage harness")
     parser.add_argument("--gmap", action="store_true",
                        help="Run the GMAP world test suite (needs gmaps=chicken.gmap)")
+    parser.add_argument("--tier1", action="store_true",
+                       help="Run the board-modify/large-file protocol-parity suite")
+    parser.add_argument("--tier2", action="store_true",
+                       help="Run the entity-family (bomb/arrow/horse/flagdel) protocol-parity suite")
+    parser.add_argument("--tier3", action="store_true",
+                       help="Run the server-control (freeze/say2/triggeraction/serverwarp) suite")
+    parser.add_argument("--tier5", action="store_true",
+                       help="Run the GS2 bytecode transport (weapon/class/gani) suite")
+    parser.add_argument("--gs2", action="store_true",
+                       help="Run the GS2 VM execution suite (weapon lifecycle, "
+                            "timeout loop, class join, triggeraction round-trip, corpus)")
     parser.add_argument("--report", type=str, default=None,
                        help="Base filename for reports (e.g., 'report' -> report.json, report.html)")
 
@@ -201,6 +212,81 @@ Examples:
         if args.report:
             reporter.save_json(f"{args.report}_gmap.json")
         sys.exit(0 if all(r.passed for r in gresults) else 1)
+
+    # Tier1 suite runs standalone (own bot lifecycle).
+    if args.tier1:
+        from game_tester.tier1_tests import run_tier1_tests
+        print("\n[TIER1 TESTS]")
+        reporter = TestReporter("Game Tester - Tier1")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=2, mode="tier1")
+        tresults = run_tier1_tests(host=args.host, port=args.port)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_tier1.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # Tier2 suite runs standalone (own bot lifecycle).
+    if args.tier2:
+        from game_tester.tier2_tests import run_tier2_tests
+        print("\n[TIER2 TESTS]")
+        reporter = TestReporter("Game Tester - Tier2")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=2, mode="tier2")
+        tresults = run_tier2_tests(host=args.host, port=args.port)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_tier2.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # Tier5 suite runs standalone (own bot lifecycle).
+    if args.tier5:
+        from game_tester.tier5_tests import run_tier5_tests
+        print("\n[TIER5 TESTS]")
+        reporter = TestReporter("Game Tester - Tier5")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=1, mode="tier5")
+        tresults = run_tier5_tests(host=args.host, port=args.port)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_tier5.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # GS2 VM suite runs standalone (own bot lifecycle).
+    if args.gs2:
+        from game_tester.gs2_tests import run_gs2_tests
+        print("\n[GS2 VM TESTS]")
+        reporter = TestReporter("Game Tester - GS2 VM")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=2, mode="gs2")
+        tresults = run_gs2_tests(host=args.host, port=args.port)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_gs2.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # Tier3 suite runs standalone (own bot lifecycle).
+    if args.tier3:
+        from game_tester.tier3_tests import run_tier3_tests
+        print("\n[TIER3 TESTS]")
+        reporter = TestReporter("Game Tester - Tier3")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=2, mode="tier3")
+        tresults = run_tier3_tests(host=args.host, port=args.port)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_tier3.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
 
     # Coverage mode runs standalone (own bot lifecycle, own report format).
     if args.coverage or args.coverage_rc or args.coverage_nc:
