@@ -341,12 +341,39 @@ class ListServerClient:
             return False
 
         try:
-            # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + "newmain"
+            # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + clienttype
+            #
+            # CLIENTTYPE FILTERING (audited against the reference listserver impl in
+            # this repo, graal-serverlist/server/src/PlayerConnection.cpp +
+            # ServerConnection.cpp): the `version` string we send is parsed and
+            # stored (PlayerConnection::msgPLI_V2ENCRYPTKEYCL) but is NEVER read
+            # again anywhere in the codebase -- it has zero effect on which
+            # servers come back. The `clienttype` string, however, does:
+            #
+            #   _clientType = (clienttype == "newmain" ? ClientType::Version3
+            #                                          : ClientType::AllServers);
+            #
+            # sendServerList() then calls conn->canAcceptClient(_clientType) per
+            # server, and canAcceptClient() short-circuits `true` for every server
+            # UNLESS the client is bucketed as Version3 (i.e. clienttype ==
+            # "newmain" exactly), in which case it's masked against that game
+            # server's own `_allowedVersionsMask` (server-admin configurable via
+            # "Listserver,settings,allowedversions"). "newmain" also causes
+            # servers literally named "offline" to be dropped from the list.
+            #
+            # Verified live against listserver.graal.in:14922 (account hosler):
+            # clienttype="newmain" returned 10/11 servers; clienttype="pyreborn"
+            # (anything != "newmain") returned 17/18 servers -- 7 extra entries
+            # (some behind allowedversions restrictions, one "offline"-named).
+            # We are not the reference "newmain" client, so identifying honestly
+            # as our own client type both is more truthful AND happens to land in
+            # the unfiltered ClientType::AllServers bucket, guaranteeing the
+            # complete list regardless of any server's allowedversions config.
             packet = bytearray()
             packet.append(LSPacketID.PLI_V2ENCRYPTKEYCL + 32)  # Packet ID
             packet.append((self._encryption_key + 32) & 0xFF)  # Key
             packet.extend(self.version[:8].ljust(8).encode('ascii'))  # Version (8 bytes)
-            packet.extend(b'newmain')  # Client type
+            packet.extend(b'pyreborn')  # Client type (see filtering note above)
             packet.append(ord('\n'))
 
             # Compress and send (Gen2 style - just zlib)
@@ -719,12 +746,15 @@ if IS_BROWSER:
         def _send_init_packet(self) -> bool:
             """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
             try:
-                # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + "newmain"
+                # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + clienttype.
+                # clienttype != "newmain" -> ClientType::AllServers server-side ->
+                # unfiltered server list. See the detailed comment on the non-browser
+                # ListServerClient._send_init_packet above for the full audit.
                 packet = bytearray()
                 packet.append(LSPacketID.PLI_V2ENCRYPTKEYCL + 32)
                 packet.append((self._encryption_key + 32) & 0xFF)
                 packet.extend(self.version[:8].ljust(8).encode('ascii'))
-                packet.extend(b'newmain')
+                packet.extend(b'pyreborn')
                 packet.append(ord('\n'))
 
                 # Compress and send (Gen2 style - just zlib)

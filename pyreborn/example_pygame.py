@@ -52,6 +52,7 @@ from . import Client
 from .listserver import ListServerClient
 from .pygame_screens import LoginScreen, ServerSelectScreen, show_loading_screen
 from .pygame_game import GameClient
+from .prefs import Prefs
 
 
 def version_for(server, default):
@@ -67,14 +68,18 @@ def version_for(server, default):
 
 def main():
     """Main entry point."""
+    # Preferences (last username/server/window size etc, see prefs.py) seed the
+    # defaults below; CLI args always override them when given explicitly.
+    prefs = Prefs.load()
+
     # Check for command line arguments
     username = None
     password = None
     use_listserver = False
-    listserver_host = "listserver.example.com"
-    listserver_port = 14922
-    host = "localhost"
-    port = 14900
+    listserver_host = prefs.listserver_host
+    listserver_port = prefs.listserver_port
+    host = prefs.host
+    port = prefs.port
     version = "6.037"  # Default version, can be overridden with --version
     servers = []        # listserver result, passed to the game for the F8 switcher
 
@@ -107,7 +112,7 @@ def main():
         print("Starting login screen...")
         print("Usage (optional): python -m pyreborn.example_pygame [user] [pass] [host] [port] [--version VER] [--listserver [host]]")
 
-        login_screen = LoginScreen()
+        login_screen = LoginScreen(prefs=prefs)
         login_result = login_screen.run()
 
         if not login_result:
@@ -128,7 +133,8 @@ def main():
     if use_listserver:
         # Listserver mode - authenticate and show server selection
         print(f"Connecting to listserver at {listserver_host}:{listserver_port}...")
-        show_loading_screen(f"Connecting to {listserver_host}...")
+        show_loading_screen(f"Connecting to {listserver_host}...",
+                           size=(prefs.window_w, prefs.window_h))
 
         ls = ListServerClient(listserver_host, listserver_port)
         response = ls.login(username, password)
@@ -142,13 +148,17 @@ def main():
         print(f"Found {len(response.servers)} servers")
         servers = response.servers  # keep for the in-game F8 server switcher
 
+        # Successful listserver auth: remember it for next launch.
+        prefs.remember_login(username, password, use_listserver=True,
+                             listserver_host=listserver_host)
+
         if not response.servers:
             print("No servers available!")
             pygame.quit()
             sys.exit(1)
 
         # Show server selection screen
-        select_screen = ServerSelectScreen(response.servers, username)
+        select_screen = ServerSelectScreen(response.servers, username, prefs=prefs)
         selected_server = select_screen.run()
 
         if not selected_server:
@@ -204,7 +214,7 @@ def main():
             # different server instead of crashing. Otherwise there's nowhere to
             # fall back to, so exit.
             if servers:
-                pick = ServerSelectScreen(servers, username).run()
+                pick = ServerSelectScreen(servers, username, prefs=prefs).run()
                 pygame.quit()
                 if not pick:
                     break
@@ -215,6 +225,11 @@ def main():
             sys.exit(1)
 
         print(f"Logged in! Level: {client.level}, Position: ({client.x:.1f}, {client.y:.1f})")
+
+        # Successful game-server login: remember it for next launch (only
+        # touches host/port when not using the listserver; see remember_login).
+        prefs.remember_login(username, password, use_listserver=use_listserver,
+                             host=host, port=port, listserver_host=listserver_host)
 
         # Load GMAP if available
         gmap_name = client.level if client.level.endswith('.gmap') else None
