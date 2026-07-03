@@ -56,6 +56,27 @@ from .packets import (
     build_rc_filebrowser_download,
     build_rc_filebrowser_delete,
     build_rc_filebrowser_rename,
+    build_rc_serveroptions_set,
+    build_rc_folderconfig_set,
+    build_rc_respawn_set,
+    build_rc_horselife_set,
+    build_rc_apincrement_set,
+    build_rc_baddyrespawn_set,
+    build_rc_playerprops_set,
+    build_rc_playerprops_set2,
+    build_rc_listrcs,
+    build_rc_disconnect_rc,
+    build_rc_apply_reason,
+    build_rc_serverflags_set,
+    build_rc_playerprops_reset,
+    build_rc_account_set,
+    build_rc_playerrights_set,
+    build_rc_filebrowser_up,
+    build_rc_filebrowser_move,
+    build_rc_npcserverquery,
+    build_rc_largefile_start,
+    build_rc_largefile_end,
+    build_rc_folder_delete,
 )
 
 
@@ -590,6 +611,199 @@ class RCClient(Client):
 
         data = build_rc_filebrowser_rename(old_name, new_name)
         return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_RENAME, data)
+
+    # =========================================================================
+    # Write-side admin operations (tier 6)
+    # =========================================================================
+
+    def set_server_options(self, options_text: str) -> bool:
+        """Replace the server options (PLI_RC_SERVEROPTIONSSET). options_text
+        is the full serveroptions.txt content ('key = value' lines).
+        DESTRUCTIVE: overwrites config - fetch with get_server_options()
+        first and send back the complete text."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_serveroptions_set(options_text)
+        return self._protocol.send_packet(PacketID.PLI_RC_SERVEROPTIONSSET, data)
+
+    def set_folder_config(self, config_text: str) -> bool:
+        """Replace foldersconfig.txt (PLI_RC_FOLDERCONFIGSET). DESTRUCTIVE:
+        overwrites the folder config wholesale."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_folderconfig_set(config_text)
+        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERCONFIGSET, data)
+
+    def set_respawn_time(self, seconds: int) -> bool:
+        """PLI_RC_RESPAWNSET - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_RESPAWNSET,
+                                          build_rc_respawn_set(seconds))
+
+    def set_horse_life(self, seconds: int) -> bool:
+        """PLI_RC_HORSELIFESET - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_HORSELIFESET,
+                                          build_rc_horselife_set(seconds))
+
+    def set_ap_increment(self, seconds: int) -> bool:
+        """PLI_RC_APINCREMENTSET - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_APINCREMENTSET,
+                                          build_rc_apincrement_set(seconds))
+
+    def set_baddy_respawn(self, seconds: int) -> bool:
+        """PLI_RC_BADDYRESPAWNSET - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_BADDYRESPAWNSET,
+                                          build_rc_baddyrespawn_set(seconds))
+
+    def set_player_props(self, player_id: int, world: str = '', props: bytes = b'',
+                         flags=(), chests=(), weapons=()) -> bool:
+        """Replace an online player's account state by id
+        (PLI_RC_PLAYERPROPSSET). DESTRUCTIVE: wholesale-replaces the
+        account's flags/chests/weapons - throwaway accounts only."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_playerprops_set(player_id, world, props, flags, chests, weapons)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSSET, data)
+
+    def set_player_props_by_name(self, account: str, world: str = '', props: bytes = b'',
+                                 flags=(), chests=(), weapons=()) -> bool:
+        """Replace a (possibly offline) account's state by name
+        (PLI_RC_PLAYERPROPSSET2). DESTRUCTIVE - see set_player_props."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_playerprops_set2(account, world, props, flags, chests, weapons)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSSET2, data)
+
+    def list_rcs(self) -> bool:
+        """PLI_RC_LISTRCS - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_LISTRCS, build_rc_listrcs())
+
+    def disconnect_rc(self, player_id: int = 0) -> bool:
+        """PLI_RC_DISCONNECTRC - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_DISCONNECTRC,
+                                          build_rc_disconnect_rc(player_id))
+
+    def apply_reason(self, account: str, reason: str = '') -> bool:
+        """PLI_RC_APPLYREASON - deprecated no-op on modern GServer."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_APPLYREASON,
+                                          build_rc_apply_reason(account, reason))
+
+    def set_server_flags(self, flags: dict) -> bool:
+        """Replace ALL server flags (PLI_RC_SERVERFLAGSSET). DESTRUCTIVE:
+        flags not present in the dict are cleared - fetch the current set
+        with get_server_flags() and merge before calling."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_serverflags_set(flags)
+        return self._protocol.send_packet(PacketID.PLI_RC_SERVERFLAGSSET, data)
+
+    def reset_player_props(self, account: str) -> bool:
+        """Reset an account to defaultaccount (PLI_RC_PLAYERPROPSRESET).
+        DESTRUCTIVE and boots the player if online (keeps admin rights)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_playerprops_reset(account)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSRESET, data)
+
+    def set_account(self, account: str, password: str = '', email: str = '',
+                    banned: bool = False, load_only: bool = False,
+                    admin_level: int = 0, world: str = '', ban_reason: str = '') -> bool:
+        """Edit account metadata (PLI_RC_ACCOUNTSET): password/email/ban/
+        load-only. Requires the Modify Staff Account right."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_account_set(account, password, email, banned,
+                                    load_only, admin_level, world, ban_reason)
+        return self._protocol.send_packet(PacketID.PLI_RC_ACCOUNTSET, data)
+
+    def set_player_rights(self, account: str, rights: int,
+                          admin_ip: str = '*.*.*.*', folders=()) -> bool:
+        """Set an account's admin rights bitmask + admin ip + folder rights
+        (PLI_RC_PLAYERRIGHTSSET)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_playerrights_set(account, rights, admin_ip, folders)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERRIGHTSSET, data)
+
+    def filebrowser_upload(self, filename: str, file_data: bytes) -> bool:
+        """Upload a file into the RC's current folder
+        (PLI_RC_FILEBROWSER_UP). For large files bracket chunked uploads
+        with filebrowser_largefile_start/end.
+
+        The upload is preceded by PLI_RAWDATA framing: packets are normally
+        newline-terminated, so any 0x0A byte in the file would truncate the
+        packet server-side (IPacketHandler::parsePacketsFromBundle reads to
+        '\\n' unless m_nextIsRaw is armed)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_filebrowser_up(filename, file_data)
+        # Raw size covers exactly the framed packet: id byte + payload. No
+        # trailing newline - the server never strips one from raw blocks
+        # (RemoveNewlinesFromRawPacket is unset), so including it would
+        # append a stray 0x0A to the uploaded file.
+        raw_size = 1 + len(data)
+        size_payload = bytes([
+            ((raw_size >> 14) & 0x7F) + 32,
+            ((raw_size >> 7) & 0x7F) + 32,
+            (raw_size & 0x7F) + 32,
+        ])
+        if not self._protocol.send_packet(PacketID.PLI_RAWDATA, size_payload):
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_UP, data,
+                                          append_newline=False)
+
+    def filebrowser_move(self, destination_dir: str, filename: str) -> bool:
+        """Move a file from the RC's current folder to destination_dir
+        (PLI_RC_FILEBROWSER_MOVE)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_filebrowser_move(destination_dir, filename)
+        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_MOVE, data)
+
+    def npcserver_query(self, message: str = 'location') -> bool:
+        """Query the NPC-server (PLI_NPCSERVERQUERY). 'location' requests the
+        NC address; the reply arrives as PLO_NPCSERVERADDR."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_rc_npcserverquery(0, message)
+        return self._protocol.send_packet(PacketID.PLI_NPCSERVERQUERY, data)
+
+    def filebrowser_largefile_start(self, filename: str) -> bool:
+        """Begin a chunked RC upload (PLI_RC_LARGEFILESTART); follow with
+        filebrowser_upload() chunks and filebrowser_largefile_end()."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_LARGEFILESTART,
+                                          build_rc_largefile_start(filename))
+
+    def filebrowser_largefile_end(self, filename: str) -> bool:
+        """Finish a chunked RC upload (PLI_RC_LARGEFILEEND) - the server
+        writes the accumulated chunks to disk."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_LARGEFILEEND,
+                                          build_rc_largefile_end(filename))
+
+    def folder_delete(self, folder: str) -> bool:
+        """Delete an empty folder (PLI_RC_FOLDERDELETE), path relative to the
+        server root."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERDELETE,
+                                          build_rc_folder_delete(folder))
 
     # =========================================================================
     # Packet Handling (Override parent)

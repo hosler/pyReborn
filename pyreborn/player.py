@@ -23,6 +23,12 @@ class Player:
     hearts: float = 3.0
     max_hearts: float = 3.0
     rupees: int = 0
+    mp: int = 0   # magic points (PLPROP_MAGICPOINTS)
+    ap: int = 50  # alignment points (PLPROP_ALIGNMENT; 50 = neutral default)
+
+    # Body colors (PLPROP_COLORS): list of palette indices
+    # (5 entries on classic clients, 8 on v6 extended body colors).
+    colors: list = field(default_factory=list)
 
     # Inventory counts
     arrows: int = 0
@@ -80,6 +86,12 @@ class Player:
             self.max_hearts = props['max_hearts']
         if 'rupees' in props:
             self.rupees = props['rupees']
+        if 'mp' in props:
+            self.mp = props['mp']
+        if 'ap' in props:
+            self.ap = props['ap']
+        if 'colors' in props:
+            self.colors = props['colors']
         if 'animation' in props:
             self.animation = props['animation']
         if 'sprite' in props:

@@ -20,6 +20,8 @@ from reborn_protocol import (
     CompressionType,
     RebornEncryption,
     Gen5Codec,
+    Gen4Codec,
+    Gen3Codec,
     Gen2Codec,
 )
 
@@ -52,9 +54,41 @@ class VersionConfig:
     build_string: Optional[str]
     client_type: ClientType
     sends_build: bool = False
+    # Encryption generation this client-type/version pair negotiates.
+    # Authoritative mapping (GServer PlayerClient.cpp handleLogin):
+    #   TYPE_CLIENT  + known version, no key  -> GEN_2
+    #   TYPE_CLIENT  + enc key (1.41 - 2.18)  -> GEN_3
+    #   TYPE_CLIENT2 (2.19 - 2.21, 3.x)       -> GEN_4
+    #   TYPE_CLIENT3 (2.22+)                  -> GEN_5
+    encryption_gen: int = 5
 
 
 VERSIONS = {
+    "1.411": VersionConfig(
+        name="1.411",
+        protocol_string="GNW13110",
+        build_string=None,
+        client_type=ClientType.TYPE_CLIENT,
+        sends_build=False,
+        encryption_gen=3,   # "1.41 registers itself as PLTYPE_CLIENT, but does
+                            # include an encryption key" -> server flips to GEN_3
+    ),
+    "2.17": VersionConfig(
+        name="2.17",
+        protocol_string="GNW22122",
+        build_string=None,
+        client_type=ClientType.TYPE_CLIENT,
+        sends_build=False,
+        encryption_gen=3,   # 1.41 - 2.18 client encryption era
+    ),
+    "2.21": VersionConfig(
+        name="2.21",
+        protocol_string="GNW01113",
+        build_string=None,
+        client_type=ClientType.TYPE_CLIENT2,
+        sends_build=False,
+        encryption_gen=4,   # PLTYPE_CLIENT2 -> ENCRYPT_GEN_4 (bz2 only)
+    ),
     "2.22": VersionConfig(
         name="2.22",
         protocol_string="GNW03014",
@@ -92,17 +126,24 @@ class Protocol:
         self.socket: Optional[socket.socket] = None
         self.connected = False
 
-        # Encryption
-        self.encryption_key = random.randint(0, 127)
-        # Encryption generation. GEN_5 (default) is the modern client/RC codec.
-        # NC connections use GEN_2 (zlib framing, no per-packet encryption and
-        # no encryption-key byte in the login packet) - see use_gen2().
-        self.gen = 5
-        self.codec = Gen5Codec(self.encryption_key)
-        self.first_packet = True  # First response is just zlib compressed
-
         # Version config
         self.version = VERSIONS.get(version, VERSIONS["2.22"])
+
+        # Encryption
+        self.encryption_key = random.randint(0, 127)
+        # Encryption generation, from the version entry. GEN_5 is the modern
+        # client/RC codec; GEN_4 = 2.19-2.21/3.x (bz2-only), GEN_3 = 1.41-2.18
+        # (client-side byte insertion + zlib). NC connections use GEN_2 (zlib
+        # framing, no per-packet encryption and no encryption-key byte in the
+        # login packet) - see use_gen2().
+        self.gen = self.version.encryption_gen
+        if self.gen == 3:
+            self.codec = Gen3Codec(self.encryption_key)
+        elif self.gen == 4:
+            self.codec = Gen4Codec(self.encryption_key)
+        else:
+            self.codec = Gen5Codec(self.encryption_key)
+        self.first_packet = True  # First response is just zlib compressed
 
         # Client type override (for RC/NC connections)
         self.client_type_override: Optional[ClientType] = None
@@ -166,9 +207,12 @@ class Protocol:
             client_type = self.client_type_override or self.version.client_type
             packet.append((client_type.value + 32) & 0xFF)
 
-            # Encryption key + 32. GEN_2 (NC) logins do not include this byte -
-            # the server only reads it when the negotiated gen is > GEN_3.
-            if self.gen > 3:
+            # Encryption key + 32. GEN_2 (NC) logins do not include this byte.
+            # GEN_3 clients DO send it: "1.41 registers itself as PLTYPE_CLIENT,
+            # but does include an encryption key" - the key byte at the version
+            # position is exactly how the server detects GEN_3 (handleLogin:
+            # unknown 8-char string -> setGen(GEN_3) -> re-read key + version).
+            if self.gen >= 3:
                 packet.append((self.encryption_key + 32) & 0xFF)
 
             # Protocol version (8 bytes)
@@ -202,14 +246,22 @@ class Protocol:
             print(f"Login send failed: {e}")
             return False
 
-    def send_packet(self, packet_id: int, data: bytes = b"") -> bool:
-        """Send encrypted packet to server"""
+    def send_packet(self, packet_id: int, data: bytes = b"",
+                    append_newline: bool = True) -> bool:
+        """Send encrypted packet to server.
+
+        append_newline=False is for packets sent inside PLI_RAWDATA framing
+        (the server reads exactly the declared byte count instead of scanning
+        for '\\n', and never strips a trailing newline from raw blocks -
+        RemoveNewlinesFromRawPacket is unset in GServer - so including one
+        would corrupt the payload, e.g. append a stray byte to file uploads).
+        """
         if not self.socket or not self.connected:
             return False
 
         try:
             # Build packet: packet_id + 32, then data, then newline
-            packet = bytes([packet_id + 32]) + data + b'\n'
+            packet = bytes([packet_id + 32]) + data + (b'\n' if append_newline else b'')
 
             # Record the outgoing payload (coverage harness compares this to the
             # server's logged view of what it received - a true wire round-trip).
@@ -639,13 +691,14 @@ class WebSocketProtocol:
             print(f"Login failed: {e}")
             return False
 
-    def send_packet(self, packet_id: int, data: bytes = b"") -> bool:
+    def send_packet(self, packet_id: int, data: bytes = b"",
+                    append_newline: bool = True) -> bool:
         """Send encrypted packet."""
         if not self.ws or not self._tcp_connected:
             return False
 
         try:
-            packet = bytes([packet_id + 32]) + data + b'\n'
+            packet = bytes([packet_id + 32]) + data + (b'\n' if append_newline else b'')
             encrypted = self.codec.send_packet(packet)
             self._send_bytes(encrypted)
             return True

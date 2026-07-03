@@ -80,6 +80,46 @@ from .packets import (
     parse_status_list,
     parse_rpg_window,
     parse_baddy_hurt,
+    parse_board_modify,
+    parse_board_modify2,
+    build_board_modify,
+    parse_board_heights,
+    parse_large_file_marker,
+    parse_large_file_size,
+    parse_file_uptodate,
+    build_update_file,
+    parse_bomb_add,
+    build_bomb_add,
+    parse_bomb_del,
+    build_bomb_del,
+    parse_arrow_add,
+    build_arrow_add,
+    parse_horse_add,
+    parse_horse_del,
+    build_horse_del,
+    parse_firespy,
+    build_firespy,
+    parse_throwcarried,
+    build_throwcarried,
+    parse_npcmoved,
+    parse_move2,
+    parse_flag_del,
+    parse_say2,
+    parse_server_warp,
+    parse_triggeraction_in,
+    parse_profile,
+    build_profile_get,
+    build_profile_set,
+    parse_npcserveraddr,
+    parse_setnetcookie,
+    parse_npc_bytecode,
+    parse_gani_script,
+    parse_npcweaponscript,
+    parse_loadgani,
+    parse_loadscript,
+    build_update_script,
+    build_update_gani,
+    build_update_class,
 )
 
 # NPC delete packet ID not in PacketID class yet
@@ -106,6 +146,21 @@ def _build_handled_plo_ids() -> set:
         "PLO_STATUSLIST", "PLO_UNKNOWN190", "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
         "PLO_BIGMAP", "PLO_ADDPLAYER", "PLO_DELPLAYER",
         "PLO_SHOOT", "PLO_SHOOT2",
+        # Tier 1: board modify / large files / board heights.
+        "PLO_BOARDMODIFY", "PLO_BOARDMODIFY2", "PLO_BOARDHEIGHTS",
+        "PLO_LARGEFILESTART", "PLO_LARGEFILESIZE", "PLO_LARGEFILEEND",
+        "PLO_FILEUPTODATE",
+        # Tier 2: entity families + NPC movement.
+        "PLO_BOMBADD", "PLO_BOMBDEL", "PLO_ARROWADD", "PLO_HORSEADD",
+        "PLO_HORSEDEL", "PLO_FIRESPY", "PLO_THROWCARRIED", "PLO_NPCMOVED",
+        "PLO_MOVE2", "PLO_FLAGDEL",
+        # Tier 3: server-control packets.
+        "PLO_FREEZEPLAYER2", "PLO_UNFREEZEPLAYER", "PLO_SAY2", "PLO_HIDENPCS",
+        "PLO_SERVERWARP", "PLO_TRIGGERACTION", "PLO_DISABLECLASSICMODE",
+        "PLO_PROFILE", "PLO_NPCSERVERADDR", "PLO_SETNETCOOKIE",
+        # Tier 5: GS2 bytecode transport (parse + store only).
+        "PLO_NPCBYTECODE", "PLO_GANISCRIPT", "PLO_NPCWEAPONSCRIPT",
+        "PLO_LOADGANI", "PLO_LOADSCRIPT",
     ]
     ids = {PLO_NPCDEL}
     for n in names:
@@ -174,6 +229,10 @@ class Client:
         # v2/v5 clients get 5. Wrong width misaligns the whole player-props
         # packet (garbled level name, spawn stuck at 0,0). See parse_player_props.
         self._colors_len = 8 if str(version).startswith("6") else 5
+        # Clients older than 2.1 receive PLO_FILE without the 5-byte modtime
+        # header (GServer Player.cpp sendFile: "Older client versions didn't
+        # send the modTime"). Only the 1.x entries qualify.
+        self._file_no_modtime = str(version).startswith("1.")
 
         # Use WebSocketProtocol in browser, regular Protocol otherwise
         if IS_BROWSER:
@@ -242,6 +301,16 @@ class Client:
         # Weapons: maps weapon_name -> weapon dict with name, image, script
         self.weapons: Dict[str, dict] = {}
 
+        # Entity families (tier 2): bombs/arrows/horses keyed by (x, y) since
+        # the protocol identifies them by half-tile position, not an id.
+        self.bombs: Dict[Tuple[float, float], dict] = {}
+        self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
+        self.horses: Dict[Tuple[float, float], dict] = {}
+
+        # NPCs: maps npc_id -> {x, y, duration_ms, dx, dy, options} most recent
+        # PLO_MOVE2/NPCMOVED update (in addition to self.npcs full props).
+        self.npc_moves: Dict[int, dict] = {}
+
         # Server time (from heartbeat)
         self.server_time = 0
 
@@ -299,6 +368,47 @@ class Client:
         # Ghost mode callback: handler(enabled) - ghost/spectator mode toggled
         self.on_ghost_mode: Optional[Callable[[bool], None]] = None
 
+        # Board modify callback: handler(info) - info is the dict from
+        # parse_board_modify/parse_board_modify2 (x, y, width, height, tiles,
+        # layer, and map_x/map_y for gmap deltas). Fired after self.tiles /
+        # self.levels[...] has already been patched.
+        self.on_board_modify: Optional[Callable[[dict], None]] = None
+
+        # File-up-to-date callback: handler(filename) - server confirmed our
+        # cached copy (per request_file_if_modified) is current.
+        self.on_file_uptodate: Optional[Callable[[str], None]] = None
+
+        # Entity family callbacks (tier 2).
+        self.on_bomb_add: Optional[Callable[[dict], None]] = None
+        self.on_bomb_del: Optional[Callable[[float, float], None]] = None
+        self.on_arrow_add: Optional[Callable[[dict], None]] = None
+        self.on_horse_add: Optional[Callable[[dict], None]] = None
+        self.on_horse_del: Optional[Callable[[float, float], None]] = None
+        self.on_firespy: Optional[Callable[[dict], None]] = None
+        self.on_throwcarried: Optional[Callable[[int], None]] = None
+
+        # NPC-moved callback: handler(info) where info has npc_id/x/y/new_level
+        # (PLO_NPCMOVED - fired when an NPC warps to a different level).
+        self.on_npc_moved: Optional[Callable[[dict], None]] = None
+        # NPC move-queue update callback: handler(info) with npc_id/x/y/dx/dy/
+        # duration_ms/options (PLO_MOVE2).
+        self.on_npc_move: Optional[Callable[[dict], None]] = None
+
+        # Server-control callbacks (tier 3).
+        # Freeze state changed: handler(frozen: bool).
+        self.on_freeze: Optional[Callable[[bool], None]] = None
+        # Sign-style server message: handler(text) (PLO_SAY2).
+        self.on_say2: Optional[Callable[[str], None]] = None
+        # Server warp target: handler(info) with name/host/port (PLO_SERVERWARP).
+        # pyReborn does NOT auto-connect; the app decides.
+        self.on_server_warp: Optional[Callable[[dict], None]] = None
+        # Inbound triggeraction: handler(info) with player_id/npc_id/x/y/action.
+        self.on_triggeraction: Optional[Callable[[dict], None]] = None
+        # Profile received: handler(profile dict) (PLO_PROFILE).
+        self.on_profile: Optional[Callable[[dict], None]] = None
+        # NPCs hidden by server: handler() (PLO_HIDENPCS).
+        self.on_hide_npcs: Optional[Callable[[], None]] = None
+
         # Chest callback: handler(x, y, opened) - level chest state
         self.on_chest: Optional[Callable[[int, int, bool], None]] = None
 
@@ -327,6 +437,51 @@ class Client:
         self._pending_files: set = set()  # Files we're waiting for
         self._received_files: Dict[str, bytes] = {}  # Received files
         self._failed_files: set = set()  # Files that failed to download
+        self._uptodate_files: set = set()  # Files confirmed unchanged by the server
+
+        # Large file transfer (PLO_LARGEFILESTART/SIZE/...FILE.../END): files
+        # over 32000 bytes arrive as repeated PLO_FILE chunks (each carrying
+        # its own modtime+filename header) that must be appended, not treated
+        # as separate complete downloads. Keyed by filename.
+        self._large_file_pending: Optional[str] = None
+        self._large_file_buffer: bytearray = bytearray()
+        self._large_file_expected_size: int = 0
+
+        # Gmap level-height overrides from PLO_BOARDHEIGHTS: (map_x, map_y) ->
+        # {'block_x', 'block_y', 'block_width', 'block_height', 'heights'}.
+        self.board_heights: Dict[Tuple[int, int], dict] = {}
+
+        # Server-control state (tier 3).
+        self.frozen = False              # PLO_FREEZEPLAYER2 / PLO_UNFREEZEPLAYER
+        self.classic_mode_disabled = False  # PLO_DISABLECLASSICMODE
+        self.npcs_hidden = False         # PLO_HIDENPCS
+        self.server_warp_info: Optional[dict] = None  # last PLO_SERVERWARP target
+        self.profiles: Dict[str, dict] = {}  # account -> profile (PLO_PROFILE)
+        self.npcserver_addr: Optional[dict] = None  # PLO_NPCSERVERADDR
+        self.net_cookie = ""             # PLO_SETNETCOOKIE
+        # Optional GS1 host attachment point: if the embedding app (pygame
+        # layer) sets this to its ClientGS1 instance, inbound
+        # PLO_TRIGGERACTION fires the matching clientside `action<name>`
+        # event on loaded scripts.
+        self.gs1_host = None
+        # Optional GS2 host attachment point (pyreborn.gs2_client.ClientGS2
+        # sets this via attach()): inbound PLO_TRIGGERACTION also fires the
+        # matching `onAction<name>` function on loaded GS2 VMs.
+        self.gs2_host = None
+
+        # GS2 bytecode store (tier 5 - parse and store only, no VM).
+        # kind -> {key: blob} where kind is 'weapon'/'npc'/'gani'/'class';
+        # weapon/gani/class keys are names, npc keys are npc ids.
+        self.gs2_bytecode: Dict[str, Dict] = {
+            'weapon': {}, 'npc': {}, 'gani': {}, 'class': {},
+        }
+        # Script headers announced via PLO_LOADSCRIPT: name -> header info
+        # dict (type/name/save_to_disk/des_key/crc).
+        self.gs2_script_headers: Dict[str, dict] = {}
+        # Gani SETBACKTO info from PLO_LOADGANI: gani -> setbackto ani.
+        self.gani_setbackto: Dict[str, str] = {}
+        # Bytecode arrival callback: handler(kind, key, blob).
+        self.on_gs2_bytecode: Optional[Callable[[str, object, bytes], None]] = None
 
         # Auto-respond settings
         self.auto_respond_hurt = True  # Automatically send hurt response with health update
@@ -475,6 +630,11 @@ class Client:
             True if packet sent successfully
         """
         if not self.connected or not self._authenticated:
+            return False
+
+        # Server froze us (PLO_FREEZEPLAYER2): movement is a no-op until
+        # PLO_UNFREEZEPLAYER, matching real client behavior.
+        if self.frozen:
             return False
 
         # Calculate new position using step size
@@ -1075,6 +1235,172 @@ class Client:
         data = build_horse_add(x, y, image, direction)
         return self._protocol.send_packet(PacketID.PLI_HORSEADD, data)
 
+    def put_bomb(self, x: Optional[float] = None, y: Optional[float] = None,
+                power: int = 1, timer_ms: int = 3050) -> bool:
+        """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time; the server
+        expects 50ms increments already counted down by ~200ms client-side, so
+        this converts it the same way (see build_bomb_add)."""
+        if not self.connected or not self._authenticated:
+            return False
+        if x is None:
+            x = self.player.x
+        if y is None:
+            y = self.player.y
+        data = build_bomb_add(x, y, power, timer_ms)
+        return self._protocol.send_packet(PacketID.PLI_BOMBADD, data)
+
+    def remove_bomb(self, x: float, y: float) -> bool:
+        """Remove a bomb at (x, y) (PLI_BOMBDEL)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_bomb_del(x, y)
+        return self._protocol.send_packet(PacketID.PLI_BOMBDEL, data)
+
+    def shoot_arrow(self, x: Optional[float] = None, y: Optional[float] = None,
+                    direction: Optional[int] = None, sprite: int = 0,
+                    power: int = 1) -> bool:
+        """Fire an arrow (PLI_ARROWADD)."""
+        if not self.connected or not self._authenticated:
+            return False
+        if x is None:
+            x = self.player.x
+        if y is None:
+            y = self.player.y
+        if direction is None:
+            direction = self.player.direction
+        data = build_arrow_add(x, y, direction, sprite, power, from_player=True)
+        return self._protocol.send_packet(PacketID.PLI_ARROWADD, data)
+
+    def remove_horse(self, x: float, y: float) -> bool:
+        """Remove/dismount a horse at (x, y) (PLI_HORSEDEL)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_horse_del(x, y)
+        return self._protocol.send_packet(PacketID.PLI_HORSEDEL, data)
+
+    def firespy(self, power: int = 1, length: int = 1) -> bool:
+        """Trigger the fire-spy weapon effect (PLI_FIRESPY)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_firespy(power, length)
+        return self._protocol.send_packet(PacketID.PLI_FIRESPY, data)
+
+    def throw_carried(self) -> bool:
+        """Throw whatever object/NPC the player is currently carrying (PLI_THROWCARRIED)."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_THROWCARRIED, build_throwcarried())
+
+    def modify_board(self, x: int, y: int, width: int, height: int, tiles) -> bool:
+        """
+        Edit a rectangle of the current level's board (PLI_BOARDMODIFY).
+
+        Args:
+            x, y: top-left tile coordinate of the edit (0-63)
+            width, height: size of the edit rectangle
+            tiles: flat list of width*height raw tile ids, row-major
+
+        Returns:
+            True if the packet was sent. The server does NOT echo the change
+            back to the sender (sendPacketToOneLevelPart/sendPacketToNearby
+            exclude the originating player id - see
+            PlayerClientPackets.cpp msgPLI_BOARDMODIFY), only to other
+            players on the level, so this applies the edit to our own cached
+            board immediately (matching real client behavior of editing
+            optimistically rather than waiting for a self-echo that never
+            arrives).
+        """
+        if not self.connected or not self._authenticated:
+            return False
+        if len(tiles) < width * height:
+            return False
+
+        level_name = self._pending_level_name or self._current_level_name
+        if level_name:
+            self._apply_board_modify(level_name, {
+                'layer': 0, 'x': x, 'y': y, 'width': width, 'height': height,
+                'tiles': list(tiles[:width * height]),
+            })
+
+        data = build_board_modify(x, y, width, height, tiles)
+        return self._protocol.send_packet(PacketID.PLI_BOARDMODIFY, data)
+
+    def request_file_if_modified(self, filename: str, mod_time: int = 0) -> bool:
+        """
+        Ask the server whether filename has changed since mod_time
+        (PLI_UPDATEFILE). Replies with PLO_FILE (new/changed - handled the
+        same as request_file) or PLO_FILEUPTODATE (unchanged, see
+        on_file_uptodate / is_file_uptodate).
+
+        Args:
+            filename: name of the file to check
+            mod_time: last known modification time (unix epoch seconds);
+                      0 always forces a fresh download.
+
+        Returns:
+            True if the packet was sent.
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        self._pending_files.add(filename)
+        data = build_update_file(filename, mod_time)
+        return self._protocol.send_packet(PacketID.PLI_UPDATEFILE, data)
+
+    def is_file_uptodate(self, filename: str) -> bool:
+        """Check if the server confirmed filename is unchanged (PLO_FILEUPTODATE)."""
+        return filename in self._uptodate_files
+
+    def request_weapon_bytecode(self, weapon_name: str) -> bool:
+        """Request a weapon's GS2 bytecode (PLI_UPDATESCRIPT). Reply arrives
+        as PLO_NPCWEAPONSCRIPT -> client.gs2_bytecode['weapon'][name]."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_update_script(weapon_name)
+        return self._protocol.send_packet(PacketID.PLI_UPDATESCRIPT, data)
+
+    def request_gani_bytecode(self, gani_name: str, checksum: int = 0) -> bool:
+        """Request a gani's GS2 bytecode (PLI_UPDATEGANI; name without .gani).
+        Replies: PLO_GANISCRIPT (if checksum differs) + PLO_LOADGANI."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_update_gani(gani_name, checksum)
+        return self._protocol.send_packet(PacketID.PLI_UPDATEGANI, data)
+
+    def request_class_bytecode(self, class_name: str, checksum: int = 0) -> bool:
+        """Request a script class's GS2 bytecode (PLI_UPDATECLASS). Reply
+        arrives as PLO_LOADSCRIPT -> client.gs2_bytecode['class'][name]."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_update_class(class_name, checksum)
+        return self._protocol.send_packet(PacketID.PLI_UPDATECLASS, data)
+
+    def request_profile(self, account: str) -> bool:
+        """
+        Request another player's profile (PLI_PROFILEGET). The reply arrives
+        as PLO_PROFILE (see on_profile / client.profiles) - requires the
+        server to be connected to a listserver that knows the account.
+        """
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_profile_get(account)
+        return self._protocol.send_packet(PacketID.PLI_PROFILEGET, data)
+
+    def set_profile(self, name: str = '', age: str = '', gender: str = '',
+                    country: str = '', messenger: str = '', email: str = '',
+                    website: str = '', hangout: str = '', quote: str = '') -> bool:
+        """
+        Update our own profile (PLI_PROFILESET). The server forwards it to the
+        listserver; it silently drops the packet if the embedded account name
+        doesn't match ours (which this method guarantees).
+        """
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_profile_set(self.player.account or '', name, age, gender,
+                                 country, messenger, email, website, hangout,
+                                 quote)
+        return self._protocol.send_packet(PacketID.PLI_PROFILESET, data)
+
     def request_level(self, level_name: str) -> bool:
         """
         Request an adjacent GMAP level.
@@ -1521,25 +1847,34 @@ class Client:
 
         # File transfer
         elif packet_id == PacketID.PLO_FILE:
-            file_info = parse_file(data)
+            file_info = parse_file(data, no_modtime=self._file_no_modtime)
             if file_info and file_info['filename']:
                 filename = file_info['filename']
                 file_data = file_info['data']
-                self._received_files[filename] = file_data
-                self._pending_files.discard(filename)
-                # A downloaded .gmap file is the world grid - parse it.
-                if filename.endswith('.gmap'):
-                    try:
-                        self.load_gmap(file_data.decode('latin-1', errors='replace'))
-                        self.gmap_name = filename
-                        # Now that the grid is known, pull in the neighbouring
-                        # segments so the world renders stitched instead of a
-                        # lone current segment.
-                        self.request_adjacent_levels()
-                    except Exception:
-                        pass
-                if self.on_file:
-                    self.on_file(filename, file_data)
+
+                # Files over 32000 bytes arrive as repeated PLO_FILE chunks
+                # bracketed by PLO_LARGEFILESTART/...END (each chunk resends
+                # the full modtime+filename header - see
+                # server/src/player/Player.cpp Player::sendFile). Append
+                # rather than overwrite while a large transfer is in flight.
+                if self._large_file_pending == filename:
+                    self._large_file_buffer.extend(file_data)
+                else:
+                    self._received_files[filename] = file_data
+                    self._pending_files.discard(filename)
+                    # A downloaded .gmap file is the world grid - parse it.
+                    if filename.endswith('.gmap'):
+                        try:
+                            self.load_gmap(file_data.decode('latin-1', errors='replace'))
+                            self.gmap_name = filename
+                            # Now that the grid is known, pull in the neighbouring
+                            # segments so the world renders stitched instead of a
+                            # lone current segment.
+                            self.request_adjacent_levels()
+                        except Exception:
+                            pass
+                    if self.on_file:
+                        self.on_file(filename, file_data)
 
         # File send failed
         elif packet_id == PacketID.PLO_FILESENDFAILED:
@@ -1547,6 +1882,49 @@ class Client:
             if filename:
                 self._failed_files.add(filename)
                 self._pending_files.discard(filename)
+
+        # Large file transfer starts (packet 68) - subsequent PLO_FILE chunks
+        # for this filename must be appended, not treated as complete files.
+        elif packet_id == PacketID.PLO_LARGEFILESTART:
+            filename = parse_large_file_marker(data)
+            self._large_file_pending = filename
+            self._large_file_buffer = bytearray()
+            self._large_file_expected_size = 0
+
+        # Large file total size (packet 84) - informational, arrives right
+        # after LARGEFILESTART.
+        elif packet_id == PacketID.PLO_LARGEFILESIZE:
+            self._large_file_expected_size = parse_large_file_size(data)
+
+        # Large file transfer ends (packet 69) - flush the accumulated
+        # buffer through the same path a normal PLO_FILE download takes.
+        elif packet_id == PacketID.PLO_LARGEFILEEND:
+            filename = parse_large_file_marker(data)
+            if self._large_file_pending == filename:
+                file_data = bytes(self._large_file_buffer)
+                self._large_file_pending = None
+                self._large_file_buffer = bytearray()
+                self._received_files[filename] = file_data
+                self._pending_files.discard(filename)
+                if filename.endswith('.gmap'):
+                    try:
+                        self.load_gmap(file_data.decode('latin-1', errors='replace'))
+                        self.gmap_name = filename
+                        self.request_adjacent_levels()
+                    except Exception:
+                        pass
+                if self.on_file:
+                    self.on_file(filename, file_data)
+
+        # Server confirms our cached copy is current (packet 45) - resolves a
+        # request_file_if_modified() call with no data transfer.
+        elif packet_id == PacketID.PLO_FILEUPTODATE:
+            filename = parse_file_uptodate(data)
+            if filename:
+                self._uptodate_files.add(filename)
+                self._pending_files.discard(filename)
+                if self.on_file_uptodate:
+                    self.on_file_uptodate(filename)
 
         # Heartbeat / time sync
         elif packet_id == PacketID.PLO_NEWWORLDTIME:
@@ -1753,12 +2131,70 @@ class Client:
             if self.on_ghost_mode:
                 self.on_ghost_mode(enabled)
 
+        # Single-level tile delta (packet 7) - non-gmap board edit.
+        elif packet_id == PacketID.PLO_BOARDMODIFY:
+            info = parse_board_modify(data)
+            level_name = self._pending_level_name or self._current_level_name
+            if level_name:
+                self._apply_board_modify(level_name, info)
+            if self.on_board_modify:
+                self.on_board_modify(info)
+
+        # Gmap tile delta (packet 186) - carries the target segment's map
+        # position so it can be applied even to a level we're not standing on
+        # (adjacent-level board edits within a gmap).
+        elif packet_id == PacketID.PLO_BOARDMODIFY2:
+            info = parse_board_modify2(data)
+            level_name = self.gmap_grid.get((info['map_x'], info['map_y']))
+            if not level_name:
+                level_name = self._pending_level_name or self._current_level_name
+            if level_name:
+                self._apply_board_modify(level_name, info)
+            if self.on_board_modify:
+                self.on_board_modify(info)
+
+        # Gmap level-height overrides (packet 185) - no rendering, just cache.
+        elif packet_id == PacketID.PLO_BOARDHEIGHTS:
+            heights = parse_board_heights(data)
+            self.board_heights[(heights['map_x'], heights['map_y'])] = heights
+
         # ---- Misc server packets (full-coverage handlers) -----------------
 
-        # Empty board marker (packet 0) - in modern mode board data arrives via
-        # PLO_BOARDPACKET/PLO_RAWDATA, so this is just an acknowledgement.
+        # Board-sent marker (packet 0) - board data normally arrives via
+        # PLO_BOARDPACKET/PLO_RAWDATA, so this is usually just an
+        # acknowledgement (server sends it with an empty payload - see
+        # PlayerClient.cpp/PlayerClientOriginal.cpp). Defensively handle the
+        # "batched board changes" payload form too (Level.cpp
+        # sendBoardChangesToPlayer style==2: concatenated
+        # getPropsForSingleLevel() records, same body as PLO_BOARDMODIFY,
+        # back to back) - currently dead code server-side (TODO, never
+        # triggered) but cheap to support if it ever is.
         elif packet_id == PacketID.PLO_LEVELBOARD:
-            pass
+            if data:
+                from .packets import PacketReader as _PacketReader
+                level_name = self._pending_level_name or self._current_level_name
+                reader = _PacketReader(data)
+                while reader.pos < len(data):
+                    start = reader.pos
+                    layer = 0
+                    first = reader.read_gchar()
+                    if first >= 64:
+                        layer = first - 64
+                        x = reader.read_gchar()
+                    else:
+                        x = first
+                    y = reader.read_gchar()
+                    w = reader.read_gchar()
+                    h = reader.read_gchar()
+                    if w <= 0 or h <= 0 or w > 64 or h > 64 or reader.pos <= start:
+                        break  # not a valid record - bail rather than misparse
+                    tiles = [reader.read_gshort() for _ in range(w * h)]
+                    info = {'layer': layer, 'x': x, 'y': y, 'width': w,
+                            'height': h, 'tiles': tiles}
+                    if level_name:
+                        self._apply_board_modify(level_name, info)
+                    if self.on_board_modify:
+                        self.on_board_modify(info)
 
         # We are this level's leader (packet 10) - drive baddies/NPCs.
         elif packet_id == PacketID.PLO_ISLEADER:
@@ -1784,6 +2220,196 @@ class Client:
             self.global_flags[name] = value
             if self.on_flag:
                 self.on_flag(name, value)
+
+        # Server-wide flag removed (packet 31).
+        elif packet_id == PacketID.PLO_FLAGDEL:
+            name = parse_flag_del(data)
+            self.global_flags.pop(name, None)
+
+        # Bomb placed by another player (packet 11).
+        elif packet_id == PacketID.PLO_BOMBADD:
+            info = parse_bomb_add(data)
+            self.bombs[(info['x'], info['y'])] = info
+            if self.on_bomb_add:
+                self.on_bomb_add(info)
+
+        # Bomb removed/exploded (packet 12).
+        elif packet_id == PacketID.PLO_BOMBDEL:
+            info = parse_bomb_del(data)
+            self.bombs.pop((info['x'], info['y']), None)
+            if self.on_bomb_del:
+                self.on_bomb_del(info['x'], info['y'])
+
+        # Arrow fired by another player (packet 19). Transient - no removal
+        # packet exists, so just keep a bounded recent-arrows list.
+        elif packet_id == PacketID.PLO_ARROWADD:
+            info = parse_arrow_add(data)
+            self.arrows.append(info)
+            if len(self.arrows) > 64:
+                self.arrows = self.arrows[-64:]
+            if self.on_arrow_add:
+                self.on_arrow_add(info)
+
+        # Horse placed/mounted by another player (packet 17).
+        elif packet_id == PacketID.PLO_HORSEADD:
+            info = parse_horse_add(data)
+            self.horses[(info['x'], info['y'])] = info
+            if self.on_horse_add:
+                self.on_horse_add(info)
+
+        # Horse removed (packet 18).
+        elif packet_id == PacketID.PLO_HORSEDEL:
+            info = parse_horse_del(data)
+            self.horses.pop((info['x'], info['y']), None)
+            if self.on_horse_del:
+                self.on_horse_del(info['x'], info['y'])
+
+        # Fire spy weapon effect from another player (packet 20).
+        elif packet_id == PacketID.PLO_FIRESPY:
+            info = parse_firespy(data)
+            if self.on_firespy:
+                self.on_firespy(info)
+
+        # Another player threw their carried object/npc (packet 21).
+        elif packet_id == PacketID.PLO_THROWCARRIED:
+            info = parse_throwcarried(data)
+            if self.on_throwcarried:
+                self.on_throwcarried(info['owner_id'])
+
+        # NPC warped to a different level (packet 24).
+        elif packet_id == PacketID.PLO_NPCMOVED:
+            info = parse_npcmoved(data)
+            if self.on_npc_moved:
+                self.on_npc_moved(info)
+
+        # NPC move-queue update, modern clients (packet 189).
+        elif packet_id == PacketID.PLO_MOVE2:
+            info = parse_move2(data)
+            npc = self.npcs.get(info['npc_id'])
+            if npc is not None:
+                npc['x'] = info['x']
+                npc['y'] = info['y']
+            self.npc_moves[info['npc_id']] = info
+            if self.on_npc_move:
+                self.on_npc_move(info)
+
+        # ---- Server-control packets (tier 3) -------------------------------
+
+        # Freeze / unfreeze player (packets 154/155) - empty payloads.
+        elif packet_id == PacketID.PLO_FREEZEPLAYER2:
+            self.frozen = True
+            if self.on_freeze:
+                self.on_freeze(True)
+
+        elif packet_id == PacketID.PLO_UNFREEZEPLAYER:
+            self.frozen = False
+            if self.on_freeze:
+                self.on_freeze(False)
+
+        # Sign-style text window pushed by the server (packet 153).
+        elif packet_id == PacketID.PLO_SAY2:
+            text = parse_say2(data)
+            if self.on_say2:
+                self.on_say2(text)
+
+        # Hide all NPCs (packet 151) - empty payload.
+        elif packet_id == PacketID.PLO_HIDENPCS:
+            self.npcs_hidden = True
+            if self.on_hide_npcs:
+                self.on_hide_npcs()
+
+        # Server warp target (packet 178) - do NOT auto-connect; just record
+        # the destination and notify the app.
+        elif packet_id == PacketID.PLO_SERVERWARP:
+            self.server_warp_info = parse_server_warp(data)
+            if self.on_server_warp:
+                self.on_server_warp(self.server_warp_info)
+
+        # Inbound triggeraction (packet 48) - from serverside scripts
+        # (triggerClient) or relayed from other players.
+        elif packet_id == PacketID.PLO_TRIGGERACTION:
+            info = parse_triggeraction_in(data)
+            if self.on_triggeraction:
+                self.on_triggeraction(info)
+            # Route into the GS1 host (if attached) so clientside scripts with
+            # a matching `if (action<name>)` handler run, mirroring the real
+            # client. Action name = first CSV token.
+            if self.gs1_host is not None and info['action']:
+                try:
+                    action_name = info['action'].split(',', 1)[0].strip()
+                    if action_name:
+                        self.gs1_host.trigger_event('action' + action_name)
+                except Exception:
+                    pass
+            # GS2 counterpart: fire onAction<name>(params...) on loaded VMs.
+            if self.gs2_host is not None and info['action']:
+                try:
+                    self.gs2_host.handle_triggeraction(info['action'])
+                except Exception:
+                    pass
+
+        # Disable classic mode (packet 176) - fully-scripted server marker.
+        elif packet_id == PacketID.PLO_DISABLECLASSICMODE:
+            self.classic_mode_disabled = True
+
+        # Another player's profile (packet 75).
+        elif packet_id == PacketID.PLO_PROFILE:
+            profile = parse_profile(data)
+            if profile.get('account'):
+                self.profiles[profile['account']] = profile
+            if self.on_profile:
+                self.on_profile(profile)
+
+        # NPC-server address (packet 79).
+        elif packet_id == PacketID.PLO_NPCSERVERADDR:
+            self.npcserver_addr = parse_npcserveraddr(data)
+
+        # Net cookie (packet 111).
+        elif packet_id == PacketID.PLO_SETNETCOOKIE:
+            self.net_cookie = parse_setnetcookie(data)
+
+        # ---- GS2 bytecode transport (tier 5: parse and store only) ---------
+
+        # Compiled NPC script (packet 131, arrives via RAWDATA).
+        elif packet_id == PacketID.PLO_NPCBYTECODE:
+            info = parse_npc_bytecode(data)
+            self.gs2_bytecode['npc'][info['npc_id']] = info['bytecode']
+            if self.on_gs2_bytecode:
+                self.on_gs2_bytecode('npc', info['npc_id'], info['bytecode'])
+
+        # Compiled gani script (packet 134, arrives via RAWDATA).
+        elif packet_id == PacketID.PLO_GANISCRIPT:
+            info = parse_gani_script(data)
+            self.gs2_bytecode['gani'][info['gani']] = info['bytecode']
+            if self.on_gs2_bytecode:
+                self.on_gs2_bytecode('gani', info['gani'], info['bytecode'])
+
+        # Weapon (or unknown-class stub) bytecode (packet 140).
+        elif packet_id == PacketID.PLO_NPCWEAPONSCRIPT:
+            info = parse_npcweaponscript(data)
+            kind = info['type'] if info['type'] in self.gs2_bytecode else 'weapon'
+            if info['name']:
+                self.gs2_bytecode[kind][info['name']] = info['bytecode']
+                self.gs2_script_headers[info['name']] = info
+            if self.on_gs2_bytecode:
+                self.on_gs2_bytecode(kind, info['name'], info['bytecode'])
+
+        # Load-gani instruction (packet 195).
+        elif packet_id == PacketID.PLO_LOADGANI:
+            info = parse_loadgani(data)
+            if info['gani']:
+                self.gani_setbackto[info['gani']] = info['setbackto']
+
+        # Script header announcement / class bytecode (packet 197).
+        elif packet_id == PacketID.PLO_LOADSCRIPT:
+            info = parse_loadscript(data)
+            if info['name']:
+                self.gs2_script_headers[info['name']] = info
+                if info['bytecode']:
+                    kind = info['type'] if info['type'] in self.gs2_bytecode else 'class'
+                    self.gs2_bytecode[kind][info['name']] = info['bytecode']
+                    if self.on_gs2_bytecode:
+                        self.on_gs2_bytecode(kind, info['name'], info['bytecode'])
 
         # Remove a weapon from inventory (packet 34).
         elif packet_id == PacketID.PLO_NPCWEAPONDEL:
@@ -1859,6 +2485,38 @@ class Client:
         if not self.tiles or x < 0 or x >= 64 or y < 0 or y >= 64:
             return 0
         return self.tiles[y * 64 + x]
+
+    def _apply_board_modify(self, level_name: str, info: dict) -> None:
+        """Patch a PLO_BOARDMODIFY/BOARDMODIFY2 tile delta into cached board
+        data (self.levels[level_name] and, if it's the active level,
+        self.tiles). Only layer 0 (the main board) is applied - extra layers
+        go through PLO_BOARDLAYER/on_board_layer instead."""
+        if info.get('layer', 0) != 0:
+            return
+        x, y = info.get('x', 0), info.get('y', 0)
+        w, h = info.get('width', 0), info.get('height', 0)
+        tiles = info.get('tiles') or []
+        if w <= 0 or h <= 0 or len(tiles) < w * h:
+            return
+
+        def _patch(board: List[int]) -> None:
+            i = 0
+            for row in range(h):
+                ty = y + row
+                if ty < 0 or ty >= 64:
+                    i += w
+                    continue
+                for col in range(w):
+                    tx = x + col
+                    if 0 <= tx < 64:
+                        board[ty * 64 + tx] = tiles[i]
+                    i += 1
+
+        board = self.levels.get(level_name)
+        if board is not None and len(board) >= 4096:
+            _patch(board)
+        if level_name == self._tiles_level_name and self.tiles and len(self.tiles) >= 4096:
+            _patch(self.tiles)
 
     def get_current_level_from_position(self) -> str:
         """
