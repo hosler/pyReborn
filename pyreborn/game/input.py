@@ -27,6 +27,7 @@ from ..tiletypes import TileType, get_tile_type
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    pygame_key_to_vk,
 )
 
 
@@ -107,7 +108,10 @@ class InputMixin:
 
     def _player_label(self, pid: int) -> str:
         p = self.client.player_list.get(pid) or self.client.players.get(pid, {})
-        return str(p.get('nickname') or p.get('account') or f"player {pid}")
+        label = str(p.get('nickname') or p.get('account') or f"player {pid}")
+        # Tier 3c: append the selectable status label (PLO_STATUSLIST), if any.
+        status = self._status_label(p.get('status'))
+        return f"{label} [{status}]" if status else label
 
     def _handle_player_list_key(self, event):
         if event.key in (K_F7, K_ESCAPE):
@@ -265,7 +269,9 @@ class InputMixin:
         if keys[K_d]:
             d.add(4)
         gs1.keys_dir = d
-        gs1.keys_raw = {i for i in range(len(keys)) if keys[i]}
+        # Translate to VK-style codes (see pygame_key_to_vk) so scripts'
+        # keydown2(<Graal VK code>) calls actually match held keys.
+        gs1.keys_raw = {pygame_key_to_vk(i) for i in range(len(keys)) if keys[i]}
 
     def _handle_input(self, current_time: float):
         """Handle held key input."""

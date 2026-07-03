@@ -17,6 +17,32 @@ TILESET_COLS = 128
 TILESET_ROWS = 32
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 
+# GS1's keydown2(keycode, edge) builtin reports keys using the Windows
+# Virtual-Key (VK) code table the real Graal client runs on (confirmed via the
+# decompiled Preagonal client, TInput.cpp: A-Z at VK 0x41-0x5A, 0-9 at VK
+# 0x30-0x39, arrows at 0x25-0x28, Enter=13, Backspace=8, ...) - NOT raw pygame
+# keycodes. Bomber Arena's arenaGUI weapon calls keydown2(82,...) for its bomb
+# cursor (82 = 0x52 = VK_R = the R key); other scripts use 13 (Enter), 8
+# (Backspace), 38 (Up arrow). Without translating, keys_raw held pygame's own
+# keycodes (e.g. pygame.K_r == 114, the ASCII lowercase code) so keydown2(82)
+# could never match and R-bound script logic silently never fired.
+def pygame_key_to_vk(pg_key: int) -> int:
+    """Translate a pygame key constant to the Graal-script VK-style code."""
+    import pygame
+    if pygame.K_a <= pg_key <= pygame.K_z:      # a-z (lowercase ASCII 97-122)
+        return pg_key - 32                       # -> VK_A..VK_Z (65-90)
+    if pygame.K_0 <= pg_key <= pygame.K_9:      # already VK_0..VK_9 (48-57)
+        return pg_key
+    _SPECIAL = {
+        pygame.K_BACKSPACE: 0x08, pygame.K_TAB: 0x09, pygame.K_RETURN: 0x0D,
+        pygame.K_ESCAPE: 0x1B, pygame.K_SPACE: 0x20,
+        pygame.K_LEFT: 0x25, pygame.K_UP: 0x26, pygame.K_RIGHT: 0x27, pygame.K_DOWN: 0x28,
+        pygame.K_LSHIFT: 0xA0, pygame.K_RSHIFT: 0xA1,
+        pygame.K_LCTRL: 0xA2, pygame.K_RCTRL: 0xA3,
+        pygame.K_LALT: 0xA4, pygame.K_RALT: 0xA5,
+    }
+    return _SPECIAL.get(pg_key, pg_key)
+
 
 def parse_npc_visual_effects(script: str, image_name: str = '') -> dict:
     """Parse NPC script and image for visual effects like drawaslight and setcoloreffect.

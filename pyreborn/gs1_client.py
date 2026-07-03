@@ -22,7 +22,7 @@ from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.parser import parse
 from reborn_protocol.gs1.values import to_num, to_str
-from .tiletypes import is_blocking
+from .tiletypes import is_blocking, is_water
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "enableweapons", "disableweapons", "noplayerkilling",
     "showstats", "setcursor", "sleep", "replaceani", "seteffectmode",
-    "setcoloreffect", "setzoomeffect", "seteffect", "callweapon", "callnpc",
+    "setcoloreffect", "setzoomeffect", "callweapon", "callnpc",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
@@ -285,6 +285,11 @@ class GS1ClientHost(Host):
             if rt.on_tiledef:
                 rt.on_tiledef(None, None)   # None block = clear all
             return
+        # seteffect r,g,b,a — fullscreen colour tint (Tier 3d). 0..1 floats.
+        if name == "seteffect" and rt.on_seteffect and len(args) >= 4:
+            rt.on_seteffect(to_num(args[0]), to_num(args[1]),
+                            to_num(args[2]), to_num(args[3]))
+            return
         # #P1..#P30 player gattribs (room slot lists). setcharprop/setplayerprop
         # on a #P code targets the PLAYER, not the NPC — store it so the script
         # can read it back via #P1(-1) etc.
@@ -437,6 +442,7 @@ class GS1ClientHost(Host):
             if name == "dontblock":
                 npc["dontblock"] = True
                 rt.shapes.pop(npc_id, None)
+                rt._update_shape_blocks(npc_id, npc, 0, 0, [])
                 return
             if name == "destroy":
                 npc["visible"] = False
@@ -511,6 +517,7 @@ class GS1ClientHost(Host):
             flags = ([int(to_num(f)) for f in args[2]]
                      if isinstance(args[2], (list, tuple)) else [])
             rt.shapes[npc_id] = (w, h, flags)
+            rt._update_shape_blocks(npc_id, npc, w, h, flags)
             return
         if name == "setshape" and len(args) >= 3:
             # setshape type,width,height — type 1 is a fully-solid box.
@@ -518,6 +525,7 @@ class GS1ClientHost(Host):
             w, h = int(to_num(args[1])), int(to_num(args[2]))
             flags = [22] * (w * h) if stype == 1 else []
             rt.shapes[npc_id] = (w, h, flags)
+            rt._update_shape_blocks(npc_id, npc, w, h, flags)
             return
 
         if name == "hide" and isinstance(npc, dict):
@@ -540,6 +548,17 @@ class GS1ClientHost(Host):
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
             return 1.0 if self.rt.is_wall(x, y) else 0.0
+        if name in ("onwater", "onwater2"):
+            x = int(to_num(args[0])) if args else 0
+            y = int(to_num(args[1])) if len(args) > 1 else 0
+            return 1.0 if self.rt.is_water_at(x, y) else 0.0
+        if name == "textwidth":
+            # textwidth(zoom, font, style, text) — approximate: Graal text is
+            # ~8px/char at zoom 1 (scripts do int((textwidth(...)+7)/8) to get
+            # 8px cells), and we have no font metrics in the headless host.
+            zoom = to_num(args[0]) if args else 1.0
+            text = to_str(args[3]) if len(args) > 3 else ""
+            return float(len(text)) * 8.0 * (zoom if zoom > 0 else 1.0)
         if name == "keydown":
             i = int(to_num(args[0])) if args else -1
             return 1.0 if i in self.rt.keys_dir else 0.0
@@ -707,6 +726,7 @@ class ClientGS1:
         self.keys_raw: set = set()
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
         self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
+        self._shape_block_owners: dict = {}  # npc_id -> set of (tx,ty) it contributed
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
         self._weapon_imgs: dict = {}      # prog-key -> showimg/showani layer table
         self._coros: list = []            # suspended script coroutines (sleep)
@@ -733,6 +753,7 @@ class ClientGS1:
         self.on_setminimap = None
         self.on_toweapons = None
         self.on_tiledef = None
+        self.on_seteffect = None
 
     def load_script(self, name, code, npc_id=0, x=0, y=0):
         self.scripts[name] = code
@@ -777,6 +798,7 @@ class ClientGS1:
         self._progs.update(weapons)
         self.shapes.clear()
         self._shape_blocks.clear()
+        self._shape_block_owners.clear()
         self._weapon_imgs.clear()       # weapon layers are per-level (bombs, HUD)
         self._coros.clear()             # abandon suspended scripts from old level
         self._active_coro_keys.clear()
@@ -797,6 +819,30 @@ class ClientGS1:
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
 
+    def _update_shape_blocks(self, npc_id, npc, w, h, flags):
+        """Translate an NPC's setshape/setshape2 geometry into world-tile
+        blocking cells for onwall()/onwall2(), anchored at the NPC's current
+        (x, y) — same convention npc_handler.NPCHandler uses for touch shapes.
+        Re-derives this NPC's contribution to `_shape_blocks` from scratch each
+        call so re-running setshape2 (e.g. NPC 161's per-frame falling choc
+        blocks during the arena's sudden-death `hurryup`) keeps it in sync,
+        without disturbing other NPCs' contributions."""
+        old = self._shape_block_owners.pop(npc_id, None)
+        if old:
+            self._shape_blocks -= old
+        if not flags or w <= 0 or h <= 0:
+            return
+        ax = int(to_num(npc.get('x', 0))) if isinstance(npc, dict) else 0
+        ay = int(to_num(npc.get('y', 0))) if isinstance(npc, dict) else 0
+        mine = set()
+        for i, flag in enumerate(flags):
+            if int(to_num(flag)) == 22:
+                col, row = i % w, i // w
+                mine.add((ax + col, ay + row))
+        if mine:
+            self._shape_blocks |= mine
+            self._shape_block_owners[npc_id] = mine
+
     def is_wall(self, x, y):
         """Collision test at world tile (x, y) for onwall(). Checks the current
         level board (a blocking tile id), plus any dynamic collision rects set
@@ -812,6 +858,18 @@ class ClientGS1:
                     pass
         # dynamic shapes (setshape2) recorded as world-tile blocking cells
         return (ix, iy) in self._shape_blocks
+
+    def is_water_at(self, x, y):
+        """Water test at world tile (x, y) for onwater() — deep or shallow."""
+        ix, iy = int(x), int(y)
+        if 0 <= ix < 64 and 0 <= iy < 64:
+            tiles = getattr(self.client, "tiles", None) if self.client else None
+            if tiles and len(tiles) >= 64 * 64:
+                try:
+                    return is_water(tiles[iy * 64 + ix])
+                except (IndexError, TypeError):
+                    pass
+        return False
 
     def advance_input_frame(self):
         """Snapshot raw keys so keydown2(code, edge=true) reports just-pressed.
