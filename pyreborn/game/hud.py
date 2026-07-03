@@ -103,13 +103,37 @@ class StatsPanel(Widget):
         surf.blit(txt, (x + 16, y + 1))
         return x + 16 + txt.get_width()
 
+    def _stat_bar(self, surf, x, y, w, label, value, maxvalue, color):
+        """A small labeled bar for MP/AP (no icon art for these exists)."""
+        h = 6
+        pygame.draw.rect(surf, (40, 40, 46), (x, y, w, h), border_radius=2)
+        if maxvalue > 0:
+            fill_w = max(0, min(w, int(w * value / maxvalue)))
+            if fill_w > 0:
+                pygame.draw.rect(surf, color, (x, y, fill_w, h), border_radius=2)
+        pygame.draw.rect(surf, (10, 10, 12), (x, y, w, h), 1, border_radius=2)
+        txt = self.game.font_small.render(label, True, (220, 220, 220))
+        surf.blit(txt, (x, y - 12))
+
     def _draw(self, surf):
         player = self.game.client.player
         hd = self.game.heart_display
         hearts_w = int(player.max_hearts) * (hd.HEART_SIZE + hd.HEART_SPACING)
         panel_w = max(168, hearts_w + 16)
-        plate = pygame.Surface((panel_w, 52), pygame.SRCALPHA)
-        pygame.draw.rect(plate, (0, 0, 0, 130), (0, 0, panel_w, 52), border_radius=6)
+
+        # Tier 3a: MP (magic) / AP (alignment) bars, from PLPROP_MAGICPOINTS(26)
+        # / PLPROP_ALIGNMENT(32) via packets.py's parse_player_props ->
+        # Player.mp/.ap. Both fields always exist on Player (defaults 0/50),
+        # so this row shows as soon as the HUD renders, not just after the
+        # server's first PLO_PLAYERPROPS - getattr keeps this tolerant of
+        # any caller passing a bare object without the fields.
+        mp = getattr(player, 'mp', None)
+        ap = getattr(player, 'ap', None)
+        show_mp_ap = mp is not None or ap is not None
+        panel_h = 52 + (20 if show_mp_ap else 0)
+
+        plate = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        pygame.draw.rect(plate, (0, 0, 0, 130), (0, 0, panel_w, panel_h), border_radius=6)
         surf.blit(plate, (6, 6))
 
         hd.render(surf, player.hearts, player.max_hearts)
@@ -118,6 +142,16 @@ class StatsPanel(Widget):
         x = self._stat_icon(surf, 12, icon_y, 'rupee', player.rupees)
         x = self._stat_icon(surf, x + 12, icon_y, 'bomb', player.bombs)
         self._stat_icon(surf, x + 12, icon_y, 'arrow', player.arrows)
+
+        if show_mp_ap:
+            bar_y = icon_y + 30
+            bar_w = (panel_w - 24 - 12) // 2
+            if mp is not None:
+                self._stat_bar(surf, 12, bar_y, bar_w, "MP", mp,
+                               getattr(player, 'max_mp', 100) or 100, (90, 140, 255))
+            if ap is not None:
+                self._stat_bar(surf, 12 + bar_w + 12, bar_y, bar_w, "AP", ap,
+                               getattr(player, 'max_ap', 100) or 100, (230, 200, 80))
 
 
 class HUD:
@@ -286,6 +320,10 @@ class HUD:
 
     def _draw_minimap(self, surf):
         g = self.game
+        if g.minimap_visible and not g.minimap_surface and not g.minimap_data:
+            # Tier 4b: no live PLO_MINIMAP data - try the PLO_BIGMAP world
+            # image instead (classic gmap worlds ship one, not the other).
+            g._ensure_bigmap_surface()
         if not (g.minimap_visible and g.minimap_surface):
             return
         mw, mh = g.minimap_size
@@ -296,10 +334,19 @@ class HUD:
         pygame.draw.rect(surf, (50, 50, 50), border, 2)
         surf.blit(g.minimap_surface, (mx, my))
         if g.client._current_level_name:
-            local_x = g.client.x % 64
-            local_y = g.client.y % 64
-            dot_x = int(mx + (local_x / 64) * mw)
-            dot_y = int(my + (local_y / 64) * mh)
+            if getattr(g, '_minimap_is_bigmap', False) and g.client.gmap_width > 0:
+                # A bigmap image covers the whole gmap, so the dot is the
+                # player's fractional position across the full grid, not one
+                # 64x64 segment.
+                span_x = g.client.gmap_width * 64
+                span_y = g.client.gmap_height * 64
+                frac_x = (g.client.x % span_x) / span_x if span_x else 0.0
+                frac_y = (g.client.y % span_y) / span_y if span_y else 0.0
+            else:
+                frac_x = (g.client.x % 64) / 64
+                frac_y = (g.client.y % 64) / 64
+            dot_x = int(mx + frac_x * mw)
+            dot_y = int(my + frac_y * mh)
             pygame.draw.circle(surf, (255, 0, 0), (dot_x, dot_y), 3)
             pygame.draw.circle(surf, (255, 255, 255), (dot_x, dot_y), 3, 1)
 

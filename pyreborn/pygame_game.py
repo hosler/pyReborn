@@ -19,6 +19,7 @@ from .sounds import SoundManager, preload_common_sounds
 from .inventory_ui import InventoryUI, HeartDisplay
 from .npc_handler import NPCHandler
 from .gs1_client import ClientGS1
+from .gs2_client import ClientGS2
 from .player import Player
 from .tiletypes import TileType, get_tile_type
 from .game.constants import (
@@ -130,6 +131,11 @@ class GameClient(
         self.gs1 = ClientGS1(self.client)
         self._setup_gs1_callbacks()
 
+        # GS2 bytecode VM (weapons/classes/ganis compiled by the server);
+        # builtins route through the same GS1 client host surface, so both
+        # engines drive the same rendering/callback paths.
+        self.gs2 = ClientGS2(self.client, self.gs1).attach()
+
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
         self.heart_display = HeartDisplay(10, 10)
@@ -155,6 +161,10 @@ class GameClient(
         self.last_level_count = 0
         self.last_level_name = ""  # Track current level for cache invalidation
         self.known_levels: set = set()  # Track which levels we've seen tiles for
+        # Tier 4a: (world_tx, world_ty, tile_id) for water/lava tiles in the
+        # current world_surface, rebuilt alongside it - see render_world.py
+        # _render_animated_tiles for the shimmer this drives.
+        self._animated_tiles: List[Tuple[int, int, int]] = []
 
         # Placeholders
         self.placeholder_sprite = create_placeholder_sprite(32, 32, (200, 50, 200))
@@ -200,6 +210,18 @@ class GameClient(
         # Active projectiles - each: {'x': float, 'y': float, 'dx': float, 'dy': float, 'time': float, 'gani': str}
         self.active_projectiles: List[dict] = []
 
+        # Tier 1: server-relayed entity families (other players' bombs/arrows/
+        # horses - read from client.bombs/arrows/horses each frame, like baddies).
+        # _server_bomb_seen tracks first-seen wall-clock time per bomb key so we
+        # can compute local fuse-flash/explosion timing without a 'time' field
+        # on the packet-parsed dict (client.py doesn't add one).
+        self._server_bomb_seen: Dict[Tuple[float, float], float] = {}
+        self.active_bomb_explosions: List[dict] = []  # {'x','y','time'} - server bomb went off
+        self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
+
+        # Tier 3d: seteffect screen tint - {'r','g','b','a'} 0..255 or None.
+        self.screen_tint: Optional[dict] = None
+
         # Dialogue box state (for say2/signs)
         self.dialogue_text: Optional[str] = None
         self.dialogue_time: float = 0.0
@@ -226,6 +248,11 @@ class GameClient(
         self.minimap_surface: Optional[pygame.Surface] = None
         self.minimap_visible = True  # Toggle with M key
         self.minimap_size = (100, 100)  # Display size in pixels
+        # Tier 4b: set when minimap_surface was built from a PLO_BIGMAP world
+        # image rather than PLO_MINIMAP per-tile data (see game/minimap.py
+        # _ensure_bigmap_surface) - changes how the player dot is positioned.
+        self._minimap_is_bigmap = False
+        self._bigmap_image_name: Optional[str] = None
 
         # Ghost mode state
         self.ghost_mode = False
@@ -353,6 +380,8 @@ class GameClient(
             # Drive NPC + weapon `timeout` events (proximity checks, room-join
             # logic, the arena's per-frame bomb gameplay loop).
             self.gs1.process_timeouts(self._frame_dt)
+            # GS2 VM onTimeout scheduling (settimer / this.timeout).
+            self.gs2.process_timeouts(self._frame_dt)
             # Snapshot held keys so keydown2(code, edge=true) sees just-pressed.
             self.gs1.advance_input_frame()
             # Reload the GS1 engine when we land in a new level (script warp,

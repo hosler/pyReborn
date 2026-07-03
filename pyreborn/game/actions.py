@@ -620,9 +620,24 @@ class ActionsMixin:
 
         # If swimming state changed, update animation
         if self.is_swimming != was_swimming:
+            player = self.client.player
             if self.is_swimming:
-                # Just entered water - could play splash sound
-                pass
+                # Just entered water: splash feedback, and snap the gani to
+                # swim immediately if we're not mid-move/mid-action (a step
+                # that ends in water is already picked up by _move()'s
+                # move_anim choice; this covers standing still / warping into
+                # water, which used to leave the walk/idle gani showing until
+                # the next explicit anim change).
+                self.sound_mgr.play("splash.wav")
+                if not player.is_carrying() and not player.is_sitting and \
+                        self.current_anim_name in ("idle", "walk"):
+                    self.player_anim.set_animation("swim", player.direction)
+                    self.current_anim_name = "swim"
             else:
-                # Just left water
-                pass
+                # Just left water: splash out, and restore idle/walk from
+                # swim/swim-idle so the player doesn't stay in the swim pose
+                # standing on dry land.
+                self.sound_mgr.play("splash.wav")
+                if self.current_anim_name == "swim" and not self.is_moving:
+                    self.player_anim.set_animation("idle", player.direction)
+                    self.current_anim_name = "idle"

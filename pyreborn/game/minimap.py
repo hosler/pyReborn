@@ -37,6 +37,7 @@ class MinimapMixin:
         """Build minimap surface from data."""
         if not self.minimap_data:
             return
+        self._minimap_is_bigmap = False  # real PLO_MINIMAP data wins over a bigmap image
 
         # Minimap data is typically a 64x64 or 128x128 grid of color indices
         # Each byte represents a tile's color (0-255 palette index)
@@ -71,6 +72,31 @@ class MinimapMixin:
         self.minimap_surface = pygame.transform.scale(
             self.minimap_surface, self.minimap_size
         )
+    def _ensure_bigmap_surface(self):
+        """Tier 4b: fall back to the PLO_BIGMAP world image for the M-key map
+        when there's no PLO_MINIMAP grid data (classic gmap worlds that ship a
+        single big picture instead of a live per-tile minimap).
+
+        client.py has no on_bigmap callback (PLO_BIGMAP just sets
+        client.bigmap_info directly, no event fires - see client.py's
+        _handle_packet), so this polls the field once per (level/image)
+        change instead of reacting to an event; cheap since it's only called
+        while the minimap has nothing else to show.
+        """
+        info = self.client.bigmap_info
+        if not info or not info.get('image'):
+            return
+        image = info['image']
+        if getattr(self, '_bigmap_image_name', None) == image and self.minimap_surface is not None:
+            return  # already built for this image
+        sheet = self.sprite_mgr.load_sheet(image)
+        if sheet is None:
+            self._request_asset(image)
+            return
+        self._bigmap_image_name = image
+        self._minimap_is_bigmap = True
+        self.minimap_surface = pygame.transform.smoothscale(sheet, self.minimap_size)
+
     def _get_minimap_palette(self) -> List[Tuple[int, int, int]]:
         """Get color palette for minimap rendering."""
         # Common tile type colors

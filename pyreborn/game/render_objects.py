@@ -30,8 +30,90 @@ from .constants import (
 )
 
 
+_ITEM_COLORS = {
+    'greenrupee': (60, 220, 90), 'bluerupee': (70, 140, 230), 'redrupee': (230, 70, 70),
+    'goldrupee': (230, 200, 60),
+    'bombs': (60, 60, 70), 'bomb': (60, 60, 70), 'superbomb': (120, 60, 140),
+    'joltbomb': (230, 230, 80), 'darts': (200, 200, 200),
+    'heart': (230, 60, 90), 'fullheart': (230, 60, 90),
+    'glove1': (150, 110, 70), 'glove2': (110, 80, 50),
+    'bow': (200, 160, 90), 'shield': (150, 150, 200), 'mirrorshield': (220, 220, 255),
+    'lizardshield': (90, 200, 90), 'sword': (210, 210, 220), 'battleaxe': (180, 120, 80),
+    'goldensword': (230, 200, 60), 'lizardsword': (90, 200, 90),
+    'fireball': (250, 140, 40), 'fireblast': (250, 90, 20), 'nukeshot': (255, 255, 120),
+    'spinattack': (200, 80, 220),
+}
+_DEFAULT_ITEM_COLOR = (220, 220, 100)
+
+
 class LevelObjectsRenderMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _get_item_sprite(self, item_type: str) -> pygame.Surface:
+        """Build (and cache) a ground-item icon.
+
+        No verified pics1.png tile-position table for item sprites exists in
+        this repo (chests were hand-picked against a live server with
+        tools/chest_picker.py; items never were), so rather than guess wrong
+        tile coordinates - which would render authentic-looking garbage -
+        items are drawn as small colour/shape-coded vector icons, matching the
+        style already used for the HUD's rupee/bomb/arrow counters
+        (game/hud.py StatsPanel._stat_icon). Type-correct and pop on pickup;
+        just not pixel-authentic Graal art."""
+        cache = getattr(self, "_item_sprite_cache", None)
+        if cache is None:
+            cache = self._item_sprite_cache = {}
+        if item_type in cache:
+            return cache[item_type]
+
+        surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        color = _ITEM_COLORS.get(item_type, _DEFAULT_ITEM_COLOR)
+        cx, cy = TILE_SIZE // 2, TILE_SIZE // 2
+        outline = tuple(max(0, c - 90) for c in color)
+
+        if 'rupee' in item_type:
+            pts = [(cx, 1), (TILE_SIZE - 2, cy), (cx, TILE_SIZE - 1), (2, cy)]
+            pygame.draw.polygon(surf, color, pts)
+            pygame.draw.polygon(surf, outline, pts, 1)
+        elif 'heart' in item_type:
+            pygame.draw.circle(surf, color, (cx - 3, cy - 1), 4)
+            pygame.draw.circle(surf, color, (cx + 3, cy - 1), 4)
+            pygame.draw.polygon(surf, color, [(2, cy), (TILE_SIZE - 2, cy), (cx, TILE_SIZE - 2)])
+        elif 'bomb' in item_type or item_type == 'darts':
+            pygame.draw.circle(surf, color, (cx, cy + 2), 6)
+            pygame.draw.circle(surf, outline, (cx, cy + 2), 6, 1)
+            pygame.draw.line(surf, (200, 150, 60), (cx + 3, cy - 3), (cx + 5, cy - 7), 2)
+        elif 'sword' in item_type or item_type == 'battleaxe':
+            pygame.draw.line(surf, color, (cx, 1), (cx, TILE_SIZE - 5), 3)
+            pygame.draw.line(surf, outline, (3, 5), (TILE_SIZE - 3, 5), 2)
+        elif 'shield' in item_type:
+            pygame.draw.polygon(surf, color, [(2, 2), (TILE_SIZE - 2, 2),
+                                              (TILE_SIZE - 2, cy), (cx, TILE_SIZE - 1), (2, cy)])
+            pygame.draw.polygon(surf, outline, [(2, 2), (TILE_SIZE - 2, 2),
+                                                (TILE_SIZE - 2, cy), (cx, TILE_SIZE - 1), (2, cy)], 1)
+        elif item_type == 'bow':
+            pygame.draw.arc(surf, color, (2, 1, TILE_SIZE - 4, TILE_SIZE - 2), -1.4, 1.4, 2)
+        else:
+            pygame.draw.rect(surf, color, (3, 3, TILE_SIZE - 6, TILE_SIZE - 6), border_radius=3)
+            pygame.draw.rect(surf, outline, (3, 3, TILE_SIZE - 6, TILE_SIZE - 6), 1, border_radius=3)
+
+        cache[item_type] = surf
+        return surf
+
+    def _render_items(self):
+        """Draw ground items from client state (PLO_ITEMADD/PLO_ITEMDEL). Reads
+        client.items live each frame, like baddies/chests - pickup already
+        removes the entry client-side so it just stops being drawn."""
+        items = getattr(self.client, "items", None)
+        if not items:
+            return
+        surf_w, surf_h = self.screen.get_size()
+        for (ix, iy), item_type in items.items():
+            sprite = self._get_item_sprite(item_type)
+            sx, sy = self._world_to_screen(ix, iy)
+            if sx < -TILE_SIZE or sx > surf_w or sy < -TILE_SIZE or sy > surf_h:
+                continue
+            self.screen.blit(sprite, (int(sx), int(sy)))
 
     def _get_chest_sprite(self, opened: bool) -> Optional[pygame.Surface]:
         """Build (and cache) the chest sprite from tileset tiles.

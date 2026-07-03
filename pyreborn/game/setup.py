@@ -112,6 +112,22 @@ class SetupMixin:
             """Handle ghost mode toggle."""
             self.ghost_mode = enabled
 
+        # Tier 3b: PLO_SERVERTEXT - a text answer from the server (e.g. a
+        # gr.getstring()/gettext() reply) - surface it in the chat log like an
+        # incoming message so it isn't silently dropped.
+        def on_server_text(text: str):
+            if text:
+                self.chat_messages.append(f"[server] {text}")
+                if len(self.chat_messages) > 10:
+                    self.chat_messages.pop(0)
+
+        # Tier 3b: PLO_RPGWINDOW - a scrollable RPG-style text window. Reuses
+        # the existing dialogue-box path (hud.py's _draw_dialogue) rather than
+        # a dedicated widget; lines are joined so the box wraps them together.
+        def on_rpg_window(lines):
+            if lines:
+                self._show_dialogue("\n".join(lines))
+
         def on_file(filename: str, data: bytes):
             """Cache a downloaded asset. Images go to the sprite cache, ganis to
             the gani parser's cache; a music file we were waiting on starts
@@ -150,6 +166,25 @@ class SetupMixin:
                 except Exception:
                     pass
 
+        # Tier 1a: a server-relayed bomb (another player's) went off. The
+        # entity itself is read live from client.bombs each frame (see
+        # render_effects._render_server_bombs); this just adds the flash +
+        # sound the removal packet doesn't otherwise convey.
+        def on_bomb_del(x, y):
+            self.active_bomb_explosions.append({'x': x, 'y': y, 'time': time.time()})
+            self.sound_mgr.play("explode.wav")
+
+        # Tier 1b: a board tile delta arrived - patch just the affected rect
+        # into the cached world_surface instead of a full rebuild.
+        def on_board_modify(info):
+            self._patch_world_surface_for_modify(info)
+
+        # Tier 1d: an extra board layer streamed in/changed - layers are only
+        # sent a handful of times per level (not every frame), so a full
+        # world_surface rebuild is cheap and simplest here.
+        def on_board_layer(layer, x, y, tiles):
+            self.world_surface = None
+
         self.client.on_chat = on_chat
         self.client.on_pm = on_pm
         self.client.on_add_player = on_add_player
@@ -157,6 +192,16 @@ class SetupMixin:
         self.client.on_hurt = on_hurt
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
+        if hasattr(self.client, 'on_bomb_del'):
+            self.client.on_bomb_del = on_bomb_del
+        if hasattr(self.client, 'on_board_modify'):
+            self.client.on_board_modify = on_board_modify
+        if hasattr(self.client, 'on_board_layer'):
+            self.client.on_board_layer = on_board_layer
+        if hasattr(self.client, 'on_server_text'):
+            self.client.on_server_text = on_server_text
+        if hasattr(self.client, 'on_rpg_window'):
+            self.client.on_rpg_window = on_rpg_window
         # A relayed projectile (another player's shoot) — fire actionprojectile2
         # so weapons react (Bomber Arena's room system is built on this). #p(n)
         # maps to event args: per GServer-v2 mc_p, #p(0) is the first param after
@@ -232,10 +277,17 @@ class SetupMixin:
         def on_message(text):
             self._show_dialogue(text)
 
-        # Set effect callback
+        # Set effect callback (Tier 3d) - fullscreen tint drawn under the HUD,
+        # over the world (see game/render_effects.py _render_screen_tint,
+        # called from the main render loop). r,g,b,a are 0..1 GS1 multipliers,
+        # same convention as changeimgcolors/setcoloreffect elsewhere.
         def on_seteffect(r, g, b, a):
-            # Could apply screen tint effect here
-            pass
+            def c255(v):
+                return max(0, min(255, int(float(v) * 255)))
+            if a and c255(a) > 0:
+                self.screen_tint = {'r': c255(r), 'g': c255(g), 'b': c255(b), 'a': c255(a)}
+            else:
+                self.screen_tint = None
 
         # freezeplayer N — lock local input for N seconds (NPC dialogue, etc).
         def on_freezeplayer(seconds):
@@ -307,6 +359,7 @@ class SetupMixin:
         self.gs1.on_freezeplayer = on_freezeplayer
         self.gs1.on_toweapons = on_toweapons
         self.gs1.on_setminimap = on_setminimap
+        self.gs1.on_seteffect = on_seteffect
         # setplayerprop #code,value — NPCs talk to you and change your look this
         # way (e.g. NPC 64 sets #c,:Added: when you join a room). #c shows as a
         # speech bubble over you; appearance codes update the local player.

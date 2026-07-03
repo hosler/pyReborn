@@ -184,6 +184,18 @@ class EntityRenderMixin:
             if self._entity_on_screen(sx, sy):
                 entities.append(('baddy', wy, sx, sy, baddy, bid))
 
+        # Add horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
+        # like baddies, so fold in the current segment's gmap offset.
+        for hkey, horse in self.client.horses.items():
+            hx = horse.get('x')
+            hy = horse.get('y')
+            if hx is None or hy is None:
+                continue
+            whx, why = hx + seg_off_x, hy + seg_off_y
+            hsx, hsy = self.camera.world_to_screen(whx, why)
+            if self._entity_on_screen(hsx, hsy):
+                entities.append(('horse', why, hsx, hsy, horse, hkey))
+
         # Sort by Y for depth
         entities.sort(key=lambda e: e[1])
 
@@ -197,6 +209,8 @@ class EntityRenderMixin:
                 self._render_npc(entity[2], entity[3], entity[4], entity[5])
             elif entity[0] == 'baddy':
                 self._render_baddy(entity[2], entity[3], entity[4], entity[5])
+            elif entity[0] == 'horse':
+                self._render_horse(entity[2], entity[3], entity[4], entity[5])
 
         # Weapon image layers — the arena bombs/vases/explosions (world coords)
         # and HUD (screen coords) are painted by the arenaGUI/arenaSYS weapons,
@@ -245,6 +259,31 @@ class EntityRenderMixin:
         pygame.draw.circle(body, (255, 230, 230), (8, 9), 2)
         pygame.draw.circle(body, (255, 230, 230), (16, 9), 2)
         self.screen.blit(body, (int(x), int(y)))
+    def _render_horse(self, x: float, y: float, horse: dict, key):
+        """Render a horse placed by another player (PLO_HORSEADD). Uses the
+        shared 'horse' gani if it's available (see assets search path in
+        game/setup.py); falls back to the raw image sheet, then a placeholder
+        rect so a horse is never silently invisible."""
+        anim = self.horse_anims.get(key)
+        if anim is None:
+            anim = AnimationState(self.gani_parser)
+            self.horse_anims[key] = anim
+        direction = horse.get('direction', 2)
+        anim.set_animation('horse', direction)
+
+        image = horse.get('image') or 'horse.png'
+        if anim.gani is not None:
+            self._render_animated_entity(x, y, anim, {'horse_image': image})
+            return
+
+        sprite = self.sprite_mgr.load_sheet(image)
+        if sprite:
+            self.screen.blit(sprite, (x, y))
+        else:
+            self._request_asset(image)
+            if self.debug_mode:
+                self.screen.blit(self.npc_placeholder, (x, y))
+
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""
         # Check if player should flash (hurt effect)
@@ -260,6 +299,10 @@ class EntityRenderMixin:
                 'head_image': player.head_image or 'head0.png',
                 'sword_image': player.sword_image or 'sword1.png',
                 'shield_image': player.shield_image or 'shield1.png',
+                # Tier 2a: PLPROP_COLORS (prop 13), parsed into player.colors
+                # by packets.py/player.py, drives the body palette-swap in
+                # get_sprite_recolored() (sprites.py).
+                'colors': player.colors,
             })
 
         # Render carried object above player's head
@@ -272,6 +315,9 @@ class EntityRenderMixin:
 
         # Render nickname below local player
         nickname = player.nickname or player.account
+        status_label = self._status_label(player.status)
+        if status_label:
+            nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
             name_surf = self.font_small.render(nickname, True, (255, 255, 255))
             name_x = x - name_surf.get_width() // 2 + 16
@@ -339,8 +385,16 @@ class EntityRenderMixin:
                 self.screen.blit(tile_surf, (tile_x, tile_y))
     def _render_other_player(self, x: float, y: float, pdata: dict, pid: int):
         """Render another player."""
-        # Get animation name - could be 'ani' or 'animation'
+        # Get animation name - could be 'ani' or 'animation'. Tier 2d: a
+        # `setani ani,param1,param2` server prop keeps its params comma-joined
+        # onto the gani name here; split them off so param images can drive
+        # ATTR1-5 layers (e.g. a scripted hat) instead of being discarded.
         player_anim = pdata.get('ani') or pdata.get('animation') or 'idle'
+        gani_params: List[str] = []
+        if ',' in player_anim:
+            parts = [p.strip() for p in player_anim.split(',')]
+            player_anim = parts[0] or 'idle'
+            gani_params = parts[1:]
         # Get direction from sprite prop (lower 2 bits) or direction field
         direction = pdata.get('direction', 2)
         if 'sprite' in pdata:
@@ -359,12 +413,18 @@ class EntityRenderMixin:
         if player_anim != current_name or anim.direction != direction:
             anim.set_animation(player_anim, direction)
 
-        self._render_animated_entity(x, y, anim, {
+        equip = {
             'body_image': pdata.get('body_image', 'body.png'),
             'head_image': pdata.get('head_image', 'head0.png'),
             'sword_image': pdata.get('sword_image', 'sword1.png'),
             'shield_image': pdata.get('shield_image', 'shield1.png'),
-        })
+            # Tier 2a: PLPROP_COLORS (prop 13), populated by parse_other_player.
+            'colors': pdata.get('colors'),
+        }
+        for i, p in enumerate(gani_params[:5], start=1):
+            if p:
+                equip[f'attr{i}_image'] = p
+        self._render_animated_entity(x, y, anim, equip)
 
         # Render chat bubble above player (if they have chat text)
         chat_text = pdata.get('chat', '')
@@ -372,7 +432,10 @@ class EntityRenderMixin:
             self._render_speech_bubble(x, y, chat_text)
 
         # Render nickname below player
-        nickname = pdata.get('nick') or pdata.get('account') or ''
+        nickname = pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or ''
+        status_label = self._status_label(pdata.get('status'))
+        if status_label:
+            nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
             name_surf = self.font_small.render(nickname, True, (255, 255, 255))
             # Center name below player (player sprite is ~48 pixels tall)
@@ -452,6 +515,63 @@ class EntityRenderMixin:
             self.client.request_file(filename)
         except Exception:
             pass
+    def _status_label(self, status) -> str:
+        """Tier 3c: resolve a numeric PLPROP_STATUS to a selectable label from
+        client.status_list (PLO_STATUSLIST), when it's being used as an index
+        into that list. STATUS is more commonly a bitmask (hidden/paused/...)
+        on most servers than a status-list index, so an out-of-range value is
+        just treated as "no status" rather than guessed at."""
+        status_list = self.client.status_list
+        if not status_list or status is None:
+            return ""
+        try:
+            idx = int(status)
+        except (TypeError, ValueError):
+            return ""
+        if 0 <= idx < len(status_list):
+            return status_list[idx]
+        return ""
+
+    def _npc_character_colors(self, npc: dict):
+        """Tier 2a for character NPCs: setcharprop #C0-#C4 (gs1_client.py's
+        _CHARPROP_NPC) stores 5 palette-index strings on npc['color0'..'4'];
+        assemble them into the [skin, coat, sleeves, shoes, belt] list
+        recolor_body() expects. Unlike the player-colors path, this one is
+        live today (no protocol-layer dependency) - it just had no reader
+        until this render wiring."""
+        if npc.get('colors'):
+            return npc['colors']
+        have_any = False
+        vals = []
+        for i in range(5):
+            v = npc.get(f'color{i}')
+            if v is not None:
+                have_any = True
+            try:
+                vals.append(int(v))
+            except (TypeError, ValueError):
+                vals.append(0)
+        return vals if have_any else None
+
+    def _render_npc_polys(self, polys: dict):
+        """Tier 3e: draw showpoly shapes. Each entry is the raw GS1 value list
+        `[x1, y1, x2, y2, ...]` (level-tile coordinates) stored verbatim by
+        gs1_client.py; converted to numbers and screen space here."""
+        from reborn_protocol.gs1.values import to_num
+        for raw in polys.values():
+            try:
+                nums = [float(to_num(v)) for v in raw]
+            except Exception:
+                continue
+            if len(nums) < 6:  # need at least 3 points (x,y pairs)
+                continue
+            points = [self.camera.world_to_screen(nums[i], nums[i + 1])
+                      for i in range(0, len(nums) - 1, 2)]
+            try:
+                pygame.draw.polygon(self.screen, (255, 210, 60), points, 2)
+            except Exception:
+                pass
+
     def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
         """Render an NPC."""
         # destroy / hide make the NPC (and its layers) vanish entirely.
@@ -465,8 +585,14 @@ class EntityRenderMixin:
             self._render_npc_layers(imgs, over=False)
 
         gani_name = npc.get('gani', npc.get('animation'))
+        gani_params: List[str] = []
         if gani_name:
-            gani_name = gani_name.split(',')[0].strip()  # setcharani arg keeps a ','
+            # setcharani/setani keep their `,param1,param2,...` args joined to
+            # the ani name; split them off (Tier 2d) instead of discarding
+            # them, so a scripted hat/prop image can drive the ATTR1-5 layers.
+            parts = [p.strip() for p in gani_name.split(',')]
+            gani_name = parts[0].strip()
+            gani_params = parts[1:]
         image_name = npc.get('image')
         is_character = npc.get('is_character')
         if is_character and not gani_name:
@@ -504,7 +630,14 @@ class EntityRenderMixin:
                         'head_image': npc.get('head_image') or 'head0.png',
                         'sword_image': npc.get('sword_image') or 'sword1.png',
                         'shield_image': npc.get('shield_image') or 'shield1.png',
+                        # Tier 2a: live via setcharprop #C0-#C4 (see
+                        # _npc_character_colors); dormant for anything that
+                        # only ever sets a raw 'colors' list.
+                        'colors': self._npc_character_colors(npc),
                     }
+                for i, p in enumerate(gani_params[:5], start=1):
+                    if p:
+                        equip[f'attr{i}_image'] = p
                 self._render_animated_entity(x, y, anim, equip)
 
         elif image_name and not is_character:
@@ -538,6 +671,12 @@ class EntityRenderMixin:
 
         if imgs:
             self._render_npc_layers(imgs, over=True)
+
+        # Tier 3e: showpoly-stored polygons (gs1_client.py stores raw GS1
+        # values under npc['polys'][index] = [x1, y1, x2, y2, ...]).
+        polys = npc.get('polys')
+        if polys:
+            self._render_npc_polys(polys)
 
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
@@ -725,8 +864,20 @@ class EntityRenderMixin:
                 img = equipment.get('sword_image', anim.gani.defaults.get('SWORD', 'sword1.png'))
             elif layer == "SHIELD":
                 img = equipment.get('shield_image', anim.gani.defaults.get('SHIELD', 'shield1.png'))
-            elif layer == "ATTR1":
-                img = anim.gani.defaults.get('ATTR1', 'hat0.png')
+            elif layer.startswith("ATTR") and layer[4:].isdigit():
+                # Tier 2b/2d: ATTR1-5 are the gani "PARAM" slots - a hat/prop
+                # image supplied either by a `setani ani,param1,param2` call
+                # (equipment['attrN_image'], plumbed through by callers from
+                # the raw NPC/other-player gani string - see _render_npc /
+                # _render_other_player) or, failing that, the gani's own
+                # DEFAULTATTRn. Per the reference client (Preagonal's
+                # Animation.cs), DEFAULTATTRn is purely opt-in per-gani text -
+                # there's no universal "hat0.png" fallback when a gani defines
+                # an ATTR1 sprite layer without a DEFAULTATTR1 line, so render
+                # nothing rather than inventing a hat.
+                img = equipment.get(f'{layer.lower()}_image') or anim.gani.defaults.get(layer, '')
+                if not img:
+                    continue
             elif layer == "SPRITES":
                 # Shadow and effects - use defaults
                 img = anim.gani.defaults.get('SPRITES', 'sprites.png')
@@ -741,17 +892,32 @@ class EntityRenderMixin:
                 # itsasign2's SIGN1.GIF) uses it directly; only keyword layers
                 # (no extension) resolve through the gani defaults. Falling back
                 # to sprites.png here drew signs/furniture as garbled characters.
+                equip_key = f"{layer.lower()}_image"
                 if '.' in layer:
                     img = layer.lower()
+                elif equip_key in equipment:
+                    # Generic equipment-driven layer (e.g. HORSE -> horse_image)
+                    # so callers can drive any named gani layer without a
+                    # dedicated elif branch here.
+                    img = equipment[equip_key]
                 else:
                     img = anim.gani.defaults.get(layer, 'sprites.png')
 
-            # Get sprite from sheet
-            sprite = self.sprite_mgr.get_sprite(
-                img,
-                sprite_def.x, sprite_def.y,
-                sprite_def.width, sprite_def.height
-            )
+            # Get sprite from sheet. BODY goes through the palette-swap path
+            # when a colors prop is available (Tier 2a - see sprites.py and
+            # PLPROP_COLORS parsing in packets.py/player.py).
+            if layer == "BODY" and equipment.get('colors'):
+                sprite = self.sprite_mgr.get_sprite_recolored(
+                    img, equipment['colors'],
+                    sprite_def.x, sprite_def.y,
+                    sprite_def.width, sprite_def.height
+                )
+            else:
+                sprite = self.sprite_mgr.get_sprite(
+                    img,
+                    sprite_def.x, sprite_def.y,
+                    sprite_def.width, sprite_def.height
+                )
 
             if sprite:
                 # Calculate screen position: base offset + gani sprite offset

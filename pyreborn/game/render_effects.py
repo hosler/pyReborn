@@ -154,6 +154,128 @@ class EffectsRenderMixin:
                 active_projectiles.append(proj)
 
         self.active_projectiles = active_projectiles
+    def _render_server_bombs(self):
+        """Render bombs placed by OTHER players (client.bombs, from PLO_BOMBADD).
+
+        The server never echoes PLI_BOMBADD back to the placer (see
+        PlayerClientPackets.cpp msgPLI_BOMBADD - sendPacketToOneLevelPart
+        excludes m_id), so this dict only ever holds other players' bombs; the
+        placer's own bomb keeps rendering via the existing local
+        active_bombs/_render_bombs path. No dedup between the two is needed.
+
+        Since parse_bomb_add's dict has no wall-clock 'time' field, first-seen
+        time is tracked locally per (x, y) key to drive the same fuse-flash /
+        explosion look as the local bomb visual.
+        """
+        now = time.time()
+        bombs = self.client.bombs
+        seen = self._server_bomb_seen
+        for key, bomb in bombs.items():
+            first_seen = seen.get(key)
+            if first_seen is None:
+                first_seen = seen[key] = now
+            fuse_total = max(0.05, bomb.get('timer_ms', 3050) / 1000.0)
+            elapsed = now - first_seen
+            x, y = bomb.get('x', 0.0), bomb.get('y', 0.0)
+            screen_x, screen_y = self.camera.world_to_screen(x, y)
+            if not self._entity_on_screen(screen_x, screen_y, margin=64):
+                continue
+            if elapsed < fuse_total:
+                flash_rate = 5 + (elapsed / fuse_total) * 10
+                if int(elapsed * flash_rate) % 2 == 0:
+                    pygame.draw.circle(self.screen, (50, 50, 50), (int(screen_x), int(screen_y)), 8)
+                    pygame.draw.circle(self.screen, (30, 30, 30), (int(screen_x), int(screen_y)), 6)
+                    pygame.draw.circle(self.screen, (255, 200, 50),
+                                       (int(screen_x + 4), int(screen_y - 8)), 3)
+            else:
+                # Timer elapsed but the server hasn't sent PLO_BOMBDEL yet (the
+                # owner detonates it locally and relays the removal) - keep a
+                # faint burst going rather than snapping back to a solid bomb.
+                progress = min(1.0, (elapsed - fuse_total) / self.explosion_duration)
+                radius = int(16 + bomb.get('power', 1) * 16 * progress)
+                alpha = int(255 * (1.0 - progress))
+                if radius > 0 and alpha > 0:
+                    surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(surf, (255, 150, 50, alpha), (radius, radius), radius)
+                    self.screen.blit(surf, (screen_x - radius, screen_y - radius))
+
+        # Drop tracking for bombs the server has removed (PLO_BOMBDEL already
+        # popped them out of client.bombs).
+        for key in list(seen):
+            if key not in bombs:
+                del seen[key]
+
+    def _render_server_bomb_explosions(self):
+        """Render the brief flash queued by on_bomb_del (see game/setup.py)."""
+        duration = 0.4
+        now = time.time()
+        active = []
+        for exp in self.active_bomb_explosions:
+            elapsed = now - exp['time']
+            if elapsed < duration:
+                screen_x, screen_y = self.camera.world_to_screen(exp['x'], exp['y'])
+                progress = elapsed / duration
+                radius = int(24 * (0.5 + progress * 0.5))
+                alpha = int(255 * (1.0 - progress))
+                surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (255, 150, 50, alpha), (radius, radius), radius)
+                pygame.draw.circle(surf, (255, 220, 120, alpha), (radius, radius), max(1, int(radius * 0.5)))
+                self.screen.blit(surf, (screen_x - radius, screen_y - radius))
+                active.append(exp)
+        self.active_bomb_explosions = active
+
+    _ARROW_DIRECTION_VECTOR = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
+
+    def _render_server_arrows(self):
+        """Render arrows fired by OTHER players (client.arrows, PLO_ARROWADD).
+
+        The protocol has no arrow-removal packet (see client.py comment on
+        self.arrows), so life is simulated client-side: each entry gets a
+        '_recv_time' stamped into the dict on first sight (safe - these are
+        plain data dicts, not shared with the protocol layer) and is flown
+        along its direction at a fixed speed for a short lifetime, matching
+        the look of the local arrow projectile path in _use_weapon."""
+        now = time.time()
+        speed = 8.0       # tiles/sec, matches the local bow-shot visual
+        lifetime = 1.25    # seconds (~10 tiles at speed 8)
+        for arrow in self.client.arrows:
+            recv_time = arrow.get('_recv_time')
+            if recv_time is None:
+                recv_time = arrow['_recv_time'] = now
+            elapsed = now - recv_time
+            if elapsed > lifetime:
+                continue
+            direction = arrow.get('direction', 2)
+            dvx, dvy = self._ARROW_DIRECTION_VECTOR.get(direction, (0, 1))
+            x = arrow.get('x', 0.0) + dvx * speed * elapsed
+            y = arrow.get('y', 0.0) + dvy * speed * elapsed
+            screen_x, screen_y = self.camera.world_to_screen(x, y)
+            if not self._entity_on_screen(screen_x, screen_y, margin=32):
+                continue
+            if direction == 0:
+                points = [(screen_x, screen_y - 8), (screen_x - 3, screen_y + 4), (screen_x + 3, screen_y + 4)]
+            elif direction == 1:
+                points = [(screen_x - 8, screen_y), (screen_x + 4, screen_y - 3), (screen_x + 4, screen_y + 3)]
+            elif direction == 2:
+                points = [(screen_x, screen_y + 8), (screen_x - 3, screen_y - 4), (screen_x + 3, screen_y - 4)]
+            else:
+                points = [(screen_x + 8, screen_y), (screen_x - 4, screen_y - 3), (screen_x - 4, screen_y + 3)]
+            pygame.draw.polygon(self.screen, (139, 69, 19), points)
+            pygame.draw.polygon(self.screen, (80, 40, 10), points, 1)
+
+    def _render_screen_tint(self):
+        """Tier 3d: fullscreen tint from a GS1 `seteffect r,g,b,a` (wired in
+        game/setup.py's on_seteffect). Drawn under the HUD, over the world."""
+        tint = self.screen_tint
+        if not tint:
+            return
+        a = tint.get('a', 0)
+        if a <= 0:
+            return
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((tint.get('r', 0), tint.get('g', 0), tint.get('b', 0), min(255, a)))
+        self.screen.blit(overlay, (0, 0))
+
     def _render_server_explosions(self):
         """Render explosions received from server (PLO_EXPLOSION packets)."""
         current_time = time.time()

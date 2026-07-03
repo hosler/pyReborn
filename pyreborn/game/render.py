@@ -211,14 +211,20 @@ class RenderMixin:
     def _render_scene(self):
         """Draw all world-space layers to self.screen via self.camera."""
         self._render_world()
+        self._render_animated_tiles()                # Tier 4a: water/lava shimmer
         if self.debug_mode:
             self._render_debug_overlay()
         self._render_chests()                       # ground, behind entities
-        self._render_entities()                     # depth-sorted by Y
+        self._render_items()                         # ground items, behind entities
+        self._render_entities()                     # depth-sorted by Y (incl. horses)
         self._render_damage_numbers()
         self._render_bombs()
+        self._render_server_bombs()                  # other players' PLI_BOMBADD bombs
+        self._render_server_arrows()                 # other players' PLI_ARROWADD arrows
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
         self._render_server_explosions()
+        self._render_server_bomb_explosions()
+        self._render_screen_tint()                   # seteffect overlay, under HUD
 
     def _render_scene_zoomed(self, zoom: float):
         """Render the world layer at 1:1 into a smaller offscreen surface, then

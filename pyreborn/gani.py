@@ -313,6 +313,12 @@ class AnimationState:
         self.playing: bool = True
         self.finished: bool = False
         self._pending_sounds: List[Tuple[str, float, float]] = []
+        # Tier 2c: per-INSTANCE memory of where a CONTINUOUS gani was left off,
+        # so switching away (e.g. "walk" -> "sword") and back resumes the walk
+        # cycle instead of restarting it at frame 0. Keyed by gani name; kept
+        # on the AnimationState instance itself (never shared across entities)
+        # to avoid the shared-playback-state bug Preagonal has.
+        self._continuous_state: Dict[str, Tuple[int, float]] = {}
 
     def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):
         """Set the current animation by name."""
@@ -329,19 +335,35 @@ class AnimationState:
                 self.direction = direction
             return
 
+        # Leaving a CONTINUOUS gani for a different one: remember where it was
+        # so resuming it later (below) doesn't snap back to frame 0.
+        if self.gani is not None and self.gani.continuous and self.gani.name != name:
+            self._continuous_state[self.gani.name] = (self.frame, self.frame_time)
+
         gani = self.parser.parse(name)
         if gani:
             self.gani = gani
-            self.frame = 0
-            self.frame_time = 0.0
-            self.playing = True
-            self.finished = False
             if direction is not None:
                 self.direction = direction
-            # Check for sound on first frame
-            frame_data = self.gani.get_frame(self.direction, 0)
-            if frame_data and frame_data.sound:
-                self._pending_sounds.append(frame_data.sound)
+            resumed = False
+            if gani.continuous and not force:
+                saved = self._continuous_state.get(name)
+                if saved is not None:
+                    frame_count = gani.get_frame_count(self.direction)
+                    self.frame = saved[0] % frame_count if frame_count else 0
+                    self.frame_time = saved[1]
+                    resumed = True
+            if not resumed:
+                self.frame = 0
+                self.frame_time = 0.0
+            self.playing = True
+            self.finished = False
+            # Check for sound on first frame (only for a fresh start - a
+            # resumed continuous gani shouldn't replay its intro sound).
+            if not resumed:
+                frame_data = self.gani.get_frame(self.direction, 0)
+                if frame_data and frame_data.sound:
+                    self._pending_sounds.append(frame_data.sound)
 
     def set_direction(self, direction: int):
         """Set the facing direction (0=up, 1=left, 2=down, 3=right)."""
