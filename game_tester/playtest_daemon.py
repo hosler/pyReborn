@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from game_tester.game_bot import GameBot
-from pyreborn.tiletypes import get_tile_type, TileType
+from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 14990
 GAME_HOST = os.environ.get('PYREBORN_TEST_HOST', 'localhost')
@@ -98,12 +98,18 @@ def bot_map(bot, radius=14):
         for x in range(max(0, cx - radius), min(64, cx + radius + 1)):
             ch = '.'
             try:
-                t = get_tile_type(tiles[y * 64 + x])
-                if t == TileType.BLOCKING:
+                tile = tiles[y * 64 + x]
+                # Use the SAME predicates the game's collision uses, not a
+                # single-enum `== BLOCKING` check — otherwise throw-through,
+                # bush/rock/pot, jump-stone and bed tiles (all solid to the
+                # player) render as walkable '.', and a playtester reads that
+                # as "phantom collision on open ground" (a real false report
+                # this map produced). B here now means "your feet will stop".
+                if is_blocking(tile):
                     ch = 'B'
-                elif t == TileType.WATER:
+                elif is_water(tile):
                     ch = 'W'
-                elif t == TileType.CHAIR:
+                elif get_tile_type(tile) == TileType.CHAIR:
                     ch = 'c'
             except Exception:
                 ch = '?'
