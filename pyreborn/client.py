@@ -57,6 +57,8 @@ from .packets import (
     build_item_take,
     build_animation,
     build_hearts,
+    build_arrow_count,
+    build_bomb_count,
     build_hurt_response,
     build_attack_player,
     build_shoot,
@@ -146,6 +148,7 @@ def _build_handled_plo_ids() -> set:
         "PLO_PLAYERWARP2", "PLO_LEVELLINK", "PLO_NPCPROPS", "PLO_OTHERPLPROPS",
         "PLO_LEVELCHEST", "PLO_DISCMESSAGE", "PLO_LEVELSIGN", "PLO_EXPLOSION",
         "PLO_HITOBJECTS", "PLO_MINIMAP", "PLO_BOARDLAYER", "PLO_GHOSTMODE",
+        "PLO_WARPFAILED",
         # Misc server packets added for full coverage.
         "PLO_LEVELBOARD", "PLO_ISLEADER", "PLO_SIGNATURE", "PLO_BADDYHURT",
         "PLO_FLAGSET", "PLO_NPCWEAPONDEL", "PLO_LEVELMODTIME", "PLO_STARTMESSAGE",
@@ -276,6 +279,11 @@ class Client:
         # Destination of a client-initiated warp awaiting the server's
         # authoritative PLO_LEVELNAME confirmation (see warp_to_level).
         self._awaiting_warp_confirm = ""
+        # Pre-warp (level, x, y) snapshot to restore if the server rejects
+        # the warp with PLO_WARPFAILED (warp_to_level flips state
+        # optimistically, so a rejected warp would otherwise strand us at a
+        # phantom level the server never confirmed).
+        self._warp_fallback: Optional[Tuple[str, float, float]] = None
 
         # GMAP grid: maps (x, y) -> level_name
         self.gmap_grid: Dict[Tuple[int, int], str] = {}
@@ -1141,6 +1149,10 @@ class Client:
                 "[%s, %s]; ignored", x, y, WARP_COORD_MIN, WARP_COORD_MAX)
             return False
 
+        # Snapshot the authoritative pre-warp state BEFORE the optimistic
+        # flip below, so a PLO_WARPFAILED rejection can restore it.
+        pre_warp_state = (self._current_level_name, self.player.x, self.player.y)
+
         # Update local state
         if level_name != self._current_level_name:
             self._reset_level_state()
@@ -1193,10 +1205,39 @@ class Client:
         # purge them (TCP order guarantees they arrive before it).
         if level_name not in self.gmap_grid.values():
             self._awaiting_warp_confirm = level_name
+            self._warp_fallback = pre_warp_state
 
         # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
         return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
+
+    def _restore_failed_warp(self, reason: str) -> None:
+        """Roll back the optimistic state flip from warp_to_level after the
+        server rejected the warp. The server's authoritative state never
+        changed (we're still in the pre-warp level), so restore the snapshot
+        taken in warp_to_level: level name, position, render board, and any
+        cached NPCs for that level."""
+        fallback = self._warp_fallback
+        target = self._awaiting_warp_confirm
+        self._awaiting_warp_confirm = ""
+        self._warp_fallback = None
+        if not fallback:
+            return
+        prev_level, prev_x, prev_y = fallback
+        logger.info("Warp to %r rejected by server (%s); restoring %r",
+                    target, reason, prev_level)
+        self._current_level_name = prev_level
+        self._pending_level_name = prev_level
+        self.player.x = prev_x
+        self.player.y = prev_y
+        # Re-point the render board and restore cached NPCs; the server-side
+        # state never changed, so the cached data is still authoritative.
+        if prev_level in self.levels:
+            self.tiles = self.levels[prev_level]
+            self._tiles_level_name = prev_level
+        cached_npcs = self._npc_cache.get(prev_level)
+        if cached_npcs:
+            self.npcs.update(cached_npcs)
 
     def _reset_level_state(self, cache_npcs: bool = True):
         """Clear per-level state on a full level change so chests, chest items,
@@ -1344,15 +1385,30 @@ class Client:
                 power: int = 1, timer_ms: int = 3050) -> bool:
         """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time; the server
         expects 50ms increments already counted down by ~200ms client-side, so
-        this converts it the same way (see build_bomb_add)."""
+        this converts it the same way (see build_bomb_add).
+
+        Ammo is client-authoritative on GServer-v2 (PLI_BOMBADD only spawns
+        the projectile; the server never touches the count), so this refuses
+        to fire at 0 bombs, decrements locally, and reports the new
+        BOMBSCOUNT. pygserver additionally decrements server-side and echoes
+        the authoritative count via PLO_PLAYERPROPS - that echo is an absolute
+        value equal to our prediction, so the two don't double-decrement."""
         if not self.connected or not self._authenticated:
+            return False
+        if self.player.bombs <= 0:
+            logger.debug("put_bomb: no bombs left, not firing")
             return False
         if x is None:
             x = self.player.x
         if y is None:
             y = self.player.y
         data = build_bomb_add(x, y, power, timer_ms)
-        return self._protocol.send_packet(PacketID.PLI_BOMBADD, data)
+        ok = self._protocol.send_packet(PacketID.PLI_BOMBADD, data)
+        if ok:
+            self.player.bombs -= 1
+            self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
+                                       build_bomb_count(self.player.bombs))
+        return ok
 
     def remove_bomb(self, x: float, y: float) -> bool:
         """Remove a bomb at (x, y) (PLI_BOMBDEL)."""
@@ -1364,8 +1420,15 @@ class Client:
     def shoot_arrow(self, x: Optional[float] = None, y: Optional[float] = None,
                     direction: Optional[int] = None, sprite: int = 0,
                     power: int = 1) -> bool:
-        """Fire an arrow (PLI_ARROWADD)."""
+        """Fire an arrow (PLI_ARROWADD).
+
+        Refuses to fire at 0 arrows, decrements the local count, and reports
+        the new ARROWSCOUNT - ammo is client-authoritative on GServer-v2 (see
+        put_bomb for the full parity story vs pygserver's server-side echo)."""
         if not self.connected or not self._authenticated:
+            return False
+        if self.player.arrows <= 0:
+            logger.debug("shoot_arrow: no arrows left, not firing")
             return False
         if x is None:
             x = self.player.x
@@ -1374,7 +1437,12 @@ class Client:
         if direction is None:
             direction = self.player.direction
         data = build_arrow_add(x, y, direction, sprite, power, from_player=True)
-        return self._protocol.send_packet(PacketID.PLI_ARROWADD, data)
+        ok = self._protocol.send_packet(PacketID.PLI_ARROWADD, data)
+        if ok:
+            self.player.arrows -= 1
+            self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
+                                       build_arrow_count(self.player.arrows))
+        return ok
 
     def remove_horse(self, x: float, y: float) -> bool:
         """Remove/dismount a horse at (x, y) (PLI_HORSEDEL)."""
@@ -1807,8 +1875,16 @@ class Client:
                     # would poison _npc_cache. The server re-streams the real
                     # NPCs right after this packet.
                     self._reset_level_state(cache_npcs=False)
-                if level_name == self._awaiting_warp_confirm:
+                if self._awaiting_warp_confirm:
+                    # Any authoritative level announcement supersedes the
+                    # pending client warp: either it's the confirmation
+                    # itself, or the server anchored us somewhere else
+                    # entirely (pygserver rejects a bad warp by re-sending
+                    # the OLD level's name+board). Clear the pending state
+                    # either way so later packets aren't misread as a warp
+                    # rejection by the PLO_PLAYERPROPS fallback below.
                     self._awaiting_warp_confirm = ""
+                    self._warp_fallback = None
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
@@ -1827,9 +1903,42 @@ class Client:
                   level_name not in self.gmap_grid.values()):
                 self._exit_gmap(level_name)
 
+        # PLO_WARPFAILED (15) - the server rejected a warp (GServer-v2
+        # PlayerClient.cpp:1180/1275 sends it with the failed level name when
+        # a target level can't be loaded/entered). warp_to_level flipped
+        # level/position optimistically, so restore the pre-warp snapshot or
+        # we'd be stranded reporting a phantom level the server never put us
+        # in (its authoritative state still has us in the old level).
+        # NB: gs2emu does NOT send this for a bad PLI_LEVELWARP - that
+        # rejection is detected via the PLO_PLAYERPROPS path below.
+        elif packet_id == PacketID.PLO_WARPFAILED:
+            failed_level = data.decode('latin-1', errors='replace').strip()
+            if self._awaiting_warp_confirm and (
+                    not failed_level
+                    or failed_level == self._awaiting_warp_confirm):
+                self._restore_failed_warp("PLO_WARPFAILED")
+            else:
+                logger.warning("PLO_WARPFAILED for %r with no matching "
+                               "pending warp", failed_level)
+
         # Player properties (our player data)
         elif packet_id == PacketID.PLO_PLAYERPROPS:
             props = parse_player_props(data, self._colors_len)
+
+            # Silent warp rejection (gs2emu): msgPLI_LEVELWARP with an
+            # unloadable level sends NO PLO_WARPFAILED - it "resolves" by
+            # re-warping us to our CURRENT level (PlayerClientPackets.cpp:
+            # 92-98), and the same-level warp path (PlayerClient.cpp:
+            # 1198-1218) emits only X2/Y2 props. So a server-set position
+            # arriving while our warp still awaits its PLO_LEVELNAME confirm
+            # means the server re-anchored us in the PRE-warp level: restore
+            # it, then let the props below apply the authoritative position.
+            # (A confirmed warp clears the flag via PLO_LEVELNAME before any
+            # in-level props arrive, so this can't fire on a successful one.)
+            if (self._awaiting_warp_confirm and self._warp_fallback
+                    and ('x' in props or 'y' in props)):
+                self._restore_failed_warp(
+                    "server re-anchored position without level confirm")
 
             # The server tracks position as LOCAL coords (0-63) within the
             # player's current segment, not world coords. Convert to the client's

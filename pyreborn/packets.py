@@ -1173,9 +1173,16 @@ def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
                 val, pos = _read_string(data, pos)
                 if val is not None:
                     props['nickname'] = val
-            elif prop_id == 1:        # MAXPOWER (halves)
+            elif prop_id == 1:        # MAXPOWER (FULL hearts, not halves!)
+                # Unlike CURPOWER, MAXPOWER is sent in whole hearts:
+                # GServer-v2 PlayerProps.cpp:171-186 stores it straight into
+                # account.maxHitpoints (hitpointsInHalves = value * 2), and
+                # LevelItem.cpp:148-151 sends a fullheart pickup as
+                # `>> MAXPOWER >> heartMax >> CURPOWER >> (heartMax * 2)`.
+                # Decoding /2.0 here halved max hearts against the real server
+                # (account MAXHP 6 rendered as 3.0).
                 if pos < len(data):
-                    props['max_hearts'] = (data[pos] - 32) / 2.0
+                    props['max_hearts'] = float(data[pos] - 32)
                     pos += 1
             elif prop_id == 2:        # CURPOWER (halves)
                 if pos < len(data):
@@ -1622,6 +1629,25 @@ def build_hearts(hearts: float) -> bytes:
     return bytes(packet)
 
 
+def build_arrow_count(count: int) -> bytes:
+    """Build PLI_PLAYERPROPS payload reporting the new ARROWSCOUNT (prop 4).
+
+    Ammo is client-authoritative on GServer-v2 (PlayerProps.cpp ARROWSCOUNT/
+    BOMBSCOUNT store the client-sent value; PLI_ARROWADD/PLI_BOMBADD only
+    spawn the projectile), so the client must report the decremented count
+    itself after firing. Clamped to GServer's props::Limits::MaxArrows (99).
+    """
+    return bytes([4 + 32, max(0, min(int(count), 99)) + 32])
+
+
+def build_bomb_count(count: int) -> bytes:
+    """Build PLI_PLAYERPROPS payload reporting the new BOMBSCOUNT (prop 5).
+
+    See build_arrow_count for why the client reports its own ammo counts.
+    """
+    return bytes([5 + 32, max(0, min(int(count), 99)) + 32])
+
+
 def build_hurt_response(hearts: float, x: float, y: float, direction: int,
                         gani_name: str = "hurt") -> bytes:
     """
@@ -1975,15 +2001,79 @@ def build_private_message(player_ids: list, message: str) -> bytes:
     return bytes(packet)
 
 
+def _untokenize_csv_fields(text: str):
+    """Untokenize a GServer-v2 toCSV() field list (StringUtils.h:895).
+
+    Fields are comma-separated; a field is quoted when it contains a
+    complex char (or always, with force_quoted as sendPrivateMessage uses),
+    and inside quotes '"' and '\\' are written DOUBLED by the server.
+
+    Returns (fields, quoted, starts): the decoded field values, whether each
+    was quoted on the wire, and each field's start offset in `text` (so a
+    caller can recover a raw unquoted tail verbatim).
+    """
+    fields, quoted, starts = [], [], []
+    i, n = 0, len(text)
+    while True:
+        starts.append(i)
+        if i < n and text[i] == '"':
+            quoted.append(True)
+            i += 1
+            buf = []
+            while i < n:
+                c = text[i]
+                if c == '"':
+                    if i + 1 < n and text[i + 1] == '"':
+                        buf.append('"')
+                        i += 2
+                        continue
+                    i += 1  # closing quote
+                    break
+                if c == '\\' and i + 1 < n and text[i + 1] == '\\':
+                    buf.append('\\')
+                    i += 2
+                    continue
+                buf.append(c)
+                i += 1
+            fields.append(''.join(buf))
+            while i < n and text[i] != ',':  # tolerate junk after close quote
+                i += 1
+        else:
+            quoted.append(False)
+            j = text.find(',', i)
+            if j == -1:
+                j = n
+            fields.append(text[i:j])
+            i = j
+        if i >= n:
+            break
+        i += 1  # skip the comma
+        if i == n:  # trailing comma = trailing empty field
+            starts.append(i)
+            fields.append('')
+            quoted.append(False)
+            break
+    return fields, quoted, starts
+
+
 def parse_private_message(data: bytes) -> dict:
     """
     Parse PLO_PRIVATEMESSAGE (packet 37) - received private message.
 
-    Format: gshort(sender_id) + "type," + message
-    Example: gshort(3) + '"","Private message:",Hello!'
+    Wire format (GServer-v2 Player.cpp sendPrivateMessage): gshort(sender_id)
+    followed by the message split on "#b" line breaks and re-joined with
+    toCSV(force_quoted=True) - i.e. every line arrives as a quoted CSV field:
+
+        gshort(3) + '"","Private message:","Hello!"'      (player PM)
+        gshort(1) + '"Welcome to the server."'            (NPC-server message)
+
+    pygserver instead sends '"<sender>","Private message:",<raw message>' with
+    the message part unquoted, so an unquoted message tail is kept verbatim
+    (it may legitimately contain commas).
 
     Returns:
         dict with 'from_id' (sender player ID), 'type', and 'message'
+        (quote wrappers removed; multi-line messages joined with '\\n')
     """
     try:
         if len(data) < 2:
@@ -1992,31 +2082,35 @@ def parse_private_message(data: bytes) -> dict:
         # First 2 bytes are the GShort sender id (same encoding as PLO_TOALL).
         sender_id = ((data[0] - 32) << 7) + (data[1] - 32)
 
-        # Rest is the message type and content
         text = data[2:].decode('latin-1', errors='replace')
+        fields, quoted, starts = _untokenize_csv_fields(text)
 
-        # Format is like: "","Private message:",actual message
-        # Split on first comma after "Private message:" or "Mass message:"
+        # GServer constructs player PMs as '#b{type}:#b{msg}' (empty first
+        # line, then "Private message:"/"Mass message:"), and some server
+        # messages as '{type}:#b{msg}'. Anything else (e.g. NPC-server script
+        # PMs) is pure message lines.
         msg_type = ''
-        message = text
+        msg_idx = 0
+        if len(fields) >= 3 and fields[1].endswith(':'):
+            msg_type = fields[1]
+            msg_idx = 2
+        elif len(fields) >= 2 and fields[0].endswith(':'):
+            msg_type = fields[0]
+            msg_idx = 1
 
-        # Try to extract type from quoted strings
-        if text.startswith('"'):
-            # Parse quoted format: "","Private message:",message
-            parts = text.split(',', 2)
-            if len(parts) >= 3:
-                msg_type = parts[1].strip('"')
-                message = parts[2]
-            elif len(parts) == 2:
-                msg_type = parts[0].strip('"')
-                message = parts[1]
+        if msg_idx < len(fields) and not quoted[msg_idx]:
+            # pygserver-style raw (unquoted) tail: keep it byte-exact,
+            # commas included.
+            message = text[starts[msg_idx]:]
+        else:
+            message = '\n'.join(fields[msg_idx:])
 
         return {
             'from_id': sender_id,
             'type': msg_type,
             'message': message
         }
-    except:
+    except Exception:
         return {'from_id': 0, 'type': '', 'message': ''}
 
 
