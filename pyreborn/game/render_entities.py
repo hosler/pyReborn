@@ -3,31 +3,13 @@
 Split from render.py; methods operate on the GameClient instance."""
 
 import time
-import json
-import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pygame
-from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT,
-    K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
-)
 
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
+from ..gani import AnimationState
 from ..player import Player
-from ..tiletypes import TileType, get_tile_type
-from .constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
-)
+from .constants import TILE_SIZE, parse_npc_visual_effects
 
 
 def _c255(v: float) -> int:
@@ -36,7 +18,7 @@ def _c255(v: float) -> int:
 
 
 # Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
-# enum. Preagonal renders baddies as gani entities rather than blitting a raw
+# enum. The C# client renders baddies as gani entities rather than blitting a raw
 # sprite sheet, so we drive the animation from the server-reported mode: they
 # walk while hunting, recoil when hurt, and flop over when dead.
 _BADDY_MODE_GANI = {
@@ -52,7 +34,7 @@ _BADDY_MODE_GANI = {
     9: "dead",   # DEAD
 }
 
-# Per-type head over body.png, the way Preagonal's classic_baddy_graanch ganis
+# Per-type head over body.png, the way the C# client's classic_baddy_graanch ganis
 # dress a baddy as a humanoid (head19.png + body.png). Keyed by the canonical
 # GServer-v2 BaddyType so the ten stock baddies read as distinct enemies.
 _BADDY_HEADS = {
@@ -97,6 +79,14 @@ class EntityRenderMixin:
         px, py = self.camera.world_to_screen(*self._player_render_pos)
         entities.append(('player', self.visual_y, px, py, player))
 
+        # Reverse lookup (level_name -> grid pos), built once per frame instead
+        # of rescanning client.gmap_grid for every remote player below (mirrors
+        # the baddy segment-offset hoist further down).
+        level_to_grid = {}
+        if self.client.gmap_grid:
+            for (gx, gy), level_name in self.client.gmap_grid.items():
+                level_to_grid[level_name] = (gx, gy)
+
         # Add other players - convert their local coords to world coords
         for pid, pdata in self.client.players.items():
             if 'x' in pdata and 'y' in pdata:
@@ -110,29 +100,21 @@ class EntityRenderMixin:
                 player_level = pdata.get('level', '')
                 world_x, world_y = ox, oy
 
-                if self.client.gmap_grid:
-                    found = False
-                    if player_level:
-                        for (gx, gy), level_name in self.client.gmap_grid.items():
-                            if level_name == player_level:
-                                world_x = ox + gx * 64
-                                world_y = oy + gy * 64
-                                found = True
-                                break
-
-                    # If no level set, assume same sub-level as local player
-                    if not found and self.client._current_level_name:
-                        for (gx, gy), level_name in self.client.gmap_grid.items():
-                            if level_name == self.client._current_level_name:
-                                world_x = ox + gx * 64
-                                world_y = oy + gy * 64
-                                break
+                # Prefer the player's own level; if unset or unknown, assume
+                # the same sub-level as the local player.
+                grid = level_to_grid.get(player_level) if player_level else None
+                if grid is None:
+                    grid = level_to_grid.get(self.client._current_level_name)
+                if grid is not None:
+                    gx, gy = grid
+                    world_x = ox + gx * 64
+                    world_y = oy + gy * 64
 
                 # Smooth interpolation for other players
                 if pid in self.other_player_visual:
                     vx, vy = self.other_player_visual[pid]
                     # Interpolate toward target position
-                    lerp = min(1.0, self.lerp_speed * 0.033)  # Assume ~30fps
+                    lerp = min(1.0, self.lerp_speed * self._frame_dt)
                     vx += (world_x - vx) * lerp
                     vy += (world_y - vy) * lerp
                     self.other_player_visual[pid] = (vx, vy)
@@ -154,7 +136,7 @@ class EntityRenderMixin:
                 # Interpolate NPC position for smooth movement
                 if npc_id in self.npc_visual:
                     vx, vy = self.npc_visual[npc_id]
-                    lerp = min(1.0, self.lerp_speed * 0.033)
+                    lerp = min(1.0, self.lerp_speed * self._frame_dt)
                     vx += (nx - vx) * lerp
                     vy += (ny - vy) * lerp
                     self.npc_visual[npc_id] = (vx, vy)
@@ -224,7 +206,7 @@ class EntityRenderMixin:
             for store in list(wimgs.values()):
                 self._render_npc_layers(store, over=True)
     def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
-        """Render a baddy as a gani entity (Preagonal style). The server-reported
+        """Render a baddy as a gani entity (the C# client's style). The server-reported
         mode picks the animation (walk/idle/hurt/dead), direction faces it, and a
         per-type head over body.png makes the enemy readable. Falls back to a red
         marker only if the gani system can't produce a frame."""
@@ -252,13 +234,11 @@ class EntityRenderMixin:
                                          {'head_image': head, 'body_image': 'body.png'})
             return
 
-        # Fallback marker: a red body so the enemy is visible.
-        body = pygame.Surface((24, 24), pygame.SRCALPHA)
-        pygame.draw.circle(body, (200, 40, 40), (12, 12), 11)
-        pygame.draw.circle(body, (90, 0, 0), (12, 12), 11, 2)
-        pygame.draw.circle(body, (255, 230, 230), (8, 9), 2)
-        pygame.draw.circle(body, (255, 230, 230), (16, 9), 2)
-        self.screen.blit(body, (int(x), int(y)))
+        # The gani isn't downloaded yet — ask for it and stay invisible,
+        # matching the NPC gani-fallback convention elsewhere in this file
+        # (_render_npc), rather than drawing a placeholder primitive. It pops
+        # in once on_file caches it.
+        self._request_asset(gani_name + '.gani')
     def _render_horse(self, x: float, y: float, horse: dict, key):
         """Render a horse placed by another player (PLO_HORSEADD). Uses the
         shared 'horse' gani if it's available (see assets search path in
@@ -319,10 +299,10 @@ class EntityRenderMixin:
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self.font_small.render(nickname, True, (255, 255, 255))
+            name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
             name_x = x - name_surf.get_width() // 2 + 16
             name_y = y + 48
-            shadow_surf = self.font_small.render(nickname, True, (0, 0, 0))
+            shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
             self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
 
@@ -437,45 +417,78 @@ class EntityRenderMixin:
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self.font_small.render(nickname, True, (255, 255, 255))
+            name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
             # Center name below player (player sprite is ~48 pixels tall)
             name_x = x - name_surf.get_width() // 2 + 16
             name_y = y + 48
             # Add shadow for readability
-            shadow_surf = self.font_small.render(nickname, True, (0, 0, 0))
+            shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
             self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
-    def _render_speech_bubble(self, x: float, y: float, text: str):
-        """Render a speech bubble above an entity."""
-        if not text:
-            return
+    def _render_text_cached(self, font: pygame.font.Font, text: str,
+                             color: Tuple[int, int, int]) -> pygame.Surface:
+        """Render (and cache) a text surface. Nicknames, speech bubbles and
+        showtext layers (_render_showtext_rec) all re-render the same handful
+        of strings every frame otherwise; keying on (font identity, text,
+        color) lets every caller share one cache. Cleared wholesale once it
+        grows large so a chat-heavy session doesn't leak memory."""
+        cache = getattr(self, '_text_surf_cache', None)
+        if cache is None:
+            cache = self._text_surf_cache = {}
+        key = (id(font), text, color)
+        surf = cache.get(key)
+        if surf is None:
+            if len(cache) > 500:
+                cache.clear()
+            surf = cache[key] = font.render(text, True, color)
+        return surf
 
-        # Render text with word wrapping (max ~15 chars per line)
+    def _wrapped_lines(self, text: str) -> List[str]:
+        """Word-wrap speech-bubble text into up to 3 lines under ~120px.
+        Recomputing this (with a font.render() per word) every frame for the
+        same message is wasteful, so cache the wrap result keyed by the full
+        text - messages are static once received."""
+        cache = getattr(self, '_wrap_cache', None)
+        if cache is None:
+            cache = self._wrap_cache = {}
+        lines = cache.get(text)
+        if lines is not None:
+            return lines
+
         max_width = 120
         words = text.split()
         lines = []
         current_line = ""
-
         for word in words:
             test_line = current_line + (" " if current_line else "") + word
-            test_surf = self.font_small.render(test_line, True, (0, 0, 0))
+            test_surf = self._render_text_cached(self.font_small, test_line, (0, 0, 0))
             if test_surf.get_width() > max_width and current_line:
                 lines.append(current_line)
                 current_line = word
             else:
                 current_line = test_line
-
         if current_line:
             lines.append(current_line)
+        lines = lines[:3]  # Limit to 3 lines max
 
-        # Limit to 3 lines max
-        lines = lines[:3]
+        if len(cache) > 300:
+            cache.clear()
+        cache[text] = lines
+        return lines
+
+    def _render_speech_bubble(self, x: float, y: float, text: str):
+        """Render a speech bubble above an entity."""
+        if not text:
+            return
+
+        lines = self._wrapped_lines(text)
 
         # Calculate bubble dimensions
         line_height = 14
         padding = 4
         bubble_height = len(lines) * line_height + padding * 2
-        bubble_width = max(self.font_small.render(line, True, (0, 0, 0)).get_width() for line in lines) + padding * 2
+        bubble_width = max(self._render_text_cached(self.font_small, line, (0, 0, 0)).get_width()
+                           for line in lines) + padding * 2
 
         # Position bubble above entity (centered, above head)
         bubble_x = x + 16 - bubble_width // 2
@@ -502,7 +515,7 @@ class EntityRenderMixin:
 
         # Draw text lines
         for i, line in enumerate(lines):
-            text_surf = self.font_small.render(line, True, (0, 0, 0))
+            text_surf = self._render_text_cached(self.font_small, line, (0, 0, 0))
             text_x = bubble_x + padding
             text_y = bubble_y + padding + i * line_height
             self.screen.blit(text_surf, (text_x, text_y))
@@ -552,25 +565,6 @@ class EntityRenderMixin:
             except (TypeError, ValueError):
                 vals.append(0)
         return vals if have_any else None
-
-    def _render_npc_polys(self, polys: dict):
-        """Tier 3e: draw showpoly shapes. Each entry is the raw GS1 value list
-        `[x1, y1, x2, y2, ...]` (level-tile coordinates) stored verbatim by
-        gs1_client.py; converted to numbers and screen space here."""
-        from reborn_protocol.gs1.values import to_num
-        for raw in polys.values():
-            try:
-                nums = [float(to_num(v)) for v in raw]
-            except Exception:
-                continue
-            if len(nums) < 6:  # need at least 3 points (x,y pairs)
-                continue
-            points = [self.camera.world_to_screen(nums[i], nums[i + 1])
-                      for i in range(0, len(nums) - 1, 2)]
-            try:
-                pygame.draw.polygon(self.screen, (255, 210, 60), points, 2)
-            except Exception:
-                pass
 
     def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
         """Render an NPC."""
@@ -658,7 +652,7 @@ class EntityRenderMixin:
                     self.screen.blit(sprite, (x, y))
             else:
                 # Not cached locally — ask the server for it (once). Stay
-                # INVISIBLE until it arrives (real Graal does), rather than
+                # INVISIBLE until it arrives (real Reborn does), rather than
                 # littering the level with green blobs; on_file caches it and it
                 # pops in. Show the marker only in debug mode.
                 self._request_asset(image_name)
@@ -671,12 +665,6 @@ class EntityRenderMixin:
 
         if imgs:
             self._render_npc_layers(imgs, over=True)
-
-        # Tier 3e: showpoly-stored polygons (gs1_client.py stores raw GS1
-        # values under npc['polys'][index] = [x1, y1, x2, y2, ...]).
-        polys = npc.get('polys')
-        if polys:
-            self._render_npc_polys(polys)
 
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
@@ -700,6 +688,8 @@ class EntityRenderMixin:
                     self._render_showani_rec(rec)
                 elif rec.get('image'):
                     self._render_showimg_rec(rec)
+                elif rec.get('poly'):
+                    self._render_showpoly_rec(rec)
             except Exception:
                 pass  # a bad layer must never break the frame
 
@@ -727,24 +717,40 @@ class EntityRenderMixin:
             return
         w = max(1, int(sprite.get_width() * factor))
         h = max(1, int(sprite.get_height() * factor))
-        sprite = pygame.transform.scale(sprite, (w, h))
 
         colors = rec.get('colors')
         additive = rec.get('mode') == 1 or 'light' in image.lower()
-        if colors:
-            r, g, b, a = colors
-            sprite = sprite.copy()
-            if additive:
-                # fold alpha into the colour so additive blending dims it
-                mult = (_c255(r * a), _c255(g * a), _c255(b * a), 255)
-                sprite.fill(mult, special_flags=pygame.BLEND_RGB_MULT)
-            else:
-                sprite.fill((_c255(r), _c255(g), _c255(b), 255),
-                            special_flags=pygame.BLEND_RGB_MULT)
-                sprite.set_alpha(_c255(a))
+        colors_key = tuple(colors) if colors else None
+
+        # Rescaling every frame (even at factor==1) and recoloring every frame
+        # is wasted work for a layer that's usually static between server
+        # updates - cache the finished (scaled + recolored) surface keyed by
+        # everything that can change its pixels.
+        cache = getattr(self, '_showimg_cache', None)
+        if cache is None:
+            cache = self._showimg_cache = {}
+        cache_key = (image, part, w, h, colors_key, additive)
+        out = cache.get(cache_key)
+        if out is None:
+            out = sprite if (w, h) == sprite.get_size() else pygame.transform.scale(sprite, (w, h))
+            if colors:
+                r, g, b, a = colors
+                out = out.copy()
+                if additive:
+                    # fold alpha into the colour so additive blending dims it
+                    mult = (_c255(r * a), _c255(g * a), _c255(b * a), 255)
+                    out.fill(mult, special_flags=pygame.BLEND_RGB_MULT)
+                else:
+                    out.fill((_c255(r), _c255(g), _c255(b), 255),
+                              special_flags=pygame.BLEND_RGB_MULT)
+                    out.set_alpha(_c255(a))
+            if len(cache) > 300:
+                cache.clear()
+            cache[cache_key] = out
+
         sx, sy = self._layer_pos(rec)
         flags = pygame.BLEND_ADD if additive else 0
-        self.screen.blit(sprite, (int(sx), int(sy)), special_flags=flags)
+        self.screen.blit(out, (int(sx), int(sy)), special_flags=flags)
 
     def _render_showani_rec(self, rec: dict):
         """Draw a showani layer (an animated gani at a level/screen position) —
@@ -753,9 +759,9 @@ class EntityRenderMixin:
         gani = rec.get('gani')
         if not gani:
             return
-        # showani may carry gani PARAMs after the name (e.g. the bomb passes
-        # "eye_bomber_bomb,50,eye_bombsprites-dec0.png,100"); the name is the
-        # part before the first comma.
+        # gs1_client.py splits the ani name from its trailing params before
+        # storing 'gani', but strip defensively in case a caller ever stores
+        # the raw comma-joined form.
         gani = gani.split(',')[0].strip()
         anim = rec.get('_anim')
         if anim is None:
@@ -764,9 +770,61 @@ class EntityRenderMixin:
         if anim.gani is None:
             self._request_asset(gani + '.gani')
             return
+
+        # An embedded-SCRIPT gani (Bomber Arena's explosion, various light/
+        # particle effects) draws its real visual via GS1 showimg calls this
+        # engine doesn't execute; its own ANI frames are a near-blank
+        # placeholder. Substitute a generic burst so it still reads visually
+        # instead of vanishing.
+        if anim.gani.has_script:
+            self._render_scripted_gani_fallback(rec)
+            return
+
         anim.update(getattr(self, '_frame_dt', 0.05))
         sx, sy = self._layer_pos(rec)
-        self._render_animated_entity(int(sx), int(sy), anim, {})
+        equip = self._showani_param_equip(rec.get('params'))
+        self._render_animated_entity(int(sx), int(sy), anim, equip)
+
+    @staticmethod
+    def _showani_param_equip(params) -> dict:
+        """Build an equipment dict from a showani call's trailing params, so
+        PARAMn frame tokens and PARAMn-layer sprite sources resolve (Bomber
+        Arena's bomb gani picks its body/decal this way - see
+        _render_animated_entity and gani.py's _parse_frame_line)."""
+        equip: dict = {}
+        if not params:
+            return equip
+        for i, p in enumerate(params, start=1):
+            equip[f'param{i}'] = p
+            if isinstance(p, str):
+                equip[f'param{i}_image'] = p
+        return equip
+
+    def _render_scripted_gani_fallback(self, rec: dict):
+        """Synthesize an expanding/fading burst for a showani whose gani has
+        an embedded SCRIPT we don't run. Bomber Arena's eye_bomber_expl.gani
+        passes its 'on' fade timer (counting down from ~2 to 0, see
+        arenaGUI.gs1's DrawExpl/CreateExpl) as the first param; use it to
+        drive the burst's lifetime instead of a fixed local clock, so it
+        stays in sync with the server-driven explosion spread."""
+        params = rec.get('params') or []
+        try:
+            on = float(params[0]) if params else 0.0
+        except (TypeError, ValueError):
+            on = 0.0
+        if on <= 0:
+            return
+        progress = max(0.0, min(1.0, 1.0 - on / 2.0))
+        radius = int(10 + 22 * progress)
+        alpha = int(255 * min(1.0, on))
+        if radius <= 0 or alpha <= 0:
+            return
+        sx, sy = self._layer_pos(rec)
+        cx, cy = int(sx) + TILE_SIZE // 2, int(sy) + TILE_SIZE // 2
+        surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(surf, (255, 150, 50, alpha), (radius, radius), radius)
+        pygame.draw.circle(surf, (255, 220, 120, alpha), (radius, radius), max(1, int(radius * 0.55)))
+        self.screen.blit(surf, (cx - radius, cy - radius))
 
     def _render_showtext_rec(self, rec: dict):
         text = rec.get('text', '')
@@ -777,8 +835,11 @@ class EntityRenderMixin:
         font = self._showtext_font(rec.get('font', '') or 'Arial', size, 'b' in style)
         colors = rec.get('colors')
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2])) if colors else (255, 255, 255)
-        surf = font.render(text, True, col)
+        surf = self._render_text_cached(font, text, col)
         if colors and len(colors) > 3:
+            # set_alpha mutates the surface in place, so operate on our own
+            # copy rather than the shared cached one.
+            surf = surf.copy()
             surf.set_alpha(_c255(colors[3]))
         sx, sy = self._layer_pos(rec)
         if 'c' in style:  # horizontally centred on the anchor
@@ -798,6 +859,35 @@ class EntityRenderMixin:
                 font = pygame.font.Font(None, size)
             cache[key] = font
         return font
+
+    def _render_showpoly_rec(self, rec: dict):
+        """Draw a showpoly/showpoly2 layer: `rec['poly']` is a flat
+        `[x1,y1,x2,y2,...]` (dim 2) or `[x1,y1,z1,x2,y2,z2,...]` (dim 3, e.g.
+        showpoly2's per-vertex height) list of level-tile coordinates. z is
+        dropped for our top-down view — the same treatment showani2/showtext2
+        give their z/zoom component. Filled with the layer's `colors` (set via
+        changeimgcolors on the same index, like any other layer type) or
+        opaque white if none was ever set."""
+        pts = rec['poly']
+        stride = 3 if rec.get('poly_dim') == 3 else 2
+        if len(pts) < stride * 3:  # need at least 3 vertices
+            return
+        points = [self.camera.world_to_screen(pts[i], pts[i + 1])
+                  for i in range(0, len(pts) - stride + 1, stride)]
+        colors = rec.get('colors')
+        col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2]),
+               _c255(colors[3]) if len(colors) > 3 else 255) if colors else (255, 255, 255, 255)
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x, min_y = min(xs), min(ys)
+        w = max(1, max(xs) - min_x)
+        h = max(1, max(ys) - min_y)
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        local_points = [(px - min_x, py - min_y) for px, py in points]
+        pygame.draw.polygon(surf, col, local_points)  # width=0 -> filled
+        self.screen.blit(surf, (min_x, min_y))
+
     def _render_light_sprite(self, sprite: pygame.Surface, x: float, y: float,
                               is_light: bool, coloreffect: Optional[Tuple[float, float, float, float]]):
         """Render a sprite with light effects (additive blending, alpha).
@@ -808,27 +898,31 @@ class EntityRenderMixin:
             is_light: If True, use additive blending
             coloreffect: (r, g, b, a) multipliers - r,g,b typically 1.0, a is alpha (0-1)
         """
-        # Create a copy of the sprite for modification
-        light_sprite = sprite.copy()
-
-        # Apply color effect (alpha)
-        if coloreffect:
-            r, g, b, a = coloreffect
-            # Alpha is typically like 0.99 (99% opacity but as a light effect)
-            alpha = int(a * 255)
-            light_sprite.set_alpha(alpha)
+        # Alpha is typically like 0.99 (99% opacity but as a light effect).
+        # copy()+set_alpha() every frame per light NPC is wasted work since the
+        # same (sprite, alpha) pair repeats frame to frame - cache the result.
+        alpha = int(coloreffect[3] * 255) if coloreffect else None
+        cache = getattr(self, '_light_sprite_cache', None)
+        if cache is None:
+            cache = self._light_sprite_cache = {}
+        key = (id(sprite), alpha)
+        light_sprite = cache.get(key)
+        if light_sprite is None:
+            light_sprite = sprite.copy()
+            if alpha is not None:
+                light_sprite.set_alpha(alpha)
+            if len(cache) > 300:
+                cache.clear()
+            cache[key] = light_sprite
 
         # Position - place light sprite with top-left at NPC position
         # User testing confirmed this positioning is correct for light effects
-        pos_x = x
-        pos_y = y
-
         if is_light:
             # Render with additive blending for light effect
-            self.screen.blit(light_sprite, (pos_x, pos_y), special_flags=pygame.BLEND_ADD)
+            self.screen.blit(light_sprite, (x, y), special_flags=pygame.BLEND_ADD)
         else:
             # Just render with alpha
-            self.screen.blit(light_sprite, (pos_x, pos_y))
+            self.screen.blit(light_sprite, (x, y))
     def _render_animated_entity(self, x: float, y: float, anim: AnimationState,
                                   equipment: dict):
         """Render an entity using gani animation.
@@ -849,7 +943,24 @@ class EntityRenderMixin:
         base_offset_y = 0
 
         # Render each sprite in the frame
-        for sprite_id, ox, oy in frame.sprites:
+        for raw_sprite_id, ox, oy in frame.sprites:
+            sprite_id = raw_sprite_id
+            if isinstance(sprite_id, str):
+                # A "PARAM1".."PARAM5" frame token - the real sprite id is
+                # whatever the showani/setani call passed as that positional
+                # extra arg (see _showani_param_equip / gani.py's
+                # _parse_frame_line), falling back to the gani's own
+                # DEFAULTPARAMn (e.g. eye_bomber_bomb.gani's DEFAULTPARAM1 50)
+                # when the caller didn't pass one.
+                pval = equipment.get(sprite_id.lower())
+                if pval is None:
+                    pval = anim.gani.defaults.get(sprite_id)
+                if pval is None:
+                    continue
+                try:
+                    sprite_id = int(float(pval))
+                except (TypeError, ValueError):
+                    continue
             sprite_def = anim.gani.sprites.get(sprite_id)
             if not sprite_def:
                 continue
@@ -870,7 +981,7 @@ class EntityRenderMixin:
                 # (equipment['attrN_image'], plumbed through by callers from
                 # the raw NPC/other-player gani string - see _render_npc /
                 # _render_other_player) or, failing that, the gani's own
-                # DEFAULTATTRn. Per the reference client (Preagonal's
+                # DEFAULTATTRn. Per the reference client (the C# client's
                 # Animation.cs), DEFAULTATTRn is purely opt-in per-gani text -
                 # there's no universal "hat0.png" fallback when a gani defines
                 # an ATTR1 sprite layer without a DEFAULTATTR1 line, so render

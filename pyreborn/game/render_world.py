@@ -11,38 +11,19 @@ Instead each 64x64-tile level segment (a single non-GMAP level counts as one
 segment) gets its own small cached surface, built lazily the first time it's
 visible and reused until its tile data actually changes. Per frame, only the
 segments intersecting the camera's visible tile range are blitted (mirrors
-Preagonal's Maps.cs Draw, which walks the camera AABB rather than the whole
+the C# client's Maps.cs Draw, which walks the camera AABB rather than the whole
 map). A bounded LRU keeps long exploration sessions from accumulating an
 unbounded number of cached segments.
 """
 
 import time
-import json
-import re
 from collections import OrderedDict
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pygame
-from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT,
-    K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
-)
 
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
-from ..player import Player
 from ..tiletypes import TileType, get_tile_type
-from .constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
-)
+from .constants import TILE_SIZE
 
 # Key used for a standalone (non-GMAP) level when neither _current_level_name
 # nor _tiles_level_name is set yet (shouldn't normally happen - _render_world
@@ -348,8 +329,11 @@ class WorldRenderMixin:
         base = self.tileset_mgr.get_tile_or_color(tile_id)
         shimmer = base.copy()
         overlay = pygame.Surface(shimmer.get_size(), pygame.SRCALPHA)
-        overlay.fill((190, 225, 255, 55))
-        shimmer.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+        # Additive blend ignores the fill alpha — the RGB values ARE the
+        # brightness bump, so keep them small (the old (190,225,255) washed
+        # every water tile to near-white and read as flashing).
+        overlay.fill((18, 26, 34))
+        shimmer.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
         cache[tile_id] = shimmer
         return shimmer
 

@@ -50,6 +50,34 @@ _PLAYER_MEMBER_ATTR.update({
 })
 
 
+def _image_size(data: bytes):
+    """(width, height) from a GIF/PNG/JPEG/BMP header, or None."""
+    if len(data) < 26:
+        return None
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return (int.from_bytes(data[6:8], "little"),
+                int.from_bytes(data[8:10], "little"))
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return (int.from_bytes(data[16:20], "big"),
+                int.from_bytes(data[20:24], "big"))
+    if data[:2] == b"BM":
+        return (int.from_bytes(data[18:22], "little", signed=True),
+                abs(int.from_bytes(data[22:26], "little", signed=True)))
+    if data[:2] == b"\xff\xd8":  # JPEG: scan for a SOF marker
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                return (int.from_bytes(data[i + 7:i + 9], "big"),
+                        int.from_bytes(data[i + 5:i + 7], "big"))
+            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+            i += 2 + seg_len
+    return None
+
+
 class _PlayerObject(GS2Object):
     """`player.` bridged onto the live pyReborn client/player."""
 
@@ -147,11 +175,33 @@ class GS2ClientHost(GS2Host):
         return GS2Object(name=classname)
 
     def sleep(self, vm: GS2VM, seconds: float) -> None:
-        # The VM is synchronous; blocking the client loop is worse than
-        # continuing. Logged once so it's visible.
-        if ("sleep",) not in GS2VM._logged_once:
-            GS2VM._logged_once.add(("sleep",))
-            logger.warning("GS2 sleep() not suspended (VM is synchronous); continuing")
+        # The VM can't suspend, so sleep() blocks — but it pumps the client's
+        # packet loop while waiting, which is what sleeping scripts are
+        # almost always waiting FOR (preloader download loops poll a file
+        # between sleep(0.05) calls; without the pump the file never arrives
+        # and the loop spins to the instruction budget). Scripts sleep in
+        # small slices, so each call blocks the frame only briefly; capped at
+        # 1s as a backstop against a script freezing the app.
+        rt2 = self.rt2
+        secs = min(max(to_num(seconds), 0.0), 1.0)
+        if secs <= 0:
+            return
+        client = rt2.client
+        if (client is None or not getattr(client, "connected", False)
+                or getattr(client, "_in_update", False) or rt2._sleeping):
+            # No client to pump, or we're inside the packet loop already (an
+            # onAction handler fired from PLO_TRIGGERACTION) or inside another
+            # script's sleep: recursing into update() would re-enter packet
+            # handling, so just wait.
+            time.sleep(min(secs, 0.05))
+            return
+        rt2._sleeping = True
+        try:
+            end = time.time() + secs
+            while time.time() < end and getattr(client, "connected", False):
+                client.update(timeout=0.02)
+        finally:
+            rt2._sleeping = False
 
     # -- builtins ------------------------------------------------------------
 
@@ -160,7 +210,14 @@ class GS2ClientHost(GS2Host):
         rt2 = self.rt2
 
         if obj is not None:
-            # object method with no member function bound: no GS1 equivalent
+            if name == "join":
+                # this.join("classname") — same semantics as the global form
+                # (the class merges into the calling script's VM).
+                if args:
+                    rt2.join_class(vm, to_str(args[0]))
+                return 0.0
+            # other object methods with no member function bound: no GS1
+            # equivalent
             return NOT_HANDLED
 
         if name == "settimer":
@@ -176,6 +233,8 @@ class GS2ClientHost(GS2Host):
         if name == "echo":
             text = to_str(args[0]) if args else ""
             rt2.echo_log.append(text)
+            if len(rt2.echo_log) > 1000:      # scripts can echo in loops
+                del rt2.echo_log[:-500]
             logger.info("GS2 echo: %s", text)
             return 0.0
 
@@ -213,6 +272,25 @@ class GS2ClientHost(GS2Host):
         if name == "timevar2":
             return time.time()
 
+        if name in ("getimgwidth", "getimgheight"):
+            # Answered from the downloaded file's header; preloader-style
+            # scripts poll this in a wait loop until the download lands, so
+            # a miss also (re-)requests the file.
+            fname = to_str(args[0]) if args else ""
+            dims = rt2.image_size(fname) if fname else None
+            if dims is None:
+                return 0.0
+            return float(dims[0] if name == "getimgwidth" else dims[1])
+
+        if name == "tiletype":
+            if rt2.client is not None and len(args) >= 2:
+                from .tiletypes import get_tile_type
+                x, y = int(to_num(args[0])), int(to_num(args[1]))
+                tiles = getattr(rt2.client, "tiles", None)
+                if tiles and 0 <= x < 64 and 0 <= y < 64:
+                    return float(get_tile_type(tiles[y * 64 + x]))
+            return 0.0
+
         # GS1 function surface (returns a value)
         if name in _GS1_FUNCTIONS and rt2.gs1 is not None:
             ctx = rt2._gs1_ctx(vm)
@@ -248,6 +326,10 @@ class ClientGS2:
         self._vm_keys: Dict[int, tuple] = {}      # id(vm) -> (kind, key)
         self._pending_joins: Dict[str, List[GS2VM]] = {}
         self._prev_bytecode_cb = None
+        # Bytecode that arrived inside the client's packet loop, waiting to
+        # be loaded/run from the game loop (see _on_bytecode).
+        self._pending_bytecode: List[tuple] = []
+        self._sleeping = False                    # a script sleep() is pumping update()
 
     # -- wiring --------------------------------------------------------------
 
@@ -267,7 +349,12 @@ class ClientGS2:
                 self._prev_bytecode_cb(kind, key, blob)
             except Exception:
                 pass
-        self.load_bytecode(kind, key, blob)
+        # This callback fires from inside client._handle_packet. Running the
+        # script here (run_toplevel/onCreated) would execute VM code — which
+        # may sleep() and pump update() — from inside the packet loop. Defer
+        # to process_timeouts, which the game loop drives every frame.
+        self._pending_bytecode.append((kind, key, blob))
+        self.pump_pending()
 
     # -- loading -------------------------------------------------------------
 
@@ -387,9 +474,37 @@ class ClientGS2:
         if name:
             self.trigger_event("onAction" + name, *parts[1:])
 
+    def image_size(self, fname: str):
+        """(w, h) of an image the client has (downloaded or on disk), or
+        None. A miss requests the download once so a polling script's next
+        check can succeed."""
+        client = self.client
+        if client is None:
+            return None
+        data = client.get_file(fname)
+        if data is None:
+            if (fname not in client._pending_files
+                    and fname not in client._failed_files):
+                try:
+                    client.request_file(fname)
+                except Exception:
+                    pass
+            return None
+        return _image_size(data)
+
+    def pump_pending(self):
+        """Load (and run toplevel/onCreated of) bytecode queued by
+        _on_bytecode — a no-op while the client's packet loop is running."""
+        if self.client is not None and getattr(self.client, "_in_update", False):
+            return
+        while self._pending_bytecode:
+            kind, key, blob = self._pending_bytecode.pop(0)
+            self.load_bytecode(kind, key, blob)
+
     def process_timeouts(self, dt: float):
         """Count down each VM's pending timeout and fire onTimeout when it
         elapses (handlers typically re-arm via settimer/this.timeout)."""
+        self.pump_pending()
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt
             if t > 0:

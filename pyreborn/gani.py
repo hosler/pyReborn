@@ -7,7 +7,7 @@ for rendering animated sprites.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Union, Callable
 import re
 
 
@@ -26,7 +26,9 @@ class GaniSprite:
 @dataclass
 class GaniFrame:
     """A single animation frame with sprite placements and optional sound."""
-    sprites: List[Tuple[int, int, int]]  # [(sprite_id, offset_x, offset_y), ...]
+    # [(sprite_id, offset_x, offset_y), ...]. sprite_id is normally an int,
+    # but may be a "PARAM1".."PARAM5" string token (see _parse_frame_line).
+    sprites: List[Tuple[Union[int, str], int, int]]
     sound: Optional[Tuple[str, float, float]] = None  # (filename, volume, pitch)
 
 
@@ -41,6 +43,14 @@ class Gani:
     continuous: bool = False
     setback: Optional[str] = None
     single_dir: bool = False  # True if only one direction defined
+    # True if the file has an embedded SCRIPT...SCRIPTEND block (the classic
+    # Graal "special-effect gani" convention: an NPC-like script drives the
+    # real visual via showimg, and the ANI section itself is a near-blank
+    # placeholder). This engine doesn't run gani-embedded scripts, so callers
+    # that show one of these (see _render_showani_rec) fall back to a
+    # synthesized effect rather than the frame data, which draws almost
+    # nothing on its own.
+    has_script: bool = False
 
     def get_frame(self, direction: int, frame_index: int) -> Optional[GaniFrame]:
         """Get a specific frame for a direction."""
@@ -140,6 +150,7 @@ class GaniParser:
         lines = content.split('\n')
 
         in_ani = False
+        in_script = False
         frame_lines: List[str] = []  # Collect lines for current frame group
         pending_sound: Optional[Tuple[str, float, float]] = None
 
@@ -173,6 +184,21 @@ class GaniParser:
 
             # Skip empty lines outside ANI section
             if not line and not in_ani:
+                continue
+
+            # An embedded SCRIPT...SCRIPTEND block (lights, particle effects,
+            # etc. drive their real visual this way, with the ANI section
+            # left as a near-blank placeholder). We don't execute gani-embedded
+            # scripts, so just flag the gani and skip the body wholesale -
+            # its GS1-ish syntax would otherwise be misread as ANI/SPRITE data.
+            if line == 'SCRIPT':
+                in_script = True
+                gani.has_script = True
+                continue
+            if line == 'SCRIPTEND':
+                in_script = False
+                continue
+            if in_script:
                 continue
 
             # Parse SPRITE definitions
@@ -287,12 +313,24 @@ class GaniParser:
             tokens = part.split()
             if len(tokens) >= 3:
                 try:
-                    sprite_id = int(tokens[0])
+                    sprite_id: object = int(tokens[0])
+                except ValueError:
+                    # Not a literal id - a "PARAMn" token substitutes whatever
+                    # sprite id the showani/setani call passed as its Nth extra
+                    # arg (e.g. Bomber Arena's bomb gani picks its body/decal
+                    # this way so DrawBomb() can recolor/animate it per-bomb).
+                    # Keep the token itself; resolved against the caller's
+                    # params dict at render time (see _render_animated_entity).
+                    if re.match(r'^PARAM\d+$', tokens[0], re.IGNORECASE):
+                        sprite_id = tokens[0].upper()
+                    else:
+                        continue
+                try:
                     offset_x = int(tokens[1])
                     offset_y = int(tokens[2])
-                    sprites.append((sprite_id, offset_x, offset_y))
                 except ValueError:
                     continue
+                sprites.append((sprite_id, offset_x, offset_y))
 
         if sprites:
             return GaniFrame(sprites=sprites)
@@ -317,7 +355,7 @@ class AnimationState:
         # so switching away (e.g. "walk" -> "sword") and back resumes the walk
         # cycle instead of restarting it at frame 0. Keyed by gani name; kept
         # on the AnimationState instance itself (never shared across entities)
-        # to avoid the shared-playback-state bug Preagonal has.
+        # to avoid the shared-playback-state bug the C# client has.
         self._continuous_state: Dict[str, Tuple[int, float]] = {}
 
     def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):

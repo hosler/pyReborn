@@ -39,6 +39,9 @@ class RenderMixin:
 
     def _update_animations(self, dt: float):
         """Update all animation states."""
+        # Walk-on sitting: derive seated state from the tile under the feet.
+        self._update_sitting_state()
+
         # Update local player animation
         sounds = self.player_anim.update(dt)
         for sound in sounds:
@@ -68,9 +71,10 @@ class RenderMixin:
                 self.player_anim.set_animation("carry", self.client.player.direction)
                 self.current_anim_name = "carry"
 
-        # If sitting and not already in sit animation
+        # If sitting and not already in sit animation. Don't stomp a one-shot
+        # action gani (sword swing while seated) — its setback returns here.
         if self.client.player.is_sitting:
-            if self.current_anim_name != "sit":
+            if self.current_anim_name not in ("sit", "sword", "lift"):
                 self.player_anim.set_animation("sit", self.client.player.direction)
                 self.current_anim_name = "sit"
 
@@ -89,7 +93,7 @@ class RenderMixin:
 
         # Update other players / NPCs / baddies. Their gani sounds (sword
         # swings, NPC effects, ...) are played positionally so the world has
-        # audible life beyond the local player — Preagonal attenuates these by
+        # audible life beyond the local player — the C# client attenuates these by
         # distance from the listener; we add a stereo pan on top.
         for pid, anim in list(self.other_player_anims.items()):
             if pid not in self.client.players:
@@ -113,6 +117,15 @@ class RenderMixin:
                 continue
             anim.update(dt)
 
+        # Same bug class as baddies above: horse_anims entries (keyed by the
+        # horse's (x, y), like client.horses) were created on first draw but
+        # never advanced, so mounts sat frozen on frame 0.
+        for hkey, anim in list(self.horse_anims.items()):
+            if hkey not in self.client.horses:
+                del self.horse_anims[hkey]
+                continue
+            anim.update(dt)
+
     def _play_entity_sounds(self, sounds, world_pos):
         """Play an entity's gani sounds attenuated/panned by its distance from
         the local player. world_pos is the entity's (x, y) in world tiles, or
@@ -132,7 +145,7 @@ class RenderMixin:
         and where they were drawn, which reads as floaty/laggy. Instead, chase
         the target at follow_speed (well above walk_speed) and lock on once
         within a frame's reach, so during normal movement the camera sits exactly
-        on the player (Preagonal snaps its camera to the player every frame) and
+        on the player (the C# client snaps its camera to the player every frame) and
         only a large correction eases in.
         """
         target_x = self.client.x
@@ -156,7 +169,7 @@ class RenderMixin:
             self.visual_y += dy / dist * step
     # The camera aims at the player's body centre, not the sprite's top-left,
     # so the character sits at screen centre instead of reading low-and-right of
-    # it. Mirrors Preagonal centring on PixelX+24,PixelY+32. The sprite bounding
+    # it. Mirrors the C# client centring on PixelX+24,PixelY+32. The sprite bounding
     # box is 2 tiles wide with feet at (+1, +3) tiles, so the torso is ~1 tile
     # right and ~1.5 tiles down from the top-left.
     CAMERA_BODY_DX = 1.0
@@ -222,6 +235,8 @@ class RenderMixin:
         self._render_server_bombs()                  # other players' PLI_BOMBADD bombs
         self._render_server_arrows()                 # other players' PLI_ARROWADD arrows
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
+        self._update_and_render_thrown(getattr(self, '_last_dt', 0.016))
+        self._render_break_effects()
         self._render_server_explosions()
         self._render_server_bomb_explosions()
         self._render_screen_tint()                   # seteffect overlay, under HUD

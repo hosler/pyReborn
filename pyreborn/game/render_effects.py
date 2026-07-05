@@ -4,6 +4,7 @@ Split from render.py; methods operate on the GameClient instance."""
 
 import time
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -154,6 +155,80 @@ class EffectsRenderMixin:
                 active_projectiles.append(proj)
 
         self.active_projectiles = active_projectiles
+
+    # Debris tints for thrown-object breaks: (bright, dark) per liftable type.
+    BREAK_COLORS = {
+        'bush': ((60, 145, 60), (28, 96, 28)),
+        'pot':  ((198, 150, 104), (140, 96, 60)),
+        'rock': ((150, 150, 150), (96, 96, 96)),
+    }
+
+    def _update_and_render_thrown(self, dt: float):
+        """Fly thrown liftables (bush/pot/rock) along their arc and break them
+        on landing or on the first blocking tile. The 2x2 tile graphic is drawn
+        lifted by its arc height, so the throw actually reads as a throw."""
+        survivors = []
+        for obj in self.thrown_objects:
+            step = obj['speed'] * dt
+            obj['x'] += obj['dx'] * step
+            obj['y'] += obj['dy'] * step
+            obj['dist'] += step
+            frac = min(1.0, obj['dist'] / obj['range'])
+            obj['z'] = obj['z0'] * (1.0 - frac * frac)  # eases to the ground
+
+            # Break when the leading edge of the 2x2 meets a wall, or at the
+            # end of the arc.
+            lead_x = obj['x'] + 1.0 + obj['dx']
+            lead_y = obj['y'] + 1.0 + obj['dy']
+            off_level = (not self.client.in_gmap_segment and
+                         not (0 <= lead_x < 64 and 0 <= lead_y < 64))
+            if obj['dist'] >= obj['range'] or off_level or \
+                    self._is_tile_blocking(self._get_tile_at(lead_x, lead_y)):
+                self._spawn_break_effect(obj)
+                continue
+
+            sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
+            for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1)]):
+                tile_surf = self.tileset_mgr.get_tile_or_color(obj['tiles'][i])
+                self.screen.blit(tile_surf, (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
+            survivors.append(obj)
+        self.thrown_objects = survivors
+
+    def _spawn_break_effect(self, obj):
+        """Queue a debris burst where a thrown object broke."""
+        self.break_effects.append({
+            'x': obj['x'] + 1.0,   # ground center of the 2x2
+            'y': obj['y'] + 1.0,
+            'time': time.time(),
+            'colors': self.BREAK_COLORS.get(obj.get('type'), self.BREAK_COLORS['bush']),
+        })
+        self.sound_mgr.play("crush.wav")
+
+    BREAK_DURATION = 0.45
+
+    def _render_break_effects(self):
+        """Draw active debris bursts: 8 chunks scattering outward and fading."""
+        now = time.time()
+        active = []
+        for eff in self.break_effects:
+            t = (now - eff['time']) / self.BREAK_DURATION
+            if t >= 1.0:
+                continue
+            cx, cy = self.camera.world_to_screen(eff['x'], eff['y'])
+            bright, dark = eff['colors']
+            alpha = int(255 * (1.0 - t))
+            spread = (0.3 + 1.2 * t) * TILE_SIZE
+            size = max(2, int(6 * (1.0 - t)))
+            for i in range(8):
+                ang = i * math.pi / 4.0
+                # Debris flies out and settles down slightly, like falling bits.
+                px = cx + math.cos(ang) * spread
+                py = cy + math.sin(ang) * spread * 0.7 + (t * t) * 10
+                chunk = pygame.Surface((size, size), pygame.SRCALPHA)
+                chunk.fill((*(bright if i % 2 == 0 else dark), alpha))
+                self.screen.blit(chunk, (px - size / 2, py - size / 2))
+            active.append(eff)
+        self.break_effects = active
     def _render_server_bombs(self):
         """Render bombs placed by OTHER players (client.bombs, from PLO_BOMBADD).
 

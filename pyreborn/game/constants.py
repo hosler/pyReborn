@@ -18,8 +18,8 @@ TILESET_ROWS = 32
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 
 # GS1's keydown2(keycode, edge) builtin reports keys using the Windows
-# Virtual-Key (VK) code table the real Graal client runs on (confirmed via the
-# decompiled Preagonal client, TInput.cpp: A-Z at VK 0x41-0x5A, 0-9 at VK
+# Virtual-Key (VK) code table the real Reborn client runs on (confirmed via the
+# decompiled C# client, TInput.cpp: A-Z at VK 0x41-0x5A, 0-9 at VK
 # 0x30-0x39, arrows at 0x25-0x28, Enter=13, Backspace=8, ...) - NOT raw pygame
 # keycodes. Bomber Arena's arenaGUI weapon calls keydown2(82,...) for its bomb
 # cursor (82 = 0x52 = VK_R = the R key); other scripts use 13 (Enter), 8
@@ -27,7 +27,7 @@ MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 # keycodes (e.g. pygame.K_r == 114, the ASCII lowercase code) so keydown2(82)
 # could never match and R-bound script logic silently never fired.
 def pygame_key_to_vk(pg_key: int) -> int:
-    """Translate a pygame key constant to the Graal-script VK-style code."""
+    """Translate a pygame key constant to the Reborn-script VK-style code."""
     import pygame
     if pygame.K_a <= pg_key <= pygame.K_z:      # a-z (lowercase ASCII 97-122)
         return pg_key - 32                       # -> VK_A..VK_Z (65-90)

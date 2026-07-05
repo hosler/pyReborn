@@ -54,6 +54,20 @@ class CompressionType:
 # =============================================================================
 # Encryption (ENCRYPT_GEN_5)
 # =============================================================================
+#
+# NOTE: this module keeps its own copies of RebornEncryption/Gen5Codec/
+# PacketReader instead of importing reborn_protocol's (used by protocol.py).
+# RebornEncryption's algorithm here is byte-for-byte identical to
+# reborn_protocol.encryption.RebornEncryption (same LCG constants/limits), so
+# that part would be a safe dedup. reborn_protocol's Gen5Codec.send_packet
+# picks compression via compress_data() (adds a bz2 branch above 8192 bytes)
+# where this module's send_packet only ever chooses UNCOMPRESSED/ZLIB -
+# irrelevant for the tiny login/serverlist-request packets this client sends,
+# but it's a real behavioral difference, and this is the account-login path
+# against real production listservers (listserver.graal.in), not just the
+# local pygserver used for QA. Swapping it without a way to verify against a
+# real listserver risked breaking live login for a refactor with no user-
+# facing benefit, so this dedup was left as a follow-up rather than done here.
 
 class RebornEncryption:
     """ENCRYPT_GEN_5 implementation."""
@@ -344,7 +358,7 @@ class ListServerClient:
             # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + clienttype
             #
             # CLIENTTYPE FILTERING (audited against the reference listserver impl in
-            # this repo, graal-serverlist/server/src/PlayerConnection.cpp +
+            # this repo, the C++ serverlist server's PlayerConnection.cpp +
             # ServerConnection.cpp): the `version` string we send is parsed and
             # stored (PlayerConnection::msgPLI_V2ENCRYPTKEYCL) but is NEVER read
             # again anywhere in the codebase -- it has zero effect on which
@@ -379,7 +393,7 @@ class ListServerClient:
             # Compress and send (Gen2 style - just zlib)
             compressed = zlib.compress(bytes(packet))
             length = struct.pack('>H', len(compressed))
-            self._socket.send(length + compressed)
+            self._socket.sendall(length + compressed)
             return True
         except Exception as e:
             print(f"Failed to send init packet: {e}")
@@ -402,7 +416,7 @@ class ListServerClient:
 
             # Send using Gen5 codec
             encrypted = self._codec.send_packet(bytes(packet))
-            self._socket.send(encrypted)
+            self._socket.sendall(encrypted)
             return True
         except Exception as e:
             print(f"Failed to send login packet: {e}")
@@ -451,12 +465,17 @@ class ListServerClient:
                     packet_data = self._recv_buffer[2:2 + length]
                     self._recv_buffer = self._recv_buffer[2 + length:]
 
-                    # Decrypt/decompress
+                    # Decrypt/decompress. first_packet is cleared
+                    # unconditionally after this first attempt (even if zlib
+                    # fails and we fall back to the codec) - otherwise a
+                    # non-zlib first bundle would make every later packet pay
+                    # a zlib.decompress exception (see protocol.py's
+                    # Protocol.recv_packets for the same fix).
                     if self._first_packet:
+                        self._first_packet = False
                         try:
                             decrypted = zlib.decompress(packet_data)
-                            self._first_packet = False
-                        except:
+                        except Exception:
                             decrypted = self._codec.recv_packet(packet_data)
                     else:
                         decrypted = self._codec.recv_packet(packet_data)
@@ -795,12 +814,13 @@ if IS_BROWSER:
                 packet_data = self._recv_buffer[2:2 + length]
                 self._recv_buffer = self._recv_buffer[2 + length:]
 
-                # Decrypt/decompress
+                # Decrypt/decompress. first_packet cleared unconditionally -
+                # see ListServerClient._recv_packets for why.
                 if self._first_packet:
+                    self._first_packet = False
                     try:
                         decrypted = zlib.decompress(packet_data)
-                        self._first_packet = False
-                    except:
+                    except Exception:
                         decrypted = self._codec.recv_packet(packet_data)
                 else:
                     decrypted = self._codec.recv_packet(packet_data)

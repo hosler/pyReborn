@@ -10,11 +10,12 @@ the tiles and entities are drawn in. For a GMAP the caller folds the segment
 offset into the center (see `RenderMixin`); the camera itself stays oblivious to
 GMAP vs single-level, which is what keeps it simple.
 
-Borrowed from Preagonal's Camera2D (Camera2D.cs): a center position, a clamped
+Borrowed from the C# client's Camera2D (Camera2D.cs): a center position, a clamped
 zoom, a dirty flag so the transform is only recomputed when something changes,
 and bounds clamping so you can't scroll past the edge of the world.
 """
 
+import math
 from typing import Optional, Tuple
 
 
@@ -90,7 +91,7 @@ class Camera2D:
     def set_bounds(self, min_x: float, min_y: float, max_x: float, max_y: float):
         """Constrain the visible area to a world rectangle (in tiles).
 
-        Mirrors Preagonal's SetPosition(campos, bounds): once set, the camera
+        Mirrors the C# client's SetPosition(campos, bounds): once set, the camera
         won't scroll past the world edge as long as the world is larger than the
         viewport. If the world is smaller than the viewport it stays centered.
         """
@@ -142,7 +143,6 @@ class Camera2D:
         """
         left, top = self.screen_to_world(0, 0)
         right, bottom = self.screen_to_world(self.screen_w, self.screen_h)
-        import math
         return (math.floor(left), math.floor(top),
                 math.ceil(right), math.ceil(bottom))
 

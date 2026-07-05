@@ -2,7 +2,7 @@
 
 Replaces the wall of hardcoded `screen.blit(font.render(...))` calls and magic
 x/y numbers that made `_render_ui` (210 lines) and the login/server screens hard
-to change. Modeled on Preagonal's Gui*Ctrl composite pattern (GuiControl ->
+to change. Modeled on the C# client's Gui*Ctrl composite pattern (GuiControl ->
 GuiButtonCtrl/GuiTextEditCtrl/GuiScrollCtrl...): every widget is a node with a
 rect, optional children, a draw step and an event step.
 
@@ -118,19 +118,30 @@ class Panel(Widget):
         self.padding = padding
         self.spacing = spacing
         self.align = align            # horizontal align of stacked children
+        self._plate_surf: Optional[pygame.Surface] = None
+        self._plate_key = None
+
+    # Maps any of the nine anchor constants to the vstack row anchor with the
+    # same horizontal component (left-ish -> TOPLEFT, center-ish -> MIDTOP,
+    # right-ish -> TOPRIGHT), so e.g. BOTTOMRIGHT still stacks flush right
+    # instead of falling through to a hardcoded default.
+    _VALIGN = {
+        TOPLEFT: TOPLEFT, MIDLEFT: TOPLEFT, BOTTOMLEFT: TOPLEFT,
+        MIDTOP: MIDTOP, CENTER: MIDTOP, MIDBOTTOM: MIDTOP,
+        TOPRIGHT: TOPRIGHT, MIDRIGHT: TOPRIGHT, BOTTOMRIGHT: TOPRIGHT,
+    }
 
     def _layout_children(self):
         if not self.vstack:
             super()._layout_children()
             return
         y = self.rect.top + self.padding
+        anchor = self._VALIGN.get(self.align, TOPLEFT)
         for c in self.children:
             if not c.visible:
                 continue
             inner = pygame.Rect(self.rect.left + self.padding, y,
                                 self.rect.width - 2 * self.padding, c.h)
-            anchor = MIDTOP if self.align == CENTER else \
-                (TOPLEFT if self.align in (TOPLEFT, MIDLEFT) else TOPRIGHT)
             saved = c.anchor
             c.anchor = anchor
             c.layout(inner)
@@ -140,10 +151,14 @@ class Panel(Widget):
     def _draw(self, surf):
         if self.bg is not None:
             if len(self.bg) == 4:
-                s = pygame.Surface(self.rect.size, pygame.SRCALPHA)
-                pygame.draw.rect(s, self.bg, s.get_rect(),
-                                 border_radius=self.radius)
-                surf.blit(s, self.rect.topleft)
+                key = (self.rect.size, self.bg, self.radius)
+                if key != self._plate_key:
+                    s = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+                    pygame.draw.rect(s, self.bg, s.get_rect(),
+                                     border_radius=self.radius)
+                    self._plate_surf = s
+                    self._plate_key = key
+                surf.blit(self._plate_surf, self.rect.topleft)
             else:
                 pygame.draw.rect(surf, self.bg, self.rect,
                                  border_radius=self.radius)

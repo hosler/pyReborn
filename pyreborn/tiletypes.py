@@ -3,7 +3,7 @@ Tile type definitions for Reborn.
 
 Each base tile ID (0-4095) maps to a tile type that determines collision
 behavior, water state, etc. The type table is loaded from ``tiletypes1.dat`` —
-the same authoritative data file the C# (Preagonal) and GServer clients ship —
+the same authoritative data file the C# client and GServer clients ship —
 instead of being baked into this module. The array that used to live here was
 truncated to 4068 bytes and disagreed with the canonical data in ~1400 spots,
 which is why a pile of hand corrections was needed to paper over it.
@@ -88,7 +88,7 @@ def get_tile_type(tile_id: int) -> int:
 def type_is_blocking(tile_type: int) -> bool:
     """Whether a tile *type* blocks walking.
 
-    Mirrors Preagonal's IsOnWall, which is just a threshold: anything at
+    Mirrors the C# client's IsOnWall, which is just a threshold: anything at
     THROW_THROUGH (20) or above blocks — throw-through, jump-stone, solid walls,
     and the liftable bush/rock/pot objects (23-25). Beds (4/5) block too, so they
     are the one explicit addition below the threshold.

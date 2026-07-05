@@ -23,6 +23,23 @@ import time
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
 
+# Player feet/touch geometry, duplicated from pyreborn/game/collision.py
+# (CollisionMixin.PLAYER_FEET_DX/DY, TOUCH_OFFSETS) — that is the source of
+# truth; keep these in sync if it changes. Not imported directly: collision.py
+# already does `from ..npc_handler import NPCHandler`, so importing collision.py
+# from here would be circular.
+#
+# player_x/player_y (as passed to check_touch) are the sprite's TOP-LEFT, same
+# as CollisionMixin's self.client.x/y — the sprite is 2 tiles wide, 3 tall.
+PLAYER_FEET_DX = 1.0
+PLAYER_FEET_DY = 2.5
+TOUCH_OFFSETS = {
+    0: [(0.5, 1.5), (1.5, 1.5)],    # up:    both columns, row above the feet box
+    1: [(-0.5, 2.5), (-0.5, 1.5)],  # left:  adjacent column, feet + torso
+    2: [(0.5, 3.5), (1.5, 3.5)],    # down:  both columns, row below the feet box
+    3: [(2.5, 2.5), (2.5, 1.5)],    # right: adjacent column, feet + torso
+}
+
 
 @dataclass
 class NPCShape:
@@ -113,30 +130,17 @@ class NPCHandler:
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.
 
-        Player direction affects which NPCs we check for touch - we test
-        the area in front of the player where they would collide.
+        Test points are the feet point plus the per-direction touch points
+        ahead of the player — the same geometry collision.py's CollisionMixin
+        uses for movement-triggered interactions (chests/signs/doors), so NPC
+        touch agrees with everything else that probes "what's in front of the
+        player" instead of using its own hand-rolled player box.
         """
         touched = []
 
-        # Player occupies roughly a 1x2 tile area (1 wide, 2 tall)
-        # Test multiple points around the player for collision
-        test_points = [
-            (player_x + 0.5, player_y),       # Center-top
-            (player_x + 0.5, player_y + 1),   # Center-bottom
-            (player_x, player_y + 0.5),       # Left-center
-            (player_x + 1, player_y + 0.5),   # Right-center
-        ]
-
-        # Add direction-specific test point in front of player
-        front_offsets = {
-            0: (0.5, -0.3),   # Up: test just above
-            1: (-0.3, 0.5),   # Left: test just left
-            2: (0.5, 1.3),    # Down: test just below
-            3: (1.3, 0.5),    # Right: test just right
-        }
-        if player_dir in front_offsets:
-            offset = front_offsets[player_dir]
-            test_points.append((player_x + offset[0], player_y + offset[1]))
+        test_points = [(player_x + PLAYER_FEET_DX, player_y + PLAYER_FEET_DY)]
+        test_points += [(player_x + ox, player_y + oy)
+                         for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
 
         for npc_id, shape in self.npc_shapes.items():
             for tx, ty in test_points:
@@ -215,14 +219,16 @@ play sen_select.wav;
         touchable = shape.get_touchable_tiles()
         print(f"    Touchable tiles: {touchable}")
 
-    # Test touch detection
+    # Test touch detection. player_x/player_y are the sprite's TOP-LEFT (see
+    # check_touch's docstring), so these no longer line up 1:1 with the NPC's
+    # own (x, y) the way a "standing position" would.
     print("\n=== Testing touch detection ===")
     test_cases = [
-        (25.0, 19.0, 0, "Player at (25,19) facing up - should touch NPC"),
-        (25.0, 18.0, 0, "Player at (25,18) facing up - inside NPC"),
-        (27.0, 18.0, 0, "Player at (27,18) facing up - x+2 not touchable"),
-        (31.0, 18.0, 0, "Player at (31,18) facing up - x+6 touchable"),
-        (25.0, 19.0, 2, "Player at (25,19) facing down - wrong direction"),
+        (25.0, 17.0, 0, "Player at (25,17) facing up - up-offset lands on NPC col 0-1"),
+        (25.0, 17.0, 2, "Player at (25,17) facing down - offsets land off-shape, no touch"),
+        (27.0, 17.0, 0, "Player at (27,17) facing up - col 2-3 not touchable"),
+        (30.5, 17.0, 0, "Player at (30.5,17) facing up - col 6-7 touchable"),
+        (25.0, 15.5, 2, "Player at (25,15.5) facing down - feet point alone touches"),
     ]
 
     for px, py, pdir, desc in test_cases:

@@ -4,17 +4,13 @@ pyreborn - Inventory UI overlay.
 Provides a simple inventory/equipment management UI for the pygame client.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 try:
     import pygame
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
-
-if PYGAME_AVAILABLE:
-    from .sprites import SpriteManager
-    from .player import Player
 
 
 class InventoryUI:
@@ -55,19 +51,43 @@ class InventoryUI:
         self.font_medium = pygame.font.Font(None, 22)
         self.font_small = pygame.font.Font(None, 18)
 
-        # Track weapon section Y position for click handling
+        # Track weapon section Y position for click handling. The line height
+        # is derived from font_medium (not hardcoded) so the click math in
+        # handle_click always matches the actual advance in _render_weapons.
         self._weapons_section_y = 0
-        self._weapon_line_height = 22  # Approximate height per weapon entry
+        self._weapon_line_height = self.font_medium.get_height() + 2
 
-        # Calculate UI dimensions
-        screen_w, screen_h = screen.get_size()
+        # UI panel size is fixed; position is derived from the screen size at
+        # render time (see render()) so a window resize keeps it centered -
+        # the game only ever reassigns .screen, it never recreates this UI.
         self.ui_width = 300
         self.ui_height = 400
-        self.ui_x = (screen_w - self.ui_width) // 2
-        self.ui_y = (screen_h - self.ui_height) // 2
+        self.ui_x = 0
+        self.ui_y = 0
 
-        # Pre-create overlay surface
+        # Pre-create overlay surface (fixed size, doesn't depend on screen size).
         self.overlay = pygame.Surface((self.ui_width, self.ui_height), pygame.SRCALPHA)
+
+        # Rendered-text and scaled-sprite caches, keyed by (font id, text, color)
+        # and (id(sprite), target size) respectively, so static/rarely-changing
+        # strings and equipment icons aren't re-rendered/rescaled every frame.
+        self._text_cache = {}
+        self._sprite_scale_cache = {}
+
+    def _cached_text(self, font, text: str, color) -> 'pygame.Surface':
+        """Render text through a cache keyed by (font, text, color).
+
+        Cleared wholesale once it grows large: hearts/rupees strings change
+        constantly during play, so an uncapped cache leaks one surface per
+        distinct value seen over a session."""
+        key = (id(font), text, color)
+        surf = self._text_cache.get(key)
+        if surf is None:
+            if len(self._text_cache) > 300:
+                self._text_cache.clear()
+            surf = font.render(text, True, color)
+            self._text_cache[key] = surf
+        return surf
 
     def toggle(self):
         """Toggle visibility."""
@@ -94,6 +114,12 @@ class InventoryUI:
 
         weapons = weapons or []
 
+        # Recompute position from the current screen size (not cached from
+        # __init__) so a window resize keeps the panel centered.
+        screen_w, screen_h = self.screen.get_size()
+        self.ui_x = (screen_w - self.ui_width) // 2
+        self.ui_y = (screen_h - self.ui_height) // 2
+
         # Clear overlay
         self.overlay.fill(self.BG_COLOR)
 
@@ -104,7 +130,7 @@ class InventoryUI:
         y = self.PADDING
 
         # Title
-        title = self.font_large.render("INVENTORY", True, self.TEXT_COLOR)
+        title = self._cached_text(self.font_large, "INVENTORY", self.TEXT_COLOR)
         title_x = (self.ui_width - title.get_width()) // 2
         self.overlay.blit(title, (title_x, y))
         y += title.get_height() + 15
@@ -129,7 +155,9 @@ class InventoryUI:
         self.screen.blit(self.overlay, (self.ui_x, self.ui_y))
 
         # Draw help text below
-        help_text = self.font_small.render("Q: Close | S+A: Cycle Weapons | D: Use", True, self.LABEL_COLOR)
+        help_text = self._cached_text(self.font_small,
+                                       "Q: Close | S+A: Cycle Weapons | D: Use",
+                                       self.LABEL_COLOR)
         help_x = (self.screen.get_width() - help_text.get_width()) // 2
         help_y = self.ui_y + self.ui_height + 10
         self.screen.blit(help_text, (help_x, help_y))
@@ -137,25 +165,25 @@ class InventoryUI:
     def _render_stats(self, y: int, player: 'Player') -> int:
         """Render player stats section."""
         # Section header
-        header = self.font_medium.render("Stats", True, self.LABEL_COLOR)
+        header = self._cached_text(self.font_medium, "Stats", self.LABEL_COLOR)
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
 
         # Hearts
         hearts_text = f"Hearts: {player.hearts:.1f}/{player.max_hearts:.1f}"
-        hearts = self.font_medium.render(hearts_text, True, self.STAT_HEART_COLOR)
+        hearts = self._cached_text(self.font_medium, hearts_text, self.STAT_HEART_COLOR)
         self.overlay.blit(hearts, (self.PADDING + 10, y))
         y += hearts.get_height() + 3
 
         # Rupees
         rupees_text = f"Rupees: {player.rupees}"
-        rupees = self.font_medium.render(rupees_text, True, self.STAT_RUPEE_COLOR)
+        rupees = self._cached_text(self.font_medium, rupees_text, self.STAT_RUPEE_COLOR)
         self.overlay.blit(rupees, (self.PADDING + 10, y))
         y += rupees.get_height() + 3
 
         # Arrows and Bombs
         items_text = f"Arrows: {player.arrows}  Bombs: {player.bombs}"
-        items = self.font_medium.render(items_text, True, self.TEXT_COLOR)
+        items = self._cached_text(self.font_medium, items_text, self.TEXT_COLOR)
         self.overlay.blit(items, (self.PADDING + 10, y))
         y += items.get_height() + 3
 
@@ -164,7 +192,7 @@ class InventoryUI:
     def _render_equipment(self, y: int, player: 'Player') -> int:
         """Render equipment section."""
         # Section header
-        header = self.font_medium.render("Equipment", True, self.LABEL_COLOR)
+        header = self._cached_text(self.font_medium, "Equipment", self.LABEL_COLOR)
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
 
@@ -177,6 +205,7 @@ class InventoryUI:
         ]
 
         slot_x = self.PADDING + 10
+        target_size = (self.SLOT_SIZE - 4, self.SLOT_SIZE - 4)
         for name, image, power in equipment:
             # Draw slot background
             pygame.draw.rect(self.overlay, (40, 40, 60),
@@ -188,18 +217,24 @@ class InventoryUI:
             if image and self.sprite_mgr:
                 sprite = self.sprite_mgr.load_sheet(image)
                 if sprite:
-                    # Scale to fit slot
-                    scaled = pygame.transform.scale(sprite, (self.SLOT_SIZE - 4, self.SLOT_SIZE - 4))
+                    # Scale to fit slot (cached per sprite identity + target size)
+                    scale_key = (id(sprite), target_size)
+                    scaled = self._sprite_scale_cache.get(scale_key)
+                    if scaled is None:
+                        if len(self._sprite_scale_cache) > 100:
+                            self._sprite_scale_cache.clear()
+                        scaled = pygame.transform.scale(sprite, target_size)
+                        self._sprite_scale_cache[scale_key] = scaled
                     self.overlay.blit(scaled, (slot_x + 2, y + 2))
 
             # Draw label below
-            label = self.font_small.render(name, True, self.LABEL_COLOR)
+            label = self._cached_text(self.font_small, name, self.LABEL_COLOR)
             label_x = slot_x + (self.SLOT_SIZE - label.get_width()) // 2
             self.overlay.blit(label, (label_x, y + self.SLOT_SIZE + 2))
 
             # Draw power if applicable
             if power is not None and power > 0:
-                power_text = self.font_small.render(f"Lv{power}", True, self.SELECTED_COLOR)
+                power_text = self._cached_text(self.font_small, f"Lv{power}", self.SELECTED_COLOR)
                 self.overlay.blit(power_text, (slot_x + 2, y + 2))
 
             slot_x += self.SLOT_SIZE + self.SLOT_SPACING
@@ -208,7 +243,7 @@ class InventoryUI:
 
         # Glove power
         glove_text = f"Glove Power: {player.glove_power}"
-        glove = self.font_medium.render(glove_text, True, self.TEXT_COLOR)
+        glove = self._cached_text(self.font_medium, glove_text, self.TEXT_COLOR)
         self.overlay.blit(glove, (self.PADDING + 10, y))
         y += glove.get_height() + 3
 
@@ -217,7 +252,7 @@ class InventoryUI:
     def _render_weapons(self, y: int, weapons: List[str]) -> int:
         """Render weapons section."""
         # Section header
-        header = self.font_medium.render("Weapons", True, self.LABEL_COLOR)
+        header = self._cached_text(self.font_medium, "Weapons", self.LABEL_COLOR)
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
 
@@ -225,26 +260,28 @@ class InventoryUI:
         self._weapons_section_y = y
 
         if not weapons:
-            no_weapons = self.font_medium.render("(no weapons)", True, self.LABEL_COLOR)
+            no_weapons = self._cached_text(self.font_medium, "(no weapons)", self.LABEL_COLOR)
             self.overlay.blit(no_weapons, (self.PADDING + 10, y))
             return y + no_weapons.get_height()
 
-        # List weapons
+        # List weapons. Each row advances by self._weapon_line_height, the same
+        # value handle_click() uses to map a click Y back to a weapon index.
         for i, weapon in enumerate(weapons):
             # Highlight selected weapon
             if i == self.selected_weapon_idx:
                 # Draw selection highlight
                 pygame.draw.rect(self.overlay, (60, 60, 100),
-                               (self.PADDING + 5, y, self.ui_width - self.PADDING * 2 - 10, 20))
+                               (self.PADDING + 5, y, self.ui_width - self.PADDING * 2 - 10,
+                                self._weapon_line_height - 2))
                 text_color = self.SELECTED_COLOR
                 prefix = "> "
             else:
                 text_color = self.TEXT_COLOR
                 prefix = "  "
 
-            weapon_text = self.font_medium.render(f"{prefix}{weapon}", True, text_color)
+            weapon_text = self._cached_text(self.font_medium, f"{prefix}{weapon}", text_color)
             self.overlay.blit(weapon_text, (self.PADDING + 10, y))
-            y += weapon_text.get_height() + 2
+            y += self._weapon_line_height
 
         return y
 

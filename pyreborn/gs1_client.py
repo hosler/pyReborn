@@ -1,6 +1,6 @@
 """Client-side GS1 execution for pyReborn.
 
-In real Graal, GS1 NPC scripts run on the CLIENT (the server ships the script).
+In real Reborn, GS1 NPC scripts run on the CLIENT (the server ships the script).
 This module runs them with the shared, faithful interpreter from
 ``reborn_protocol.gs1`` (the same engine pygserver uses server-side), via a
 client Host that maps built-in variables to the local player / NPC and turns
@@ -67,13 +67,15 @@ _NPC_WRITE = {
 }
 
 # setcharprop / setplayerprop message-code target -> NPC dict key. These mirror
-# a Graal player's appearance slots (#2 shield, #3 head, #8 body, colours, ...).
+# a Reborn player's appearance slots (#2 shield, #3 head, #8 body, colours, ...).
 # A character NPC (showcharacter) is then composited like a player.
 _CHARPROP_NPC = {
     "#1": "sword_image", "#2": "shield_image", "#3": "head_image",
-    "#8": "body_image", "#n": "nickname", "#c": "message",
+    "#5": "horse_image", "#7": "gani", "#8": "body_image",
+    "#m": "gani", "#n": "nickname", "#c": "message",
     "#C0": "color0", "#C1": "color1", "#C2": "color2",
-    "#C3": "color3", "#C4": "color4",
+    "#C3": "color3", "#C4": "color4", "#C5": "color5",
+    "#C6": "color6", "#C7": "color7",
 }
 
 # Commands that just toggle/ignore for client rendering (input/feature state we
@@ -113,13 +115,15 @@ class GS1ClientHost(Host):
         p = getattr(cl, "player", None)
         out = [{"x": float(getattr(cl, "x", 0)), "y": float(getattr(cl, "y", 0)),
                 "account": getattr(p, "account", ""),
-                "nickname": getattr(p, "nickname", "")}]
+                "nickname": getattr(p, "nickname", ""),
+                "chat": getattr(p, "chat", "")}]
         for op in getattr(cl, "players", {}).values():
             if isinstance(op, dict):
                 out.append({"x": float(op.get("x", 0) or 0),
                             "y": float(op.get("y", 0) or 0),
                             "account": op.get("account", ""),
-                            "nickname": op.get("nickname", "")})
+                            "nickname": op.get("nickname", ""),
+                            "chat": op.get("chat", "")})
         return out
 
     # -- built-in attribute access ----------------------------------------
@@ -146,7 +150,7 @@ class GS1ClientHost(Host):
         if name == "tokenscount":   # number of tokens from the last `tokenize`
             return float(len(getattr(ctx, "tokenize_tokens", []) or []))
         if name == "timevar":
-            # Graal server clock (GServer-v2 Server::calculateNWTime): integer
+            # Reborn server clock (GServer-v2 Server::calculateNWTime): integer
             # ticks of 5 seconds since 2001-02-01 17:33:34 UTC. The bomber room
             # timers (server.bombrm_NN) are in this scale; raw unix seconds were
             # out of scale + decimal, which broke the room-timer comparisons.
@@ -164,7 +168,7 @@ class GS1ClientHost(Host):
         if name == "leftmousebutton":
             return 1.0 if self.rt.mouse_left else 0.0
         if name == "isleader":
-            # Standard Graal: true on the first/authority player in the level.
+            # Standard Reborn: true on the first/authority player in the level.
             # Forced override wins (tests); otherwise we're leader iff no other
             # player shares our level.
             if self.rt.is_leader is not None:
@@ -333,7 +337,7 @@ class GS1ClientHost(Host):
         # NPCs paint floating images (lights, signs, furniture) addressed by a
         # numeric index; changeimg* then mutate that record. The renderer reads
         # npc['imgs'] each frame. Coords are level tiles (showimg) for index < ...
-        # showimg/showani/changeimg*/showtext/hideimg layer system. NPCs store
+        # showimg/showani/changeimg*/showtext/showpoly/hideimg layer system. NPCs store
         # layers on npc['imgs']; weapons (no NPC obj — e.g. arenaGUI's bombs,
         # vases and explosions) store them in _weapon_imgs. The renderer draws
         # both. _layer_store resolves to the right table for the running script.
@@ -349,16 +353,24 @@ class GS1ClientHost(Host):
                 rec.setdefault("vis", 4)
                 return
             if name in ("showani", "showani2") and len(args) >= 3:
-                # showani index,x,y,...,gani,... — record gani + position so the
-                # renderer can animate furniture/effects. Pull the first string
-                # arg after the coords as the gani name (best-effort).
+                # showani index,x,y,dir,gani,param1,param2,... — record gani +
+                # position so the renderer can animate furniture/effects. Pull
+                # the first string arg after the coords as the gani name
+                # (best-effort), then keep everything after it as params: the
+                # classic GANI "PARAMn" frame-token substitution (Bomber
+                # Arena's DrawBomb() picks the bomb's body/decal sprite and
+                # decal image this way, see _render_animated_entity).
                 idx = int(to_num(args[0]))
                 rec = imgs.setdefault(idx, {})
                 rec["x"], rec["y"] = to_num(args[1]), to_num(args[2])
-                gani = next((to_str(a) for a in args[3:] if isinstance(a, str) and a), "")
-                if gani and gani != rec.get("gani"):
-                    rec["gani"] = gani
-                    rec.pop("_anim", None)   # gani changed -> rebuild animation
+                name_idx = next((i for i in range(3, len(args))
+                                  if isinstance(args[i], str) and args[i]), None)
+                if name_idx is not None:
+                    gani = to_str(args[name_idx])
+                    if gani != rec.get("gani"):
+                        rec["gani"] = gani
+                        rec.pop("_anim", None)   # gani changed -> rebuild animation
+                    rec["params"] = list(args[name_idx + 1:])
                 rec["screen"] = (name == "showani2")
                 rec.setdefault("vis", 4)
                 return
@@ -397,12 +409,16 @@ class GS1ClientHost(Host):
                     "screen": False,
                 }
                 return
-            if name == "showtext2" and len(args) >= 6:
+            if name == "showtext2" and len(args) >= 7:
+                # showtext2 index,x,y,zoom,font,style,text (lexer 'EEEESSS' —
+                # one more arg than showtext's 'EEESSS', an extra leading
+                # zoom float before font/style/text).
                 idx = int(to_num(args[0]))
                 imgs[idx] = {
                     "x": to_num(args[1]), "y": to_num(args[2]),
-                    "font": to_str(args[3]), "style": to_str(args[4]),
-                    "text": to_str(args[5]), "text_is": True, "vis": 4,
+                    "zoom": to_num(args[3]),
+                    "font": to_str(args[4]), "style": to_str(args[5]),
+                    "text": to_str(args[6]), "text_is": True, "vis": 4,
                     "screen": True,
                 }
                 return
@@ -422,11 +438,24 @@ class GS1ClientHost(Host):
                           and (end is None or k <= end)]:
                     imgs.pop(k, None)
                 return
-        if isinstance(npc, dict):
-            if name == "showpoly":  # polygons not drawn yet; store raw
-                if args:
-                    npc.setdefault("polys", {})[int(to_num(args[0]))] = args[1:]
+            if name in ("showpoly", "showpoly2") and len(args) >= 2:
+                # showpoly index,{x1,y1,x2,y2,...} (2D) / showpoly2
+                # index,{x1,y1,z1,x2,y2,z2,...} (3D — a height/z per vertex,
+                # e.g. eye_furniture_*.gani's pupil poly). The second arg is a
+                # GS1 array literal, which the interpreter already evaluates to
+                # a flat Python list — a prior version stored `args[1:]` (the
+                # *tuple of remaining args*, i.e. a 1-element list wrapping
+                # that list) which silently failed to render since it isn't a
+                # flat number list. Stored as a regular layer record (like
+                # showimg/showani/showtext) so changeimgvis/changeimgcolors and
+                # the vis>=2 over-player ordering apply to it the same way.
+                idx = int(to_num(args[0]))
+                rec = imgs.setdefault(idx, {})
+                rec["poly"] = [float(to_num(v)) for v in args[1]]
+                rec["poly_dim"] = 3 if name == "showpoly2" else 2
+                rec.setdefault("vis", 4)
                 return
+        if isinstance(npc, dict):
             if name == "showcharacter":
                 npc["is_character"] = True
                 return
@@ -553,7 +582,7 @@ class GS1ClientHost(Host):
             y = int(to_num(args[1])) if len(args) > 1 else 0
             return 1.0 if self.rt.is_water_at(x, y) else 0.0
         if name == "textwidth":
-            # textwidth(zoom, font, style, text) — approximate: Graal text is
+            # textwidth(zoom, font, style, text) — approximate: Reborn text is
             # ~8px/char at zoom 1 (scripts do int((textwidth(...)+7)/8) to get
             # 8px cells), and we have no font metrics in the headless host.
             zoom = to_num(args[0]) if args else 1.0
@@ -572,9 +601,37 @@ class GS1ClientHost(Host):
                 held = code in self.rt.keys_raw
             return 1.0 if held else 0.0
         if name == "hasweapon":
-            wname = to_str(args[0]) if args else ""
-            return 1.0 if wname in (getattr(self.rt.client, "weapons", {}) or {}) else 0.0
+            # case-insensitive exact match (Account::hasWeapon uses
+            # string::equalsi, Account.h:118) — match server semantics.
+            wname = to_str(args[0]).lower() if args else ""
+            weapons = getattr(self.rt.client, "weapons", {}) or {}
+            return 1.0 if any(str(w).lower() == wname for w in weapons) else 0.0
+        if name == "playersays":
+            return self._playersays(args, contains=False)
+        if name == "playersays2":
+            return self._playersays(args, contains=True)
         return UNSET
+
+    def _playersays(self, args, contains):
+        # playersays(text) / playersays(index,text) — GS1Functions.cpp:963/995.
+        # playersays: case-insensitive EXACT match; playersays2: case-
+        # insensitive CONTAINS. An optional leading index selects a player
+        # from _player_list() (index 0 = us) instead of the local player.
+        if not args:
+            return 0.0
+        if len(args) >= 2:
+            idx = int(to_num(args[0]))
+            text = to_str(args[1])
+            pl = self._player_list()
+            chat = to_str(pl[idx].get("chat", "")) if 0 <= idx < len(pl) else None
+        else:
+            text = to_str(args[0])
+            player = self._player
+            chat = to_str(getattr(player, "chat", "")) if player is not None else None
+        if chat is None:
+            return 0.0
+        chat, text = chat.lower(), text.lower()
+        return 1.0 if (text in chat if contains else chat == text) else 0.0
 
     def message_code(self, code, args, ctx) -> str:
         player = self._player
@@ -718,7 +775,7 @@ class ClientGS1:
         self.mouse_y = 0.0
         self.mouse_left = False
         # Leader = the first player in the level (NPC-authority client); a
-        # standard Graal builtin, not bomber-specific. None = auto-detect (we're
+        # standard Reborn builtin, not bomber-specific. None = auto-detect (we're
         # leader iff alone in the level); set True/False to force (tests).
         self.is_leader = None
         self.default_movement = True   # disabledefmovement: arena weapons drive movement

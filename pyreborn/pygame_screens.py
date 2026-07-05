@@ -233,7 +233,7 @@ class LoginScreen(_Screen):
 
 
 # type_prefix -> (friendly badge text, color). See listserver.py's
-# _send_init_packet comment / graal-serverlist ServerConnection::getType() for
+# _send_init_packet comment / the C++ serverlist server's ServerConnection::getType() for
 # where these come from: G3D->"3 ", Gold->"P ", Bronze->"H ", Hidden->"U ".
 BADGE_INFO = {
     "H ": ("BRONZE", (205, 150, 70)),

@@ -19,8 +19,8 @@ except ImportError:
 
 # -- Tier 2a: player body-color recoloring (palette swap) -------------------
 #
-# Classic Graal's PLPROP_COLORS carries 5 indices into a 20-color named
-# palette (see Preagonal OpenGraal.Common/Players/ColorManager.cs AllColors)
+# Classic Reborn's PLPROP_COLORS carries 5 indices into a 20-color named
+# palette (see the C# client's Players/ColorManager.cs AllColors)
 # that get painted onto 5 marker colors baked into body*.png. packets.py
 # parses PLPROP_COLORS (prop 13, fixed-width: 5 bytes classic / 8 bytes v6
 # extended body colors) into Player.colors and the other-player props dict;
@@ -30,7 +30,7 @@ except ImportError:
 # (draws the sprite unmodified) when colors is absent/short.
 #
 # Marker colors below were read directly off body.png/body2.png/body5.png/
-# body12.png with PIL (Preagonal ships no reference table): all four share
+# body12.png with PIL (the C# client ships no reference table): all four share
 # the exact same 5 non-outline, non-transparent RGB values, just in different
 # pixel proportions per clothing cut, confirming they are the 5 recolor
 # markers. The marker -> named-slot assignment (skin/coat/sleeves/shoes/belt,
@@ -40,14 +40,14 @@ except ImportError:
 # COLORS 2,0,10,4,18, but no reference screenshot to check the result
 # against). If it turns out wrong once colors actually flow, only
 # BODY_COLOR_MARKERS' ordering needs correcting.
-GRAAL_PALETTE = [
+REBORN_PALETTE = [
     "white", "yellow", "orange", "pink", "red", "darkred", "lightgreen",
     "green", "darkgreen", "lightblue", "blue", "darkblue", "brown",
     "cynober", "purple", "darkpurple", "lightgray", "gray", "black",
     "transparent",
 ]
 
-GRAAL_PALETTE_RGB: Dict[str, Tuple[int, int, int]] = {
+REBORN_PALETTE_RGB: Dict[str, Tuple[int, int, int]] = {
     "white": (255, 255, 255), "yellow": (255, 255, 0), "orange": (255, 140, 0),
     "pink": (255, 175, 175), "red": (220, 30, 30), "darkred": (139, 0, 0),
     "lightgreen": (140, 255, 140), "green": (0, 180, 0), "darkgreen": (0, 100, 0),
@@ -71,10 +71,10 @@ BODY_COLOR_MARKERS: Tuple[Tuple[int, int, int], ...] = (
 def palette_index_to_rgb(index) -> Tuple[int, int, int]:
     """Resolve a PLPROP_COLORS palette index (0-19) to an RGB triple."""
     try:
-        name = GRAAL_PALETTE[int(index)]
+        name = REBORN_PALETTE[int(index)]
     except (IndexError, ValueError, TypeError):
         return (255, 255, 255)
-    return GRAAL_PALETTE_RGB.get(name, (255, 255, 255))
+    return REBORN_PALETTE_RGB.get(name, (255, 255, 255))
 
 
 class SpriteManager:
@@ -236,29 +236,6 @@ class SpriteManager:
             print(f"Error extracting sprite from {sheet_name} at ({x},{y},{width},{height}): {e}")
             return None
 
-    def get_sprite_or_placeholder(self, sheet_name: str, x: int, y: int,
-                                   width: int, height: int,
-                                   color: Tuple[int, int, int] = (200, 100, 200)) -> pygame.Surface:
-        """
-        Get a sprite, or create a colored placeholder if not available.
-
-        Args:
-            sheet_name: Name of the sprite sheet file
-            x, y, width, height: Sprite region
-            color: Fallback color for placeholder
-
-        Returns:
-            pygame.Surface (sprite or placeholder)
-        """
-        sprite = self.get_sprite(sheet_name, x, y, width, height)
-        if sprite:
-            return sprite
-
-        # Create placeholder
-        placeholder = pygame.Surface((width, height), pygame.SRCALPHA)
-        placeholder.fill((*color, 128))
-        return placeholder
-
     def preload(self, names: List[str]):
         """Preload multiple sprite sheets."""
         for name in names:
@@ -351,9 +328,13 @@ class TilesetManager:
         """Initialize with a sprite manager."""
         self.sprite_mgr = sprite_manager
         self.tile_cache: Dict[Tuple[str, int], pygame.Surface] = {}
+        # get_tile_or_color()'s colored fallback for a missing tile, cached per
+        # tile_id so a level full of undownloaded tiles doesn't allocate a new
+        # placeholder Surface on every miss every frame.
+        self._placeholder_cache: Dict[int, pygame.Surface] = {}
         self.default_tileset = "dustynewpics1.png"
         # Per-block tileset overrides set by GS1 addtiledef2 (Bomber Arena's
-        # chocolate tiles). Maps a Graal tile-block (tile_id // 512) to its own
+        # chocolate tiles). Maps a Reborn tile-block (tile_id // 512) to its own
         # 256x512 image; the whole level tileset is these blocks side by side.
         self.tiledefs: Dict[int, str] = {}
 
@@ -381,7 +362,7 @@ class TilesetManager:
             pygame.Surface or None
         """
         # A per-block tiledef (addtiledef2) wins over the default tileset. The
-        # block image is one Graal block: 16 cols x 32 rows of 16px tiles, so
+        # block image is one Reborn block: 16 cols x 32 rows of 16px tiles, so
         # the tile sits at its LOCAL position within the 256x512 image.
         if tileset is None:
             tdef = self.tiledefs.get(tile_id // 512)
@@ -430,6 +411,10 @@ class TilesetManager:
         if tile:
             return tile
 
+        cached = self._placeholder_cache.get(tile_id)
+        if cached is not None:
+            return cached
+
         # Generate color from tile ID for visual debugging
         r = (tile_id * 17) % 256
         g = (tile_id * 31) % 256
@@ -437,6 +422,7 @@ class TilesetManager:
 
         placeholder = pygame.Surface((self.TILE_SIZE, self.TILE_SIZE))
         placeholder.fill((r, g, b))
+        self._placeholder_cache[tile_id] = placeholder
         return placeholder
 
     def preload_tileset(self, tileset: Optional[str] = None):

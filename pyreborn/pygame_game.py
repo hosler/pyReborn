@@ -152,6 +152,9 @@ class GameClient(
         self._frame_dt = 0.0    # Most recent frame delta, set by run()
         self.last_action_time = 0.0
         self.action_delay = 0.3  # 300ms between actions
+        # Sword has its own, much shorter, cooldown so it can be spam-swung.
+        self.last_sword_time = 0.0
+        self.sword_delay = 0.15
 
         # Key state tracking
         self.key_just_pressed: Dict[int, bool] = {}
@@ -209,6 +212,14 @@ class GameClient(
 
         # Active projectiles - each: {'x': float, 'y': float, 'dx': float, 'dy': float, 'time': float, 'gani': str}
         self.active_projectiles: List[dict] = []
+
+        # Thrown liftables (bush/pot/rock) in flight — see _throw_object /
+        # _update_and_render_thrown. Each: {'tiles', 'x', 'y', 'z', 'z0',
+        # 'dx', 'dy', 'speed', 'dist', 'range'}.
+        self.thrown_objects: List[dict] = []
+        # Break bursts when a thrown object lands/hits — each: {'x', 'y',
+        # 'time', 'color'} with a handful of scattering particles.
+        self.break_effects: List[dict] = []
 
         # Tier 1: server-relayed entity families (other players' bombs/arrows/
         # horses - read from client.bombs/arrows/horses each frame, like baddies).
@@ -277,10 +288,6 @@ class GameClient(
         # Suppress "X entered" spam from the login roster dump: join
         # announcements only fire after this time (set when the loop starts).
         self.roster_ready_time = float('inf')
-
-        # Removed tiles tracking (for pickup/throw mechanics)
-        # Maps (level_name, x, y) -> original_tile_id
-        self.removed_tiles: Dict[Tuple[str, int, int], int] = {}
 
         # Grass/dirt tile ID to replace picked up objects
         self.grass_tile_id = 0  # Will be detected or default to 0

@@ -309,7 +309,7 @@ class SetupMixin:
                     except Exception:
                         pass
 
-        # setlevel2 / serverwarp — authoritative in Graal. Record it; the game
+        # setlevel2 / serverwarp — authoritative in Reborn. Record it; the game
         # loop performs the warp between events (see _process_pending_warp).
         def on_warp(level, x, y):
             self._pending_gs1_warp = (level, x, y)

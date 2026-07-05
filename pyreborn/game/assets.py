@@ -5,7 +5,7 @@ Before this, the client scattered `pygame.font.Font(None, 24)` and
 HUD. Each `Font(...)` allocation is non-trivial, sizes were magic numbers, and
 there was no single place to swap in a bundled TTF.
 
-Borrowed from Preagonal's FontSystem (FontSystem.cs): fonts are cached by a key
+Borrowed from the C# client's FontSystem (FontSystem.cs): fonts are cached by a key
 built from (name, size, style) so identical requests share one object, and a
 named role can map to a concrete size/style in one place.
 

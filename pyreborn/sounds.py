@@ -42,6 +42,11 @@ class SoundManager:
         self._music_files: Dict[str, str] = {}
         self._music_failed = set()
 
+        # Names that failed to resolve/load, so play() doesn't re-walk every
+        # search path on each call (e.g. a missing footstep sound fired once
+        # per step). Mirrors _music_failed above.
+        self._sound_failed = set()
+
         # Subdirectories to search
         self.subdirs = ['', 'sounds', 'sfx', 'audio']
 
@@ -100,6 +105,9 @@ class SoundManager:
         if not self.enabled:
             return None
 
+        if name in self._sound_failed:
+            return None
+
         self.initialize()
 
         # Check cache
@@ -109,6 +117,7 @@ class SoundManager:
         # Find file
         file_path = self.find_file(name)
         if not file_path:
+            self._sound_failed.add(name)
             return None
 
         # Load sound
@@ -118,6 +127,7 @@ class SoundManager:
             return sound
         except Exception as e:
             print(f"Error loading sound {name}: {e}")
+            self._sound_failed.add(name)
             return None
 
     def play(self, name: str, volume: float = 1.0, pitch: float = 1.0) -> bool:
@@ -165,9 +175,11 @@ class SoundManager:
         return self.play(filename, volume, pitch)
 
     # Tiles from the listener at which a positional sound fades to silence.
-    # The viewport shows ~40x30 tiles, so a sound dies a little past the edge
-    # of what's on screen — same idea as Preagonal's SfxSystem distance falloff.
-    POSITIONAL_FALLOFF = 18.0
+    # The viewport shows ~40x30 tiles (half-width 20, half-height 15), so the
+    # falloff needs to reach the corners (hypot(20, 15) ~= 25) or entities near
+    # the screen edge play silently — same idea as the C# client's SfxSystem
+    # distance falloff.
+    POSITIONAL_FALLOFF = 26.0
 
     def play_positional(self, sound_info: Tuple[str, float, float],
                         dx: float, dy: float) -> bool:

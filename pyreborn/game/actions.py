@@ -5,7 +5,6 @@ Split from pygame_game.py; methods operate on the GameClient instance."""
 import time
 import json
 import math
-import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -46,7 +45,7 @@ class ActionsMixin:
         player = self.client.player
 
         # Press a direction INTO an adjacent object to interact, the classic
-        # Graal way (no separate action key): a chest in front opens, a chair in
+        # Reborn way (no separate action key): a chest in front opens, a chair in
         # front seats you. Face the pressed direction first so the in-front
         # probes look the right way.
         facing = direction_from_delta(dx, dy)
@@ -61,18 +60,9 @@ class ActionsMixin:
                 self.client.chests[chest] = True   # optimistic; server confirms
             return
 
-        if not player.is_sitting and not player.is_carrying():
-            # Front tiles only: a chair under our own feet must not re-seat us
-            # the instant we stand up and step off it.
-            chair = self._find_adjacent_chair(include_feet=False)
-            if chair is not None:
-                self._sit_on_chair(chair[0], chair[1], facing)
-                return
-
-        # Seated players don't walk (input stands them up first on a fresh press);
-        # guard here too since _move runs several times per frame.
-        if player.is_sitting:
-            return
+        # Sitting is walk-on: standing on a chair tile IS sitting (see
+        # _update_sitting_state) — movement is never intercepted or blocked
+        # for chairs, it's just a different idle ani.
 
         step = MOVE_STEP
         # Candidate moves: the full input first, then each single axis as a slide.
@@ -81,9 +71,14 @@ class ActionsMixin:
             candidates += [(dx, 0), (0, dy)]
 
         mdx = mdy = 0
+        # Escape hatch: if we're ALREADY overlapping a wall (bad server spawn,
+        # warp onto a solid tile), blocking every move would trap us — allow
+        # movement so the player can walk out.
+        stuck = self._is_position_blocked(self.client.x, self.client.y)
         for cdx, cdy in candidates:
-            if not self._is_position_blocked(self.client.x + cdx * step,
-                                             self.client.y + cdy * step, cdx, cdy):
+            if stuck or not self._is_position_blocked(self.client.x + cdx * step,
+                                                      self.client.y + cdy * step,
+                                                      cdx, cdy):
                 mdx, mdy = cdx, cdy
                 break
 
@@ -116,7 +111,8 @@ class ActionsMixin:
 
         # Pick the movement animation. Carrying uses the looping "carry" gani
         # (walk-with-object); setting it only when it changes lets it actually
-        # animate instead of resetting to frame 0 every step.
+        # animate instead of resetting to frame 0 every step. (Sword/lift
+        # can't be active here — those root the player in _handle_input.)
         if self.is_swimming:
             move_anim = "swim"
         elif self.client.player.is_carrying():
@@ -131,31 +127,26 @@ class ActionsMixin:
         self._try_link_warp()
     def _swing_sword(self):
         """Swing sword attack."""
-        self.client.sword_attack(self.client.player.direction)
-        self.player_anim.set_animation("sword", self.client.player.direction, force=True)
+        player = self.client.player
+        self.client.sword_attack(player.direction)
+        self.player_anim.set_animation("sword", player.direction, force=True)
         self.current_anim_name = "sword"
     def _try_grab(self):
         """Try to grab/interact with something.
 
         Priority:
         1. If carrying an object, throw it
-        2. If sitting, stand up
-        3. If near a chair, sit down
-        4. Check for door links
-        5. Try to pickup items at current position
+        2. Open a chest / lift an object / read a sign / use a door
+        3. Try to pickup items at current position
+
+        (Sitting is walk-on state, not a grab action — see
+        _update_sitting_state.)
         """
         player = self.client.player
 
         # If carrying something, throw it
         if player.is_carrying():
             self._throw_object()
-            return
-
-        # If sitting, stand up
-        if player.is_sitting:
-            player.stand_up()
-            self.player_anim.set_animation("idle", player.direction, force=True)
-            self.current_anim_name = "idle"
             return
 
         # Open a chest in front of the player
@@ -167,13 +158,10 @@ class ActionsMixin:
                 self.client.chests[chest] = True   # optimistic; server confirms
             return
 
-        # Check for chair in front of player
-        chair_tile = self._find_adjacent_chair()
-        if chair_tile is not None:
-            tx, ty, tile_id = chair_tile
-            self._sit_on_chair(tx, ty, player.direction)
-            if player.is_sitting:
-                return
+        # Lift a bush/pot/rock in front — plain A lifts, classic style (no
+        # arrow needed).
+        if self._lift_in_front(player.direction):
+            return
 
         # Check for sign NPC nearby
         sign_text = self._check_sign_nearby()
@@ -191,36 +179,26 @@ class ActionsMixin:
         # Try to pickup item at current position
         self.client.pickup_item()
     def _check_sign_nearby(self) -> Optional[str]:
-        """Check for sign NPC nearby and return its text if found."""
-        import re
+        """Check for a sign at the player's touch points and return its text.
+
+        Reads client.signs (the real parsed sign data: {level_name: {(x, y):
+        text}}, tile coords LOCAL to the level) — the same source
+        render_objects.py's _check_and_render_signs auto-popup reads, so the
+        A-press path and the proximity popup agree. This replaces the old
+        regex-scraping of NPC scripts/images, which only ever matched signs
+        implemented as NPCs and could return garbage for anything else."""
+        signs = self.client.signs.get(self.client._current_level_name)
+        if not signs:
+            return None
+
         player = self.client.player
-
-        # Probe the per-direction touch points in front of the player.
-        points = self._touch_points(player.direction)
-
-        for npc_id, npc in self.client.npcs.items():
-            npc_x = npc.get('x', 0)
-            npc_y = npc.get('y', 0)
-
-            # Check if NPC is close to any probed touch point
-            if any(abs(npc_x - cx) < 1.5 and abs(npc_y - cy) < 1.5
-                   for cx, cy in points):
-                # Check if this NPC is a sign (has signlink or setplayerprop #c)
-                script = npc.get('script', '')
-                image = npc.get('image', '')
-
-                # Look for sign-like images
-                if 'sign' in image.lower():
-                    # Extract message from script
-                    match = re.search(r'setplayerprop\s+#c\s*,?\s*([^;]+)', script, re.IGNORECASE)
-                    if match:
-                        return match.group(1).strip()
-                    # Try to find any text in the script
-                    match = re.search(r'message\s+([^;]+)', script, re.IGNORECASE)
-                    if match:
-                        return match.group(1).strip()
-                    # Default to NPC image name if it's a sign
-                    return f"(Sign: {image})"
+        for tx, ty in self._touch_points(player.direction):
+            # Touch points are world coords (matter in a GMAP); sign keys are
+            # level-local, so wrap the same way render_objects.py does.
+            lx, ly = tx % 64, ty % 64
+            for (sx, sy), text in signs.items():
+                if abs(lx - sx) < 1.5 and abs(ly - sy) < 1.5:
+                    return text
 
         return None
     def _show_dialogue(self, text: str):
@@ -231,13 +209,8 @@ class ActionsMixin:
         """Dismiss the current dialogue."""
         self.dialogue_text = None
     def _try_pickup(self, dx: int, dy: int):
-        """Try to pickup a liftable 2x2 object (bush/rock/pot) in the given direction.
-
-        Requires appropriate glove power:
-        - Bush: glove power 1+
-        - Pot: glove power 2+
-        - Rock: glove power 3
-        """
+        """A + arrow: lift a 2x2 object (bush/rock/pot) in that direction, or
+        throw the carried one."""
         player = self.client.player
 
         # Update direction first
@@ -250,57 +223,61 @@ class ActionsMixin:
             self._throw_object()
             return
 
-        # If sitting, stand up first
-        if player.is_sitting:
-            player.stand_up()
+        if not self._lift_in_front(direction):
+            # No liftable object in front - try a regular item pickup at the
+            # primary touch point. No lift animation: flailing the lift gani
+            # at empty ground on every failed grab read as pure jank.
+            px, py = self._touch_points(direction)[0]
+            self.client.pickup_item(px, py)
+
+    def _lift_in_front(self, direction: int) -> bool:
+        """Lift the 2x2 liftable (bush/pot/rock) at the touch points for the
+        given facing, if any and glove power allows. Returns True if lifted."""
+        player = self.client.player
 
         # Probe the per-direction touch points and take the first liftable tile.
         points = self._touch_points(direction)
         target = next(((tx, ty) for tx, ty in points
                        if self._is_tile_liftable(self._get_tile_at(tx, ty))), None)
+        if target is None:
+            return False
 
-        if target is not None:
-            target_x, target_y = target
-            tile_id = self._get_tile_at(target_x, target_y)
-            required_power = self._get_tile_lift_power(tile_id)
-            glove_power = player.glove_power
+        target_x, target_y = target
+        tile_id = self._get_tile_at(target_x, target_y)
+        tile_type = self._get_corrected_tile_type(tile_id)
+        required_power = self._get_tile_lift_power(tile_id)
+        object_name = self._get_liftable_name(tile_id)
 
-            if glove_power >= required_power:
-                # Find the 2x2 object origin (top-left corner)
-                obj_origin = self._find_2x2_object_origin(target_x, target_y)
-                if obj_origin:
-                    ox, oy = obj_origin
-                    # Get all 4 tile IDs
-                    tile_ids = self._get_2x2_tiles(ox, oy)
-                    object_name = self._get_liftable_name(tile_id)
+        if player.glove_power < required_power:
+            print(f"Need glove power {required_power} to lift {object_name} "
+                  f"(have {player.glove_power})")
+            return False
 
-                    # Store original tiles and replace with grass
-                    self._remove_2x2_tiles(ox, oy, tile_ids)
+        # Find the 2x2 object origin (top-left corner)
+        obj_origin = self._find_2x2_object_origin(target_x, target_y)
+        if not obj_origin:
+            return False
 
-                    # Pick up the object
-                    player.pickup_object(object_name, tile_ids, (ox, oy))
+        ox, oy = obj_origin
+        # tile_type/tile_id let _get_2x2_tiles and _remove_2x2_tiles tell a real
+        # quadrant of the object from a neighbor that only happens to sit in the
+        # 2x2 box (the corrections overlay may only cover some of an object's 4
+        # tiles, so the single-tile fallback origin above can pull in plain
+        # grass/other decor on the other 3).
+        tile_ids = self._get_2x2_tiles(ox, oy, tile_type, tile_id)
 
-                    # Play lift animation then switch to carry
-                    self.player_anim.set_animation("lift", direction, force=True)
-                    self.current_anim_name = "lift"
+        # Remove the object's tiles (replaced with grass) and hoist it overhead.
+        self._remove_2x2_tiles(ox, oy, tile_type)
+        player.pickup_object(object_name, tile_ids, (ox, oy))
 
-                    # Invalidate world surface to show removed tiles
-                    self.world_surface = None
+        # Play lift animation then switch to carry
+        self.player_anim.set_animation("lift", direction, force=True)
+        self.current_anim_name = "lift"
+        self.sound_mgr.play("lift.wav")
 
-                    print(f"Picked up {object_name}!")
-            else:
-                # Not enough glove power
-                object_name = self._get_liftable_name(tile_id)
-                print(f"Need glove power {required_power} to lift {object_name} (have {glove_power})")
-        else:
-            # No liftable object in front - try a regular item pickup at the
-            # primary touch point.
-            px, py = points[0]
-            self.client.pickup_item(px, py)
-
-            # Play lift animation anyway for visual feedback
-            self.player_anim.set_animation("lift", direction, force=True)
-            self.current_anim_name = "lift"
+        # Invalidate world surface to show removed tiles
+        self.world_surface = None
+        return True
     def _find_2x2_object_origin(self, x: float, y: float) -> Optional[Tuple[int, int]]:
         """Find the top-left corner of a 2x2 liftable object.
 
@@ -341,54 +318,46 @@ class ActionsMixin:
 
         # Fallback: just use this tile as origin (for single-tile objects)
         return (tx, ty)
-    def _get_2x2_tiles(self, ox: int, oy: int) -> Tuple[int, int, int, int]:
-        """Get the 4 tile IDs of a 2x2 object starting at origin."""
-        tl = self._get_tile_at(ox, oy)
-        tr = self._get_tile_at(ox + 1, oy)
-        bl = self._get_tile_at(ox, oy + 1)
-        br = self._get_tile_at(ox + 1, oy + 1)
-        return (tl, tr, bl, br)
-    def _remove_2x2_tiles(self, ox: int, oy: int, tile_ids: Tuple[int, int, int, int]):
-        """Remove 2x2 tiles from the level and replace with grass."""
-        level_name = self.client._current_level_name
-        if not level_name or level_name not in self.client.levels:
-            return
+    def _get_2x2_tiles(self, ox: int, oy: int, tile_type: int, anchor_tile_id: int) -> Tuple[int, int, int, int]:
+        """Get the 4 tile IDs of a 2x2 object starting at origin.
 
-        tiles = self.client.levels[level_name]
-        local_ox = ox % 64
-        local_oy = oy % 64
+        Only quadrants whose corrected type matches the lifted object's type
+        are real pieces of it (the corrections overlay may only cover some of
+        an object's 4 tiles). A mismatched quadrant reports anchor_tile_id
+        (the tile that was actually lifted) instead of its own unrelated tile
+        — the carried-object renderer (render_entities.py _render_carried_object)
+        indexes tile_ids directly into a tileset lookup with no None/0 handling,
+        so a real tile id is required; anchor_tile_id renders fine there and
+        _remove_2x2_tiles below leaves that quadrant's actual tile in place.
+        """
+        tiles = []
+        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            t = self._get_tile_at(ox + dx, oy + dy)
+            tiles.append(t if self._get_corrected_tile_type(t) == tile_type else anchor_tile_id)
+        return tuple(tiles)
+    def _remove_2x2_tiles(self, ox: int, oy: int, tile_type: int):
+        """Remove the 2x2 object's tiles from the level, replacing with grass.
 
-        # Store original tiles and replace with grass
+        Skips any quadrant whose corrected type doesn't match tile_type — that
+        position isn't part of the object (see _get_2x2_tiles), so its tile
+        stays on the ground untouched."""
+        # Per-tile segment lookup so an object straddling a GMAP boundary (or
+        # lifted from the adjacent segment) edits the right level's tiles.
         positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        for i, (dx, dy) in enumerate(positions):
-            lx, ly = local_ox + dx, local_oy + dy
-            if 0 <= lx < 64 and 0 <= ly < 64:
-                idx = ly * 64 + lx
-                self.removed_tiles[(level_name, lx, ly)] = tile_ids[i]
-                tiles[idx] = self.grass_tile_id
-    def _restore_2x2_tiles(self, ox: int, oy: int, tile_ids: Tuple[int, int, int, int]):
-        """Restore 2x2 tiles to the level (when throwing object back)."""
-        level_name = self.client._current_level_name
-        if not level_name or level_name not in self.client.levels:
-            return
-
-        tiles = self.client.levels[level_name]
-        local_ox = ox % 64
-        local_oy = oy % 64
-
-        # Restore original tiles
-        positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        for i, (dx, dy) in enumerate(positions):
-            lx, ly = local_ox + dx, local_oy + dy
-            if 0 <= lx < 64 and 0 <= ly < 64:
-                idx = ly * 64 + lx
-                tiles[idx] = tile_ids[i]
-                # Remove from tracking
-                key = (level_name, lx, ly)
-                if key in self.removed_tiles:
-                    del self.removed_tiles[key]
+        for dx, dy in positions:
+            wx, wy = ox + dx, oy + dy
+            check_tile = self._get_tile_at(wx, wy)
+            if self._get_corrected_tile_type(check_tile) != tile_type:
+                continue
+            level_name, tiles = self._level_tiles_at(wx, wy)
+            if not level_name or not tiles:
+                continue
+            lx, ly = wx % 64, wy % 64
+            tiles[ly * 64 + lx] = self.grass_tile_id
     def _throw_object(self):
-        """Throw the currently carried object."""
+        """Throw the carried object: it flies ahead in an arc and breaks on
+        landing (or on the first wall it hits), classic style. It does NOT
+        re-plant itself in the level — a thrown bush is a destroyed bush."""
         player = self.client.player
         if not player.is_carrying():
             return
@@ -401,34 +370,27 @@ class ActionsMixin:
         anim = "throw" if self.gani_parser.parse("throw") else "idle"
         self.player_anim.set_animation(anim, direction, force=True)
         self.current_anim_name = anim
+        self.sound_mgr.play("put.wav")
 
         if not thrown_tiles:
-            print(f"Threw {thrown_type} in direction {direction}!")
             return
 
-        # Land the object ~2 tiles ahead of the player's feet, centered.
-        fx, fy = self._player_feet()
         ddx, ddy = self._facing_delta(direction)
-        ox = int(round(fx - 0.5 + ddx * 2))
-        oy = int(round(fy - 0.5 + ddy * 2))
-
-        # Validate the landing 2x2 is on-level and not blocked; else drop where
-        # it was picked up so it never vanishes into a wall.
-        clear = True
-        for ddx2 in range(2):
-            for ddy2 in range(2):
-                tx, ty = ox + ddx2, oy + ddy2
-                if not self.client.is_gmap and not (0 <= tx < 64 and 0 <= ty < 64):
-                    clear = False
-                elif self._is_tile_blocking(self._get_tile_at(tx, ty)):
-                    clear = False
-        if not clear and thrown_pos:
-            ox, oy = thrown_pos
-
-        self._restore_2x2_tiles(ox, oy, thrown_tiles)
-        self.world_surface = None  # Force redraw
-
-        print(f"Threw {thrown_type} in direction {direction} -> ({ox},{oy})!")
+        # Launch from where the carried object is drawn: 2x2 top-left over the
+        # head, i.e. z0 tiles above a ground anchor just below the torso — so
+        # the sprite doesn't jump on release.
+        z0 = 2.75
+        self.thrown_objects.append({
+            'tiles': thrown_tiles,
+            'type': thrown_type,
+            'x': self.client.x,          # ground-projected 2x2 top-left
+            'y': self.client.y + 1.0,
+            'z': z0, 'z0': z0,           # height above ground, eases to 0
+            'dx': ddx, 'dy': ddy,
+            'speed': 20.0,               # tiles/second
+            'dist': 0.0,
+            'range': 16.0,               # tiles of flight before landing
+        })
     def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
         """Return the (cx, cy) key of a chest whose 2x2 footprint the player is
         facing, or None. Chests block, so the player stands adjacent and the
@@ -442,52 +404,27 @@ class ActionsMixin:
                 if cx <= ftx <= cx + 1 and cy <= fty <= cy + 1:
                     return (cx, cy)
         return None
-    def _find_adjacent_chair(self, include_feet: bool = True) -> Optional[Tuple[int, int, int]]:
-        """Find a chair tile in front of the player (and, by default, under their
-        feet).
-
-        Returns (tile_x, tile_y, tile_id) if chair found, None otherwise.
-
-        Pass include_feet=False to ignore the tile the player is standing on —
-        the walk-into-sit path needs this so the chair you're already seated on
-        doesn't immediately re-seat you the moment you stand up to leave.
-        """
+    def _update_sitting_state(self):
+        """Walk-on sitting: you're seated exactly while standing still on a
+        chair tile. Movement is completely normal — walking onto, across, and
+        off a chair is just walking; only the stationary ani differs."""
         player = self.client.player
-
-        candidates = list(self._touch_points(player.direction))
-        if include_feet:
-            candidates.append(self._player_feet())
-        for cx, cy in candidates:
-            tile_id = self._get_tile_at(cx, cy)
-            if self._is_tile_chair(tile_id):
-                return (int(cx), int(cy), tile_id)
-
-        return None
-    def _sit_on_chair(self, ctx: int, cty: int, direction: int):
-        """Seat the player on the chair tile at (ctx, cty).
-
-        Snap the player so their feet rest on the seat; the visual-position lerp
-        then slides them onto it instead of them standing on the chair. Broadcast
-        the sit gani so the server (and other players) see it and our snapped
-        position syncs."""
-        player = self.client.player
-        if player.is_carrying() or player.is_sitting:
-            return
-        # Align the feet (PLAYER_FEET offset from the sprite top-left) to the
-        # centre of the chair tile.
-        player.x = ctx + 0.5 - self.PLAYER_FEET_DX
-        player.y = cty + 0.5 - self.PLAYER_FEET_DY
-        player.direction = direction
-        if player.sit_down(direction):
-            self.player_anim.set_animation("sit", direction, force=True)
-            self.current_anim_name = "sit"
-            self.client.set_animation("sit")
+        on_chair = (not self.is_moving and not player.is_carrying()
+                    and not self.is_swimming
+                    and self._is_tile_chair(self._get_tile_at(*self._player_feet())))
+        if on_chair and not player.is_sitting:
+            if player.sit_down(player.direction):
+                self.client.set_animation("sit")
+        elif not on_chair and player.is_sitting:
+            player.stand_up()
+            # Tell the server/other players we're no longer in the sit gani.
+            self.client.set_animation("walk" if self.is_moving else "idle")
     def _use_weapon(self):
         """Use the currently equipped weapon."""
         # Get selected weapon from inventory
         weapon = self.inventory_ui.get_selected_weapon(self.weapons)
         if weapon:
-            # A GS1-scripted weapon (a Graal weapon is an inventory NPC) handles
+            # A GS1-scripted weapon (a Reborn weapon is an inventory NPC) handles
             # its own fire: pressing D fires the weapon-fire event and the script
             # does the work (drops a bomb, shoots, ...). This is how Bomber Arena
             # weapons play. Fall through to the built-in actions only if the
@@ -616,7 +553,10 @@ class ActionsMixin:
     def _update_swimming_state(self):
         """Update swimming state based on current position."""
         was_swimming = self.is_swimming
-        self.is_swimming = self._check_water_at_position(self.client.x, self.client.y)
+        # Sample the feet, not the sprite's top-left (1 tile left, 2.5 tiles
+        # above where the player actually stands) — otherwise swimming is
+        # judged a tile off from where the player visibly is.
+        self.is_swimming = self._check_water_at_position(*self._player_feet())
 
         # If swimming state changed, update animation
         if self.is_swimming != was_swimming:

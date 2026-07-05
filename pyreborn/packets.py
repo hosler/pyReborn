@@ -109,7 +109,7 @@ def _read_string(data: bytes, pos: int):
 
 
 def _read_gbyte(data: bytes, pos: int, count: int):
-    """Read a `count`-byte Graal-packed unsigned int. Returns (value_or_None, new_pos)."""
+    """Read a `count`-byte Reborn-packed unsigned int. Returns (value_or_None, new_pos)."""
     n = len(data)
     if pos + count > n:
         return None, n
@@ -264,7 +264,7 @@ def parse_level_link(data: bytes) -> dict:
     return {}
 
 
-# Graal sign text alphabet (from GServer-v2 LevelSign.cpp `signText`). Each
+# Reborn sign text alphabet (from GServer-v2 LevelSign.cpp `signText`). Each
 # encoded sign byte is `index_into_this_string + 32`.
 _SIGN_ALPHABET = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -277,7 +277,7 @@ _SIGN_SYMBOLS = "ABXYudlrhxyz#4."
 
 
 def decode_sign_text(body: bytes) -> str:
-    """Decode the Graal-encoded sign text body (after the x/y bytes).
+    """Decode the Reborn-encoded sign text body (after the x/y bytes).
 
     Mirrors LevelSign::decodeSignCode: each byte's code (byte-32) either maps to
     a button-symbol escape (#A, #B, ...) via the ctab tables or indexes the sign
@@ -301,7 +301,7 @@ def parse_level_sign(data: bytes) -> dict:
     Parse PLO_LEVELSIGN (packet 5) - sign/board text.
     Format: [x:GCHAR][y:GCHAR][encoded_text...]
 
-    x/y are whole-tile coordinates. The text is Graal sign-encoded and must be
+    x/y are whole-tile coordinates. The text is Reborn sign-encoded and must be
     run through decode_sign_text to recover readable characters.
     """
     if len(data) < 2:
@@ -917,19 +917,21 @@ def parse_level_chest(data: bytes) -> dict:
 def parse_newworldtime(data: bytes) -> dict:
     """
     Parse PLO_NEWWORLDTIME (packet 42) - server heartbeat/time sync.
-    Returns dict with time info.
+
+    The server writes this with writeGInt4 (GServer-v2 server/src/Server.cpp:148):
+    four G-encoded bytes (-32 each, 7 bits per byte, big-endian), NOT raw
+    little-endian bytes. reborn_protocol's PacketReader has no read_gint4, so
+    decode it inline the same way read_gint3/read_gint5 do.
     """
     if len(data) < 4:
         return {'time': 0}
 
-    reader = PacketReader(data)
-    # Time is typically a 4-byte value
-    b1 = reader.read_byte()
-    b2 = reader.read_byte()
-    b3 = reader.read_byte()
-    b4 = reader.read_byte() if reader.has_data() else 0
+    b1 = data[0] - 32
+    b2 = data[1] - 32
+    b3 = data[2] - 32
+    b4 = data[3] - 32
 
-    time_val = b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+    time_val = (b1 << 21) | (b2 << 14) | (b3 << 7) | b4
     return {'time': time_val}
 
 
@@ -1003,7 +1005,7 @@ def parse_weapon_add(data: bytes) -> dict:
     Two wire formats exist:
       - Structured (classic 2.22 + GServer-v2): ``(gchar)namelen, name,
         (gchar)propid, value...`` where prop 0 = image (gchar len + str) and
-        prop 1 = SCRIPT (gshort len + raw). This is what real Graal servers send.
+        prop 1 = SCRIPT (gshort len + raw). This is what real Reborn servers send.
       - Legacy text: ``+name image!<script`` (pygserver still emits this).
 
     They're ambiguous for an 11-char name (namelen 11 -> '+'), so we try the
@@ -1074,6 +1076,10 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
     params (the CSV string set by setshootparams), which a receiving weapon reads
     via #p(n) in an actionprojectile2 handler.
 
+    x/y are normalized to tiles for both variants: v1 writes (pixels%1024)/8
+    (half-tile units, Player.cpp:224-225) while v2 writes raw pixel gshorts
+    (Player.cpp:240-241) — dividing by 2 vs 16 respectively puts both in tiles.
+
     Returns {shooter, gani, params, x, y} (params is the raw CSV string).
     """
     try:
@@ -1085,11 +1091,15 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
             r.read_gchar(); r.read_gchar()               # sangle, sanglez
             r.read_gchar(); r.read_gchar()               # power, gravity
             gani = r.read_gstring_short()                # gshort len + gani
+            x /= 16.0
+            y /= 16.0
         else:
             r.read_gint3()                               # GInt source
             x = r.read_gchar(); y = r.read_gchar(); r.read_gchar()  # x,y,z
             r.read_gchar(); r.read_gchar(); r.read_gchar()          # sangle,sanglez,power
             gani = r.read_gstring()                      # gchar len + gani
+            x /= 2.0
+            y /= 2.0
         params = r.read_gstring()                        # gchar len + params (CSV)
         return {'shooter': shooter, 'gani': gani, 'params': params,
                 'x': x, 'y': y}
@@ -1494,24 +1504,6 @@ def build_sword_attack(x: float, y: float, direction: int) -> bytes:
     return bytes(packet)
 
 
-def build_bomb_drop(x: float, y: float, power: int = 1) -> bytes:
-    """
-    Build bomb drop packet (PLI_EXPLOSION).
-    Format: gchar(x) + gchar(y) + gchar(power)
-    Uses local position (0-63 range).
-    """
-    packet = bytearray()
-    # Use local position within level (mod 64)
-    local_x = x % 64
-    local_y = y % 64
-    # Position in half-tiles (gchar = byte-32)
-    packet.append(int(local_x * 2) + 32)
-    packet.append(int(local_y * 2) + 32)
-    packet.append(power + 32)
-
-    return bytes(packet)
-
-
 def parse_item_add(data: bytes) -> dict:
     """
     Parse PLO_ITEMADD (packet 22) - item added to level.
@@ -1786,8 +1778,10 @@ def build_shoot(x: float, y: float, z: float, angle: float, speed: int,
     packet.append(0 + 32)  # offset_x
     packet.append(0 + 32)  # offset_y
 
-    # Angle: convert radians to 0-220 range (0-pi = 0-220)
-    angle_byte = int((angle / math.pi) * 220) & 0xFF
+    # Angle: convert radians to 0-220 range. Server decodes sangle as
+    # 0..2*pi -> 0..220 (GServer-v2 PlayerClientPackets.cpp:1348,1381), so
+    # this must match build_shoot_v1's 2*pi divisor, not pi (that was 2x).
+    angle_byte = int((angle / (2 * math.pi)) * 220) & 0xFF
     packet.append(angle_byte + 32)
 
     # Z-angle (usually 0 for flat shots)
@@ -2424,7 +2418,7 @@ def parse_rc_player_rights(data: bytes) -> dict:
         'name': name,
         'admin_rights': admin_rights,
         'admin_ip': admin_ip,
-        'folders': _parse_graal_csv(folders) if folders else [],
+        'folders': _parse_reborn_csv(folders) if folders else [],
     }
 
 
@@ -2521,7 +2515,7 @@ def parse_rc_server_options(data: bytes) -> dict:
     each element is one ``key=value`` (or comment/blank) line of the config file.
     """
     text = data.decode('latin-1', errors='replace')
-    lines = _parse_graal_csv(text)
+    lines = _parse_reborn_csv(text)
     options = {}
     for line in lines:
         if '=' in line:
@@ -2538,7 +2532,7 @@ def parse_rc_folder_config(data: bytes) -> dict:
     ``rights folder/path`` line (e.g. ``rw world/*``).
     """
     text = data.decode('latin-1', errors='replace')
-    return {'lines': _parse_graal_csv(text)}
+    return {'lines': _parse_reborn_csv(text)}
 
 
 # =============================================================================
@@ -2869,8 +2863,8 @@ def parse_filesendfailed(data: bytes) -> str:
 # already stripped the leading id byte and trailing newline.
 # =============================================================================
 
-def _parse_graal_csv(text: str) -> list:
-    """Parse a Graal/quoted CSV row (toCSV format).
+def _parse_reborn_csv(text: str) -> list:
+    """Parse a Reborn/quoted CSV row (toCSV format).
 
     Fields are comma-separated; a field may be wrapped in double quotes, inside
     which a literal quote is doubled ("").  Used by STAFFGUILDS and RPGWINDOW.
@@ -2952,7 +2946,7 @@ def parse_server_text(data: bytes) -> str:
 
 def parse_staff_guilds(data: bytes) -> list:
     """PLO_STAFFGUILDS (47): quoted-CSV list of staff guild names."""
-    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+    return _parse_reborn_csv(data.decode('latin-1', errors='replace'))
 
 
 def parse_status_list(data: bytes) -> list:
@@ -2963,7 +2957,7 @@ def parse_status_list(data: bytes) -> list:
 
 def parse_rpg_window(data: bytes) -> list:
     """PLO_RPGWINDOW (179): quoted-CSV text lines for an RPG-style window."""
-    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+    return _parse_reborn_csv(data.decode('latin-1', errors='replace'))
 
 
 def parse_baddy_hurt(data: bytes) -> dict:
@@ -3158,19 +3152,19 @@ def parse_nc_weapon_list(data: bytes) -> list:
 
 
 def parse_nc_level_list(data: bytes) -> list:
-    """PLO_NC_LEVELLIST (80): {GSTRING levels}, graal-tokenized (toCSV-style)."""
+    """PLO_NC_LEVELLIST (80): {GSTRING levels}, reborn-tokenized (toCSV-style)."""
     text = data.decode('latin-1', errors='replace')
-    return [lvl for lvl in _parse_graal_csv(text) if lvl]
+    return [lvl for lvl in _parse_reborn_csv(text) if lvl]
 
 
 def parse_nc_level_dump(data: bytes) -> str:
-    """PLO_NC_LEVELDUMP (164): graal-tokenized variable dump for a level.
+    """PLO_NC_LEVELDUMP (164): reborn-tokenized variable dump for a level.
 
     The body is one toCSV row whose joined fields reconstruct the multi-line
     dump; returned as the decoded text for inspection.
     """
     text = data.decode('latin-1', errors='replace')
-    return "\n".join(_parse_graal_csv(text))
+    return "\n".join(_parse_reborn_csv(text))
 
 
 def parse_nc_weapon_get(data: bytes) -> dict:
@@ -3191,7 +3185,7 @@ def parse_nc_weapon_get(data: bytes) -> dict:
 
 def parse_nc_npc_attributes(data: bytes) -> list:
     """PLO_NC_NPCATTRIBUTES (157): toCSV variable dump for one database NPC."""
-    return _parse_graal_csv(data.decode('latin-1', errors='replace'))
+    return _parse_reborn_csv(data.decode('latin-1', errors='replace'))
 
 
 def parse_nc_npc_add(data: bytes) -> dict:
@@ -3221,7 +3215,7 @@ def parse_nc_npc_script(data: bytes) -> dict:
     """PLO_NC_NPCSCRIPT (160): {INT id}{toCSV(script, "\\n")}."""
     reader = PacketReader(data)
     npc_id = reader.read_gint3()
-    script = "\n".join(_parse_graal_csv(
+    script = "\n".join(_parse_reborn_csv(
         reader.remaining().decode('latin-1', errors='replace')))
     return {'id': npc_id, 'script': script}
 
@@ -3231,7 +3225,7 @@ def parse_nc_npc_flags(data: bytes) -> dict:
     reader = PacketReader(data)
     npc_id = reader.read_gint3()
     text = reader.remaining().decode('latin-1', errors='replace')
-    flags = [f for f in _parse_graal_csv(text) if f] if text else []
+    flags = [f for f in _parse_reborn_csv(text) if f] if text else []
     return {'id': npc_id, 'flags': flags}
 
 
@@ -3239,7 +3233,7 @@ def parse_nc_class_get(data: bytes) -> dict:
     """PLO_NC_CLASSGET (162): {CHAR name length}{name}{toCSV(script)}."""
     reader = PacketReader(data)
     name = reader.read_gstring()
-    script = "\n".join(_parse_graal_csv(
+    script = "\n".join(_parse_reborn_csv(
         reader.remaining().decode('latin-1', errors='replace')))
     return {'name': name, 'script': script}
 
@@ -3687,7 +3681,7 @@ def parse_server_warp(data: bytes) -> dict:
     Parse PLO_SERVERWARP (178) - the target server to warp to.
 
     Payload is a gtokenized string built by the listserver
-    (graal-serverlist ServerConnection::msgSVI_SERVERINFO):
+    (the C++ serverlist server's ServerConnection::msgSVI_SERVERINFO):
         "<name>\\n<name>\\n<ip>\\n<port>".gtokenize()
     relayed verbatim by GServer (ServerList.cpp msgSVI_SERVERINFO).
     """
@@ -3760,7 +3754,7 @@ def build_profile_get(account: str) -> bytes:
 
     Format: the account name raw, no length prefix (the listserver reads it
     with readString("") after skipping the forwarded packet-id byte - see
-    graal-serverlist ServerConnection::msgSVI_GETPROF).
+    the C++ serverlist server's ServerConnection::msgSVI_GETPROF).
     """
     return account.encode('latin-1', errors='replace')
 
@@ -3772,7 +3766,7 @@ def build_profile_set(account: str, name: str = '', age: str = '',
     """
     Build PLI_PROFILESET (81) payload - update our own profile.
 
-    Format (Player.cpp msgPLI_PROFILESET + graal-serverlist msgSVI_SETPROF):
+    Format (Player.cpp msgPLI_PROFILESET + the C++ serverlist server's msgSVI_SETPROF):
         {GCHAR len}{account} then 9 x {GCHAR len}{field}:
         name, age, gender, country, messenger, email, website, hangout, quote.
     The server rejects the whole packet if account != our account name.

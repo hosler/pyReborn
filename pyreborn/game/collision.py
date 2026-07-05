@@ -42,7 +42,7 @@ class CollisionMixin:
     def _is_tile_blocking(self, tile_id: int) -> bool:
         """Check if tile is blocking, using corrections.
 
-        Uses the shared threshold predicate (Preagonal-style) so the blocking
+        Uses the shared threshold predicate (the C# client's style) so the blocking
         rule lives in one place instead of being duplicated as a type set."""
         return type_is_blocking(self._get_corrected_tile_type(tile_id))
     def _is_tile_water(self, tile_id: int) -> bool:
@@ -89,7 +89,7 @@ class CollisionMixin:
         return (self.client.x + self.PLAYER_FEET_DX,
                 self.client.y + self.PLAYER_FEET_DY)
 
-    # Per-facing interaction offsets — the original Graal client's Player._touchtestd
+    # Per-facing interaction offsets — the original Reborn client's Player._touchtestd
     # idea. Each entry lists the (dx, dy) tile offsets from the sprite's TOP-LEFT to
     # the point(s) probed when grabbing / lifting / reading something in that
     # direction. The feet footprint is the 2-wide box at columns {x, x+1}, row y+2
@@ -111,30 +111,45 @@ class CollisionMixin:
         offs = self.TOUCH_OFFSETS.get(
             direction, [(self.PLAYER_FEET_DX, self.PLAYER_FEET_DY)])
         return [(self.client.x + ox, self.client.y + oy) for ox, oy in offs]
+    def _level_tiles_at(self, x: float, y: float):
+        """(level_name, tiles) for the level segment containing world (x, y).
+
+        In a GMAP the segment is derived from the world coordinates via the
+        grid — using the *current* level's tiles with a %64 wrap (the old
+        behavior) made every collision probe near a segment boundary test the
+        wrong level's tiles, which is exactly where walls felt flaky."""
+        if self.client.in_gmap_segment:
+            grid = (math.floor(x / 64), math.floor(y / 64))
+            seg = self.client.gmap_grid.get(grid)
+            if seg:
+                return seg, self.client.levels.get(seg)
+            return None, None
+        name = self.client._current_level_name
+        return name, (self.client.levels.get(name) or self.client.tiles)
+
     def _get_tile_at(self, x: float, y: float) -> int:
         """Get the tile ID at a given position (in tile coordinates)."""
-        # Get the current level's tiles
-        if self.client.is_gmap:
-            # In GMAP mode, need to find the correct level for this position
-            level_name = self.client._current_level_name
-            tiles = self.client.levels.get(level_name, self.client.tiles)
-        else:
-            tiles = self.client.tiles
-
+        _, tiles = self._level_tiles_at(x, y)
         if not tiles:
             return 0  # Default to walkable
 
-        # Convert to tile indices
-        tx = int(x) % 64
-        ty = int(y) % 64
-
-        # Bounds check
+        # Convert to tile indices (floor, not int(): int() truncates toward
+        # zero and mis-tiles fractional negatives). Only GMAP world coords get
+        # the %64 localization — on a standalone level an off-board probe must
+        # read as out-of-world (blocking), not wrap to the far column the way
+        # floor(-1.5) % 64 == 63 would (edge lifts/touches sampled the
+        # opposite side of the board).
+        tx = math.floor(x)
+        ty = math.floor(y)
+        if self.client.in_gmap_segment:
+            tx %= 64
+            ty %= 64
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
-            return 0
+            return -1  # out of world: blocking, not water/liftable
 
         tile_idx = ty * 64 + tx
-        if tile_idx < 0 or tile_idx >= len(tiles):
-            return 0
+        if tile_idx >= len(tiles):
+            return -1
 
         return tiles[tile_idx]
     def _is_position_blocked(self, x: float, y: float, dx: int = 0, dy: int = 0) -> bool:
@@ -143,14 +158,15 @@ class CollisionMixin:
         Uses corrected tile types from user edits.
 
         Player world position (x, y) is the TOP-LEFT of the sprite. The sprite is
-        2 tiles wide and 3 tall; collision is checked against the "feet" box at
-        the bottom-center of the sprite rather than a single point, so the player
-        can't clip a corner into a wall. (dx, dy) is the movement direction.
+        2 tiles wide and 3 tall; collision is checked against the "feet" box
+        covering both feet at the bottom row. The box is inset 0.4 from the
+        sprite's side edges: the outer pixels of the 2-wide cell are transparent
+        margin, so a full-width box (tried) stops visibly short of walls —
+        "too aggressive" — while the old 0.5-inset let half of each foot clip
+        into walls. (dx, dy) is the movement direction.
         """
-        # Feet hitbox, in tile offsets from the sprite's top-left. A ~1-tile-wide
-        # box centered under the 2-tile-wide sprite, covering the bottom tile row.
-        left, right = 0.5, 1.5
-        top, bottom = 2.1, 2.9
+        left, right = 0.4, 1.6
+        top, bottom = 2.0, 3.0
 
         # The box is half-open: its right/bottom edge sitting exactly on a tile
         # boundary does NOT occupy the next tile. Without the epsilon, a feet edge
@@ -158,7 +174,9 @@ class CollisionMixin:
         # player stops a step (~4px) short. Inset the far edges so you can move
         # flush against walls.
         EPS = 1e-3
-        for cx in (x + left, x + right - EPS):
+        # Three x-samples: a >1-wide box can span 3 tile columns when
+        # unaligned, and corner-only sampling would miss the middle one.
+        for cx in (x + left, x + 1.0, x + right - EPS):
             for cy in (y + top, y + bottom - EPS):
                 if self._is_blocked_at(cx, cy):
                     return True

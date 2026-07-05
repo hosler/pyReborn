@@ -6,7 +6,7 @@ one place. The crustiest part was that vertical cursor: every conditional status
 line had to remember to advance `ui_y`, so adding/removing a line meant chasing
 the bookkeeping.
 
-The fix follows the same Gui*Ctrl-composite inspiration as ui.py (Preagonal):
+The fix follows the same Gui*Ctrl-composite inspiration as ui.py (the C# client):
 the always-on, anchored pieces (stat panel, the status-line stack, the help hint,
 the ghost-mode banner) live in a declarative widget tree, and the **vstack**
 container does the vertical layout that `ui_y` used to do by hand — a hidden line
@@ -24,7 +24,6 @@ from typing import Optional
 
 import pygame
 
-from .constants import SCREEN_WIDTH, SCREEN_HEIGHT
 from .ui import UIManager, Panel, Label, Widget, TOPLEFT, TOPRIGHT, MIDTOP
 
 
@@ -44,6 +43,8 @@ class Badge(Widget):
         self._fonts = None
         self._surf: Optional[pygame.Surface] = None
         self._key = None
+        self._plate: Optional[pygame.Surface] = None
+        self._plate_key = None
 
     @property
     def text(self):
@@ -69,10 +70,13 @@ class Badge(Widget):
     def _draw(self, surf):
         if self._surf is None:
             return
-        plate = pygame.Surface((self.w, self.h))
-        plate.fill((0, 0, 0))
-        plate.set_alpha(self.bg_alpha)
-        surf.blit(plate, self.rect.topleft)
+        plate_key = (self.w, self.h, self.bg_alpha)
+        if plate_key != self._plate_key:
+            self._plate = pygame.Surface((self.w, self.h))
+            self._plate.fill((0, 0, 0))
+            self._plate.set_alpha(self.bg_alpha)
+            self._plate_key = plate_key
+        surf.blit(self._plate, self.rect.topleft)
         surf.blit(self._surf, (self.rect.x + self.PAD_X, self.rect.y + self.PAD_Y))
 
 
@@ -83,6 +87,8 @@ class StatsPanel(Widget):
     def __init__(self, game):
         super().__init__(0, 0, TOPLEFT, (6, 6))
         self.game = game
+        self._plate: Optional[pygame.Surface] = None
+        self._plate_key = None
 
     def _stat_icon(self, surf, x, y, kind, count):
         """Draw a consumable icon + count; returns x after the text."""
@@ -132,9 +138,13 @@ class StatsPanel(Widget):
         show_mp_ap = mp is not None or ap is not None
         panel_h = 52 + (20 if show_mp_ap else 0)
 
-        plate = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        pygame.draw.rect(plate, (0, 0, 0, 130), (0, 0, panel_w, panel_h), border_radius=6)
-        surf.blit(plate, (6, 6))
+        plate_key = (panel_w, panel_h)
+        if plate_key != self._plate_key:
+            self._plate = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+            pygame.draw.rect(self._plate, (0, 0, 0, 130), (0, 0, panel_w, panel_h),
+                             border_radius=6)
+            self._plate_key = plate_key
+        surf.blit(self._plate, (6, 6))
 
         hd.render(surf, player.hearts, player.max_hearts)
 
@@ -201,6 +211,11 @@ class HUD:
         self.ghost = Badge("GHOST MODE", color=(200, 200, 255),
                            anchor=MIDTOP, offset=(0, 50), visible=False)
         self.ui.root.add(self.hint, self.ghost)
+
+        # Per-message (text, plate) surfaces for the chat log, rebuilt only
+        # when the last-5 slice of chat_messages actually changes.
+        self._chat_cache = {}
+        self._chat_slice = None
 
     # -- per-frame --------------------------------------------------------
     def update(self):
@@ -300,14 +315,27 @@ class HUD:
             lines.append(cur)
         return lines
 
+    def _build_chat_line(self, g, msg):
+        ts = g.font.render(msg[:60], True, (255, 255, 255))
+        plate = pygame.Surface((ts.get_width() + 10, ts.get_height() + 4))
+        plate.fill((0, 0, 0))
+        plate.set_alpha(150)
+        return (ts, plate)
+
     def _draw_chat(self, surf):
         g = self.game
+        slice_ = tuple(g.chat_messages[-5:])
+        if slice_ != self._chat_slice:
+            old_cache = self._chat_cache
+            self._chat_cache = {
+                msg: old_cache[msg] if msg in old_cache else self._build_chat_line(g, msg)
+                for msg in slice_
+            }
+            self._chat_slice = slice_
+
         y = g.screen_h - 60
-        for msg in reversed(g.chat_messages[-5:]):
-            ts = g.font.render(msg[:60], True, (255, 255, 255))
-            plate = pygame.Surface((ts.get_width() + 10, ts.get_height() + 4))
-            plate.fill((0, 0, 0))
-            plate.set_alpha(150)
+        for msg in reversed(slice_):
+            ts, plate = self._chat_cache[msg]
             surf.blit(plate, (5, y - 2))
             surf.blit(ts, (10, y))
             y -= 20

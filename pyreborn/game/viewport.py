@@ -4,7 +4,7 @@ The client used to call `pygame.display.set_mode((640, 480))` and draw directly
 to that fixed surface, so the window couldn't be resized and every layout number
 assumed exactly 640x480.
 
-Borrowed from Preagonal's ResolutionIndependentRenderer
+Borrowed from the C# client's ResolutionIndependentRenderer
 (ResolutionIndependentRenderer.cs): keep a fixed **virtual** canvas (all game and
 HUD layout math stays in virtual pixels), then scale that canvas to whatever size
 the window currently is, preserving aspect ratio with letterbox/pillarbox bars.

@@ -34,6 +34,12 @@ from .constants import (
 class InputMixin:
     """Mixin providing the above methods for GameClient."""
 
+    # pygame_key_to_vk rebuilds a small dict internally on every call; caching
+    # its result per pygame keycode avoids redoing that ~512 times a frame in
+    # _feed_gs1_input (once per held key, but the whole key range is scanned
+    # every frame to find them).
+    _vk_cache: Dict[int, int] = {}
+
     def _handle_events(self):
         """Handle pygame events."""
         # Reset just-pressed flags
@@ -270,8 +276,20 @@ class InputMixin:
             d.add(4)
         gs1.keys_dir = d
         # Translate to VK-style codes (see pygame_key_to_vk) so scripts'
-        # keydown2(<Graal VK code>) calls actually match held keys.
-        gs1.keys_raw = {pygame_key_to_vk(i) for i in range(len(keys)) if keys[i]}
+        # keydown2(<Reborn VK code>) calls actually match held keys. Cache the
+        # per-key result instead of calling pygame_key_to_vk (which rebuilds a
+        # dict internally) for every held key, every frame.
+        cache = self._vk_cache
+        raw = set()
+        for i in range(len(keys)):
+            if not keys[i]:
+                continue
+            vk = cache.get(i)
+            if vk is None:
+                vk = pygame_key_to_vk(i)
+                cache[i] = vk
+            raw.add(vk)
+        gs1.keys_raw = raw
 
     def _handle_input(self, current_time: float):
         """Handle held key input."""
@@ -315,16 +333,22 @@ class InputMixin:
                     self.last_action_time = current_time
             return
 
-        # Sword swing (S or Space, but not with A)
+        # Sword swing (S or Space, but not with A). Uses its own short cooldown
+        # (not the shared 300ms action_delay) so the sword can be spam-swung —
+        # each fresh press restarts the swing, classic style. While carrying,
+        # S throws the object instead (you can't swing with a bush overhead).
+        # Falls through to movement: the swing itself roots you (see below),
+        # but holding S after the swing ends doesn't.
         if (s_held or keys[K_SPACE]) and not a_held:
             if self.key_just_pressed.get(K_s, False) or self.key_just_pressed.get(K_SPACE, False):
-                if current_time - self.last_action_time > self.action_delay:
+                if self.client.player.is_carrying():
+                    self._throw_object()
+                elif current_time - self.last_sword_time > self.sword_delay:
                     self._swing_sword()
-                    self.last_action_time = current_time
-            return
+                    self.last_sword_time = current_time
 
         # Use weapon (D)
-        if keys[K_d]:
+        elif keys[K_d]:
             if self.key_just_pressed.get(K_d, False):
                 if current_time - self.last_action_time > self.action_delay:
                     self._use_weapon()
@@ -342,9 +366,13 @@ class InputMixin:
         elif keys[K_RIGHT]:
             dx = 1
 
-        # A + Arrow = Pickup
+        # A + Arrow = Pickup/throw — only on a fresh press of A or the arrow.
+        # The old held-repeat re-fired this every 300ms, so lifting a bush and
+        # keeping the keys held threw it right back out of your hands.
         if a_held and (dx != 0 or dy != 0):
-            if current_time - self.last_action_time > self.action_delay:
+            fresh = any(self.key_just_pressed.get(k, False)
+                        for k in (K_a, K_UP, K_DOWN, K_LEFT, K_RIGHT))
+            if fresh:
                 self._try_pickup(dx, dy)
                 self.last_action_time = current_time
             return
@@ -359,19 +387,12 @@ class InputMixin:
 
         # Movement (arrow keys only, no A held)
         if not a_held and (dx != 0 or dy != 0):
-            # Stand up if sitting and trying to move — but only on a FRESH
-            # direction press. Otherwise the held key that sat you down on a
-            # chair would immediately pop you back out of it next frame.
-            if self.client.player.is_sitting:
-                arrow_just = any(self.key_just_pressed.get(k, False)
-                                 for k in (K_UP, K_DOWN, K_LEFT, K_RIGHT))
-                if not arrow_just:
-                    self.is_moving = False
-                    return
-                self.client.player.stand_up()
-                self.player_anim.set_animation("idle", self.client.player.direction, force=True)
-                self.current_anim_name = "idle"
-                self.client.set_animation("idle")
+            # A sword swing (or lift) roots you for its duration, classic
+            # style. Once the gani finishes (setback -> idle) held arrows
+            # resume walking.
+            if self.current_anim_name in ("sword", "lift"):
+                self.is_moving = False
+                return
             # Frame-rate independent movement: accumulate distance at walk_speed
             # and apply it in MOVE_STEP-sized steps so speed is identical
             # regardless of frame rate.

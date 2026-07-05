@@ -6,10 +6,13 @@ Supports both TCP (native Python) and WebSocket (browser via Pyodide).
 In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
+import logging
 import re
 import sys
 import time
 from typing import Optional, Callable, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
@@ -46,7 +49,6 @@ from .packets import (
     build_chat,
     build_player_chat,
     build_sword_attack,
-    build_bomb_drop,
     build_item_take,
     build_animation,
     build_hearts,
@@ -176,17 +178,24 @@ HANDLED_PLO_IDS = _build_handled_plo_ids()
 def _eval_warp_coord(expr, player_x: float, player_y: float) -> Optional[float]:
     """Resolve a level-link destination coordinate.
 
-    It's a plain number for most doors, but edge links use Graal expressions
+    It's a plain number for most doors, but edge links use Reborn expressions
     that reference the player's current coordinate so a crossing is seamless:
     "playerx", "playery", "playery-4", "playerx+0.5", etc. Returns the resolved
     float, or None if it can't be parsed.
     """
     s = str(expr).strip().lower()
+    # Server-controlled input (level link destination) — cap length and reject
+    # '**' (power operator) before it ever reaches eval. Without this, a link
+    # like "9**9**9**9" builds a tower-of-exponents that hangs the client (DoS).
+    if len(s) > 64 or '**' in s:
+        return None
     try:
         return float(s)
     except ValueError:
         pass
     s = s.replace('playerx', repr(float(player_x))).replace('playery', repr(float(player_y)))
+    if len(s) > 64 or '**' in s:
+        return None
     # Only allow arithmetic over the substituted numbers — no names/calls.
     if re.fullmatch(r'[-+*/0-9.eE() ]+', s):
         try:
@@ -480,6 +489,11 @@ class Client:
         self.gs2_script_headers: Dict[str, dict] = {}
         # Gani SETBACKTO info from PLO_LOADGANI: gani -> setbackto ani.
         self.gani_setbackto: Dict[str, str] = {}
+        # (name, crc) weapon-bytecode pulls already sent, so a re-announced
+        # unchanged header doesn't re-request.
+        self._gs2_requested: set = set()
+        # True while update() is dispatching received packets (see update()).
+        self._in_update = False
         # Bytecode arrival callback: handler(kind, key, blob).
         self.on_gs2_bytecode: Optional[Callable[[str, object, bytes], None]] = None
 
@@ -514,6 +528,10 @@ class Client:
         self.packet_stats: Dict[int, Dict[str, object]] = {}
         # Capture the most recent error traceback per packet id for debugging.
         self._packet_trace_enabled = False  # when True, keep raw bytes of each id
+        # Packet ids we've already logged a handler-exception warning for, so
+        # a persistently-failing packet type doesn't spam the log every frame
+        # (the count is still visible in packet_stats[id]['errors']).
+        self._warned_packet_errors: set = set()
         # PLO ids this instance has a dispatch branch for. Subclasses (e.g.
         # RCClient) extend this so coverage counts their handlers too.
         self._handled_plo_ids = set(HANDLED_PLO_IDS)
@@ -524,6 +542,13 @@ class Client:
 
     def connect(self) -> bool:
         """Connect to the server. Returns True if successful."""
+        # Per-session decode state (codec, buffers) is reset inside
+        # Protocol.connect(); this instance also gets reset here for the case
+        # a Client is reused across connect() calls without an intervening
+        # disconnect() (normal usage builds a fresh Client per connection —
+        # see example_pygame.py's F8 server-switch loop — so this is
+        # defensive, not load-bearing).
+        self._authenticated = False
         return self._protocol.connect()
 
     def disconnect(self):
@@ -770,11 +795,46 @@ class Client:
         local_x = self.player.x % 64
         local_y = self.player.y % 64
         data = build_sword_attack(local_x, local_y, direction)
-        return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
+        sent = self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
+
+        # Classic sword damage is attacker-client-authoritative: the swing
+        # itself is just a gani prop; the attacker detects the hit and sends
+        # PLI_HURTPLAYER per victim (the server only relays/applies). Without
+        # this, sword swings are cosmetic and players can't melee each other.
+        if sent:
+            self._sword_hit_players(direction)
+        return sent
+
+    # Sword swing hitbox: how far the blade reaches in the facing direction
+    # and how wide the arc is, measured between sprite centers (sprite center
+    # = top-left + (1, 1.5)).
+    _SWORD_REACH = 2.5
+    _SWORD_WIDTH = 1.5
+
+    def _sword_hit_players(self, direction: int):
+        """Send PLI_HURTPLAYER for every other player inside the sword arc."""
+        dir_vec = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction)
+        if not dir_vec:
+            return
+        fx, fy = dir_vec
+        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
+        # Half a heart per sword power level, matching the classic client.
+        damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
+        for pid, p in list(self.players.items()):
+            px, py = p.get('x'), p.get('y')
+            if px is None or py is None:
+                continue
+            dx, dy = (px + 1.0) - my_cx, (py + 1.0) - my_cy
+            forward = dx * fx + dy * fy
+            lateral = abs(dx * fy) + abs(dy * fx)
+            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+                self.attack_player(pid, damage=damage,
+                                   knockback_x=fx * 2, knockback_y=fy * 2)
 
     def drop_bomb(self, power: int = 1) -> bool:
         """
-        Drop a bomb at current position.
+        Drop a bomb at current position (PLI_BOMBADD; the server runs the
+        fuse, explosion, and damage).
 
         Args:
             power: Bomb power (1-3)
@@ -782,11 +842,7 @@ class Client:
         Returns:
             True if packet sent successfully
         """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_bomb_drop(self.player.x, self.player.y, power)
-        return self._protocol.send_packet(PacketID.PLI_EXPLOSION, data)
+        return self.put_bomb(power=power)
 
     def pickup_item(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
         """
@@ -1074,7 +1130,7 @@ class Client:
         # host then thinks the room is full and never settles to host it). GMAP
         # segment hops keep the roster (you see players across the whole gmap).
         if (level_name != self._current_level_name
-                and level_name not in self.gmap_grid):
+                and level_name not in self.gmap_grid.values()):
             self.players.clear()
 
         self._current_level_name = level_name
@@ -1635,19 +1691,32 @@ class Client:
         """
         packets = self._protocol.recv_packets(timeout)
 
-        for packet_id, data in packets:
-            stats = self.packet_stats.get(packet_id)
-            if stats is None:
-                stats = {'received': 0, 'handled': 0, 'errors': 0, 'last_error': ''}
-                self.packet_stats[packet_id] = stats
-            stats['received'] += 1
-            try:
-                self._handle_packet(packet_id, data)
-                if packet_id in self._handled_plo_ids:
-                    stats['handled'] += 1
-            except Exception as e:
-                stats['errors'] += 1
-                stats['last_error'] = f"{type(e).__name__}: {e}"
+        # Flagged so re-entrant callers (a GS2 script sleep() pumping update
+        # from inside a packet-fired handler) can detect they're already in
+        # the packet loop and must not recurse into it.
+        self._in_update = True
+        try:
+            for packet_id, data in packets:
+                stats = self.packet_stats.get(packet_id)
+                if stats is None:
+                    stats = {'received': 0, 'handled': 0, 'errors': 0, 'last_error': ''}
+                    self.packet_stats[packet_id] = stats
+                stats['received'] += 1
+                try:
+                    self._handle_packet(packet_id, data)
+                    if packet_id in self._handled_plo_ids:
+                        stats['handled'] += 1
+                except Exception as e:
+                    stats['errors'] += 1
+                    stats['last_error'] = f"{type(e).__name__}: {e}"
+                    if packet_id not in self._warned_packet_errors:
+                        self._warned_packet_errors.add(packet_id)
+                        logger.warning(
+                            "Handler for packet %d raised %s: %s (further errors "
+                            "for this packet id are counted in packet_stats but "
+                            "not logged)", packet_id, type(e).__name__, e)
+        finally:
+            self._in_update = False
 
         return packets
 
@@ -1659,9 +1728,25 @@ class Client:
             level_name = parse_level_name(data)
             # .nw files are actual levels, .gmap is the world map name
             if level_name.endswith('.nw'):
-                # Only update if we don't have a base level yet, or this is the first level
-                if not self._current_level_name:
+                # A real level transition (server push via PLO_PLAYERWARP/
+                # PLO_PLAYERWARP2 for RC warps/respawn, or a client-initiated
+                # warp_to_level()) always (re-)announces the destination via
+                # this packet — GServer-v2 PlayerClient.cpp:1421/1473. Segments
+                # of the currently loaded gmap are announced the same way as
+                # we stream across them and must NOT reset per-level state
+                # (that would wipe the stitched world's chests/signs/items/
+                # NPCs on every segment hop); distinguish the two by checking
+                # whether level_name is one of the loaded gmap's segments.
+                is_gmap_segment = (self.gmap_width > 0 and
+                                    level_name in self.gmap_grid.values())
+                if level_name != self._current_level_name:
                     self._current_level_name = level_name
+                    if not is_gmap_segment:
+                        # Real warp: drop the old level's chests/signs/items/
+                        # baddies/NPCs so stale entries (e.g. a link back
+                        # through a door that doesn't exist here) don't leak
+                        # into the new level.
+                        self._reset_level_state()
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
@@ -1714,6 +1799,15 @@ class Client:
             # First props packet means we're authenticated
             if not self._authenticated:
                 self._authenticated = True
+                # Weapon headers announced earlier in this login burst
+                # couldn't be pulled yet (request_weapon_bytecode refuses
+                # pre-auth) — pull them now.
+                for wname, hdr in self.gs2_script_headers.items():
+                    if hdr.get('type') == 'weapon' and not hdr.get('bytecode'):
+                        req_key = (wname, hdr.get('crc', ''))
+                        if req_key not in self._gs2_requested:
+                            if self.request_weapon_bytecode(wname):
+                                self._gs2_requested.add(req_key)
 
         # Chat message OR movement update
         elif packet_id == PacketID.PLO_TOALL:
@@ -2040,16 +2134,16 @@ class Client:
                 if chat and self.on_chat:
                     self.on_chat(player_id, chat)
                 if player_id in self.players:
-                    # Merge props, preferring tile positions (15/16) over pixel (75/76)
-                    # Only update x/y if the new value is reasonable
+                    # Merge props. X2/Y2 (props 78/79) legitimately exceed 64
+                    # on gmaps (world coords) and can be slightly negative near
+                    # the origin, so there's no valid range to gate on here —
+                    # trust the parser (parse_other_player already resolves
+                    # the 75/76-vs-X2/Y2 ambiguity; this used to guard against
+                    # that misparse era with a 0-64 clamp that just dropped
+                    # legitimate gmap coordinates).
                     existing = self.players[player_id]
                     for key, value in props.items():
-                        if key in ('x', 'y'):
-                            # Prefer values in tile range (0-64) if existing is already set
-                            if value is not None and (key not in existing or 0 <= value <= 64):
-                                existing[key] = value
-                        else:
-                            existing[key] = value
+                        existing[key] = value
                 else:
                     self.players[player_id] = props
 
@@ -2410,6 +2504,18 @@ class Client:
                     self.gs2_bytecode[kind][info['name']] = info['bytecode']
                     if self.on_gs2_bytecode:
                         self.on_gs2_bytecode(kind, info['name'], info['bytecode'])
+                elif info['type'] == 'weapon':
+                    # Header-only announcement (Weapon.cpp
+                    # registerWeaponWithPlayer): the server waits for the
+                    # client to pull the bytecode with PLI_UPDATESCRIPT (a
+                    # real client skips the pull only on a local-cache CRC
+                    # hit; we keep no disk cache, so always fetch). Once per
+                    # (name, crc) so a re-announced unchanged script doesn't
+                    # re-request forever.
+                    req_key = (info['name'], info['crc'])
+                    if req_key not in self._gs2_requested:
+                        if self.request_weapon_bytecode(info['name']):
+                            self._gs2_requested.add(req_key)
 
         # Remove a weapon from inventory (packet 34).
         elif packet_id == PacketID.PLO_NPCWEAPONDEL:
@@ -2558,7 +2664,12 @@ class Client:
         # (2.5) fell half a tile short, so you'd jam against a downward warp and
         # have to noclip through it.
         px, py = self.player.x, self.player.y
-        local_x = (px + 1.0) % 64
+        # Horizontal span of the feet box (both feet: columns x .. x+2), not
+        # just the single centre column — a 1-tile-wide door must trigger when
+        # any part of the body overlaps it, otherwise standing half a tile
+        # off-centre walks straight past the warp.
+        span_left = px % 64
+        span_right = span_left + 2.0
         body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5, 3.0)]
 
         for link in links:
@@ -2578,8 +2689,10 @@ class Client:
             if is_edge and is_adjacent:
                 continue
 
-            # Triggered if any body sample falls inside the link rect.
-            if lx <= local_x < lx + lw and any(ly <= by < ly + lh for by in body_ys):
+            # Triggered if the feet span overlaps the link rect horizontally
+            # and any body sample falls inside it vertically.
+            if span_left < lx + lw and span_right > lx and \
+                    any(ly <= by < ly + lh for by in body_ys):
                 return link
 
         return None
@@ -2602,7 +2715,7 @@ class Client:
         dest_y = link.get('dest_y', '0')
 
         # Destination coords (LOCAL within the destination level) may be a number
-        # OR a Graal expression referencing playerx/playery — used by edge links
+        # OR a Reborn expression referencing playerx/playery — used by edge links
         # to keep the player's coordinate across a seamless crossing (e.g.
         # "playery", "playerx-4"). Plain float() throws on those and the old code
         # fell back to (0,0), so every such warp dumped the player in the corner.
