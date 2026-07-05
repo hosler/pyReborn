@@ -65,36 +65,78 @@ class WorldRenderMixin:
 
         self._apply_pending_full_invalidate()
 
-        # Tier 4a: the water/lava shimmer index is rebuilt this frame from
-        # whichever segments actually get blitted below (folded from each
-        # segment's own cached, segment-local index into world tile coords).
-        self._animated_tiles = []
+        tile_range = self.camera.visible_tile_range()
 
         if in_gmap and c.gmap_grid:
-            min_tx, min_ty, max_tx, max_ty = self.camera.visible_tile_range()
+            min_tx, min_ty, max_tx, max_ty = tile_range
             min_gx, max_gx = min_tx // 64, max_tx // 64
             min_gy, max_gy = min_ty // 64, max_ty // 64
+            segments = []
             for gy in range(min_gy, max_gy + 1):
                 for gx in range(min_gx, max_gx + 1):
                     level_name = c.gmap_grid.get((gx, gy))
-                    if not level_name:
-                        continue  # segment not part of this gmap - stays black
-                    self._blit_segment(level_name, gx * 64, gy * 64)
+                    if level_name:  # else segment not part of this gmap - stays black
+                        segments.append((level_name, gx * 64, gy * 64))
         else:
             level_name = c._current_level_name or c._tiles_level_name or _STANDALONE_KEY
-            self._blit_segment(level_name, 0, 0)
+            segments = [(level_name, 0, 0)]
+
+        for (level_name, grid_ox, grid_oy) in segments:
+            self._blit_segment(level_name, grid_ox, grid_oy)
+
+        # Tier 4a: the water/lava shimmer only actually gets drawn on
+        # alternating halves of its period (see _render_animated_tiles) - on
+        # the other half nothing this frame will use the fold, so skip
+        # rebuilding it entirely. `_is_shimmer_draw_frame`'s result is stashed
+        # so _render_animated_tiles (called later this same frame) checks the
+        # exact same half rather than recomputing time.time() again.
+        self._shimmer_draw_this_frame = self._is_shimmer_draw_frame()
+        if self._shimmer_draw_this_frame:
+            self._refresh_animated_tiles_cache(segments, tile_range)
 
     def _blit_segment(self, level_name: str, grid_ox: int, grid_oy: int):
-        """Draw one segment's cached surface at its grid-tile offset, and fold
-        its (segment-local) animated-tile index into this frame's world coords."""
+        """Draw one segment's cached surface at its grid-tile offset."""
         surf = self._get_segment_surface(level_name)
         if surf is None:
             return  # not loaded yet - leave black, matches pre-refactor behavior
         self.screen.blit(surf, self.camera.world_to_screen(grid_ox, grid_oy))
-        entry = self._segments().get(level_name)
-        if entry:
+
+    def _refresh_animated_tiles_cache(self, segments, tile_range):
+        """Rebuild self._animated_tiles (the per-frame world-coord fold of
+        every visible segment's water/lava index) only if the visible segment
+        set, the underlying segment surfaces, or the camera's visible tile
+        range actually changed since the last rebuild - a no-op while
+        standing still looking at the same segments.
+
+        Each segment's contribution is culled against `tile_range` (the exact
+        tile-space rect the camera can see) up front - a segment is 64x64
+        tiles but the viewport only ever shows a fraction of one, so this
+        keeps the fold to the tiles that are actually going to be drawn
+        instead of folding the whole segment and re-culling per-tile with
+        `camera.world_to_screen` later in `_render_animated_tiles`.
+        """
+        min_tx, min_ty, max_tx, max_ty = tile_range
+        cache = self._segments()
+        key = (tile_range, tuple(
+            (level_name, grid_ox, grid_oy,
+             id(cache[level_name]['surface']) if level_name in cache else None)
+            for (level_name, grid_ox, grid_oy) in segments
+        ))
+        if key == self._animated_tiles_key:
+            return
+        self._animated_tiles_key = key
+
+        animated = []
+        for (level_name, grid_ox, grid_oy) in segments:
+            entry = cache.get(level_name)
+            if not entry or not entry['animated']:
+                continue
+            lo_x, hi_x = min_tx - grid_ox, max_tx - grid_ox
+            lo_y, hi_y = min_ty - grid_oy, max_ty - grid_oy
             for (tx, ty, tile_id) in entry['animated']:
-                self._animated_tiles.append((grid_ox + tx, grid_oy + ty, tile_id))
+                if lo_x <= tx <= hi_x and lo_y <= ty <= hi_y:
+                    animated.append((grid_ox + tx, grid_oy + ty, tile_id))
+        self._animated_tiles = animated
 
     def _render_level_loading(self):
         """Brief overlay shown while a newly-entered level's board streams in."""
@@ -337,19 +379,25 @@ class WorldRenderMixin:
         cache[tile_id] = shimmer
         return shimmer
 
+    _SHIMMER_PERIOD = 0.3
+
+    def _is_shimmer_draw_frame(self) -> bool:
+        """True on the half of each `_SHIMMER_PERIOD` where the shimmer
+        variant actually gets drawn - the other half the base tile (already
+        baked into the segment surface) is correct as-is."""
+        return int(time.time() / self._SHIMMER_PERIOD) % 2 == 1
+
     def _render_animated_tiles(self):
         """Tier 4a: redraw just the indexed water/lava tiles every ~300ms with
         a shimmer variant, on top of the already-composited world_surface."""
+        if not self._shimmer_draw_this_frame:
+            return  # base tile (already baked into world_surface) is frame 0
         tiles = self._animated_tiles
         if not tiles:
             return
-        period = 0.3
-        frame = int(time.time() / period) % 2
-        if frame == 0:
-            return  # base tile (already baked into world_surface) is frame 0
-        surf_w, surf_h = self.screen.get_size()
+        # tiles is already culled to the camera's visible tile range (see
+        # _refresh_animated_tiles_cache), so no per-tile screen-bounds check
+        # is needed here beyond the world->screen conversion for the blit.
         for (tx, ty, tile_id) in tiles:
             sx, sy = self.camera.world_to_screen(tx, ty)
-            if sx < -TILE_SIZE or sx > surf_w or sy < -TILE_SIZE or sy > surf_h:
-                continue
             self.screen.blit(self._get_shimmer_tile(tile_id), (int(sx), int(sy)))

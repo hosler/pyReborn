@@ -193,11 +193,19 @@ class RenderMixin:
         # single 64x64 level, this CENTRES that level (Camera2D centres any world
         # smaller than the viewport) with black around it; a GMAP larger than the
         # window scroll-clamps to its perimeter instead of revealing the void.
-        if self.client.in_gmap_segment:
-            self.camera.set_bounds(0, 0, self.client.gmap_width * 64,
-                                   self.client.gmap_height * 64)
-        else:
-            self.camera.set_bounds(0, 0, 64, 64)
+        # set_bounds() re-clamps the center on top of the clamp set_center() below
+        # already redoes every frame, so only call it again when one of its
+        # inputs (level/GMAP switch, zoom, or a window resize) actually changed.
+        bounds_key = (self.client.in_gmap_segment, self.client.gmap_width,
+                     self.client.gmap_height, self.client._current_level_name,
+                     self.camera.zoom, self.screen_w, self.screen_h)
+        if bounds_key != self._camera_bounds_key:
+            self._camera_bounds_key = bounds_key
+            if self.client.in_gmap_segment:
+                self.camera.set_bounds(0, 0, self.client.gmap_width * 64,
+                                       self.client.gmap_height * 64)
+            else:
+                self.camera.set_bounds(0, 0, 64, 64)
 
         self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
                                gmap_visual_y + self.CAMERA_BODY_DY)

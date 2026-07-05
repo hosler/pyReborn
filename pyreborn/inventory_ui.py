@@ -357,6 +357,10 @@ class HeartDisplay:
         """Initialize heart display at position."""
         self.x = x
         self.y = y
+        # The heart row only actually changes when hearts/max_hearts do, not
+        # every frame - cache the composited row and just blit it otherwise.
+        self._cache: Optional['pygame.Surface'] = None
+        self._cache_key = None
 
     def render(self, screen: 'pygame.Surface', current: float, maximum: float):
         """
@@ -370,19 +374,27 @@ class HeartDisplay:
         if not PYGAME_AVAILABLE:
             return
 
-        full_hearts = int(current)
-        has_half = (current - full_hearts) >= 0.5
-        total_hearts = int(maximum)
+        key = (current, maximum)
+        if key != self._cache_key:
+            full_hearts = int(current)
+            has_half = (current - full_hearts) >= 0.5
+            total_hearts = int(maximum)
 
-        for i in range(total_hearts):
-            x = self.x + i * (self.HEART_SIZE + self.HEART_SPACING)
-            if i < full_hearts:
-                fill = 'full'
-            elif i == full_hearts and has_half:
-                fill = 'half'
-            else:
-                fill = 'empty'
-            self._draw_heart(screen, x, self.y, fill)
+            w = max(1, total_hearts * (self.HEART_SIZE + self.HEART_SPACING))
+            row = pygame.Surface((w, self.HEART_SIZE), pygame.SRCALPHA)
+            for i in range(total_hearts):
+                x = i * (self.HEART_SIZE + self.HEART_SPACING)
+                if i < full_hearts:
+                    fill = 'full'
+                elif i == full_hearts and has_half:
+                    fill = 'half'
+                else:
+                    fill = 'empty'
+                self._draw_heart(row, x, 0, fill)
+            self._cache = row
+            self._cache_key = key
+
+        screen.blit(self._cache, (self.x, self.y))
 
     OUTLINE_COLOR = (20, 10, 10)
 

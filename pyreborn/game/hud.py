@@ -89,6 +89,11 @@ class StatsPanel(Widget):
         self.game = game
         self._plate: Optional[pygame.Surface] = None
         self._plate_key = None
+        # Icons (rupee/bomb/arrow counters + MP/AP bars) only actually change
+        # when one of the values they show changes, not every frame - cache
+        # the composited result and just re-blit it otherwise.
+        self._icons_surf: Optional[pygame.Surface] = None
+        self._icons_key = None
 
     def _stat_icon(self, surf, x, y, kind, count):
         """Draw a consumable icon + count; returns x after the text."""
@@ -148,20 +153,32 @@ class StatsPanel(Widget):
 
         hd.render(surf, player.hearts, player.max_hearts)
 
-        icon_y = 32
-        x = self._stat_icon(surf, 12, icon_y, 'rupee', player.rupees)
-        x = self._stat_icon(surf, x + 12, icon_y, 'bomb', player.bombs)
-        self._stat_icon(surf, x + 12, icon_y, 'arrow', player.arrows)
+        max_mp = getattr(player, 'max_mp', 100) or 100
+        max_ap = getattr(player, 'max_ap', 100) or 100
+        icons_key = (panel_w, panel_h, player.rupees, player.bombs,
+                    player.arrows, mp, ap, max_mp, max_ap)
+        if icons_key != self._icons_key:
+            # Drawn into a panel-local surface (same (6, 6) origin as
+            # `self._plate` above) so it can be cached and blitted as one
+            # unit rather than redrawn from scratch every frame.
+            icons = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+            icon_y = 32
+            x = self._stat_icon(icons, 6, icon_y - 6, 'rupee', player.rupees)
+            x = self._stat_icon(icons, x + 12, icon_y - 6, 'bomb', player.bombs)
+            self._stat_icon(icons, x + 12, icon_y - 6, 'arrow', player.arrows)
 
-        if show_mp_ap:
-            bar_y = icon_y + 30
-            bar_w = (panel_w - 24 - 12) // 2
-            if mp is not None:
-                self._stat_bar(surf, 12, bar_y, bar_w, "MP", mp,
-                               getattr(player, 'max_mp', 100) or 100, (90, 140, 255))
-            if ap is not None:
-                self._stat_bar(surf, 12 + bar_w + 12, bar_y, bar_w, "AP", ap,
-                               getattr(player, 'max_ap', 100) or 100, (230, 200, 80))
+            if show_mp_ap:
+                bar_y = icon_y + 30 - 6
+                bar_w = (panel_w - 24 - 12) // 2
+                if mp is not None:
+                    self._stat_bar(icons, 6, bar_y, bar_w, "MP", mp, max_mp,
+                                   (90, 140, 255))
+                if ap is not None:
+                    self._stat_bar(icons, 6 + bar_w + 12, bar_y, bar_w, "AP", ap,
+                                   max_ap, (230, 200, 80))
+            self._icons_surf = icons
+            self._icons_key = icons_key
+        surf.blit(self._icons_surf, (6, 6))
 
 
 class HUD:

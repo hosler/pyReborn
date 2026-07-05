@@ -82,6 +82,10 @@ class GameClient(
         # the offset math that used to be copy-pasted into every render method.
         self.camera = Camera2D(self.screen.get_width(), self.screen.get_height(),
                                TILE_SIZE)
+        # Memoizes the inputs _sync_camera() last called camera.set_bounds()
+        # with, so it's only re-issued on an actual level/zoom/resize change
+        # rather than every frame - see game/render.py.
+        self._camera_bounds_key = None
 
         # Fonts: keyed/cached via FontManager. self.font / self.font_small remain
         # as aliases for the HUD and small roles the legacy render code uses.
@@ -168,6 +172,11 @@ class GameClient(
         # current world_surface, rebuilt alongside it - see render_world.py
         # _render_animated_tiles for the shimmer this drives.
         self._animated_tiles: List[Tuple[int, int, int]] = []
+        # Memoization key for the above (visible segment set + tile data +
+        # camera view) and whether this frame is a shimmer-draw half, both
+        # set each frame by WorldRenderMixin._render_world - see render_world.py.
+        self._animated_tiles_key = None
+        self._shimmer_draw_this_frame = False
 
         # Placeholders
         self.placeholder_sprite = create_placeholder_sprite(32, 32, (200, 50, 200))
@@ -369,8 +378,11 @@ class GameClient(
             # Handle held key input
             self._handle_input(current_time)
 
-            # Update client (process packets)
-            self.client.update()
+            # Update client (process packets). Non-blocking: clock.tick(60)
+            # below already paces the loop, so there's no need for update()'s
+            # default 10ms select() wait on top of it - that just adds input
+            # latency without changing the frame rate.
+            self.client.update(timeout=0)
 
             # Load + run NPCs that streamed in after startup (slow server).
             self._load_new_npcs()
