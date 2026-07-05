@@ -98,7 +98,8 @@ class RenderMixin:
         for pid, anim in list(self.other_player_anims.items()):
             if pid not in self.client.players:
                 del self.other_player_anims[pid]
-                continue
+                self.other_player_visual.pop(pid, None)  # else this leaks per
+                continue                                 # player id for the session
             self._play_entity_sounds(anim.update(dt), self.other_player_visual.get(pid))
 
         for npc_id, anim in list(self.npc_anims.items()):

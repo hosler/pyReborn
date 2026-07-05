@@ -408,6 +408,19 @@ class SetupMixin:
                     npc_id, "playertouchsme"))
             # The handler reads collision shapes the engine records on setshape.
             self.npc_handler.gs1 = self.gs1
+            # Drop a despawned NPC's shape/script so its ghost can't keep
+            # firing playertouchsme from the old tile, and clear its render
+            # caches.
+            self.client.on_npc_del = self._on_npc_del
+
+    def _on_npc_del(self, npc_id: int):
+        if getattr(self, "npc_handler", None) is not None:
+            self.npc_handler.forget_npc(npc_id)
+        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual'):
+            cache = getattr(self, attr, None)
+            if isinstance(cache, dict):
+                cache.pop(npc_id, None)
+
     def _load_npc_scripts(self):
         """Load NPC scripts into the GS1 interpreter."""
         for npc_id, npc in self.client.npcs.items():
@@ -511,7 +524,8 @@ class SetupMixin:
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()
-        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual'):
+        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual',
+                     'other_player_visual'):
             cache = getattr(self, attr, None)
             if isinstance(cache, dict):
                 cache.clear()

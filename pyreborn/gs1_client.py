@@ -864,6 +864,26 @@ class ClientGS1:
         # without the weapon's enabledefmovement running.
         self.default_movement = True
 
+    def forget_npc(self, npc_id):
+        """Drop a despawned NPC's prog, shape, blocked cells and any suspended
+        coroutine (PLO_NPCDEL). Weapons (npc_id -1) are never touched. Without
+        this the NPC's script stays loaded and keeps running from its old tile."""
+        if npc_id < 0:
+            return
+        dead_keys = {k for k, e in self._progs.items()
+                     if e.get("npc_id") == npc_id and not e.get("is_weapon")}
+        for k in dead_keys:
+            self._progs.pop(k, None)
+            self.scripts.pop(k, None)
+            self._active_coro_keys.discard(k)
+            self._weapon_timeouts.pop(k, None)
+        if dead_keys:
+            self._coros = [c for c in self._coros if c.get("key") not in dead_keys]
+        self.shapes.pop(npc_id, None)
+        cells = self._shape_block_owners.pop(npc_id, None)
+        if cells:
+            self._shape_blocks -= cells
+
     def trigger_event(self, event, name=None):
         names = [name] if name is not None else list(self._progs)
         for n in names:

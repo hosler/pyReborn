@@ -482,6 +482,11 @@ class EntityRenderMixin:
             return
 
         lines = self._wrapped_lines(text)
+        if not lines:
+            # Whitespace-only text wraps to no words; nothing to show. Without
+            # this guard the max() below crashes the whole render loop, which a
+            # remote player sending an all-space chat could trigger for everyone.
+            return
 
         # Calculate bubble dimensions
         line_height = 14

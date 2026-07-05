@@ -109,6 +109,16 @@ class NPCHandler:
         # off — it does NOT interpret scripts itself.
         self.on_playertouchsme: Optional[callable] = None  # (npc_id, npc_data) -> None
 
+    def forget_npc(self, npc_id: int):
+        """Drop all per-NPC state for a despawned NPC (PLO_NPCDEL). Without
+        this the stale collision shape keeps registering touches and its GS1
+        prog keeps firing playertouchsme from the NPC's old tile."""
+        self.npc_shapes.pop(npc_id, None)
+        self.npc_scripts.pop(npc_id, None)
+        self.touched_npcs.discard(npc_id)
+        if self.gs1 is not None:
+            self.gs1.forget_npc(npc_id)
+
     def update_npcs(self):
         """Refresh per-NPC scripts and collision shapes.
 

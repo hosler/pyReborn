@@ -407,6 +407,10 @@ class Client:
         # NPC move-queue update callback: handler(info) with npc_id/x/y/dx/dy/
         # duration_ms/options (PLO_MOVE2).
         self.on_npc_move: Optional[Callable[[dict], None]] = None
+        # NPC-deleted callback: handler(npc_id) - lets the render/scripting
+        # layer drop the NPC's collision shape and loaded GS1 prog so a
+        # despawned NPC can't keep firing playertouchsme from its old tile.
+        self.on_npc_del: Optional[Callable[[int], None]] = None
 
         # Server-control callbacks (tier 3).
         # Freeze state changed: handler(frozen: bool).
@@ -2143,6 +2147,8 @@ class Client:
                 npc_id = reader.read_gint3()
                 if npc_id in self.npcs:
                     del self.npcs[npc_id]
+                    if self.on_npc_del:
+                        self.on_npc_del(npc_id)
 
         # Other player properties
         elif packet_id == PacketID.PLO_OTHERPLPROPS:
