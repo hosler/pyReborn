@@ -116,20 +116,26 @@ CASES: List[GS1Case] = [
     # --- warp ---------------------------------------------------------------
     GS1Case("warp", "setlevel2 (warp the player)",
             f"setlevel2 {DEST_LEVEL},20,20;", "warp", "level"),
-    # --- KNOWN DIVERGENCES (grounded in the C++ source) ---------------------
-    # The oracle stores body colours as classic colour NAMES (Character.h
-    # ClassicColors enum; mc_C returns getClassicColorName(colors[i])), so
-    # `setplayerprop #C0,<n>` assigns the string "<n>" which is not a valid
-    # colour name -> slot resolves to 0. pygserver's gs1_host instead treats
-    # the value as a numeric palette index and writes it verbatim.
-    GS1Case("color_player", "setplayerprop #C0 (body colour, numeric vs name)",
-            "setplayerprop #C0,9;", "player", "color0", expect_divergence=True,
-            note="oracle: #C colour codes are classic colour NAMES (Character.h "
-                 "ClassicColors); numeric '9' is not a name -> slot 0. pygserver "
-                 "gs1_host writes the number as a raw palette index."),
-    GS1Case("color_npc", "setcharprop #C0 (NPC colour, numeric vs name)",
-            "setcharprop #C0,6;", "npc", "color0", expect_divergence=True,
-            note="same root cause as color_player, via setcharprop on the NPC."),
+    # --- #C0-#C7 colour codes: classic colour NAMES, not raw indices ---------
+    # The oracle resolves #C values as classic colour names (Character.h
+    # ClassicColors / GS1Visitor::getColorValueFromString): a bare number like
+    # "9" is not a name -> slot 0, and a real name -> its enum index. This was a
+    # divergence (gs1_host treated the value as a raw palette index) — now fixed
+    # in gs1_host._resolve_color, so these must MATCH the oracle both ways.
+    GS1Case("color_player_badname", "setplayerprop #C0,9 (non-name -> 0)",
+            "setplayerprop #C0,9;", "player", "color0",
+            note="'9' is not a classic colour name, so the slot resolves to 0 "
+                 "(WHITE) on both, not the raw index 9."),
+    GS1Case("color_player_name", "setplayerprop #C0,red (name -> index 4)",
+            "setplayerprop #C0,red;", "player", "color0",
+            note="'red' is ClassicColors index 4."),
+    # (No non-name NPC case: an NPC's default colour[0] is already 0, so setting
+    # it to 0 is a no-op the dirty-diff won't transmit and the client can't
+    # observe it. The shared _resolve_color path is covered by
+    # color_player_badname; color_npc_name covers the NPC setcharprop path.)
+    GS1Case("color_npc_name", "setcharprop #C0,blue (name -> index 10)",
+            "setcharprop #C0,blue;", "npc", "color0",
+            note="'blue' is ClassicColors index 10."),
 ]
 
 
