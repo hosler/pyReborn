@@ -175,28 +175,41 @@ class TestScenarios:
 
     @staticmethod
     def test_movement_all_directions(bot: GameBot) -> TestResult:
-        """Test movement in all 4 directions."""
+        """Test movement in all 4 directions.
+
+        A previous version of this test never required any move to actually
+        succeed - it passed as long as any *blocked* move wasn't an
+        out-of-bounds bug, so it passed unconditionally even if move()
+        always returned False (0/4 moves). The QA fixture level's spawn
+        area (onlinestartlocal.nw around 30,30) is open ground in all 4
+        directions, so require most moves to actually change position while
+        still tolerating an occasional legitimate wall/edge block.
+        """
         start = time.time()
         issues = []
         directions = [(1, 0, "right"), (-1, 0, "left"), (0, 1, "down"), (0, -1, "up")]
+        succeeded = 0
 
         for dx, dy, name in directions:
             old_x, old_y = bot.x, bot.y
             moved = bot.move(dx, dy)
 
-            if not moved:
+            if moved:
+                succeeded += 1
+            else:
                 # Check if blocked by wall
                 result = BugDetector.check_out_of_bounds(bot.client)
                 if not result.passed:
                     issues.append(bot.issues[-1] if bot.issues else None)
 
-        passed = len(issues) == 0
+        issues = [i for i in issues if i]
+        passed = succeeded >= 3 and len(issues) == 0
         return TestResult(
             name="movement_all_directions",
             passed=passed,
             duration=time.time() - start,
-            details=f"Tested {len(directions)} directions",
-            issues=[i for i in issues if i]
+            details=f"{succeeded}/{len(directions)} directions moved successfully",
+            issues=issues
         )
 
     @staticmethod
@@ -240,75 +253,63 @@ class TestScenarios:
     def test_collision_detection(bot: GameBot) -> TestResult:
         """Test that collision detection works (parity with pygame client).
 
-        This test verifies that the GameBot collision detection matches
-        the pygame client's behavior. If this test fails, it means
-        the bot can walk through walls that would block a real player.
+        A previous version of this test accepted ANY outcome ("either we hit
+        a wall or moved successfully - both are valid") for every sub-check,
+        so it passed even with collision detection completely disabled. This
+        version pins down two concrete facts about the shared QA fixture
+        level (onlinestartlocal.nw, probed live against the running server):
+        the default spawn (30, 30) is open ground, and there's a wall
+        spanning row 17 a few tiles north of it (tile id 18 at column 30,
+        row 17 is TileType-blocking). A real player can walk south from
+        spawn but is stopped before crossing north past row 17.
         """
         start = time.time()
         issues = []
-        passed_tests = 0
-        total_tests = 0
 
-        # Test 1: Movement and basic collision
-        # Note: In GMAP worlds, the bot can walk across level boundaries (64 tiles each)
-        # so we just verify that the move() function works and collision is being checked
-        total_tests += 1
-        start_x = bot.x
-        moves_succeeded = 0
-        moves_blocked = 0
-        for _ in range(100):  # Try some moves
-            moved = bot.move(1, 0)
-            if moved:
-                moves_succeeded += 1
-            else:
-                moves_blocked += 1
-                break  # Hit a wall
+        # Known-good starting position so the test is deterministic
+        # regardless of what earlier tests left the bot doing.
+        bot.warp_to("onlinestartlocal.nw", 30.0, 30.0)
 
-        # Either we hit a wall (collision working) or moved successfully (open terrain)
-        # Both are valid outcomes - the key is move() returns the correct result
-        if moves_succeeded > 0 or moves_blocked > 0:
-            passed_tests += 1
-        else:
-            issues.append(f"Movement test: no moves attempted")
+        # 1) A known floor tile must allow movement.
+        floor_ok = bot.move(0, 1)  # open field south of spawn
+        if not floor_ok:
+            issues.append(
+                f"Known floor tile blocked movement at ({bot.x:.1f}, {bot.y:.1f})")
 
-        # Test 2: Verify collision blocking works on actual wall tiles
-        total_tests += 1
-        # Walk back toward center and check if we can detect blocked moves
-        blocked_count = 0
-        move_count = 0
-        for _ in range(50):
-            moved = bot.move(-1, 0)  # Walk left
-            move_count += 1
+        # 2) A known wall (row 17) must actually block movement - walk north
+        # into it and confirm the bot stops before tunnelling through.
+        # Collision is FEET-only (box rows y+2..y+3, classic style: the head
+        # sprite may overlap walls above), so walking north the bot may
+        # legally stand as high as y=16 (feet rows 18-19); it must be
+        # blocked once its feet row would land on 17, i.e. it can never
+        # get below y=15.
+        hit_wall = False
+        for _ in range(60):
+            moved = bot.move(0, -1)
             if not moved:
-                blocked_count += 1
+                hit_wall = True
+                break
+            if bot.y <= 13.0:
+                break  # safety net: feet fully past the known wall row
 
-        # We should have some blocked moves if there are walls
-        # Or all moves should succeed if no walls
-        # Either is valid - key is that collision is being checked
-        if blocked_count > 0:
-            passed_tests += 1
-            issues.append(f"Wall collision: {blocked_count}/{move_count} moves blocked")
-        else:
-            # No walls encountered - this is OK, just means open terrain
-            passed_tests += 1
+        if not hit_wall:
+            issues.append(
+                f"Expected feet to be blocked by the wall at row 17, but "
+                f"reached ({bot.x:.1f}, {bot.y:.1f}) unobstructed")
+        elif bot.y < 15.0:
+            issues.append(
+                f"Walked through the wall: stopped at y={bot.y:.1f} "
+                f"(wall row 17 = feet-blocked at y>=15)")
 
-        # Test 3: Verify _is_position_blocked is being called
-        total_tests += 1
-        # This test ensures the collision check method exists and works
-        try:
-            test_blocked = bot._is_position_blocked(bot.x, bot.y, 0, 0)
-            passed_tests += 1
-        except Exception as e:
-            issues.append(f"Collision check error: {e}")
-
-        passed = passed_tests == total_tests
+        passed = floor_ok and hit_wall and bot.y >= 15.0
 
         return TestResult(
             name="collision_detection",
             passed=passed,
             duration=time.time() - start,
-            details=f"Passed {passed_tests}/{total_tests} collision tests. Position: ({bot.x:.1f}, {bot.y:.1f})",
-            issues=issues if not passed else []
+            details=(f"floor_move={floor_ok} hit_wall={hit_wall} "
+                     f"final=({bot.x:.1f}, {bot.y:.1f})"),
+            issues=issues
         )
 
     @staticmethod
@@ -326,7 +327,7 @@ class TestScenarios:
 
         # Test that swimming state can be checked without error
         try:
-            water_check = bot._check_water_at_position(bot.x, bot.y)
+            water_check = bot._check_water_at_position(bot.x + 1.0, bot.y + 2.5)
             check_works = True
         except Exception as e:
             check_works = False
@@ -403,30 +404,50 @@ class TestScenarios:
 
     @staticmethod
     def test_chat_roundtrip(bot: GameBot) -> TestResult:
-        """Test that sending chat reflects locally.
+        """Test that a chat message actually reaches the server and gets relayed.
 
-        The server never echoes your own message back to you (toall skips the
-        sender; CURCHAT is not returned to the setter), so a single bot verifies
-        the *local* roundtrip: after say(), our own player's chat bubble is set.
+        A previous version of this test only asserted on
+        client.player.chat, which client.say() sets *optimistically* before
+        the packet is even written to the socket (the server never echoes
+        your own message back to you - toall skips the sender - so that
+        local field proves nothing about the network round trip and the
+        test passed even with a completely broken connection). Verify the
+        real server-relay path with a second, disposable connection that
+        should see the message via PLO_TOALL/on_chat.
         """
         start = time.time()
-
+        issues = []
+        success = False
         test_msg = f"Test_{int(time.time())}"
-        sent = bot.say(test_msg)
-        bot.update(0.2)
-        local_chat = bot.client.player.chat
-        success = sent and (test_msg in local_chat)
 
-        if not success:
-            bot._add_issue("LOW", "chat",
-                           f"Local chat not reflected: sent={test_msg!r} bubble={local_chat!r}")
+        listener = GameBot(f"{bot.name}_chatlistener", bot.host, bot.port, bot.password)
+        try:
+            if not listener.connect(timeout=8.0):
+                issues.extend(listener.get_issues())
+            else:
+                listener.chat_received.clear()
+                sent = bot.say(test_msg)
+
+                deadline = time.time() + 5.0
+                while time.time() < deadline and not success:
+                    listener.update(0.1)
+                    bot.update(0.1)
+                    success = bool(sent) and any(
+                        test_msg in msg for _, msg, _ in listener.chat_received)
+
+                if not success:
+                    issues.append(
+                        f"Chat message not relayed to a second connection: "
+                        f"sent={sent} msg={test_msg!r} received={listener.chat_received!r}")
+        finally:
+            listener.disconnect()
 
         return TestResult(
             name="chat_roundtrip",
             passed=success,
             duration=time.time() - start,
-            details=f"Message: {test_msg}; bubble: {local_chat!r}",
-            issues=bot.get_issues()
+            details=f"Message: {test_msg}; relayed={success}",
+            issues=issues
         )
 
     # ========== Item Tests ==========

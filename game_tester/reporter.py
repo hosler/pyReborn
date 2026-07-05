@@ -62,22 +62,46 @@ class TestReporter:
         """Set test configuration for report."""
         self.config.update(kwargs)
 
+    @staticmethod
+    def _normalize_issue(issue) -> Issue:
+        """Coerce a raw string issue into an Issue object.
+
+        Test scenarios (e.g. game_tester/test_scenarios.py) commonly append
+        plain strings to a TestResult's issues list. Normalizing here, once,
+        lets to_dict()/save_html() stay strict (issue.severity/.description)
+        instead of each serializer needing its own isinstance(str) branch -
+        previously that branch was missing from to_dict()/save_html(), so
+        the first failing test whose issues list contained a plain string
+        (e.g. collision_detection before this fix) crashed report generation
+        with AttributeError.
+        """
+        if isinstance(issue, Issue):
+            return issue
+        return Issue(
+            timestamp=time.time(),
+            severity="LOW",
+            category="general",
+            description=str(issue),
+        )
+
     def add_result(self, name: str, passed: bool, duration: float,
                    details: str = "", issues: List[Issue] = None,
                    screenshot: bytes = None):
         """Add a test result."""
+        normalized = [self._normalize_issue(i) for i in (issues or [])]
+
         self.results.append(TestResult(
             name=name,
             passed=passed,
             duration=duration,
             details=details,
-            issues=issues or [],
+            issues=normalized,
             screenshot=screenshot
         ))
 
         # Also track issues separately
-        if issues:
-            self.issues.extend(issues)
+        if normalized:
+            self.issues.extend(normalized)
 
     def add_issue(self, severity: str, description: str,
                   context: Dict[str, Any] = None, category: str = "general",

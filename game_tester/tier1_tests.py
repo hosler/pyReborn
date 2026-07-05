@@ -1,7 +1,7 @@
 """
 tier1_tests - Board modify / large file protocol-parity test scenarios.
 
-Exercises the pyReborn Tier 1 additions (see the opengraal2 protocol-parity
+Exercises the pyReborn Tier 1 additions (see the openreborn2 protocol-parity
 audit):
   - PLI_BOARDMODIFY / PLO_BOARDMODIFY round-trip between two bots
   - a >32000 byte file download via PLO_LARGEFILESTART/SIZE/...FILE.../END,

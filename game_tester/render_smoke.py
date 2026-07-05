@@ -26,6 +26,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import sys
 import time
 import traceback
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -192,6 +193,77 @@ def _t1d(game, c1, c2):
     tiles = game._decode_board_layer_tiles(raw)
     assert len(tiles) == 4096
     assert all(t == 0 for t in tiles)
+
+
+# Real Bomber Arena (bomber.eevul.net) gani fixtures, captured live and
+# checked into cache/bomber_arena/assets - used below to prove the PARAMn
+# frame-token substitution and embedded-SCRIPT fallback against the actual
+# server assets rather than a synthetic stand-in.
+_BOMBER_ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "cache", "bomber_arena", "assets")
+
+
+@check("tier1e_bomber_arena_bomb_param_substitution")
+def _t1e(game, c1, c2):
+    # eye_bomber_bomb.gani (Bomber Arena's DrawBomb()) picks its body/decal
+    # sprite via "PARAM1"/"PARAM3" frame tokens instead of literal sprite ids,
+    # and its decal image via a SPRITE whose layer is the literal "PARAM2"
+    # (see gani.py's _parse_frame_line and render_entities.py's
+    # _render_animated_entity). Without support for either, the bomb's body
+    # and decal silently vanish and only the fuse spark (a literal sprite id)
+    # draws.
+    path = os.path.join(_BOMBER_ASSETS, "eye_bomber_bomb.gani")
+    gani = game.gani_parser.parse_file(Path(path))
+    assert gani is not None, "eye_bomber_bomb.gani should parse"
+    assert gani.has_script is False, "this gani has no embedded SCRIPT block"
+
+    frame = gani.get_frame(0, 0)
+    assert frame is not None
+    token_ids = {sid for sid, _, _ in frame.sprites if isinstance(sid, str)}
+    assert token_ids == {"PARAM1", "PARAM3"}, f"expected PARAM1/PARAM3 tokens, got {token_ids}"
+
+    from pyreborn.gani import AnimationState
+    anim = AnimationState(game.gani_parser)
+    anim.gani = gani
+    anim.direction = 0
+    anim.frame = 0
+
+    # No params and no DEFAULTPARAMn happens not to apply here (both DEFAULTs
+    # exist), so resolution should fall back to them rather than raising.
+    game._render_animated_entity(0, 0, anim, {})  # must not raise
+
+    # A live showani call's params (per arenaGUI.gs1's DrawBomb) should
+    # resolve PARAM1 (body sprite 50-63), PARAM2 (decal image), and PARAM3
+    # (decal sprite 100-120) - i.e. the actual bomb + decal draw, not just
+    # the fuse.
+    equip = game._showani_param_equip([56.0, "eye_bombsprites-dec1.png", 112.0])
+    assert equip == {
+        'param1': 56.0, 'param2': "eye_bombsprites-dec1.png",
+        'param2_image': "eye_bombsprites-dec1.png", 'param3': 112.0,
+    }
+    game._render_animated_entity(0, 0, anim, equip)  # must not raise
+
+
+@check("tier1f_bomber_arena_explosion_script_fallback")
+def _t1f(game, c1, c2):
+    # eye_bomber_expl.gani's own ANI frames are a near-blank placeholder -
+    # the real visual is an embedded SCRIPT block (light/particle showimg
+    # calls) this engine doesn't execute. _render_showani_rec must detect
+    # that (has_script) and substitute a synthesized burst rather than
+    # drawing nothing.
+    path = os.path.join(_BOMBER_ASSETS, "eye_bomber_expl.gani")
+    gani = game.gani_parser.parse_file(Path(path))
+    assert gani is not None, "eye_bomber_expl.gani should parse"
+    assert gani.has_script is True, "expected the embedded SCRIPT block to be flagged"
+
+    rec = {'x': 21.0, 'y': 21.0, 'gani': gani.name, 'params': [1.2, 0.0]}
+    from pyreborn.gani import AnimationState
+    rec['_anim'] = anim = AnimationState(game.gani_parser)
+    anim.gani = gani
+    game._render_scripted_gani_fallback(rec)  # must not raise while 'on' > 0
+
+    rec['params'] = [0.0, 0.0]
+    game._render_scripted_gani_fallback(rec)  # must not raise once faded out
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +439,12 @@ def _t3d(game, c1, c2):
 
 @check("tier3e_showpoly_renders")
 def _t3e(game, c1, c2):
-    game._render_npc_polys({0: [1, 1, 5, 1, 5, 5, 1, 5]})  # must not raise
-    game._render_npc_polys({0: [1, 1]})  # too few points - must be skipped, not raise
+    # showpoly/showpoly2 are unified into the same imgs layer table as
+    # showimg/showani/showtext (gs1_client.py), so they render through
+    # _render_npc_layers -> _render_showpoly_rec like any other layer.
+    game._render_npc_layers({0: {'poly': [1, 1, 5, 1, 5, 5, 1, 5], 'vis': 4}}, over=True)  # must not raise
+    game._render_npc_layers({0: {'poly': [1, 1], 'vis': 4}}, over=True)  # too few points - must be skipped, not raise
+    game._render_npc_layers({0: {'poly': [1, 1, 0, 5, 1, 0, 5, 5, 0, 1, 5, 0], 'poly_dim': 3, 'vis': 4}}, over=True)  # dim-3 (showpoly2) - must not raise
 
 
 @check("tier3f_swim_enter_leave_hooks")
@@ -388,6 +464,40 @@ def _t3f(game, c1, c2):
         assert game.current_anim_name == "idle"
     finally:
         game._check_water_at_position = orig
+
+
+@check("tier3g_showpoly_dispatch_recolors_and_orders_like_other_layers")
+def _t3g(game, c1, c2):
+    # End-to-end: a real GS1 script's showpoly/showpoly2 + changeimgcolors +
+    # changeimgvis land on the NPC's imgs table exactly like showimg/showani/
+    # showtext (gs1_client.py's _dispatch), so the renderer's vis>=2-over-
+    # player split and per-layer colour tinting both apply to polygons too.
+    npc_id = 9001
+    game.client.npcs[npc_id] = {'x': 30.0, 'y': 30.0, 'nickname': 'polytest'}
+    try:
+        game.gs1.load_script(f"npc_{npc_id}", """
+            if (playerenters) {
+              showpoly 0,{30,30,34,30,34,34,30,34};
+              changeimgcolors 0,1,0,0,0.5;
+              changeimgvis 0,1;
+              showpoly2 1,{31,31,0,33,31,0,33,33,0};
+            }
+        """, npc_id=npc_id)
+        game.gs1.trigger_npc_event(npc_id, 'playerenters')
+
+        npc = game.client.npcs[npc_id]
+        imgs = npc.get('imgs') or {}
+        assert 0 in imgs and 1 in imgs, f"expected layers 0 and 1, got {sorted(imgs)}"
+        assert imgs[0]['poly'] == [30, 30, 34, 30, 34, 34, 30, 34]
+        assert imgs[0]['colors'] == (1, 0, 0, 0.5), imgs[0]['colors']
+        assert imgs[0]['vis'] == 1, "changeimgvis must update the shared layer record"
+        assert imgs[1].get('poly_dim') == 3, "showpoly2 must record a 3-wide stride"
+
+        game._render_npc(30.0, 30.0, npc, npc_id)  # must not raise
+    finally:
+        del game.client.npcs[npc_id]
+        game.gs1._progs.pop(f"npc_{npc_id}", None)
+        game.gs1.scripts.pop(f"npc_{npc_id}", None)
 
 
 # ---------------------------------------------------------------------------

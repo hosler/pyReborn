@@ -85,16 +85,35 @@ class BugDetector:
 
     @staticmethod
     def check_out_of_bounds(client, min_val: float = 0.0,
-                            max_val: float = 64.0) -> CheckResult:
-        """Check if player is out of level bounds."""
-        x, y = client.x, client.y
+                            max_val: Optional[float] = None) -> CheckResult:
+        """Check if player is out of level bounds.
 
-        if x < min_val or x > max_val or y < min_val or y > max_val:
+        A standalone level is always local coordinates 0-64. On a GMAP,
+        though, world coordinates legitimately span the whole stitched grid
+        (gmap_width/gmap_height segments of 64 tiles each) - a hardcoded 0-64
+        max here flagged every player past the first segment as "out of
+        bounds". Only use client.in_gmap_segment (an actual grid segment, not
+        e.g. a standalone house/cave reached via a door while a gmap happens
+        to be loaded - see Client.in_gmap_segment) to size the check; an
+        explicit max_val always wins.
+        """
+        x, y = client.x, client.y
+        x_min = y_min = min_val
+
+        if max_val is not None:
+            x_max = y_max = max_val
+        elif getattr(client, "in_gmap_segment", False):
+            x_max = client.gmap_width * 64
+            y_max = client.gmap_height * 64
+        else:
+            x_max = y_max = 64.0
+
+        if x < x_min or x > x_max or y < y_min or y > y_max:
             return CheckResult(
                 passed=False,
                 message=f"Player out of bounds: ({x:.1f}, {y:.1f})",
                 severity="HIGH",
-                details={"position": (x, y), "bounds": (min_val, max_val)}
+                details={"position": (x, y), "bounds": (x_min, x_max, y_min, y_max)}
             )
 
         return CheckResult(passed=True, message="Position in bounds")

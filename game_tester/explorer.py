@@ -307,9 +307,16 @@ class ExplorerBot:
         if not self.bot.connected:
             self._add_anomaly("HIGH", "connection", "Unexpected disconnect")
 
-        # Check for invalid tile data
+        # Check for invalid tile data. bot.tiles/bot.x/bot.y are always the
+        # CURRENT LEVEL's 64x64 board and WORLD coordinates respectively (see
+        # GameBot._get_tile_at) - on a GMAP, world x/y legitimately exceed 64,
+        # so index with local (%64) coords like the real tile lookup does,
+        # not raw world coords (which used to alias into unrelated tiles or
+        # fall outside the bounds check entirely on segments past the first).
         if self.bot.tiles:
-            tile_idx = int(self.bot.y) * 64 + int(self.bot.x)
+            local_x = int(self.bot.x) % 64
+            local_y = int(self.bot.y) % 64
+            tile_idx = local_y * 64 + local_x
             if 0 <= tile_idx < len(self.bot.tiles):
                 tile = self.bot.tiles[tile_idx]
                 if tile < 0 or tile > 65535:

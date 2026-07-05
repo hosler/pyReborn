@@ -14,6 +14,7 @@ Key parity features:
 - Same movement step size (0.25 tiles)
 """
 
+import math
 import sys
 import time
 from pathlib import Path
@@ -336,44 +337,60 @@ class GameBot:
         if not tiles:
             return 0  # Default to walkable
 
-        # Convert to tile indices
-        tx = int(x) % 64
-        ty = int(y) % 64
-
-        # Bounds check
+        # Convert to tile indices. floor() (not int()) so negatives don't
+        # truncate toward 0, and bounds-check BEFORE any %64: off-level
+        # coords on a single level must read as out-of-world, not wrap
+        # around to the far side of the board (int(-1.5)%64 == 63 used to
+        # let bots walk off the west edge and sample east-side tiles).
+        tx = math.floor(x)
+        ty = math.floor(y)
+        if self.client.is_gmap:
+            tx %= 64
+            ty %= 64
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
-            return 0
+            return -1  # out of world: blocking, not water
 
         tile_idx = ty * 64 + tx
-        if tile_idx < 0 or tile_idx >= len(tiles):
-            return 0
+        if tile_idx >= len(tiles):
+            return -1
 
         return tiles[tile_idx]
 
     def _is_position_blocked(self, x: float, y: float, dx: int = 0, dy: int = 0) -> bool:
         """Check if a position is blocked by tiles.
 
-        Matches pygame_game.py:_is_position_blocked() for parity.
+        (x, y) here is already the full-tile-ahead destination (see move()'s
+        parity note), so this probes the LEADING EDGE of the sprite's
+        footprint in the direction of travel, not a fixed point. Duplicated
+        inline rather than importing pyreborn/game/collision.py's box-based
+        _is_position_blocked (left/right 0.4-1.6, top/bottom 2.0-3.0 from the
+        sprite's top-left) to avoid a pygame-dependent import in the headless
+        bot; the sprite is 2 tiles wide x 3 tall, top-left anchored.
 
-        Player world position (x, y) is TOP-LEFT of sprite.
-        Collision happens at feet: +1 tile right, +3 tiles down from position.
+        The probed points are the leading edge of collision.py's FEET box
+        {x+0.4..x+1.6} x {y+2.0..y+3.0} (collision is feet-only, classic
+        style: the head/torso may overlap walls). A single feet-center
+        point (the previous version) missed walls that clip only one side
+        of the box, and probing the head row for upward moves blocked the
+        bot where the real client walks.
         """
+        box_l, box_r, box_cx = 0.4, 1.6, 1.0
+        box_t, box_b = 2.0, 3.0
         check_offsets = []
 
-        # Check at center (feet position) - same as pygame
-        if dx < 0:  # Moving left
-            check_offsets.append((self._feet_offset_x, self._feet_offset_y))
-        elif dx > 0:  # Moving right
-            check_offsets.append((self._feet_offset_x, self._feet_offset_y))
+        if dx < 0:      # Moving left: leading edge is the box's left column
+            check_offsets += [(box_l, box_t), (box_l, box_b)]
+        elif dx > 0:    # Moving right: the box's right column
+            check_offsets += [(box_r, box_t), (box_r, box_b)]
 
-        if dy < 0:  # Moving up
-            check_offsets.append((self._feet_offset_x, self._feet_offset_y))
-        elif dy > 0:  # Moving down
-            check_offsets.append((self._feet_offset_x, self._feet_offset_y))
+        if dy < 0:      # Moving up: leading edge is the box's top row
+            check_offsets += [(box_l, box_t), (box_cx, box_t), (box_r, box_t)]
+        elif dy > 0:    # Moving down: the box's bottom (feet) row
+            check_offsets += [(box_l, box_b), (box_cx, box_b), (box_r, box_b)]
 
-        # If no direction, just check feet position (standing still)
+        # If no direction, just check the feet center (standing still)
         if not check_offsets:
-            check_offsets = [(self._feet_offset_x, self._feet_offset_y)]
+            check_offsets = [(box_cx, box_b)]
 
         for ox, oy in check_offsets:
             check_x = x + ox
@@ -392,9 +409,11 @@ class GameBot:
     def _update_swimming_state(self):
         """Update swimming state based on current position.
 
-        Matches pygame_game.py:_update_swimming_state() for parity.
+        Matches pygame_game.py:_update_swimming_state() for parity: sample the
+        player's FEET (sprite top-left + (1.0, 2.5)), not the top-left corner.
         """
-        self.is_swimming = self._check_water_at_position(self.client.x, self.client.y)
+        self.is_swimming = self._check_water_at_position(self.client.x + 1.0,
+                                                         self.client.y + 2.5)
 
     def check_link_collision(self) -> Optional[dict]:
         """Check if bot is standing on a door/warp link.
