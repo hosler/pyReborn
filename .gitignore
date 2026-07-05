@@ -187,11 +187,11 @@ test_*.py
 analyze_*.py
 trace_*.py
 capture_*.py
-CLAUDE.md
+# the scratch pattern must not swallow the real test tree
+!tests/**/test_*.py
 
-# Old examples/tests/docs (use old API)
+# Old examples/docs (use old API); tests/ is live again (unit + server scripts)
 examples/
-tests/
 docs/
 API_QUICKSTART.md
 baseline_results.json

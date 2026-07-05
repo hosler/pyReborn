@@ -1,82 +1,25 @@
-# PyReborn TODO - Next Development Session
+# PyReborn TODO
 
-## Recently Completed
-- [x] Fixed sprite positioning (top-left, no offsets)
-- [x] Fixed other player visibility (PLO_OTHERPLPROPS handling)
-- [x] Fixed Y position jumping (added props 78/79/80 to parse_other_player)
-- [x] Fixed props 75/76 parsing (OSTYPE/TEXTCODEPAGE, not X2/Y2)
-- [x] Added position interpolation for smooth other player movement
-- [x] Increased movement speed to match legacy client
+Most of the items formerly tracked here (other-player gani/sword/shield rendering,
+sword hit detection, damage/hurt/death, bombs/explosions, arrows, NPC movement/anim,
+sign reading + dialogue boxes, trigger actions, audio, minimap, weapon switching,
+animated tiles, water/lava, item pickup/chest/inventory, level links/warping,
+config file, unit tests) are **done** — verified against current `pyreborn/`,
+`pyreborn/game/`, `tests/unit/`, and `pygserver/pygserver/` source.
 
-## High Priority
+For current implementation status, known gaps, and the roadmap, see
+[`../FEATURE_GAPS.md`](../FEATURE_GAPS.md) at the repo root — it is kept up to date
+and covers pyReborn, pygserver, and reborn-protocol together.
 
-### Other Player Rendering
-- [ ] Verify other player gani animations display correctly
-- [ ] Verify sword/shield rendering on other players
-- [ ] Verify direction changes on other players
-- [ ] Test multiple other players simultaneously
+## Still open (pyReborn-specific, per FEATURE_GAPS.md)
 
-### Combat System
-- [ ] Sword hit detection
-- [ ] Damage numbers/effects
-- [ ] Player hurt animations
-- [ ] Death/respawn handling
-- [ ] Bombs and explosions
-- [ ] Arrows/projectiles
-
-### NPC System
-- [ ] NPC movement/pathfinding display
-- [ ] NPC animation states
-- [ ] Sign reading (NPC interaction)
-- [ ] NPC dialogue boxes
-- [ ] Trigger actions
-
-## Medium Priority
-
-### Audio
-- [ ] Sound effect playback
-- [ ] Music/ambient sounds
-- [ ] Volume controls
-
-### UI Improvements
-- [ ] Chat message history display
-- [ ] Player list/who's online
-- [ ] Health/rupee/item counters
-- [ ] Minimap for GMAP
-
-### Items & Inventory
-- [ ] Item pickup animations
-- [ ] Chest opening
-- [ ] Inventory management
-- [ ] Weapon switching
-
-### Level Features
-- [ ] Level links (door warping)
-- [ ] Level signs
-- [ ] Animated tiles
-- [ ] Water/lava effects
-
-## Low Priority
-
-### Polish
-- [ ] Loading screen improvements
-- [ ] Error handling/reconnection
-- [ ] Configuration file for settings
-- [ ] Key rebinding
-
-### Protocol
-- [ ] Full prop coverage audit in all parse functions
-- [ ] Packet logging/replay for debugging
-- [ ] Protocol version negotiation
-
-### Testing
-- [ ] Unit tests for packet parsing
-- [ ] Integration tests with mock server
-- [ ] Visual regression tests
-
-## Known Issues
-- Movement uses half-tile precision (0.5 tiles) - may look slightly choppy
-- GMAP other players assume same sub-level if level prop not set
+- Remaining GS1 commands: `changeimgpart`, `showpoly`/`hidepoly`, `drawoverplayer`/`drawunderplayer`.
+- `pyreborn/listserver.py` defines its own local `PacketReader` instead of importing
+  the shared one from `reborn-protocol`.
+- No verified `pics1.png` tile-position table for ground-item sprites
+  (`pyreborn/game/render_objects.py`) — some item drops render with placeholder art.
+- Polish: key rebinding.
+- GS2 bytecode execution (no VM) — cross-project gap, see FEATURE_GAPS.md.
 
 ## Notes for Next Session
 
