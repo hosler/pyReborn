@@ -666,6 +666,11 @@ class TestScenarios:
                                     description="All chests already opened (no reset)", context={}))
             else:
                 rupees_before = cb.client.player.rupees
+                # Walk up to the chest before opening it — the server only
+                # grants loot to a player standing next to the chest (a chest
+                # is opened in melee range, not from across the level).
+                cb.walk_to(target[0], target[1], timeout=8.0)
+                cb.update(0.5)
                 cb.client.open_chest(target[0], target[1])
                 cb.update(1.0)
                 if not cb.client.chests.get(target, False):
