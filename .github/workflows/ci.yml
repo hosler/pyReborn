@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "43 5 * * *" # nightly: catches reborn-protocol/pygserver-only pushes
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      # siblings are not on PyPI; install by path. pygserver is needed at
+      # runtime by conftest.py's server fixture (integration tests spawn it).
+      - uses: actions/checkout@v4
+        with:
+          repository: hosler/reborn-protocol
+          path: reborn-protocol
+      - uses: actions/checkout@v4
+        with:
+          repository: hosler/pygserver
+          path: pygserver
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ./reborn-protocol -e ./pygserver -e ".[dev]"
+      # unit + integration; the pygserver fixture self-starts from
+      # PYGSERVER_DIR (conftest falls back to the sibling ../pygserver, which
+      # doesn't exist in the Actions workspace layout)
+      - run: PYGSERVER_DIR="$GITHUB_WORKSPACE/pygserver" pytest -q

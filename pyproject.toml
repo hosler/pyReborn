@@ -95,7 +95,11 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q"
+addopts = "-ra -q -m \"not live\""
 testpaths = [
     "tests",
+]
+markers = [
+    "integration: starts a throwaway pygserver (see conftest.py) and exercises it end-to-end via game_tester; no external server needed, but slower than unit tests.",
+    "live: requires a hand-started server on a hardcoded host:port; opt-in only, not run by default (run with `-m live`).",
 ]

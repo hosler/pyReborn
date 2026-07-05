@@ -9,12 +9,17 @@ os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
 import pygame
+import pytest
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT
+
+# Standalone script against a hand-started server on a hardcoded host:port
+# (see run_tests() below) - opt-in only, not run by bare `pytest`.
+pytestmark = pytest.mark.live
 
 
 def take_screenshot(screen, filename: str) -> Image.Image:
