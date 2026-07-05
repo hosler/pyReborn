@@ -136,6 +136,60 @@ CASES: List[GS1Case] = [
     GS1Case("color_npc_name", "setcharprop #C0,blue (name -> index 10)",
             "setcharprop #C0,blue;", "npc", "color0",
             note="'blue' is ClassicColors index 10."),
+    # --- #C0-#C7 READ side: a #C value is the classic colour NAME ------------
+    # C++ handleCharacterBasedMessageCode (GS1MessageCodes.cpp:347) + mc_C:
+    # the value is getClassicColorName(slot) — a NAME, not the raw index and
+    # not "". WHICH character is context-sensitive: #Cn(-1) = the source NPC,
+    # #Cn(0) = the acting player, and bare #Cn = the CURRENT SOURCE — inside a
+    # setcharprop/setplayerprop value arg that is the command's own pushed
+    # target (processBuiltInCommand pushSource, GS1Commands.cpp:430-453),
+    # elsewhere it falls back to the initiating player. gs1_host used to
+    # return "" for every #C read, so the real-corpus copy idiom
+    # `setcharprop #C0,#C0` zeroed the slot; fixed, so these must MATCH.
+    GS1Case("color_copy_idiom", "setcharprop #C0,#C0 (NPC self round-trip)",
+            "setplayerprop #C0,green;\nsetcharprop #C0,brown;\n"
+            "setcharprop #C0,#C0;", "npc", "color0",
+            note="bare #C0 inside setcharprop reads the NPC's OWN slot "
+                 "('brown' -> 12, NOT the player's green=7): setcharprop "
+                 "pushes the NPC as current source before evaluating its "
+                 "args. The old read-side bug zeroed the slot instead."),
+    GS1Case("color_bare_playerprop", "setplayerprop #C3,#C1 (player source)",
+            "setplayerprop #C1,darkred;\nsetplayerprop #C3,#C1;",
+            "player", "color3",
+            note="bare #C1 inside setplayerprop reads the acting PLAYER's "
+                 "slot ('darkred' -> 5): the symmetric pushed source."),
+    GS1Case("color_bare_message", "message #C2 (initiator-biased bare read)",
+            "setplayerprop #C2,cynober;\nmessage #C2;", "npc", "message",
+            note="outside setcharprop/setplayerprop the source stack is "
+                 "empty, so bare #C2 resolves to the INITIATING player "
+                 "(getCurrentSource(true)): 'cynober'."),
+    GS1Case("color_read_npc_self", "setcharprop #C1,#C0(-1) (NPC self slot)",
+            "setcharprop #C0,pink;\nsetcharprop #C1,#C0(-1);", "npc", "color1",
+            note="#C0(-1) reads the source NPC's own slot 0: 'pink' -> 3."),
+    GS1Case("color_read_player0", "setplayerprop #C2,#C1(0) (player self slot)",
+            "setplayerprop #C1,red;\nsetplayerprop #C2,#C1(0);", "player", "color2",
+            note="#C1(0) reads the acting player's slot 1: 'red' -> 4."),
+    # --- hurt: the argument is HALF-hearts -----------------------------------
+    # C++ fn_hurt (GS1Commands.cpp:1346) floors the arg and hits the player
+    # for that many half-hearts (on the oracle via PLO_HURTPLAYER power, which
+    # the client applies as power/2 hearts). gs1_host used to subtract N FULL
+    # hearts; fixed (_c_hurt), so this must MATCH: 3 - 1*0.5 = 2.5.
+    #
+    # Two cases because on gs2emu `playerhearts = 3; hurt 1;` in ONE event is
+    # order-inverted on the wire: fn_hurt sends PLO_HURTPLAYER inline but the
+    # hearts prop is flushed AFTER the event, so the client applies the hit
+    # first and the flush overwrites it (observed live: '3'). Setting hearts
+    # in the PREVIOUS case's event gives both engines the same deterministic
+    # starting value. (pygserver's combat apply_damage ~1s invincibility
+    # window is NOT in play: the GS1 hurt path is a direct hearts write on
+    # both engines — the C++ one via the client, which has no i-frames.)
+    GS1Case("hearts_reset", "playerhearts = N (re-arm for hurt case)",
+            "playerhearts = 3;", "player", "hearts",
+            note="deterministic starting hearts for hurt_halfhearts."),
+    GS1Case("hurt_halfhearts", "hurt N (N is HALF-hearts)",
+            "hurt 1;", "player", "hearts",
+            note="fn_hurt hits for N half-hearts: 3 - 0.5 = 2.5 (the old bug "
+                 "subtracted N full hearts -> 2)."),
 ]
 
 
@@ -212,17 +266,19 @@ def _current_npc(bot: GameBot) -> Optional[dict]:
 def _observe(bot: GameBot, case: GS1Case) -> str:
     p = bot.client.player
     if case.kind == "player":
-        if case.field == "color0":
+        if case.field.startswith("color"):
+            slot = int(case.field[5:])
             cols = getattr(p, "colors", None) or []
-            return _fmt(cols[0]) if cols else "<none>"
+            return _fmt(cols[slot]) if slot < len(cols) else "<none>"
         return _fmt(getattr(p, case.field, None))
     if case.kind == "npc":
         npc = _current_npc(bot)
         if npc is None:
             return "<no-npc>"
-        if case.field == "color0":
+        if case.field.startswith("color"):
+            slot = int(case.field[5:])
             cols = npc.get("colors") or []
-            return _fmt(cols[0]) if cols else "<none>"
+            return _fmt(cols[slot]) if slot < len(cols) else "<none>"
         return _fmt(npc.get(case.field))
     if case.kind == "warp":
         return _basename(bot.client._current_level_name)
