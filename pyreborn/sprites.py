@@ -97,6 +97,9 @@ class SpriteManager:
         # colors-tuple) so a re-render doesn't re-run the pixel remap.
         self._recolor_sheet_cache: Dict[Tuple[str, Tuple[int, ...]], Optional[pygame.Surface]] = {}
         self._recolor_sprite_cache: Dict[tuple, Optional[pygame.Surface]] = {}
+        # normalized-colors-tuple cache for get_sprite_recolored/recolor_body,
+        # keyed by id(colors) - see _colors_key().
+        self._colors_key_cache: Dict[int, Tuple[list, Tuple[int, ...]]] = {}
 
         # Subdirectories to search within each path
         self.subdirs = ['', 'bodies', 'heads', 'swords', 'shields', 'hats',
@@ -241,6 +244,28 @@ class SpriteManager:
         for name in names:
             self.load_sheet(name)
 
+    def _colors_key(self, colors) -> Tuple[int, ...]:
+        """Normalize a >=5-value colors sequence into the int tuple used as a
+        recolor cache key, memoized by the colors list's identity. The local
+        player's colors sequence (player.colors) is a live attribute re-read
+        every frame by _render_animated_entity, but player.py replaces it
+        wholesale (`self.colors = props['colors']`) rather than mutating it in
+        place, so the same unchanged list is passed in every frame the colors
+        prop hasn't changed - rebuilding `tuple(int(c) for c in colors[:5])`
+        each time is wasted work. Guarded against id() reuse after garbage
+        collection by verifying the cached entry is still the same object
+        (and, incidentally, keeping a reference to it so the id can't be
+        recycled by an unrelated list while the entry is live)."""
+        cache = self._colors_key_cache
+        entry = cache.get(id(colors))
+        if entry is not None and entry[0] is colors:
+            return entry[1]
+        key = tuple(int(c) for c in colors[:5])
+        if len(cache) > 300:
+            cache.clear()
+        cache[id(colors)] = (colors, key)
+        return key
+
     def recolor_body(self, sheet_name: str, colors) -> Optional[pygame.Surface]:
         """Return a palette-swapped copy of `sheet_name` for a 5-value
         PLPROP_COLORS sequence (see the module-level Tier 2a notes above).
@@ -249,7 +274,7 @@ class SpriteManager:
         policy as load_sheet)."""
         if not colors or len(colors) < 5:
             return None
-        key = (sheet_name, tuple(int(c) for c in colors[:5]))
+        key = (sheet_name, self._colors_key(colors))
         if key in self._recolor_sheet_cache:
             return self._recolor_sheet_cache[key]
 
@@ -277,7 +302,7 @@ class SpriteManager:
         if not colors or len(colors) < 5:
             return self.get_sprite(sheet_name, x, y, width, height)
 
-        cache_key = (sheet_name, tuple(int(c) for c in colors[:5]), x, y, width, height)
+        cache_key = (sheet_name, self._colors_key(colors), x, y, width, height)
         if cache_key in self._recolor_sprite_cache:
             return self._recolor_sprite_cache[cache_key]
 
@@ -304,6 +329,7 @@ class SpriteManager:
         self.sprite_cache.clear()
         self._recolor_sheet_cache.clear()
         self._recolor_sprite_cache.clear()
+        self._colors_key_cache.clear()
 
     def get_stats(self) -> Dict[str, int]:
         """Get cache statistics."""

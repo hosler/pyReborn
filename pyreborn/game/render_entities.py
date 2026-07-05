@@ -55,17 +55,28 @@ _BADDY_DEFAULT_HEAD = "head19.png"
 class EntityRenderMixin:
     """Mixin providing the above methods for GameClient."""
 
-    def _entity_on_screen(self, px: float, py: float, margin: int = 96) -> bool:
+    def _entity_on_screen(self, px: float, py: float, margin: int = 96,
+                           screen_size: Optional[Tuple[int, int]] = None) -> bool:
         """True if a sprite at screen pixel (px, py) is near enough the canvas to
         be worth drawing. Levels can carry dozens of NPCs spread across 64x64;
         culling the off-screen ones skips their load_sheet/blit work entirely.
-        Bounds come from self.screen so it adapts to the zoom scene surface."""
-        w, h = self.screen.get_size()
+        Bounds come from self.screen so it adapts to the zoom scene surface.
+        `screen_size` lets a hot per-frame caller hoist self.screen.get_size()
+        out of a per-entity loop (see _render_entities, which calls this once
+        per entity at up to ~80 entities/frame); callers that don't pass it
+        (render_effects.py) still get it looked up here, unchanged."""
+        w, h = screen_size if screen_size is not None else self.screen.get_size()
         return -margin <= px <= w + margin and -margin <= py <= h + margin
 
     def _render_entities(self):
         """Render all entities (players, NPCs) sorted by Y position."""
         entities = []
+        # Computed once per frame (not per entity - see _entity_on_screen).
+        screen_size = self.screen.get_size()
+        # Nameplates placed this frame, so overlapping players/NPCs standing
+        # on/near the same tile stagger instead of drawing on top of each
+        # other (see _place_nameplate).
+        self._frame_nameplate_rects = []
 
         # Add local player. Draw it through the camera at its true render-frame
         # top-left (set by _sync_camera) — same transform every other entity
@@ -124,7 +135,7 @@ class EntityRenderMixin:
                     self.other_player_visual[pid] = (vx, vy)
 
                 opx, opy = self.camera.world_to_screen(vx, vy)
-                if self._entity_on_screen(opx, opy):
+                if self._entity_on_screen(opx, opy, screen_size=screen_size):
                     entities.append(('other', vy, opx, opy, pdata, pid))
 
         # Add NPCs - use world coords if available (for GMAP), else local
@@ -145,7 +156,7 @@ class EntityRenderMixin:
                     self.npc_visual[npc_id] = (vx, vy)
 
                 npx, npy = self.camera.world_to_screen(vx, vy)
-                if self._entity_on_screen(npx, npy):
+                if self._entity_on_screen(npx, npy, screen_size=screen_size):
                     entities.append(('npc', vy, npx, npy, npc, npc_id))
 
         # Add baddies (enemies). Their x/y are local to the current segment, so
@@ -163,7 +174,7 @@ class EntityRenderMixin:
                 continue
             wx, wy = bx + seg_off_x, by + seg_off_y
             sx, sy = self.camera.world_to_screen(wx, wy)
-            if self._entity_on_screen(sx, sy):
+            if self._entity_on_screen(sx, sy, screen_size=screen_size):
                 entities.append(('baddy', wy, sx, sy, baddy, bid))
 
         # Add horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
@@ -175,7 +186,7 @@ class EntityRenderMixin:
                 continue
             whx, why = hx + seg_off_x, hy + seg_off_y
             hsx, hsy = self.camera.world_to_screen(whx, why)
-            if self._entity_on_screen(hsx, hsy):
+            if self._entity_on_screen(hsx, hsy, screen_size=screen_size):
                 entities.append(('horse', why, hsx, hsy, horse, hkey))
 
         # Sort by Y for depth
@@ -302,6 +313,7 @@ class EntityRenderMixin:
             name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
             name_x = x - name_surf.get_width() // 2 + 16
             name_y = y + 48
+            name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
             shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
             self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
@@ -363,6 +375,31 @@ class EntityRenderMixin:
                 tile_x = obj_x + dx * TILE_SIZE
                 tile_y = obj_y + dy * TILE_SIZE
                 self.screen.blit(tile_surf, (tile_x, tile_y))
+    def _split_other_player_anim(self, player_anim: str) -> Tuple[str, List[str]]:
+        """Split a `setani ani,param1,param2` comma-joined string into
+        (name, params), memoized on the raw string. Other players' anim
+        string is static between server updates, so re-splitting it every
+        frame per remote player (the original inline code here) is wasted
+        work at any real player count; re-parse only when the raw string
+        actually changes."""
+        cache = getattr(self, '_other_anim_split_cache', None)
+        if cache is None:
+            cache = self._other_anim_split_cache = {}
+        result = cache.get(player_anim)
+        if result is None:
+            if ',' in player_anim:
+                parts = [p.strip() for p in player_anim.split(',')]
+                name = parts[0] or 'idle'
+                params = parts[1:]
+            else:
+                name = player_anim
+                params = []
+            result = (name, params)
+            if len(cache) > 300:
+                cache.clear()
+            cache[player_anim] = result
+        return result
+
     def _render_other_player(self, x: float, y: float, pdata: dict, pid: int):
         """Render another player."""
         # Get animation name - could be 'ani' or 'animation'. Tier 2d: a
@@ -370,11 +407,7 @@ class EntityRenderMixin:
         # onto the gani name here; split them off so param images can drive
         # ATTR1-5 layers (e.g. a scripted hat) instead of being discarded.
         player_anim = pdata.get('ani') or pdata.get('animation') or 'idle'
-        gani_params: List[str] = []
-        if ',' in player_anim:
-            parts = [p.strip() for p in player_anim.split(',')]
-            player_anim = parts[0] or 'idle'
-            gani_params = parts[1:]
+        player_anim, gani_params = self._split_other_player_anim(player_anim)
         # Get direction from sprite prop (lower 2 bits) or direction field
         direction = pdata.get('direction', 2)
         if 'sprite' in pdata:
@@ -421,10 +454,29 @@ class EntityRenderMixin:
             # Center name below player (player sprite is ~48 pixels tall)
             name_x = x - name_surf.get_width() // 2 + 16
             name_y = y + 48
+            name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
             # Add shadow for readability
             shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
             self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
+    def _place_nameplate(self, name_x: float, name_y: float,
+                          size: Tuple[int, int]) -> Tuple[float, float]:
+        """Stagger a nameplate vertically if it would overlap one already
+        placed this frame. Two players (or an NPC and a player) standing on
+        or near the same tile otherwise draw their nickname at the same
+        y-offset, producing garbled overlapping text; nudge each subsequent
+        overlapper straight down by one box-height until it clears. Reset
+        per-frame by _render_entities via self._frame_nameplate_rects."""
+        rects = getattr(self, '_frame_nameplate_rects', None)
+        if rects is None:
+            rects = self._frame_nameplate_rects = []
+        w, h = size
+        rect = pygame.Rect(int(name_x), int(name_y), int(w), int(h))
+        while any(rect.colliderect(r) for r in rects):
+            rect.y += h + 2
+        rects.append(rect)
+        return rect.x, rect.y
+
     def _render_text_cached(self, font: pygame.font.Font, text: str,
                              color: Tuple[int, int, int]) -> pygame.Surface:
         """Render (and cache) a text surface. Nicknames, speech bubbles and
@@ -571,6 +623,25 @@ class EntityRenderMixin:
                 vals.append(0)
         return vals if have_any else None
 
+    def _split_npc_gani(self, gani_name: str) -> Tuple[str, List[str]]:
+        """Split a `setcharani/setani ani,param1,...` comma-joined string into
+        (name, params), memoized on the raw string - same rationale as
+        _split_other_player_anim, mirrored here since a level can carry
+        dozens of NPCs re-splitting the same static string every frame."""
+        cache = getattr(self, '_npc_gani_split_cache', None)
+        if cache is None:
+            cache = self._npc_gani_split_cache = {}
+        result = cache.get(gani_name)
+        if result is None:
+            parts = [p.strip() for p in gani_name.split(',')]
+            name = parts[0].strip()
+            params = parts[1:]
+            result = (name, params)
+            if len(cache) > 300:
+                cache.clear()
+            cache[gani_name] = result
+        return result
+
     def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
         """Render an NPC."""
         # destroy / hide make the NPC (and its layers) vanish entirely.
@@ -589,9 +660,9 @@ class EntityRenderMixin:
             # setcharani/setani keep their `,param1,param2,...` args joined to
             # the ani name; split them off (Tier 2d) instead of discarding
             # them, so a scripted hat/prop image can drive the ATTR1-5 layers.
-            parts = [p.strip() for p in gani_name.split(',')]
-            gani_name = parts[0].strip()
-            gani_params = parts[1:]
+            # Memoized on the raw string (see _split_npc_gani) since it's
+            # static between server updates and there can be dozens of NPCs.
+            gani_name, gani_params = self._split_npc_gani(gani_name)
         image_name = npc.get('image')
         is_character = npc.get('is_character')
         if is_character and not gani_name:
@@ -893,6 +964,23 @@ class EntityRenderMixin:
         pygame.draw.polygon(surf, col, local_points)  # width=0 -> filled
         self.screen.blit(surf, (min_x, min_y))
 
+    # Additive-blitting a light sprite reads as a blown-out white blob rather
+    # than a glow. GS1 scripts commonly pass an "on" alpha around 0.99 (see
+    # _render_scripted_gani_fallback's arenaGUI note), which looks like it
+    # should dim the light almost to nothing... except pygame's BLEND_ADD
+    # blit onto a plain (non-SRCALPHA) destination - which self.screen always
+    # is here - IGNORES alpha entirely, both the surface-level alpha the
+    # original code set via set_alpha() and the sprite's own per-pixel alpha
+    # channel (verified empirically: an alpha=0 source still adds its full
+    # RGB). So the *actual* additive contribution has always been the
+    # sprite's raw, unscaled RGB regardless of coloreffect's alpha - that's
+    # the real source of the wash-out, and set_alpha() never touched it.
+    # Fixed the same way _render_showimg_rec already handles this exact
+    # problem (see its "fold alpha into the colour so additive blending dims
+    # it" comment): pre-scale the sprite's RGB via BLEND_RGB_MULT before the
+    # additive blit, so the alpha (capped) actually reduces brightness.
+    _LIGHT_ADDITIVE_ALPHA_CAP = 140  # out of 255
+
     def _render_light_sprite(self, sprite: pygame.Surface, x: float, y: float,
                               is_light: bool, coloreffect: Optional[Tuple[float, float, float, float]]):
         """Render a sprite with light effects (additive blending, alpha).
@@ -903,51 +991,86 @@ class EntityRenderMixin:
             is_light: If True, use additive blending
             coloreffect: (r, g, b, a) multipliers - r,g,b typically 1.0, a is alpha (0-1)
         """
-        # Alpha is typically like 0.99 (99% opacity but as a light effect).
-        # copy()+set_alpha() every frame per light NPC is wasted work since the
-        # same (sprite, alpha) pair repeats frame to frame - cache the result.
-        alpha = int(coloreffect[3] * 255) if coloreffect else None
+        # copy()+recolor/set_alpha() every frame per light NPC is wasted work
+        # since the same (sprite, mult) pair repeats frame to frame - cache
+        # the result.
         cache = getattr(self, '_light_sprite_cache', None)
         if cache is None:
             cache = self._light_sprite_cache = {}
-        key = (id(sprite), alpha)
-        light_sprite = cache.get(key)
-        if light_sprite is None:
-            light_sprite = sprite.copy()
-            if alpha is not None:
-                light_sprite.set_alpha(alpha)
-            if len(cache) > 300:
-                cache.clear()
-            cache[key] = light_sprite
 
-        # Position - place light sprite with top-left at NPC position
-        # User testing confirmed this positioning is correct for light effects
         if is_light:
-            # Render with additive blending for light effect
+            # See the class-level comment above: alpha is folded into the RGB
+            # via BLEND_RGB_MULT (not set_alpha(), which BLEND_ADD ignores),
+            # capped so the additive contribution can't wash the scene out.
+            alpha_frac = coloreffect[3] if coloreffect else 1.0
+            mult = _c255(min(alpha_frac, self._LIGHT_ADDITIVE_ALPHA_CAP / 255.0))
+            key = (id(sprite), mult, True)
+            light_sprite = cache.get(key)
+            if light_sprite is None:
+                light_sprite = sprite.copy()
+                light_sprite.fill((mult, mult, mult, 255), special_flags=pygame.BLEND_RGB_MULT)
+                if len(cache) > 300:
+                    cache.clear()
+                cache[key] = light_sprite
+            # Position - place light sprite with top-left at NPC position.
+            # User testing confirmed this positioning is correct for light
+            # effects. Render with additive blending for light effect.
             self.screen.blit(light_sprite, (x, y), special_flags=pygame.BLEND_ADD)
         else:
-            # Just render with alpha
+            # Non-additive path: a plain blit DOES respect set_alpha(), so
+            # this one is unaffected by the BLEND_ADD alpha quirk above.
+            alpha = int(coloreffect[3] * 255) if coloreffect else None
+            key = (id(sprite), alpha, False)
+            light_sprite = cache.get(key)
+            if light_sprite is None:
+                light_sprite = sprite.copy()
+                if alpha is not None:
+                    light_sprite.set_alpha(alpha)
+                if len(cache) > 300:
+                    cache.clear()
+                cache[key] = light_sprite
             self.screen.blit(light_sprite, (x, y))
-    def _render_animated_entity(self, x: float, y: float, anim: AnimationState,
-                                  equipment: dict):
-        """Render an entity using gani animation.
+    def _resolve_gani_layers(self, anim: AnimationState, frame, equipment: dict) -> list:
+        """Resolve frame.sprites -> (image, sprite-rect) per layer, memoized
+        per (gani, direction, frame, equipment). This is the expensive part
+        of _render_animated_entity (a dict.get/isinstance/startswith/isdigit
+        chain per sprite, per entity, per frame - ~80 entities/frame adds up
+        fast) but its result only changes when the animation moves to a new
+        frame/direction or the equipment dict changes, both far rarer than
+        "every frame" - most entities hold the same gani/frame/equipment
+        across many consecutive frames, so this cache is normally a hit.
 
-        The gani offsets position sprites within a bounding box.
-        Position (x, y) is the top-left of the entity's tile position.
+        Returns a list of entries, either:
+          ('shadow', ox, oy) - blit self.shadow_sprite there, or
+          ('sprite', img, sprite_def, ox, oy, recolor) - recolor is True if
+          the caller should draw it through get_sprite_recolored using the
+          CALLER's *current* equipment['colors'] (not baked into the cache -
+          only the resolved (img, sprite_def) needs memoizing; re-reading
+          colors from the live equipment dict at blit time is just as cheap
+          as a plain get_sprite lookup and avoids ever holding a stale
+          reference to an old colors list).
         """
-        frame = anim.get_frame() if anim.gani else None
+        cache = getattr(self, '_gani_layer_cache', None)
+        if cache is None:
+            cache = self._gani_layer_cache = {}
 
-        if not frame:
-            # Fallback to placeholder - position at top-left
-            self.screen.blit(self.placeholder_sprite, (x, y))
-            return
+        # A hashable snapshot of the equipment dict - small (a handful of
+        # keys), so building this every call is cheap; it's re-walking
+        # frame.sprites with it that's expensive, and that's what gets cached.
+        equipment_key = tuple(sorted(
+            (k, tuple(v) if isinstance(v, (list, tuple)) else v)
+            for k, v in equipment.items()
+        ))
+        # Direction is part of the key even though it's not called out
+        # explicitly in the finding, because the same frame index can hold
+        # different sprite layouts per direction (facing up vs down) - the
+        # important thing being memoized is (gani, direction, frame index).
+        key = (id(anim.gani), anim.direction, anim.frame, equipment_key)
+        resolved = cache.get(key)
+        if resolved is not None:
+            return resolved
 
-        # No base offset - gani sprite positions are relative to entity position
-        # Entity position (x, y) is the top-left of the tile
-        base_offset_x = 0
-        base_offset_y = 0
-
-        # Render each sprite in the frame
+        resolved = []
         for raw_sprite_id, ox, oy in frame.sprites:
             sprite_id = raw_sprite_id
             if isinstance(sprite_id, str):
@@ -996,13 +1119,11 @@ class EntityRenderMixin:
                     continue
             elif layer == "SPRITES":
                 # Shadow and effects - use defaults
-                img = anim.gani.defaults.get('SPRITES', 'sprites.png')
                 # Special case: shadow sprite (id 0) - render our shadow
                 if sprite_id == 0:
-                    screen_x = x + base_offset_x + ox
-                    screen_y = y + base_offset_y + oy
-                    self.screen.blit(self.shadow_sprite, (screen_x, screen_y))
+                    resolved.append(('shadow', ox, oy))
                     continue
+                img = anim.gani.defaults.get('SPRITES', 'sprites.png')
             else:
                 # A sprite whose source is a literal image filename (e.g.
                 # itsasign2's SIGN1.GIF) uses it directly; only keyword layers
@@ -1019,10 +1140,47 @@ class EntityRenderMixin:
                 else:
                     img = anim.gani.defaults.get(layer, 'sprites.png')
 
-            # Get sprite from sheet. BODY goes through the palette-swap path
-            # when a colors prop is available (Tier 2a - see sprites.py and
-            # PLPROP_COLORS parsing in packets.py/player.py).
-            if layer == "BODY" and equipment.get('colors'):
+            # BODY goes through the palette-swap path when a colors prop is
+            # available (Tier 2a - see sprites.py and PLPROP_COLORS parsing
+            # in packets.py/player.py).
+            recolor = layer == "BODY" and bool(equipment.get('colors'))
+            resolved.append(('sprite', img, sprite_def, ox, oy, recolor))
+
+        if len(cache) > 2000:
+            cache.clear()
+        cache[key] = resolved
+        return resolved
+
+    def _render_animated_entity(self, x: float, y: float, anim: AnimationState,
+                                  equipment: dict):
+        """Render an entity using gani animation.
+
+        The gani offsets position sprites within a bounding box.
+        Position (x, y) is the top-left of the entity's tile position.
+        """
+        frame = anim.get_frame() if anim.gani else None
+
+        if not frame:
+            # Fallback to placeholder - position at top-left
+            self.screen.blit(self.placeholder_sprite, (x, y))
+            return
+
+        # No base offset - gani sprite positions are relative to entity position
+        # Entity position (x, y) is the top-left of the tile
+        base_offset_x = 0
+        base_offset_y = 0
+
+        # Render each sprite in the frame, from the memoized layer resolution
+        for entry in self._resolve_gani_layers(anim, frame, equipment):
+            if entry[0] == 'shadow':
+                _, ox, oy = entry
+                screen_x = x + base_offset_x + ox
+                screen_y = y + base_offset_y + oy
+                self.screen.blit(self.shadow_sprite, (screen_x, screen_y))
+                continue
+
+            _, img, sprite_def, ox, oy, recolor = entry
+            if recolor:
                 sprite = self.sprite_mgr.get_sprite_recolored(
                     img, equipment['colors'],
                     sprite_def.x, sprite_def.y,
