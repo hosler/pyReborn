@@ -106,10 +106,11 @@ def start_server():
     return proc, port, d, logf
 
 
-def start_daemon(game_port: int):
+def start_daemon(game_port: int, game_host: str = "localhost"):
     """Spawn the playtest daemon on a free port pointed at the game server."""
     dport = _free_port()
-    env = dict(os.environ, PYREBORN_TEST_PORT=str(game_port),
+    env = dict(os.environ, PYREBORN_TEST_HOST=game_host,
+               PYREBORN_TEST_PORT=str(game_port),
                PYTHONPATH=os.pathsep.join([str(PYR), str(PROTO),
                                            os.environ.get("PYTHONPATH", "")]))
     proc = subprocess.Popen(
@@ -253,34 +254,47 @@ def run_persona(key, model, dport, name, role, focus, others, max_turns, out):
     out[name] = report
 
 
-def _serve_only():
+def _serve_only(external_host: str = None, external_port: int = 14900):
     """Bring up the throwaway server + daemon and block until interrupted, so a
     Claude Code session (or a human with curl) can drive the agents. No API
-    calls, no cost. Always tears the children down on exit."""
+    calls, no cost. Always tears the children down on exit.
+
+    If external_host is given, skip spawning a throwaway pygserver entirely and
+    point the daemon at the already-running server instead — teardown then
+    never touches it (we didn't start it, we don't stop it)."""
     import signal
-    srv, gport, tmpdir, logf = start_server()
-    dproc, dport = start_daemon(gport)
+    srv = tmpdir = logf = None
+    if external_host:
+        ghost, gport = external_host, external_port
+    else:
+        srv, gport, tmpdir, logf = start_server()
+        ghost = "localhost"
+    dproc, dport = start_daemon(gport, ghost)
 
     def teardown(*_):
         try:
             daemon_get(dport, "/quit?confirm=shutdown")
         except Exception:
             pass
-        for p in (dproc, srv):
+        procs = (dproc, srv) if srv is not None else (dproc,)
+        for p in procs:
             p.terminate()
             try:
                 p.wait(8)
             except Exception:
                 p.kill()
-        logf.close()
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if logf is not None:
+            logf.close()
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
         print("\n[playtest] served infra torn down.")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, teardown)
     signal.signal(signal.SIGTERM, teardown)
     print(f"[playtest] SERVE MODE — no API cost. Drive the agents yourself.\n"
-          f"  game server : 127.0.0.1:{gport}\n"
+          f"  game server : {ghost}:{gport}"
+          f"{'  (external, not managed by us)' if external_host else ''}\n"
           f"  daemon (API): http://127.0.0.1:{dport}\n"
           f"  brief       : {BRIEF}\n"
           f"  personas    : {', '.join(n for n, _, _ in PERSONAS)}\n"
@@ -300,10 +314,15 @@ def main():
                     help="just bring up the throwaway server + daemon and wait "
                          "(no API calls / no cost) so a Claude Code session can "
                          "drive the persona agents itself; Ctrl-C to tear down")
+    ap.add_argument("--external-host", default=None,
+                    help="target an already-running Reborn server instead of "
+                         "spawning a throwaway pygserver; teardown won't touch it")
+    ap.add_argument("--external-port", type=int, default=14900,
+                    help="port for --external-host (default: 14900)")
     args = ap.parse_args()
 
     if args.serve:
-        _serve_only()
+        _serve_only(args.external_host, args.external_port)
         return
 
     key = _api_key()
@@ -311,9 +330,15 @@ def main():
         sys.exit(f"Brief not found at {BRIEF}")
     personas = PERSONAS[:max(1, min(args.agents, len(PERSONAS)))]
 
-    print(f"[playtest] starting throwaway server + daemon...")
-    srv, gport, tmpdir, logf = start_server()
-    dproc, dport = start_daemon(gport)
+    srv = tmpdir = logf = None
+    if args.external_host:
+        ghost, gport = args.external_host, args.external_port
+        print(f"[playtest] targeting external server {ghost}:{gport}...")
+    else:
+        print(f"[playtest] starting throwaway server + daemon...")
+        srv, gport, tmpdir, logf = start_server()
+        ghost = "localhost"
+    dproc, dport = start_daemon(gport, ghost)
     print(f"[playtest] server :{gport}  daemon :{dport}  agents={len(personas)}  "
           f"turns~{args.turns}  model={args.model}")
 
@@ -332,14 +357,17 @@ def main():
             t.join()
     finally:
         daemon_get(dport, "/quit?confirm=shutdown")
-        for p in (dproc, srv):
+        procs = (dproc, srv) if srv is not None else (dproc,)
+        for p in procs:
             p.terminate()
             try:
                 p.wait(8)
             except Exception:
                 p.kill()
-        logf.close()
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if logf is not None:
+            logf.close()
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_path = Path(args.out or (PYR / f"playtest_report_{stamp}.md"))
