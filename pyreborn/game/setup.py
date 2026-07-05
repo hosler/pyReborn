@@ -56,6 +56,12 @@ class SetupMixin:
         return paths + extra_paths
     def _setup_callbacks(self):
         """Setup client callbacks."""
+        # State for the newer render_effects visuals below - initialized here
+        # (this runs once, at the end of GameClient.__init__) rather than in
+        # pygame_game.py, which owns the rest of the render-state init.
+        self.other_thrown_objects = []   # PLO_THROWCARRIED arcs (other players)
+        self._pushaway_velocity = (0.0, 0.0)   # PLO_PUSHAWAY knockback, tiles/sec
+
         def on_chat(player_id, message):
             self.chat_messages.append(f"[{player_id}] {message}")
             if len(self.chat_messages) > 10:
@@ -185,6 +191,63 @@ class SetupMixin:
         def on_board_layer(layer, x, y, tiles):
             self.world_surface = None
 
+        # PLO_HITOBJECTS - a player's sword/weapon connected with a bush/pot/
+        # etc; spawn the same break/spark burst a thrown object landing uses
+        # (see render_effects._spawn_hit_break_effect).
+        def on_hit_objects(x, y, power, player_id):
+            self._spawn_hit_break_effect(x, y)
+
+        # PLO_THROWCARRIED - another player threw whatever they were
+        # carrying. The packet only names the owner (see
+        # packets.parse_throwcarried), so look up their last known
+        # position/direction and launch a generic thrown-arc from there (see
+        # render_effects._update_and_render_other_thrown / on init below).
+        def on_throwcarried(owner_id):
+            owner = self.client.players.get(owner_id)
+            if not owner:
+                return
+            direction = owner.get('direction', 2) or 2
+            ddx, ddy = self._facing_delta(direction)
+            x, y = owner.get('x', 0.0), owner.get('y', 0.0)
+            z0 = 2.75
+            self.other_thrown_objects.append({
+                'x': x, 'y': y + 1.0,
+                'z': z0, 'z0': z0,
+                'dx': ddx, 'dy': ddy,
+                'speed': 20.0, 'dist': 0.0, 'range': 16.0,
+                'colors': self.BREAK_COLORS['bush'],
+            })
+
+        # PLO_FIRESPY - a GS1 firespy/fireball effect from another player's
+        # weapon script. Like PLO_THROWCARRIED, the payload is just the owner
+        # + power/length (see packets.parse_firespy); feed it into the same
+        # active_projectiles pipeline as a local bow shot, tagged 'firespy' so
+        # render_effects picks the fireball gani/fallback color instead of
+        # the arrow's.
+        def on_firespy(info):
+            owner = self.client.players.get(info.get('owner_id'))
+            if not owner:
+                return
+            direction = owner.get('direction', 2) or 2
+            speed = 10.0
+            dx_map = {0: 0, 1: -speed, 2: 0, 3: speed}
+            dy_map = {0: -speed, 1: 0, 2: speed, 3: 0}
+            x, y = owner.get('x', 0.0), owner.get('y', 0.0)
+            self.active_projectiles.append({
+                'x': x, 'y': y,
+                'dx': dx_map.get(direction, 0), 'dy': dy_map.get(direction, 0),
+                'time': time.time(), 'direction': direction, 'gani': 'firespy',
+                'max_distance': max(1.0, float(info.get('length', 1) or 1)),
+                'start_x': x, 'start_y': y,
+            })
+
+        # PLO_PUSHAWAY (packet 38) - a knockback impulse. Queued here and
+        # applied/decayed per-frame in render_effects._apply_pushaway (see its
+        # docstring for the conservative-decode note).
+        def on_pushaway(dx, dy):
+            vx, vy = self._pushaway_velocity
+            self._pushaway_velocity = (vx + dx, vy + dy)
+
         self.client.on_chat = on_chat
         self.client.on_pm = on_pm
         self.client.on_add_player = on_add_player
@@ -202,6 +265,14 @@ class SetupMixin:
             self.client.on_server_text = on_server_text
         if hasattr(self.client, 'on_rpg_window'):
             self.client.on_rpg_window = on_rpg_window
+        if hasattr(self.client, 'on_hit_objects'):
+            self.client.on_hit_objects = on_hit_objects
+        if hasattr(self.client, 'on_throwcarried'):
+            self.client.on_throwcarried = on_throwcarried
+        if hasattr(self.client, 'on_firespy'):
+            self.client.on_firespy = on_firespy
+        if hasattr(self.client, 'on_pushaway'):
+            self.client.on_pushaway = on_pushaway
         # A relayed projectile (another player's shoot) — fire actionprojectile2
         # so weapons react (Bomber Arena's room system is built on this). #p(n)
         # maps to event args: per GServer-v2 mc_p, #p(0) is the first param after

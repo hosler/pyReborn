@@ -108,6 +108,7 @@ from .packets import (
     build_firespy,
     parse_throwcarried,
     build_throwcarried,
+    parse_push_away,
     parse_npcmoved,
     parse_move2,
     parse_flag_del,
@@ -160,7 +161,7 @@ def _build_handled_plo_ids() -> set:
         # Tier 2: entity families + NPC movement.
         "PLO_BOMBADD", "PLO_BOMBDEL", "PLO_ARROWADD", "PLO_HORSEADD",
         "PLO_HORSEDEL", "PLO_FIRESPY", "PLO_THROWCARRIED", "PLO_NPCMOVED",
-        "PLO_MOVE2", "PLO_FLAGDEL",
+        "PLO_MOVE2", "PLO_FLAGDEL", "PLO_PUSHAWAY",
         # Tier 3: server-control packets.
         "PLO_FREEZEPLAYER2", "PLO_UNFREEZEPLAYER", "PLO_SAY2", "PLO_HIDENPCS",
         "PLO_SERVERWARP", "PLO_TRIGGERACTION", "PLO_DISABLECLASSICMODE",
@@ -400,6 +401,10 @@ class Client:
         self.on_horse_del: Optional[Callable[[float, float], None]] = None
         self.on_firespy: Optional[Callable[[dict], None]] = None
         self.on_throwcarried: Optional[Callable[[int], None]] = None
+
+        # Push-away/knockback callback: handler(dx, dy) - tiles, signed (see
+        # packets.parse_push_away for the PLO_PUSHAWAY GCHAR decode).
+        self.on_pushaway: Optional[Callable[[float, float], None]] = None
 
         # NPC-moved callback: handler(info) where info has npc_id/x/y/new_level
         # (PLO_NPCMOVED - fired when an NPC warps to a different level).
@@ -2396,6 +2401,14 @@ class Client:
             info = parse_throwcarried(data)
             if self.on_throwcarried:
                 self.on_throwcarried(info['owner_id'])
+
+        # Push-away/knockback impulse (packet 38). See packets.parse_push_away
+        # for the GCHAR decode this uses (GServer-v2's IEnums.h doc comment is
+        # the only reference for this packet in this workspace).
+        elif packet_id == PacketID.PLO_PUSHAWAY:
+            push = parse_push_away(data)
+            if push and self.on_pushaway:
+                self.on_pushaway(push['dx'], push['dy'])
 
         # NPC warped to a different level (packet 24).
         elif packet_id == PacketID.PLO_NPCMOVED:

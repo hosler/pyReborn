@@ -3569,6 +3569,29 @@ def build_throwcarried() -> bytes:
     return b''
 
 
+def parse_push_away(data: bytes) -> dict:
+    """
+    Parse PLO_PUSHAWAY (packet 38) - knockback impulse.
+    Format: {GCHAR dx}{GCHAR dy}
+
+    Per GServer-v2 (dependencies/gs2lib/include/IEnums.h): "dx is calculated
+    as: dx * 0.0625 - 4.0, which is a range of -2.0 to 2.0 in 1/16 tile
+    increments" - applied here to each decoded GCHAR byte (0-223) in turn, the
+    same formula for dy. GServer-v2 itself never sends this packet (server/src
+    only lists it in TPlayer's DO(PLO_PUSHAWAY) packet-name table) and
+    pygserver's build_push_away (protocol/packets.py) uses a different,
+    unused-in-practice encoding (write_gchar(dx*2)) - so this doc comment is
+    the sole cross-checkable reference for the wire format; no live sender
+    exists in this workspace to verify against.
+    """
+    if len(data) < 2:
+        return {}
+    reader = PacketReader(data)
+    dx = reader.read_gchar() * 0.0625 - 4.0
+    dy = reader.read_gchar() * 0.0625 - 4.0
+    return {'dx': dx, 'dy': dy}
+
+
 # =============================================================================
 # NPC movement: PLO_NPCMOVED / PLO_MOVE2 (protocol parity tier 2c)
 # =============================================================================
