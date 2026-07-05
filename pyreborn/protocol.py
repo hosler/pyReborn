@@ -11,6 +11,7 @@ import struct
 import zlib
 import random
 import json
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Tuple, Callable, Dict
@@ -159,6 +160,17 @@ class Protocol:
         # packet_id -> list of payloads sent (after the id byte, before newline).
         self.sent_payloads: Optional[Dict[int, List[bytes]]] = None
 
+        # Serializes the outbound critical section (codec encrypt + sendall).
+        # The GEN_3/4/5 codecs carry a STATEFUL cipher iterator whose byte order
+        # must match the order bytes hit the wire. Two threads each doing
+        # "encrypt (advance iterator) ... sendall" can interleave so the wire
+        # order != encrypt order, which desyncs the server's decrypt stream. The
+        # server then reads garbage packet/prop ids; a player-prop id the server
+        # can't map (>=83) makes GServer-v2's constructPropFor throw and the
+        # whole process SIGABRTs (remote DoS). One lock => sends are atomic and
+        # can never corrupt the stream, no matter how many threads call in.
+        self._send_lock = threading.Lock()
+
     def connect(self) -> bool:
         """Connect to server"""
         try:
@@ -257,9 +269,10 @@ class Protocol:
             # Compress with zlib and send with length prefix
             compressed = zlib.compress(bytes(packet))
             length = struct.pack('>H', len(compressed))
-            self.socket.setblocking(True)
-            self.socket.sendall(length + compressed)
-            self.socket.setblocking(False)
+            with self._send_lock:
+                self.socket.setblocking(True)
+                self.socket.sendall(length + compressed)
+                self.socket.setblocking(False)
             return True
 
         except Exception as e:
@@ -288,12 +301,15 @@ class Protocol:
             if self.sent_payloads is not None:
                 self.sent_payloads.setdefault(packet_id, []).append(data)
 
-            # Encrypt and get length-prefixed result
-            encrypted = self.codec.send_packet(packet)
-
-            self.socket.setblocking(True)
-            self.socket.sendall(encrypted)
-            self.socket.setblocking(False)
+            # Encrypt + frame + send as one atomic unit: the codec mutates a
+            # stateful cipher iterator, so a concurrent send must not slip
+            # between encrypt and sendall (that reorders the wire vs the cipher
+            # stream and desyncs the server - see _send_lock).
+            with self._send_lock:
+                encrypted = self.codec.send_packet(packet)
+                self.socket.setblocking(True)
+                self.socket.sendall(encrypted)
+                self.socket.setblocking(False)
             return True
 
         except Exception as e:
