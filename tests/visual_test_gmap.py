@@ -8,6 +8,9 @@ import sys
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
+import pytest
+pytest.importorskip("pygame")  # live scripts need the full client stack
+pytest.importorskip("PIL")
 import pygame
 import pytest
 from PIL import Image
