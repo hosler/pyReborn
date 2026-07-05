@@ -273,6 +273,9 @@ class Client:
         self.levels: Dict[str, List[int]] = {}
         self._current_level_name = ""  # The player's actual level (set once at login)
         self._pending_level_name = ""  # Track which level data is being received
+        # Destination of a client-initiated warp awaiting the server's
+        # authoritative PLO_LEVELNAME confirmation (see warp_to_level).
+        self._awaiting_warp_confirm = ""
 
         # GMAP grid: maps (x, y) -> level_name
         self.gmap_grid: Dict[Tuple[int, int], str] = {}
@@ -1181,17 +1184,32 @@ class Client:
         if cached_npcs:
             self.npcs.update(cached_npcs)
 
+        # Mark the warp as awaiting the server's authoritative confirmation.
+        # We flipped _current_level_name above optimistically (for instant
+        # tile/board display), but that also makes incoming NPC/chest props
+        # get stamped with the new level — so old-level props still in transit
+        # from before the server processed this warp would be mis-attributed
+        # to the new level. On the confirming PLO_LEVELNAME we re-reset to
+        # purge them (TCP order guarantees they arrive before it).
+        if level_name not in self.gmap_grid.values():
+            self._awaiting_warp_confirm = level_name
+
         # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
         return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
 
-    def _reset_level_state(self):
+    def _reset_level_state(self, cache_npcs: bool = True):
         """Clear per-level state on a full level change so chests, chest items,
         signs, ground items, baddies and NPCs from the old level don't leak into
         the new one. (Links/signs are keyed by level name; the rest are flat.)
 
         Not called on seamless GMAP segment crossing (that goes through move(),
-        not warp_to_level), so the stitched world keeps its entities."""
+        not warp_to_level), so the stitched world keeps its entities.
+
+        cache_npcs=False skips the per-level NPC snapshot: on a client-warp
+        confirmation the NPCs present may be transit-window leaks stamped with
+        the WRONG (optimistically-flipped) level, so caching them would poison
+        _npc_cache for that level."""
         self.chests.clear()
         self.chest_items.clear()
         self.signs.clear()
@@ -1199,10 +1217,11 @@ class Client:
         self.baddies.clear()
         # Snapshot NPCs per level before clearing so we can restore them if we
         # come back and the server doesn't re-stream them (see _npc_cache).
-        for nid, npc in self.npcs.items():
-            lvl = npc.get('_level')
-            if lvl:
-                self._npc_cache.setdefault(lvl, {})[nid] = npc
+        if cache_npcs:
+            for nid, npc in self.npcs.items():
+                lvl = npc.get('_level')
+                if lvl:
+                    self._npc_cache.setdefault(lvl, {})[nid] = npc
         self.npcs.clear()
 
     def send_pm(self, player_id: int, message: str) -> bool:
@@ -1777,6 +1796,19 @@ class Client:
                         # through a door that doesn't exist here) don't leak
                         # into the new level.
                         self._reset_level_state()
+                elif (not is_gmap_segment
+                      and level_name == self._awaiting_warp_confirm):
+                    # Client-initiated warp: _current_level_name already equals
+                    # level_name (flipped optimistically at send), so the guard
+                    # above missed. Reset now on the authoritative confirmation
+                    # to purge any old-level NPC/chest props that leaked in
+                    # during the send->confirm window. cache_npcs=False: those
+                    # leaks are mis-stamped with THIS level, so caching them
+                    # would poison _npc_cache. The server re-streams the real
+                    # NPCs right after this packet.
+                    self._reset_level_state(cache_npcs=False)
+                if level_name == self._awaiting_warp_confirm:
+                    self._awaiting_warp_confirm = ""
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
