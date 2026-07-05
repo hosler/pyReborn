@@ -250,6 +250,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send({'result': result, 'state': bot_state(bot)})
                 else:
                     self._send('unknown endpoint', 404)
+        except (ValueError, TypeError) as e:
+            # Bad caller input (e.g. non-numeric x/y for open_chest) — a clean
+            # 400, not a 500 with a stack trace leaked to the agent.
+            self._send(f'bad argument: {e}', 400)
         except Exception as e:
             import traceback
             self._send(f'error: {e}\n{traceback.format_exc()}', 500)

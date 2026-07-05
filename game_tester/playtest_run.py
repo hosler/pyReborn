@@ -253,6 +253,41 @@ def run_persona(key, model, dport, name, role, focus, others, max_turns, out):
     out[name] = report
 
 
+def _serve_only():
+    """Bring up the throwaway server + daemon and block until interrupted, so a
+    Claude Code session (or a human with curl) can drive the agents. No API
+    calls, no cost. Always tears the children down on exit."""
+    import signal
+    srv, gport, tmpdir, logf = start_server()
+    dproc, dport = start_daemon(gport)
+
+    def teardown(*_):
+        try:
+            daemon_get(dport, "/quit?confirm=shutdown")
+        except Exception:
+            pass
+        for p in (dproc, srv):
+            p.terminate()
+            try:
+                p.wait(8)
+            except Exception:
+                p.kill()
+        logf.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print("\n[playtest] served infra torn down.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, teardown)
+    signal.signal(signal.SIGTERM, teardown)
+    print(f"[playtest] SERVE MODE — no API cost. Drive the agents yourself.\n"
+          f"  game server : 127.0.0.1:{gport}\n"
+          f"  daemon (API): http://127.0.0.1:{dport}\n"
+          f"  brief       : {BRIEF}\n"
+          f"  personas    : {', '.join(n for n, _, _ in PERSONAS)}\n"
+          f"Ctrl-C to stop.", flush=True)
+    signal.pause()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--agents", type=int, default=3,
@@ -261,7 +296,15 @@ def main():
                     help="approx actions per agent")
     ap.add_argument("--model", default="claude-sonnet-5")
     ap.add_argument("--out", default=None, help="report path (default: timestamped)")
+    ap.add_argument("--serve", action="store_true",
+                    help="just bring up the throwaway server + daemon and wait "
+                         "(no API calls / no cost) so a Claude Code session can "
+                         "drive the persona agents itself; Ctrl-C to tear down")
     args = ap.parse_args()
+
+    if args.serve:
+        _serve_only()
+        return
 
     key = _api_key()
     if not BRIEF.exists():
