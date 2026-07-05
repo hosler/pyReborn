@@ -14,6 +14,11 @@ from typing import Optional, Callable, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# LEVELWARP encodes coords as gchar half-tiles: byte = int(coord*2)+32, which
+# must stay in [0, 255]. That bounds the warp target to [-16, 111.5] tiles.
+WARP_COORD_MIN = -16.0
+WARP_COORD_MAX = 111.5
+
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
 from .packets import (
@@ -1106,6 +1111,22 @@ class Client:
             True if packet sent successfully
         """
         if not self.connected or not self._authenticated:
+            return False
+
+        # Guard BEFORE mutating any state: everything below (level reset, roster
+        # clear, tile-cache swap) is irreversible, and build_level_warp encodes
+        # x/y as gchar half-tiles (byte = int(coord*2)+32). A missing level name
+        # or an off-map coordinate makes that build throw, leaving the client
+        # desynced at a phantom level/position it can't recover from. Reject up
+        # front instead — same graceful path a bogus level name already takes.
+        if not level_name:
+            logger.warning("warp_to_level: empty level name ignored")
+            return False
+        if not (WARP_COORD_MIN <= x <= WARP_COORD_MAX
+                and WARP_COORD_MIN <= y <= WARP_COORD_MAX):
+            logger.warning(
+                "warp_to_level: (%s, %s) outside encodable range "
+                "[%s, %s]; ignored", x, y, WARP_COORD_MIN, WARP_COORD_MAX)
             return False
 
         # Update local state

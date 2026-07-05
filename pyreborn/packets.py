@@ -1933,12 +1933,15 @@ def build_level_warp(x: float, y: float, level_name: str) -> bytes:
     """
     packet = bytearray()
 
-    # Position in half-tiles (gchar = byte + 32)
-    packet.append(int(x * 2) + 32)
-    packet.append(int(y * 2) + 32)
+    # Position in half-tiles (gchar = byte + 32). Clamp so an out-of-range
+    # coord can never raise "byte must be in range(0, 256)" from deep in the
+    # builder — callers should validate first (see Client.warp_to_level), but
+    # a crash here corrupts client state, so never let one escape.
+    packet.append(max(0, min(255, int(x * 2) + 32)))
+    packet.append(max(0, min(255, int(y * 2) + 32)))
 
     # Level name
-    packet.extend(level_name.encode('latin-1'))
+    packet.extend((level_name or "").encode('latin-1'))
 
     return bytes(packet)
 

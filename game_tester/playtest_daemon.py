@@ -12,7 +12,10 @@ pace (bots stay online + pumped between agent tool calls).
              arrow[&dir] | grab | attack&pid | pm&pid&msg | warp&level&x&y
              open_chest[&x&y] | pickup[&x&y]
   GET  /log?name=X              recent events (chat/hurt/pm) + detected issues
-  GET  /quit                    disconnect all bots and exit
+  GET  /leave?name=X            disconnect just bot X (others keep playing)
+  GET  /quit?confirm=shutdown   disconnect all bots and stop the daemon
+                                (token required so a shared daemon isn't killed
+                                 by a stray call)
 
 Run: python -m game_tester.playtest_daemon [port]   (default 14990)
 Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
@@ -194,11 +197,26 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with lock:
                 if u.path == '/quit':
+                    # Full shutdown kills the daemon for EVERY bot, so when
+                    # several agents share one daemon a stray /quit takes them
+                    # all down (this is exactly what looked like "random daemon
+                    # crashes"). Require an explicit confirm token so a curious
+                    # play agent can't do it by accident.
+                    if q.get('confirm', [''])[0] != 'shutdown':
+                        self._send('refused: /quit needs ?confirm=shutdown '
+                                   '(use /leave to drop just your own bot)', 403)
+                        return
                     for b in bots.values():
                         b.disconnect()
                     running = False
                     self._send('bye')
                     threading.Thread(target=self.server.shutdown).start()
+                    return
+                if u.path == '/leave':
+                    b = bots.pop(name, None)
+                    if b:
+                        b.disconnect()
+                    self._send('left' if b else f'no bot {name!r}')
                     return
                 if u.path == '/spawn':
                     if name not in bots:
