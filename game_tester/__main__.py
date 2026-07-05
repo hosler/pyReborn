@@ -193,6 +193,10 @@ Examples:
     parser.add_argument("--gs2", action="store_true",
                        help="Run the GS2 VM execution suite (weapon lifecycle, "
                             "timeout loop, class join, triggeraction round-trip, corpus)")
+    parser.add_argument("--gs1", action="store_true",
+                       help="Run the GS1 behavioral conformance suite: same GS1 "
+                            "NPC scripts on pygserver vs the C++ gs2emu oracle, "
+                            "diffing client-observable effects")
     parser.add_argument("--report", type=str, default=None,
                        help="Base filename for reports (e.g., 'report' -> report.json, report.html)")
 
@@ -271,6 +275,26 @@ Examples:
         reporter.print_summary()
         if args.report:
             reporter.save_json(f"{args.report}_gs2.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # GS1 conformance suite runs standalone (spawns its own servers, or
+    # captures from a single --host/--port target).
+    if args.gs1:
+        from game_tester.gs1_conformance import run_gs1_conformance
+        print("\n[GS1 CONFORMANCE TESTS]")
+        reporter = TestReporter("Game Tester - GS1 Conformance")
+        reporter.set_config(host=f"{args.host}:{args.port}", bots=1, mode="gs1")
+        # An explicit host/port means "capture that one server"; the bare
+        # --gs1 spawns pygserver + gs2emu itself and diffs.
+        explicit = ("--host" in sys.argv) or ("--port" in sys.argv)
+        tresults = run_gs1_conformance(
+            host=args.host, port=args.port, explicit_target=explicit)
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_gs1.json")
         sys.exit(0 if all(r.passed for r in tresults) else 1)
 
     # Tier3 suite runs standalone (own bot lifecycle).
