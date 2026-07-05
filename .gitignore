@@ -197,3 +197,6 @@ API_QUICKSTART.md
 baseline_results.json
 quick_test.py
 .aider*
+
+# One-shot playtest run reports (game_tester/playtest_run.py)
+playtest_report_*.md
