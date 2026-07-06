@@ -73,12 +73,19 @@ class ActionsMixin:
         mdx = mdy = 0
         # Escape hatch: if we're ALREADY overlapping a wall (bad server spawn,
         # warp onto a solid tile), blocking every move would trap us — allow
-        # movement so the player can walk out.
-        stuck = self._is_position_blocked(self.client.x, self.client.y)
+        # movement so the player can walk out. But only moves that stay on the
+        # board and don't deepen the overlap: a blanket allow is noclip (walk
+        # through walls, off the level edge, into negative coords).
+        stuck_count = self._blocked_sample_count(self.client.x, self.client.y)
         for cdx, cdy in candidates:
-            if stuck or not self._is_position_blocked(self.client.x + cdx * step,
-                                                      self.client.y + cdy * step,
-                                                      cdx, cdy):
+            nx = self.client.x + cdx * step
+            ny = self.client.y + cdy * step
+            if stuck_count:
+                if (not self._position_out_of_bounds(nx, ny)
+                        and self._blocked_sample_count(nx, ny) <= stuck_count):
+                    mdx, mdy = cdx, cdy
+                    break
+            elif not self._is_position_blocked(nx, ny, cdx, cdy):
                 mdx, mdy = cdx, cdy
                 break
 

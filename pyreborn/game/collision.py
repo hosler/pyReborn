@@ -165,23 +165,48 @@ class CollisionMixin:
         "too aggressive" — while the old 0.5-inset let half of each foot clip
         into walls. (dx, dy) is the movement direction.
         """
-        left, right = 0.4, 1.6
-        top, bottom = 2.0, 3.0
-
-        # The box is half-open: its right/bottom edge sitting exactly on a tile
-        # boundary does NOT occupy the next tile. Without the epsilon, a feet edge
-        # flush against a wall (e.g. 35.0) floors into the wall tile and the
-        # player stops a step (~4px) short. Inset the far edges so you can move
-        # flush against walls.
-        EPS = 1e-3
-        # Three x-samples: a >1-wide box can span 3 tile columns when
-        # unaligned, and corner-only sampling would miss the middle one.
-        for cx in (x + left, x + 1.0, x + right - EPS):
-            for cy in (y + top, y + bottom - EPS):
-                if self._is_blocked_at(cx, cy):
-                    return True
+        for cx, cy in self._feet_samples(x, y):
+            if self._is_blocked_at(cx, cy):
+                return True
 
         return False
+
+    # Feet box geometry: left/right inset 0.4 from the 2-wide sprite's edges,
+    # box covers the bottom row (y+2..y+3). The box is half-open: its
+    # right/bottom edge sitting exactly on a tile boundary does NOT occupy the
+    # next tile. Without the epsilon, a feet edge flush against a wall (e.g.
+    # 35.0) floors into the wall tile and the player stops a step (~4px)
+    # short. Inset the far edges so you can move flush against walls.
+    _FEET_EPS = 1e-3
+    _FEET_LEFT, _FEET_RIGHT = 0.4, 1.6
+    _FEET_TOP, _FEET_BOTTOM = 2.0, 3.0
+
+    def _feet_samples(self, x: float, y: float):
+        """Sample points covering the feet box at player position (x, y).
+        Three x-samples: a >1-wide box can span 3 tile columns when unaligned,
+        and corner-only sampling would miss the middle one."""
+        for cx in (x + self._FEET_LEFT, x + 1.0, x + self._FEET_RIGHT - self._FEET_EPS):
+            for cy in (y + self._FEET_TOP, y + self._FEET_BOTTOM - self._FEET_EPS):
+                yield cx, cy
+
+    def _blocked_sample_count(self, x: float, y: float) -> int:
+        """How many feet-box samples at (x, y) are blocked. Used by _move's
+        stuck-escape: a move out of a bad spawn may hold or reduce this count
+        but never deepen the overlap."""
+        return sum(1 for cx, cy in self._feet_samples(x, y)
+                   if self._is_blocked_at(cx, cy))
+
+    def _position_out_of_bounds(self, x: float, y: float) -> bool:
+        """Feet box partially outside the walkable world: the standalone 64x64
+        board, or the stitched gmap rectangle when inside a segment. Enforced
+        even for the stuck-escape, which bypasses tile blocking."""
+        if self.client.in_gmap_segment:
+            max_x = self.client.gmap_width * 64
+            max_y = self.client.gmap_height * 64
+        else:
+            max_x = max_y = 64
+        return (x + self._FEET_LEFT < 0 or x + self._FEET_RIGHT > max_x or
+                y + self._FEET_TOP < 0 or y + self._FEET_BOTTOM > max_y)
     def _is_blocked_at(self, x: float, y: float) -> bool:
         """True if the single tile at world position (x, y) blocks movement.
 
