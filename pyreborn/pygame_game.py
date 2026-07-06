@@ -38,7 +38,7 @@ from .game.input import InputMixin
 from .game.actions import ActionsMixin
 from .game.render import RenderMixin
 from .game.render_world import WorldRenderMixin
-from .game.render_entities import EntityRenderMixin
+from .game.render_entities import EntityRenderMixin, BaddySheet
 from .game.render_effects import EffectsRenderMixin
 from .game.render_objects import LevelObjectsRenderMixin
 
@@ -120,6 +120,9 @@ class GameClient(
         # Animation states for NPCs
         self.npc_anims: Dict[int, AnimationState] = {}
         self.baddy_anims: Dict[int, AnimationState] = {}
+        # Classic baddy sprite sheets (baddygray.png, baddyoctopus.png, ...),
+        # cached per image name - see game/render_entities.py's BaddySheet.
+        self.baddy_sheets: Dict[str, BaddySheet] = {}
         # Assets (NPC/player images) already requested from the server.
         self._requested_assets: set = set()
         # Visual positions for NPCs (for smooth interpolation)

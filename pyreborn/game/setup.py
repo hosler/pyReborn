@@ -53,6 +53,7 @@ class SetupMixin:
             extra_paths.append(p / "heads")
             extra_paths.append(p / "swords")
             extra_paths.append(p / "shields")
+            extra_paths.append(p / "baddies")
         return paths + extra_paths
     def _setup_callbacks(self):
         """Setup client callbacks."""

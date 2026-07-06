@@ -37,6 +37,12 @@ _BADDY_MODE_GANI = {
 # Per-type head over body.png, the way the C# client's classic_baddy_graanch ganis
 # dress a baddy as a humanoid (head19.png + body.png). Keyed by the canonical
 # GServer-v2 BaddyType so the ten stock baddies read as distinct enemies.
+# NOTE: this table (and the gani-based render path below it) is now only a
+# last-resort fallback for when a baddy's own sprite sheet (see _BADDY_IMAGES
+# / BaddySheet) can't be loaded at all - real classic baddies are NOT
+# humanoids dressed in head/body.png (verified by inspecting the actual
+# sheets: baddygray.png etc. are an armored roll-up creature, baddyoctopus.png
+# an octopus, baddyhare.png a frog/hare face - nothing like a soldier).
 _BADDY_HEADS = {
     0: "head19.png",  # graysoldier
     1: "head20.png",  # bluesoldier
@@ -50,6 +56,151 @@ _BADDY_HEADS = {
     9: "head25.png",  # dragon
 }
 _BADDY_DEFAULT_HEAD = "head19.png"
+
+# Type -> default sprite sheet (GServer-v2 BaddyType), used when the server
+# doesn't send an explicit BDPROP_POWERIMAGE image name. Ships in
+# assets/baddies/ (see game/setup.py _setup_asset_paths); a server-downloaded
+# copy of the same filename still wins if the server streams one (SpriteManager
+# caches by filename regardless of which search path it came from).
+_BADDY_IMAGES = {
+    0: "baddygray.png",     # graysoldier
+    1: "baddyblue.png",     # bluesoldier
+    2: "baddyred.png",      # redsoldier
+    3: "baddyblue.png",     # shootingsoldier
+    4: "baddygray.png",     # swampsoldier
+    5: "baddyhare.png",     # frog / hare
+    6: "baddyoctopus.png",  # octopus
+    7: "baddygold.png",     # goldenwarrior
+    8: "baddylizardon.png", # lizardon
+    9: "baddydragon.png",   # dragon
+}
+_BADDY_DEFAULT_IMAGE = "baddygray.png"
+
+# BDMODE (see packets.parse_baddy_props) grouped into the three sheet rows a
+# classic baddy PNG actually carries (see BaddySheet below): walking modes
+# animate between the sheet's two walk frames, hurt/bumped hold a single
+# recoil frame, die/dead hold a single "final" frame.
+_BADDY_HURT_MODES = frozenset({3, 4})   # HURT, BUMPED
+_BADDY_DEAD_MODES = frozenset({5, 9})   # DIE, DEAD
+# Everything else (WALK, LOOK, HUNT, SWAMPSHOT, HAREJUMP, OCTOSHOT) animates
+# the walk frames - classic baddy art doesn't dedicate a distinct pose to
+# those per-type "special attack" modes (confirmed empirically: the row that
+# would hold one, e.g. baddyoctopus.png's row 2, is really just a 3rd walk
+# variant only drawn for the left/right columns - see the recon contact
+# sheets), so treating them identically to WALK is both simpler and correct.
+
+# Row indices within a BaddySheet 4x4 grid (see BaddySheet's docstring for how
+# these were derived empirically from the actual PNGs).
+_BADDY_ROW_HURT = 2
+_BADDY_ROW_DEAD = 3
+
+
+class BaddySheet:
+    """Slices a classic baddy PNG (baddygray.png, baddyoctopus.png, ...) into
+    per-direction/mode frames.
+
+    Derived empirically (see the contact-sheet recon this task's evidence is
+    based on - every 128-wide sheet sliced cleanly into a 4x4 grid of the same
+    aspect once GServer-v2's own body.png convention - column = direction, in
+    the standard up/left/down/right order - was applied): 4 columns of
+    `width/4` px, 4 rows of `height/4` px. baddyhare.png (32x32) is the
+    exception: a single frame reused for every mode/direction.
+
+    Row semantics (see the module-level _BADDY_HURT_MODES/_BADDY_DEAD_MODES
+    comment): row 0/1 are the two walk frames, row 2 is a hurt/recoil pose,
+    row 3 is a final "dead" pose (for baddygray-style sheets this is a
+    fully-curled ball; for baddyoctopus it's often blank for the up/down
+    columns, since front/back needed no distinct death art - handled by
+    _frame_for climbing back down to a populated row).
+
+    The RIGHT direction's sheet column is unreliable across sheets - some
+    (baddygray/gold/lizardon) reuse it in rows 1-2 for an unrelated vertical
+    blood-decal asset rather than a right-facing pose - so RIGHT is always
+    synthesized by horizontally flipping the LEFT column instead of reading
+    column 3 (confirmed safe: where column 3 IS genuine right-facing art,
+    e.g. baddyoctopus row 0, it's already a mirror of column 1).
+
+    Background pixels: the classic PNGs carry a palette transparency index
+    (verified per-file with PIL - each has its own `transparency` index, not
+    a fixed RGB) that SpriteManager/pygame already resolves into alpha=0 via
+    convert_alpha() in load_sheet()/get_sprite() - no extra colorkey handling
+    needed here.
+    """
+
+    _DIRECTION_COLS = {0: 0, 1: 1, 2: 2}  # up, left, down -> sheet column
+    _BLANK_ALPHA_FRACTION = 0.92  # frame is "no art" if >=92% transparent
+
+    def __init__(self, sprite_mgr, image: str):
+        self.sprite_mgr = sprite_mgr
+        self.image = image
+        self._blank_cache: dict = {}
+        self._mirror_cache: dict = {}
+
+    def _sheet_layout(self, sheet):
+        """(frame_w, frame_h, single) for the loaded sheet surface."""
+        w, h = sheet.get_size()
+        if w <= 32 and h <= 32:
+            return w, h, True
+        return w // 4, h // 4, False
+
+    def _raw_frame(self, row: int, col: int):
+        sheet = self.sprite_mgr.load_sheet(self.image)
+        if sheet is None:
+            return None
+        fw, fh, single = self._sheet_layout(sheet)
+        if single:
+            row = col = 0
+        return self.sprite_mgr.get_sprite(self.image, col * fw, row * fh, fw, fh)
+
+    def _is_blank(self, row: int, col: int) -> bool:
+        key = (row, col)
+        cached = self._blank_cache.get(key)
+        if cached is not None:
+            return cached
+        sprite = self._raw_frame(row, col)
+        if sprite is None:
+            return True
+        w, h = sprite.get_size()
+        step = 2 if w * h > 256 else 1
+        total = transparent = 0
+        for py in range(0, h, step):
+            for px in range(0, w, step):
+                total += 1
+                if sprite.get_at((px, py))[3] == 0:
+                    transparent += 1
+        blank = total == 0 or (transparent / total) >= self._BLANK_ALPHA_FRACTION
+        self._blank_cache[key] = blank
+        return blank
+
+    def frame(self, row: int, direction: int):
+        """The frame for `row` (0-3) and `direction` (0-3, up/left/down/right),
+        falling back to the nearest populated row above it (see class
+        docstring) and synthesizing RIGHT by flipping LEFT. None if the sheet
+        itself hasn't loaded (caller should request it and stay invisible)."""
+        sheet = self.sprite_mgr.load_sheet(self.image)
+        if sheet is None:
+            return None
+        _, _, single = self._sheet_layout(sheet)
+        if single:
+            return self._raw_frame(0, 0)
+
+        mirror = direction == 3
+        col = 1 if mirror else self._DIRECTION_COLS.get(direction, 1)
+        r = max(0, min(row, 3))
+        while r > 0 and self._is_blank(r, col):
+            r -= 1
+
+        if mirror:
+            key = (r, col)
+            flipped = self._mirror_cache.get(key)
+            if flipped is None:
+                base = self._raw_frame(r, col)
+                if base is None:
+                    return None
+                flipped = pygame.transform.flip(base, True, False)
+                self._mirror_cache[key] = flipped
+            return flipped
+        return self._raw_frame(r, col)
 
 
 class EntityRenderMixin:
@@ -217,38 +368,64 @@ class EntityRenderMixin:
             for store in list(wimgs.values()):
                 self._render_npc_layers(store, over=True)
     def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
-        """Render a baddy as a gani entity (the C# client's style). The server-reported
-        mode picks the animation (walk/idle/hurt/dead), direction faces it, and a
-        per-type head over body.png makes the enemy readable. Falls back to a red
-        marker only if the gani system can't produce a frame."""
+        """Render a baddy from its own classic sprite sheet (baddygray.png,
+        baddyoctopus.png, ...) - see BaddySheet. The server-reported mode
+        picks walk/hurt/dead, direction picks the column, and the type (or an
+        explicit BDPROP_POWERIMAGE image) picks which sheet. Falls back to the
+        old gani head-over-body composite only if the sheet can't be loaded."""
         mode = baddy.get('mode', 2)
         direction = baddy.get('direction', 2)
+        btype = baddy.get('type', 0)
+        image = baddy.get('image') or _BADDY_IMAGES.get(btype, _BADDY_DEFAULT_IMAGE)
 
-        # Prefer a server-supplied gani; otherwise drive one from the mode.
+        sheet = self.baddy_sheets.get(image)
+        if sheet is None:
+            sheet = BaddySheet(self.sprite_mgr, image)
+            self.baddy_sheets[image] = sheet
+
+        if mode in _BADDY_DEAD_MODES:
+            row = _BADDY_ROW_DEAD
+        elif mode in _BADDY_HURT_MODES:
+            row = _BADDY_ROW_HURT
+        else:
+            # Walk family: alternate the sheet's 2 walk frames. Prefer the
+            # server's own BDPROP_ANI index (so it stays in lockstep with
+            # whatever pace the server animates at); fall back to a local
+            # ~4fps clock for servers that never send it.
+            ani = baddy.get('animation')
+            row = int(ani) % 2 if ani is not None else int(time.time() * 4) % 2
+
+        frame = sheet.frame(row, direction)
+        if frame is not None:
+            # Hurt baddies blink so a hit reads even when the mode reverts fast
+            # (mirrors the old gani path's behavior).
+            if mode == 3 and int(time.time() * 10) % 2 == 0:
+                return
+            self.screen.blit(frame, (x, y))
+            return
+
+        # The sheet isn't available at all (missing from assets/baddies/ and
+        # never streamed by the server) - ask for it, and fall back to the
+        # legacy gani head-over-body composite as a last resort rather than
+        # leaving the baddy invisible.
+        self._request_asset(image)
+
         gani_name = (baddy.get('gani') or baddy.get('ani')
                      or _BADDY_MODE_GANI.get(mode, "walk"))
-
         anim = self.baddy_anims.get(baddy_id)
         if anim is None:
             anim = AnimationState(self.gani_parser)
             self.baddy_anims[baddy_id] = anim
-        # set_animation no-ops when the name is unchanged, so this is cheap to
-        # call every frame; it also keeps the facing direction in sync.
         anim.set_animation(gani_name, direction)
 
         if anim.gani is not None:
-            # Hurt baddies blink so a hit reads even when the mode reverts fast.
             if mode == 3 and int(time.time() * 10) % 2 == 0:
                 return
-            head = _BADDY_HEADS.get(baddy.get('type', 0), _BADDY_DEFAULT_HEAD)
+            head = _BADDY_HEADS.get(btype, _BADDY_DEFAULT_HEAD)
             self._render_animated_entity(x, y, anim,
                                          {'head_image': head, 'body_image': 'body.png'})
             return
 
-        # The gani isn't downloaded yet — ask for it and stay invisible,
-        # matching the NPC gani-fallback convention elsewhere in this file
-        # (_render_npc), rather than drawing a placeholder primitive. It pops
-        # in once on_file caches it.
         self._request_asset(gani_name + '.gani')
     def _render_horse(self, x: float, y: float, horse: dict, key):
         """Render a horse placed by another player (PLO_HORSEADD). Uses the
@@ -362,7 +539,11 @@ class EntityRenderMixin:
 
         # (x, y) is the sprite's top-left; the sprite is ~2 tiles wide (center at
         # x + TILE_SIZE) with the head near the top. Hold the object centered
-        # over the head, resting just above it.
+        # over the head, resting just above it, so the carry gani's raised
+        # hands read as holding each side of the object. (Verified centered
+        # against dusty's bush by pixel measurement — an apparent lean there
+        # is the art's asymmetric transparency letting the head show through
+        # one quadrant, not a placement offset.)
         obj_x = (x + TILE_SIZE) - obj_width // 2
         obj_y = y - obj_height + 8
 
@@ -375,6 +556,7 @@ class EntityRenderMixin:
                 tile_x = obj_x + dx * TILE_SIZE
                 tile_y = obj_y + dy * TILE_SIZE
                 self.screen.blit(tile_surf, (tile_x, tile_y))
+
     def _split_other_player_anim(self, player_anim: str) -> Tuple[str, List[str]]:
         """Split a `setani ani,param1,param2` comma-joined string into
         (name, params), memoized on the raw string. Other players' anim
@@ -623,6 +805,18 @@ class EntityRenderMixin:
                 vals.append(0)
         return vals if have_any else None
 
+    @staticmethod
+    def _npc_image(npc: dict, new_key: str, wire_key: str, default: str) -> str:
+        """Resolve a character NPC's head/body image, preferring the
+        setcharprop-style key (`new_key`, set by the client-side GS1 path -
+        gs1_client.py's _CHARPROP_NPC) over the raw wire prop the modern
+        server-run GS1 sends instead (`wire_key` - see
+        packets.parse_npc_props' HEADIMAGE/_NPC_STRING_KEYS handling). The
+        wire prop can rarely be a bare preset-id int rather than a filename
+        (HEADIMAGE's marker<100 case); treat that like a missing value."""
+        v = npc.get(new_key) or npc.get(wire_key)
+        return v if isinstance(v, str) and v else default
+
     def _split_npc_gani(self, gani_name: str) -> Tuple[str, List[str]]:
         """Split a `setcharani/setani ani,param1,...` comma-joined string into
         (name, params), memoized on the raw string - same rationale as
@@ -665,6 +859,15 @@ class EntityRenderMixin:
             gani_name, gani_params = self._split_npc_gani(gani_name)
         image_name = npc.get('image')
         is_character = npc.get('is_character')
+        if not is_character and not image_name and (npc.get('headimage') or npc.get('bodyimage')):
+            # is_character is normally set by the client-side GS1 showcharacter
+            # builtin (gs1_client.py), but pygserver now runs level scripts
+            # SERVER-side and just streams the look as plain NPC props
+            # (headimage/bodyimage - packets.parse_npc_props), with no
+            # showcharacter call for the client to see. An NPC with a face but
+            # no plain sprite image (guards, villagers, ...) is a character
+            # either way, so infer it the same as an explicit showcharacter.
+            is_character = True
         if is_character and not gani_name:
             gani_name = 'idle'  # a showcharacter with no ani idles
 
@@ -696,8 +899,8 @@ class EntityRenderMixin:
                 equip = {}
                 if is_character:
                     equip = {
-                        'body_image': npc.get('body_image') or 'body.png',
-                        'head_image': npc.get('head_image') or 'head0.png',
+                        'body_image': self._npc_image(npc, 'body_image', 'bodyimage', 'body.png'),
+                        'head_image': self._npc_image(npc, 'head_image', 'headimage', 'head0.png'),
                         'sword_image': npc.get('sword_image') or 'sword1.png',
                         'shield_image': npc.get('shield_image') or 'shield1.png',
                         # Tier 2a: live via setcharprop #C0-#C4 (see
@@ -1165,9 +1368,16 @@ class EntityRenderMixin:
             self.screen.blit(self.placeholder_sprite, (x, y))
             return
 
-        # No base offset - gani sprite positions are relative to entity position
-        # Entity position (x, y) is the top-left of the tile
-        base_offset_x = 0
+        # Gani sprite positions are relative to a 48px-wide frame canvas with
+        # the character CENTERED in it (idle.gani places body/head at x=8,
+        # shadow center 23.5 — canvas center 24). Entity position (x, y) is
+        # the top-left of the 2-tile (32px) logical box, so anchor the canvas
+        # 8px left to line the character up with its box: body center lands
+        # at x+15.5, matching the collision feet box, the nametag, and the
+        # carried-object blit (all of which center on the box). Vertical
+        # needs no shift — body y=16..47 already puts feet in the y+2..y+3
+        # collision rows.
+        base_offset_x = -(48 - TILE_SIZE * 2) // 2
         base_offset_y = 0
 
         # Render each sprite in the frame, from the memoized layer resolution
