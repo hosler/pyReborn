@@ -12,7 +12,7 @@ import pygame
 from pygame.locals import (
     QUIT, KEYDOWN, MOUSEBUTTONDOWN,
     K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE,
+    K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE, K_TAB,
     K_F1, K_F2, K_F7, K_F8, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
@@ -64,6 +64,13 @@ class InputMixin:
                     self._handle_chat_input(event)
                 else:
                     self._handle_key_press(event)
+                    # GS1 `keypressed` event (weapon scripts, e.g. the sword
+                    # emulation in npcserver.md). Only for gameplay input, same
+                    # as the overlay guard above — queued and fired from
+                    # _handle_input (after keys_dir is refreshed) so a script's
+                    # keydown() check sees the key that was just pressed.
+                    self._gs1_keypress_queue.append(
+                        (event.key, event.unicode or ""))
 
             elif event.type == pygame.VIDEORESIZE:
                 # Resizable window: the viewport rescales the fixed virtual canvas.
@@ -244,17 +251,23 @@ class InputMixin:
             self.noclip = not self.noclip
             print(f"Noclip {'ON' if self.noclip else 'OFF'}")
     def _clear_gs1_input(self):
-        """Drop all held keys from the GS1 engine (input is blocked this frame)."""
+        """Drop all held keys from the GS1 engine (input is blocked this frame).
+        Also drops any queued `keypressed` fires — a key pressed while an
+        overlay/chat box consumed it, or while frozen/dead, shouldn't reach
+        weapon scripts (matches keys_dir being cleared the same frames)."""
         gs1 = getattr(self, 'gs1', None)
         if gs1 is not None:
             gs1.keys_dir = set()
             gs1.keys_raw = set()
+        self._gs1_keypress_queue.clear()
 
     def _feed_gs1_input(self, keys):
         """Mirror pygame keyboard/mouse + screen size into the GS1 engine so
         weapon scripts (arenaSYS reads keydown()/playerx, arenaGUI reads the
-        mouse + screen) can drive arena gameplay. keydown indices: 0=up 1=left
-        2=down 3=right 4=action(D)."""
+        mouse + screen) can drive arena gameplay. keydown indices follow the
+        control-function table in scripting-gs1-functions.md: 0=up 1=left
+        2=down 3=right 4=weapon(D) 5=sword(S/Space) 6=grab(A) 7=map(M)
+        8=chat(Tab) 9=inventory(Q). Index 10 (pause/P) has no bound key here."""
         gs1 = getattr(self, 'gs1', None)
         if gs1 is None:
             return
@@ -274,6 +287,16 @@ class InputMixin:
             d.add(3)
         if keys[K_d]:
             d.add(4)
+        if keys[K_s] or keys[K_SPACE]:
+            d.add(5)
+        if keys[K_a]:
+            d.add(6)
+        if keys[K_m]:
+            d.add(7)
+        if keys[K_TAB]:
+            d.add(8)
+        if keys[K_q]:
+            d.add(9)
         gs1.keys_dir = d
         # Translate to VK-style codes (see pygame_key_to_vk) so scripts'
         # keydown2(<Reborn VK code>) calls actually match held keys. Cache the
@@ -314,6 +337,21 @@ class InputMixin:
 
         keys = pygame.key.get_pressed()
         self._feed_gs1_input(keys)
+
+        # Fire any GS1 `keypressed` events queued by _handle_events, now that
+        # keys_dir above reflects the just-pressed key — so a script's
+        # `keypressed && keydown(5)` (see npcserver.md's sword emulation)
+        # actually sees it true on the same frame the event fires.
+        if self._gs1_keypress_queue:
+            gs1 = getattr(self, 'gs1', None)
+            queued, self._gs1_keypress_queue = self._gs1_keypress_queue, []
+            if gs1 is not None:
+                for pygame_key, ch in queued:
+                    vk = self._vk_cache.get(pygame_key)
+                    if vk is None:
+                        vk = pygame_key_to_vk(pygame_key)
+                        self._vk_cache[pygame_key] = vk
+                    gs1.fire_keypress(vk, ch)
 
         # Arena mode: a weapon called disabledefmovement and drives movement +
         # bomb placement itself by reading keydown()/playerx. Don't run the

@@ -165,6 +165,9 @@ class GameClient(
 
         # Key state tracking
         self.key_just_pressed: Dict[int, bool] = {}
+        # GS1 `keypressed` events queued by _handle_events, fired from
+        # _handle_input once keys_dir is refreshed (see game/input.py).
+        self._gs1_keypress_queue: List[Tuple[int, str]] = []
 
         # World rendering
         self.world_surface: Optional[pygame.Surface] = None

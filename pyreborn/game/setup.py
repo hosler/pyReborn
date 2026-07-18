@@ -471,6 +471,11 @@ class SetupMixin:
         self.gs1.on_setplayerprop = on_setplayerprop
         self.gs1.on_tiledef = on_tiledef
 
+        # A sword swing connected with a level NPC (client.py _sword_hit_npcs):
+        # fire `washit` on it, same as the real client (scripting-gs1-events.md).
+        self.client.on_sword_hit_npc = (
+            lambda npc_id: self.gs1.trigger_npc_event(npc_id, "washit"))
+
         # Route NPC touch events through the shared GS1 engine, which runs the
         # script (including its `play`/`triggeraction`/etc. side effects via the
         # gs1.on_* callbacks above). The handler only does collision detection.

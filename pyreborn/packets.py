@@ -2114,6 +2114,26 @@ def parse_private_message(data: bytes) -> dict:
         return {'from_id': 0, 'type': '', 'message': ''}
 
 
+def build_hit_objects(power: float, x: float, y: float) -> bytes:
+    """
+    Build PLI_HITOBJECTS (packet 36) - report a sword-swing hit probe.
+
+    Format (GServer-v2 msgPLI_HITOBJECTS): [power*2:GCHAR][x*2:GCHAR][y*2:GCHAR]
+    (an optional trailing GINT3 npc_id exists for NPC-server weapons; a plain
+    sword swing does not send it). The server runs its own hit detection at
+    (x, y) and fires `washit` on server-side scripted NPCs.
+
+    Args:
+        power: Hit power (sword power, hearts)
+        x, y: Probe location in level tiles (center of the swing arc)
+    """
+    packet = bytearray()
+    packet.append((int(power * 2) & 0x7F) + 32)
+    packet.append((int(x * 2) & 0x7F) + 32)
+    packet.append((int(y * 2) & 0x7F) + 32)
+    return bytes(packet)
+
+
 def build_baddy_hurt(baddy_id: int, damage: float) -> bytes:
     """
     Build PLI_BADDYHURT (packet 16) - attack a baddy/enemy.

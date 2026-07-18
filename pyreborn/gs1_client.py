@@ -83,7 +83,7 @@ _CHARPROP_NPC = {
 # silently so a script full of them still runs its visible commands.
 _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
-    "enableweapons", "disableweapons", "noplayerkilling",
+    "noplayerkilling",
     "showstats", "setcursor", "sleep", "replaceani", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "callweapon", "callnpc",
     "serverwarp",
@@ -139,12 +139,49 @@ class GS1ClientHost(Host):
                 return _num_or_str(getattr(player, PLAYER_ATTR[name], 0))
             if name == "playeronline":
                 return 1.0
+            # playerswimming: no dedicated swim-state on the core Client (that
+            # lives on GameClient, which this host can't see) — approximate it
+            # with the same tile-water check onwater()/is_wall() already use.
+            if name == "playerswimming":
+                px = float(getattr(self.rt.client, "x", 0)) % 64
+                py = float(getattr(self.rt.client, "y", 0)) % 64
+                return 1.0 if self.rt.is_water_at(px, py) else 0.0
+            # playeronhorse: PLPROP_HORSEGIF (21) is only non-empty while
+            # mounted (mount_horse/dismount are player-props round trips).
+            if name == "playeronhorse":
+                return 1.0 if getattr(player, "horse_image", "") else 0.0
+            # playerfreezetime: seconds left on the last `freezeplayer` call
+            # (rt._freeze_until is armed in _dispatch, same duration the input
+            # layer locks movement for).
+            if name == "playerfreezetime":
+                import time as _t
+                remaining = self.rt._freeze_until - _t.time()
+                return remaining if remaining > 0 else 0.0
+            # carry* flags: pyReborn only models bush/rock/pot lift objects
+            # (game/collision.py _get_liftable_name); "rock"/"pot" are the
+            # same objects Reborn's docs call "stone"/"vase". carriesblackstone/
+            # -sign/-npc have no client-side backing (nothing lifts those) and
+            # are intentionally left unimplemented.
+            if name == "carrying":
+                return 1.0 if player.is_carrying() else 0.0
+            if name == "carriesbush":
+                return 1.0 if player.carried_object_type == "bush" else 0.0
+            if name == "carriesstone":
+                return 1.0 if player.carried_object_type == "rock" else 0.0
+            if name == "carriesvase":
+                return 1.0 if player.carried_object_type == "pot" else 0.0
         if isinstance(npc, dict) and name in NPC_ATTR:
             return _num_or_str(npc.get(NPC_ATTR[name], 0))
+        # visible: True unless `hide`/`destroy` cleared it (npc dict has no
+        # key until then, so a never-hidden NPC must default true).
+        if isinstance(npc, dict) and name == "visible":
+            return 1.0 if npc.get("visible", True) else 0.0
         if name == "isweapon":
             return 1.0 if getattr(ctx, "_is_weapon", False) else 0.0
         if name == "weaponscount":
             return float(len(getattr(self.rt.client, "weapons", {}) or {}))
+        if name == "weaponsenabled":
+            return 1.0 if self.rt.weapons_enabled else 0.0
         if name == "playerscount":
             return float(len(self._player_list()))
         if name == "tokenscount":   # number of tokens from the last `tokenize`
@@ -275,6 +312,14 @@ class GS1ClientHost(Host):
         if name == "enabledefmovement":
             rt.default_movement = True
             return
+        # enableweapons/disableweapons: real client-side state (backs the
+        # `weaponsenabled` flag), not just a swallowed no-op.
+        if name == "enableweapons":
+            rt.weapons_enabled = True
+            return
+        if name == "disableweapons":
+            rt.weapons_enabled = False
+            return
         # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — remap a tile-block
         # to a custom tileset image (Bomber Arena's chocolate tiles). The block
         # is xoffset/256 (8 images x 256px build the level's 2048px tileset).
@@ -323,8 +368,18 @@ class GS1ClientHost(Host):
             rt.on_warp(to_str(args[0]), x, y)
             return
         if name == "freezeplayer":
+            secs = to_num(args[0]) if args else 0.5
             if rt.on_freezeplayer:
-                rt.on_freezeplayer(to_num(args[0]) if args else 0.5)
+                rt.on_freezeplayer(secs)
+            import time as _t
+            rt._freeze_until = _t.time() + max(0.0, secs)
+            return
+        # hitobjects power,x,y — client-side sword-hit emulation (see
+        # npcserver.md "Emulating sword hits"): fire `washit` on NPCs and hurt
+        # baddies at that (level-local) point, same effects as a real sword
+        # swing (client.py _sword_hit_npcs/_sword_hit_baddies).
+        if name == "hitobjects" and len(args) >= 3:
+            rt.hit_objects_at(to_num(args[1]), to_num(args[2]), to_num(args[0]))
             return
         if name == "setminimap" and rt.on_setminimap:
             rt.on_setminimap([to_str(a) for a in args])
@@ -675,6 +730,12 @@ class GS1ClientHost(Host):
                 return to_str(others[idx - 1].get(f"gattrib{ai}", ""))
             return ""
         if code == "#L":
+            # The SOURCE NPC's level, not the player's — an NPC's script (e.g.
+            # a control-NPC or one on a different gmap segment) should report
+            # where IT lives. npc['_level'] is set from PLO_NPCPROPS; fall back
+            # to the player's level when the NPC has none (weapon scripts).
+            if isinstance(npc, dict) and npc.get("_level"):
+                return to_str(npc["_level"])
             return to_str(getattr(self.rt.client, "level", "")) if self.rt.client else ""
         if code == "#p":  # projectile param n during actionprojectile2
             idx = int(to_num(args[0])) if args else 0
@@ -763,12 +824,14 @@ class ClientGS1:
         self._shared = {"client": {}, "server": _ServerFlagScope(self),
                         "level": {}, "global": {}}
         self._flags: dict = {}
-        self._proj_params: list = []   # #p(n) during an actionprojectile2 event
+        self._proj_params: list = []   # #p(n) during actionprojectile2/keypressed
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
         # Input / screen / game-role state the arena weapons read via builtins.
         # The pygame input layer populates these each frame; headless tests set
-        # them directly. keys_dir holds held arrow/action indices (0=up 1=left
-        # 2=down 3=right 4=action/D); keys_raw holds raw keycodes for keydown2.
+        # them directly. keys_dir holds held control-function indices (see the
+        # keydown() table in scripting-gs1-functions.md: 0=up 1=left 2=down
+        # 3=right 4=weapon/D 5=sword/S 6=grab/A 7=map/M 8=chat/Tab 9=inventory/Q);
+        # keys_raw holds raw keycodes for keydown2.
         self.screen_w = 800
         self.screen_h = 600
         self.mouse_x = 0.0
@@ -779,6 +842,8 @@ class ClientGS1:
         # leader iff alone in the level); set True/False to force (tests).
         self.is_leader = None
         self.default_movement = True   # disabledefmovement: arena weapons drive movement
+        self.weapons_enabled = True    # enableweapons/disableweapons -> `weaponsenabled`
+        self._freeze_until = 0.0       # time.time() a freezeplayer call unfreezes -> `playerfreezetime`
         self.keys_dir: set = set()
         self.keys_raw: set = set()
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
@@ -992,6 +1057,45 @@ class ClientGS1:
             self.trigger_event("actionprojectile2")
         finally:
             self._proj_params = []
+
+    def fire_keypress(self, keycode, char=""):
+        """A key was pressed: fire `keypressed` (npcserver-gs1.md) across all
+        scripts, with `#p(0)`/`#p(1)` bound to the keycode/character. Shares
+        _proj_params with actionprojectile2 — the two never fire concurrently."""
+        self._proj_params = [float(keycode), char]
+        try:
+            self.trigger_event("keypressed")
+        finally:
+            self._proj_params = []
+
+    def hit_objects_at(self, x, y, power=1.0):
+        """`hitobjects power,x,y` (also used to emulate a sword hit, see
+        npcserver.md "Emulating sword hits"): fire `washit` on visible,
+        blocking NPCs at (x, y) and PLI_BADDYHURT on baddies there.
+        Coordinates are level-local (0-63), matching npc/baddy x,y and
+        playerx/playery. `power` is hearts of damage (GS1Commands.cpp doubles
+        it to half-hearts only for the network PLO_HITOBJECTS relay; our
+        hurt_baddy() already takes hearts)."""
+        cl = self.client
+        if cl is None:
+            return
+        for npc_id, npc in list(getattr(cl, "npcs", {}).items()):
+            if not isinstance(npc, dict):
+                continue
+            if npc.get("visible", True) is False or npc.get("dontblock"):
+                continue
+            nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+            if abs(nx - x) <= 1.0 and abs(ny - y) <= 1.0:
+                self.trigger_npc_event(npc_id, "washit")
+        for baddy_id, baddy in list(getattr(cl, "baddies", {}).items()):
+            if not isinstance(baddy, dict):
+                continue
+            bx, by = to_num(baddy.get("x", 0)), to_num(baddy.get("y", 0))
+            if abs(bx - x) <= 1.0 and abs(by - y) <= 1.0:
+                try:
+                    cl.hurt_baddy(baddy_id, damage=power)
+                except Exception:
+                    pass
 
     def _run(self, entry, event):
         key = entry.get("_key")

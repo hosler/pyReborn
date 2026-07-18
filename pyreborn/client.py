@@ -427,6 +427,10 @@ class Client:
         # layer drop the NPC's collision shape and loaded GS1 prog so a
         # despawned NPC can't keep firing playertouchsme from its old tile.
         self.on_npc_del: Optional[Callable[[int], None]] = None
+        # Sword-hit-NPC callback: handler(npc_id) - a sword swing connected
+        # with a level NPC (see _sword_hit_npcs). The scripting layer wires
+        # this to fire the GS1 `washit` event on that NPC.
+        self.on_sword_hit_npc: Optional[Callable[[int], None]] = None
 
         # Server-control callbacks (tier 3).
         # Freeze state changed: handler(frozen: bool).
@@ -826,8 +830,24 @@ class Client:
         # itself is just a gani prop; the attacker detects the hit and sends
         # PLI_HURTPLAYER per victim (the server only relays/applies). Without
         # this, sword swings are cosmetic and players can't melee each other.
+        # Level NPCs and baddies get the same treatment: NPCs react to a
+        # `washit` event (bushes/pots/enemies with scripts) and baddies take
+        # real damage via PLI_BADDYHURT.
         if sent:
             self._sword_hit_players(direction)
+            self._sword_hit_npcs(direction)
+            self._sword_hit_baddies(direction)
+            # Also report the swing to the server so IT can run hit detection
+            # against server-side scripted NPCs (fires their `washit`). Real
+            # clients send PLI_HITOBJECTS on every swing; the probe point is
+            # the center of the swing arc in local level coords.
+            from .packets import build_hit_objects
+            dir_vec = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction, (0, 1))
+            probe_x = (self.player.x % 64) + 1 + dir_vec[0] * 1.5
+            probe_y = (self.player.y % 64) + 1.5 + dir_vec[1] * 1.5
+            power = max(1.0, float(getattr(self.player, "sword_power", 1) or 1))
+            self._protocol.send_packet(
+                PacketID.PLI_HITOBJECTS, build_hit_objects(power, probe_x, probe_y))
         return sent
 
     # Sword swing hitbox: how far the blade reaches in the facing direction
@@ -855,6 +875,64 @@ class Client:
             if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
                 self.attack_player(pid, damage=damage,
                                    knockback_x=fx * 2, knockback_y=fy * 2)
+
+    def _sword_hit_npcs(self, direction: int):
+        """Fire on_sword_hit_npc for every visible, blocking level NPC inside
+        the sword arc (same math as _sword_hit_players). Hidden NPCs (`hide`/
+        `destroy` -> visible=False) and non-blocking ones (`dontblock`) are
+        skipped: per npcserver-gs1.md, `visible` tracks whether an NPC has
+        been made invisible, and a dontblock NPC has no collision to hit.
+        NPC positions use world_x/world_y (set on PLO_NPCPROPS) since
+        self.player.x/y are world coords on a GMAP."""
+        if not self.on_sword_hit_npc:
+            return
+        dir_vec = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction)
+        if not dir_vec:
+            return
+        fx, fy = dir_vec
+        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
+        for npc_id, npc in list(self.npcs.items()):
+            if npc.get('visible', True) is False or npc.get('dontblock'):
+                continue
+            nx = npc.get('world_x', npc.get('x'))
+            ny = npc.get('world_y', npc.get('y'))
+            if nx is None or ny is None:
+                continue
+            dx, dy = (nx + 1.0) - my_cx, (ny + 1.0) - my_cy
+            forward = dx * fx + dy * fy
+            lateral = abs(dx * fy) + abs(dy * fx)
+            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+                self.on_sword_hit_npc(npc_id)
+
+    def _sword_hit_baddies(self, direction: int):
+        """Send PLI_BADDYHURT for every baddy inside the sword arc (same math
+        as _sword_hit_players). Baddy x/y are level-local, not world coords
+        (unlike NPCs, PLO_BADDYPROPS has no world_x/world_y), so fold in the
+        current GMAP segment's offset first, like render_entities.py does for
+        drawing them."""
+        dir_vec = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction)
+        if not dir_vec:
+            return
+        fx, fy = dir_vec
+        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
+        seg_off_x = seg_off_y = 0
+        if self.gmap_grid:
+            seg = next((g for g, n in self.gmap_grid.items()
+                        if n == self._current_level_name), None)
+            if seg:
+                seg_off_x, seg_off_y = seg[0] * 64, seg[1] * 64
+        # Half a heart per sword power level, matching the classic client.
+        damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
+        for bid, b in list(self.baddies.items()):
+            bx, by = b.get('x'), b.get('y')
+            if bx is None or by is None:
+                continue
+            wx, wy = bx + seg_off_x, by + seg_off_y
+            dx, dy = (wx + 1.0) - my_cx, (wy + 1.0) - my_cy
+            forward = dx * fx + dy * fy
+            lateral = abs(dx * fy) + abs(dy * fx)
+            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+                self.hurt_baddy(bid, damage=damage)
 
     def drop_bomb(self, power: int = 1) -> bool:
         """
