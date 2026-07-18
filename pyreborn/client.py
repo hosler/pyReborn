@@ -882,21 +882,34 @@ class Client:
             return
         fx, fy = dir_vec
         my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
-        # self.players carries raw wire coords (level-local 0-63) while
-        # self.player.x/y are WORLD coords on a GMAP — without folding the
-        # attacker's segment offset in, every hit test off segment (0,0) is
-        # 64+ tiles wrong and swords silently never connect (live repro:
-        # chicken1.nw at world (84,94) vs target view (20,31.5)). Same-level
-        # players share the attacker's segment, so its offset applies.
+        # self.players['x'/'y'] are now always LEVEL-LOCAL (0-63) - the
+        # PLO_OTHERPLPROPS handler normalizes both classic X/Y and
+        # high-precision X2/Y2 into that one frame at merge time - while
+        # self.player.x/y are WORLD coords on a GMAP, so folding in an
+        # offset is still required to compare them. 'world_x'/'world_y' are
+        # set on that same merge whenever the wire told us the true world
+        # position (a value >= 64, only possible via X2/Y2); prefer those
+        # when known instead of assuming the attacker's own segment. When
+        # they're not known (pygserver never sends per-player GMAPLEVELX/Y
+        # (43/44) for OTHERPLPROPS, so a player on a DIFFERENT segment from
+        # ours has no way to report its true segment), fall back to folding
+        # in the ATTACKER's own segment offset - correct for same-segment
+        # targets, but a target one segment over (e.g. attacker on
+        # chicken1 at world (64, 95.5), target on chicken2 at local
+        # (63.5, 94), a 1.6-tile world gap) still won't connect. Documented
+        # limitation, not fixable client-side without server support.
         seg_ox = (self.player.x // 64) * 64
         seg_oy = (self.player.y // 64) * 64
         # Half a heart per sword power level, matching the classic client.
         damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
         for pid, p in list(self.players.items()):
-            px, py = p.get('x'), p.get('y')
-            if px is None or py is None:
-                continue
-            if px < 64 and py < 64:
+            wx, wy = p.get('world_x'), p.get('world_y')
+            if wx is not None and wy is not None:
+                px, py = wx, wy
+            else:
+                px, py = p.get('x'), p.get('y')
+                if px is None or py is None:
+                    continue
                 px, py = px + seg_ox, py + seg_oy
             dx, dy = (px + 1.0) - my_cx, (py + 1.5) - my_cy
             forward = dx * fx + dy * fy
@@ -1058,11 +1071,23 @@ class Client:
         self.player.animation = gani_name
         self.player.hurt_timeout = time.time() + 0.5  # 500ms hurt animation
 
-        # Send combined hurt response with health + animation
+        # Send combined hurt response with health + animation. Always send
+        # LOCAL coords (0-63) via X2/Y2 - self.player.x/y are WORLD coords
+        # on a GMAP (move()/sword_attack() already wrap with % 64 for this
+        # same reason), but this used to send them verbatim. The server
+        # tracks position per-level/local (pygserver player.py
+        # _handle_player_props: `self.x = props[PLPROP.X2]`, no unwrap), so
+        # a world value here poisoned the SERVER's notion of this player's
+        # position - not just the wire relay other clients saw (BUG 1's
+        # players_visible frame poisoning), but pygserver's own hurt-range
+        # sanity check (combat.py handle_hurt_player: `abs(attacker.x -
+        # target.x) > 6.0`), which started rejecting every subsequent hit
+        # against this player as "out of range" once its tracked x/y jumped
+        # by a whole segment (live repro: kills took 3-6 extra swings).
         data = build_hurt_response(
             new_hearts,
-            self.player.x,
-            self.player.y,
+            self.player.x % 64,
+            self.player.y % 64,
             self.player.direction,
             gani_name
         )
@@ -1540,10 +1565,14 @@ class Client:
         if self.player.arrows <= 0:
             logger.debug("shoot_arrow: no arrows left, not firing")
             return False
+        # ARROWADD wire coords are LEVEL-LOCAL (0-63) like move()/sword —
+        # GServer-v2's msgPLI_ARROWADD treats them as local-to-segment, and
+        # sending world coords on a gmap made the server drop the arrow as
+        # out-of-bounds on tick 1 (arrows silently never hit anything).
         if x is None:
-            x = self.player.x
+            x = self.player.x % 64
         if y is None:
-            y = self.player.y
+            y = self.player.y % 64
         if direction is None:
             direction = self.player.direction
         data = build_arrow_add(x, y, direction, sprite, power, from_player=True)
@@ -1844,10 +1873,19 @@ class Client:
             # Find the level's grid position
             for (gx, gy), level_name in self.gmap_grid.items():
                 if level_name == npc_level:
+                    # Same guard as the PLO_NPCPROPS handler (BUG 4): only
+                    # fold in the segment offset for a still-local value, so
+                    # a re-run of this (e.g. gmap grid arriving/reloading
+                    # after an NPC's coords were already normalized to
+                    # world) can't double-offset it.
                     if 'x' in npc:
-                        npc['world_x'] = npc['x'] + gx * 64
+                        raw_x = npc['x']
+                        npc['world_x'] = (raw_x if (raw_x >= 64 or raw_x < 0)
+                                           else raw_x + gx * 64)
                     if 'y' in npc:
-                        npc['world_y'] = npc['y'] + gy * 64
+                        raw_y = npc['y']
+                        npc['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
+                                           else raw_y + gy * 64)
                     break
 
     def get_adjacent_levels(self, level_name: str) -> List[str]:
@@ -2222,16 +2260,34 @@ class Client:
         # PLO_LEVELBOARD (0) - not tile data, possibly level metadata
         # Tile data comes via PLO_BOARDPACKET (101) instead
 
-        # Level board tiles (uncompressed, 8192 bytes)
+        # Level board tiles (uncompressed, 8192 bytes; also reached for the
+        # compressed/raw path - PLO_RAWDATA's payload is re-emitted with this
+        # same packet_id once its byte count is satisfied, see protocol.py).
         elif packet_id == PacketID.PLO_BOARDPACKET:
             tiles = parse_board_packet(data)
             # Store in levels dict using the pending level name
             level_for_tiles = self._pending_level_name or self._current_level_name
             if level_for_tiles:
                 self.levels[level_for_tiles] = tiles
-            # Always update self.tiles with the latest (for fallback rendering)
-            self.tiles = tiles
-            self._tiles_level_name = level_for_tiles
+            # self.tiles is the ACTIVE render/collision board and must only
+            # ever switch on a real warp/segment change - never on a GMAP
+            # adjacent-segment preload (request_adjacent_levels(), answered
+            # by pygserver's _handle_adjacent_level with just [LEVELNAME,
+            # board] for a neighbour so the world renders stitched via
+            # self.levels[] above; the player never actually moves there).
+            # Previously this unconditionally clobbered self.tiles with
+            # whichever segment's board arrived LAST, so during a preload
+            # burst the active board flip-flopped between our real segment
+            # and up to 8 neighbours (symptom: /map returning contradictory
+            # boards, collision/warp-validation following stale tiles).
+            # _current_level_name is always updated (optimistically, at
+            # send time) before the confirming board for an actual
+            # warp/segment-cross arrives - see warp_to_level()/move() and
+            # the PLO_LEVELNAME/PLO_PLAYERWARP2 handlers - so gating on it
+            # here is sufficient and doesn't need extra state.
+            if level_for_tiles == self._current_level_name:
+                self.tiles = tiles
+                self._tiles_level_name = level_for_tiles
             if self.on_level:
                 self.on_level(tiles)
 
@@ -2393,15 +2449,30 @@ class Client:
                 npc_level = self._pending_level_name or self._current_level_name
                 props['_level'] = npc_level
 
-                # Convert NPC local coords to world coords if in GMAP
+                # Convert NPC local coords to world coords if in GMAP.
+                # parse_npc_props writes both NPCPROP.X/Y (props 2/3,
+                # always LEVEL-LOCAL) and NPCPROP.X2/Y2 (props 75/76,
+                # pixel-precision - LOCAL on this server, but WORLD per the
+                # general protocol on a real GServer-v2) into the same
+                # 'x'/'y' keys. Blindly adding the segment offset here
+                # double-counts it whenever 'x'/'y' is already a world
+                # value: seen live as an NPC's world_x/world_y reading
+                # exactly +64,+64 past its true position for one update,
+                # then reverting. Guard the same way as the OTHERPLPROPS
+                # merge (BUG 1): only fold in the segment offset for a
+                # value that's still in the local 0-63 range.
                 if self.gmap_grid and npc_level:
                     # Find the level's grid position
                     for (gx, gy), level_name in self.gmap_grid.items():
                         if level_name == npc_level:
                             if 'x' in props:
-                                props['world_x'] = props['x'] + gx * 64
+                                raw_x = props['x']
+                                props['world_x'] = (raw_x if (raw_x >= 64 or raw_x < 0)
+                                                     else raw_x + gx * 64)
                             if 'y' in props:
-                                props['world_y'] = props['y'] + gy * 64
+                                raw_y = props['y']
+                                props['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
+                                                     else raw_y + gy * 64)
                             break
                 else:
                     # Not in GMAP - local coords are world coords
@@ -2438,24 +2509,72 @@ class Client:
                     if self.on_player_left:
                         self.on_player_left(player_id)
                     return
+                # gs2emu (unlike pygserver) keeps sending cross-level updates
+                # for players AFTER their leave notification, with CURLEVEL
+                # naming their new level — verified via live beta4 packet
+                # trace (leave packet followed one tick later by a props
+                # packet that re-added the ghost). self.players is the
+                # SAME-LEVEL roster (sword arcs, visibility), so a props
+                # update naming a different level removes/skips instead.
+                other_level = props.get('level')
+                if other_level and self._current_level_name and \
+                        other_level != self._current_level_name:
+                    self.players.pop(player_id, None)
+                    return
                 # A non-empty CURCHAT prop is another player's chat bubble — the
                 # primary in-level chat path. Surface it through on_chat.
                 chat = props.get('chat')
                 if chat and self.on_chat:
                     self.on_chat(player_id, chat)
+                # Normalize the X/Y coordinate FRAME before merging. Classic
+                # props 15/16 (X/Y) are always LEVEL-LOCAL (0-63), while
+                # high-precision props 78/79 (X2/Y2) legitimately carry WORLD
+                # pixels on a gmap - but parse_other_player writes both into
+                # the same 'x'/'y' keys, and different server paths favor
+                # different props for the SAME player (e.g. pygserver relays
+                # plain movement via classic X/Y-derived local coords but
+                # respond_to_hurt's PLI_PLAYERPROPS round-trips the client's
+                # own WORLD x/y through X2/Y2 verbatim). Without normalizing,
+                # players[pid]['x'/'y'] silently flips frame depending on
+                # which prop arrived LAST: seen live as another player's y
+                # reported as 97.25 instead of 33.25 (a whole segment high),
+                # which made every sword-hit test against them miss forever
+                # until they moved or warped. Store LEVEL-LOCAL canonically
+                # in 'x'/'y' (wrap any world value via %64) and ALSO stash
+                # 'world_x'/'world_y' whenever the wire value told us the
+                # true world position (>=64, only possible from X2/Y2) so
+                # consumers that need world coords (cross-segment hit tests)
+                # can prefer that over re-deriving it from our own segment.
+                # A fresh LOCAL-only update invalidates any previously known
+                # world_x/world_y - we no longer know it's still correct -
+                # rather than let a stale world coordinate silently survive
+                # a merge alongside a now-different local one.
+                if 'x' in props:
+                    raw_x = props['x']
+                    if raw_x >= 64 or raw_x < 0:
+                        props['world_x'] = raw_x
+                        props['x'] = raw_x % 64
+                    else:
+                        props['world_x'] = None
+                if 'y' in props:
+                    raw_y = props['y']
+                    if raw_y >= 64 or raw_y < 0:
+                        props['world_y'] = raw_y
+                        props['y'] = raw_y % 64
+                    else:
+                        props['world_y'] = None
                 if player_id in self.players:
-                    # Merge props. X2/Y2 (props 78/79) legitimately exceed 64
-                    # on gmaps (world coords) and can be slightly negative near
-                    # the origin, so there's no valid range to gate on here —
-                    # trust the parser (parse_other_player already resolves
-                    # the 75/76-vs-X2/Y2 ambiguity; this used to guard against
-                    # that misparse era with a 0-64 clamp that just dropped
-                    # legitimate gmap coordinates).
+                    # Merge props (None marks a value to DROP, not store -
+                    # see the world_x/world_y invalidation above).
                     existing = self.players[player_id]
                     for key, value in props.items():
-                        existing[key] = value
+                        if value is None:
+                            existing.pop(key, None)
+                        else:
+                            existing[key] = value
                 else:
-                    self.players[player_id] = props
+                    self.players[player_id] = {k: v for k, v in props.items()
+                                                if v is not None}
 
         # Level chest (packet 4)
         elif packet_id == PacketID.PLO_LEVELCHEST:

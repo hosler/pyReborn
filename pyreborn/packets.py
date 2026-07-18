@@ -336,19 +336,23 @@ def parse_explosion(data: bytes) -> dict:
 
 def parse_hit_objects(data: bytes) -> dict:
     """
-    Parse PLO_HITOBJECTS (packet 46) - hit detection feedback.
-    Format: [x:GCHAR][y:GCHAR][power:GCHAR][player_id:GSHORT?]
+    Parse PLO_HITOBJECTS (packet 46) - relayed sword-swing hit probe.
+    Format: [player_id:GSHORT][power:GCHAR][x*2:GCHAR][y*2:GCHAR][npc_id:GINT3?]
 
-    Sent when player hits objects (bushes, pots, etc) with sword/weapon.
+    Verified against a live gs2emu beta4 packet trace (relay of
+    PLI_HITOBJECTS, e.g. body 20 23 22 5e 63 = player 3, power 1,
+    x 31, y 33.5); pygserver's build_hit_objects emits the same layout.
+    The old parse here read [x][y][power][id] and produced garbage.
     """
-    if len(data) < 3:
+    if len(data) < 5:
         return {}
     reader = PacketReader(data)
     return {
+        'player_id': reader.read_gshort(),
+        'power': reader.read_gchar() / 2.0,
         'x': reader.read_gchar() / 2.0,
         'y': reader.read_gchar() / 2.0,
-        'power': reader.read_gchar(),
-        'player_id': reader.read_gshort() if reader.has_data() else 0
+        'npc_id': reader.read_gint3() if reader.has_data() else None
     }
 
 
