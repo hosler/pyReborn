@@ -8,9 +8,10 @@ things that are broken, wrong, or weird. You are not writing tests — you are t
 
 - `GET /spawn?name=YOU` — connect your bot (call once at start; idempotent). Returns state.
 - `GET /state?name=YOU` — JSON: pos (x,y), direction, hearts/max_hearts, bombs, arrows,
-  rupees, swimming, players_visible {name: {x,y,...}}, npcs_nearby, chests, links.
+  rupees, swimming, players_visible {name: {x,y,...}}, npcs_nearby, chests (with
+  x/y/opened/item), signs (with x/y/text), links, npc_dialogue (last ~10 sign/NPC texts).
 - `GET /map?name=YOU` — ASCII of the level around you. Legend: `@`=you, `P`=other player,
-  `B`=blocking/wall, `W`=water, `C`=chest, `L`=link/warp, `N`=npc, `.`=walkable.
+  `B`=blocking/wall, `W`=water, `C`=chest, `S`=sign, `L`=link/warp, `N`=npc, `.`=walkable.
 - `GET /act?name=YOU&cmd=CMD&...` — do something; returns resulting state. Commands:
   - `move&dx=1&dy=0` (step in a direction; dx/dy in tiles)
   - `walkto&x=35&y=35` (pathfind-ish walk to a tile)
@@ -19,9 +20,12 @@ things that are broken, wrong, or weird. You are not writing tests — you are t
   - `bomb` (optionally `&power=1`) / `arrow` (optionally `&dir=`)
   - `grab` / `attack&pid=PLAYERID` / `pm&pid=PLAYERID&msg=hi`
   - `warp&level=NAME.nw&x=30&y=30`
-  - `open_chest` (optionally `&x=&y=`) / `pickup` (optionally `&x=&y=`)
-- `GET /log?name=YOU` — recent chat_received, hurt_received, pm_received, and any issues the
-  bot's own detector flagged.
+  - `open_chest` (optionally `&x=&y=`; with no coords it auto-targets the nearest known
+    chest in reach and only reports success once the open is actually confirmed - an
+    out-of-reach or unknown chest returns an error string, not a false `true`)
+    / `pickup` (optionally `&x=&y=`)
+- `GET /log?name=YOU` — recent chat_received, hurt_received, pm_received, npc_dialogue,
+  and any issues the bot's own detector flagged (including death/respawn events).
 - `GET /leave?name=YOU` — disconnect just your bot when done (optional; don't disconnect others).
 
 Do NOT call `/quit` — it stops the whole shared daemon for every agent, not just you.

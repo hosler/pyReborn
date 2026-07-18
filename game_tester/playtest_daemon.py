@@ -3,10 +3,11 @@ them over a tiny local HTTP API so LLM agents can drive them at their own
 pace (bots stay online + pumped between agent tool calls).
 
   GET  /spawn?name=X            connect a bot (idempotent)
-  GET  /state?name=X            JSON game state for the bot
+  GET  /state?name=X            JSON game state for the bot, including
+                                npc_dialogue (see caveats below)
   GET  /map?name=X              ASCII map of the current level (B=blocking,
-                                .=walkable, W=water, C=chest, @=you, P=player,
-                                N=npc, D=baddy, L=link)
+                                .=walkable, W=water, C=chest, S=sign, @=you,
+                                P=player, N=npc, D=baddy, L=link)
   GET  /act?name=X&cmd=...      perform an action, returns resulting state
        cmds: move&dx&dy | walkto&x&y | say&msg | sword[&dir] | bomb[&power]
              arrow[&dir] | grab | attack&pid | pm&pid&msg
@@ -15,8 +16,13 @@ pace (bots stay online + pumped between agent tool calls).
        door mid-move (default is on, matching the real client - see
        GameBot.move()). warp accepts force=1 to warp onto a tile that looks
        blocking anyway (default refuses and returns an error string instead
-       of stranding the bot - see do_act()).
-  GET  /log?name=X              recent events (chat/hurt/pm) + detected issues
+       of stranding the bot - see do_act()). open_chest with no x/y
+       auto-targets the nearest known chest in reach and only reports
+       success once the open is actually confirmed - see GameBot.open_chest.
+  GET  /log?name=X              recent events (chat/hurt/pm) + detected
+                                issues (including death/respawn - see
+                                GameBot._check_death_respawn) + npc_dialogue
+                                (see caveats below)
   GET  /leave?name=X            disconnect just bot X (others keep playing)
   GET  /quit?confirm=shutdown   disconnect all bots and stop the daemon
                                 (token required so a shared daemon isn't killed
@@ -28,19 +34,24 @@ Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
 Agent-prompt caveats:
   - /map draws @ at the sprite's TOP-LEFT while collision is feet-only (rows
     y+2..y+3) — tell agents or they report false wall-clips.
-  - npc_dialogue in /log is PLO_SAY2 text (sign reads / NPC chatter) - without
-    it, scripted NPC dialogue is invisible to a playtest agent.
+  - npc_dialogue (PLO_SAY2 text: sign reads / NPC chatter) is in BOTH /state
+    and /log, not just one - without it in /state, an agent polling only
+    /state never sees scripted NPC dialogue at all.
   - Coordinate conventions per /state field (matters on a GMAP world like
     funtimes/chicken.gmap, where a level segment's own tiles are always
     0-63 but the *player* wanders far past that): x/y and npcs_nearby are
     WORLD coordinates (local + grid*64) - the same frame /act's walkto
     param takes, so `walkto&x&y` can target either your own or an NPC's
-    reported position directly. players_visible, chests, baddies_nearby and
-    links are LEVEL-LOCAL (0-63) - what the wire protocol actually sends for
-    another entity, with no reliable way here to attribute an arbitrary
-    baddy/chest to a world segment (see GameBot._resolve_level_name's
-    docstring for why level attribution on a GMAP is the hard part). /act's
-    warp param is also level-local, matching client.warp_to_level().
+    reported position directly. players_visible, chests, signs, baddies_nearby
+    and links are LEVEL-LOCAL (0-63) - what the wire protocol actually sends
+    for another entity. npcs_nearby and signs are filtered to the bot's
+    CURRENT level (npcs via their '_level' tag, signs because client.signs is
+    already keyed per level); chests/baddies have no level attribution
+    available here at all (see GameBot._resolve_level_name's docstring for
+    why that's the hard part on a GMAP) so they can still include stale
+    entries from a previously-visited segment - _pump_on_level_change() below
+    narrows but does not eliminate that window right after a level change.
+    /act's warp param is also level-local, matching client.warp_to_level().
 """
 import json
 import math
@@ -62,6 +73,9 @@ bots = {}
 lock = threading.RLock()
 running = True
 
+# Last level we saw each bot resolve to, for _pump_on_level_change() below.
+_bot_last_level = {}
+
 
 def pump_loop():
     while running:
@@ -72,6 +86,29 @@ def pump_loop():
                 except Exception:
                     pass
         time.sleep(0.05)
+
+
+def _pump_on_level_change(bot):
+    """If bot.level has changed since the last time we looked, pump the
+    client once more before building a response.
+
+    Right after an edge warp (a GMAP segment boundary crossed by ordinary
+    movement, not warp_to_level) bot.level flips the instant the player's
+    world position crosses the boundary - it's derived from position, not
+    from a server confirmation - but the new segment's PLO_NPCPROPS /
+    PLO_LEVELCHEST / PLO_LEVELSIGN packets can still be in flight. A
+    /state or /map read at exactly that moment reports the OLD segment's
+    npcs/chests/signs under a level field that already says the NEW
+    segment (confirmed live: /state right after an edge warp still listed
+    the previous level's entities). This doesn't guarantee freshness - the
+    stream can still be slower than one extra pump - but it closes most of
+    the window without adding real latency to the common case (no level
+    change -> no extra pump at all).
+    """
+    prev = _bot_last_level.get(bot.name)
+    if prev != bot.level:
+        bot.update(0.2)
+        _bot_last_level[bot.name] = bot.level
 
 
 def _current_links(bot, limit=10):
@@ -108,19 +145,36 @@ def bot_state(bot):
         others[pid] = {k: pl.get(k) for k in ('account', 'nickname', 'x', 'y', 'chat')
                        if pl.get(k) is not None}
     npcs = {}
-    for nid, npc in list(c.npcs.items())[:30]:
-        if isinstance(npc, dict):
-            # world_x/world_y (set by client.py on PLO_NPCPROPS, see
-            # client.py:885) so this matches the x/y frame below instead of
-            # the raw level-local npc['x']/npc['y'].
-            npcs[nid] = {'x': npc.get('world_x', npc.get('x')),
-                         'y': npc.get('world_y', npc.get('y')),
-                         'image': npc.get('image', '')[:30]}
+    for nid, npc in c.npcs.items():
+        if len(npcs) >= 30:
+            break
+        if not isinstance(npc, dict):
+            continue
+        # Restrict to the bot's CURRENT level: npcs is a flat dict that
+        # isn't cleared on a seamless GMAP segment crossing (only on a full
+        # warp_to_level - see client._reset_level_state's docstring), so
+        # without this filter an npc from a previously-visited segment
+        # keeps showing up as "nearby" forever. '_level' is stamped on every
+        # npc by client.py's PLO_NPCPROPS handler; fall back to including it
+        # if that's somehow missing rather than dropping it silently.
+        if npc.get('_level', bot.level) != bot.level:
+            continue
+        # world_x/world_y (set by client.py on PLO_NPCPROPS, see
+        # client.py:885) so this matches the x/y frame below instead of
+        # the raw level-local npc['x']/npc['y'].
+        npcs[nid] = {'x': npc.get('world_x', npc.get('x')),
+                    'y': npc.get('world_y', npc.get('y')),
+                    'image': npc.get('image', '')[:30]}
     baddies = {}
     for bid, b in list(c.baddies.items())[:30]:
         if isinstance(b, dict):
             baddies[bid] = {'type': b.get('type'), 'x': b.get('x'), 'y': b.get('y'),
                             'alive': b.get('power', 1) > 0}
+    # signs is keyed per level ({level: {(x,y): text}}), so this is already
+    # naturally scoped to the bot's current level - unlike chests/baddies
+    # there's no cross-segment leak to filter out here.
+    signs = [{'x': x, 'y': y, 'text': text}
+             for (x, y), text in list((c.signs.get(bot.level) or {}).items())[:10]]
     return {
         'name': bot.name, 'connected': bot.connected,
         'level': bot.level, 'x': round(bot.x, 1), 'y': round(bot.y, 1),
@@ -135,7 +189,11 @@ def bot_state(bot):
                     'item': c.chest_items.get((x, y))}
                    for (x, y), opened in list(c.chests.items())[:10]],
         'links': _current_links(bot),
-        'signs': len(c.signs or []),
+        'signs': signs,
+        # PLO_SAY2 text (sign reads / NPC chatter) - also in /log's
+        # npc_dialogue; kept in both so an agent polling only /state still
+        # sees scripted dialogue (see module docstring caveats).
+        'npc_dialogue': [txt for txt, _ in getattr(bot, 'say2_received', [])[-10:]],
     }
 
 
@@ -177,13 +235,16 @@ def bot_map(bot, radius=14):
 
     for (chx, chy) in c.chests:
         mark(chx, chy, 'C')
+    for (sx, sy) in (c.signs.get(bot.level) or {}):
+        mark(sx, sy, 'S')
     for l in _current_links(bot, limit=len(c.links.get(bot.level) or [])):
         mark(l.get('x', -1), l.get('y', -1), 'L')
     for npc in c.npcs.values():
         # Level-local x/y here, not world_x/world_y: the map grid drawn
         # above is always local 0-63 (one segment), same as bot.x % 64 used
-        # for cx/cy.
-        if isinstance(npc, dict):
+        # for cx/cy. Same current-level filter as bot_state() - see that
+        # function's comment on why the flat npcs dict needs it.
+        if isinstance(npc, dict) and npc.get('_level', bot.level) == bot.level:
             mark(npc.get('x', -1), npc.get('y', -1), 'N')
     for b in c.baddies.values():
         if isinstance(b, dict) and b.get('power', 1) > 0:
@@ -357,6 +418,7 @@ class Handler(BaseHTTPRequestHandler):
                             return
                         bots[name] = b
                         b.update(1.0)
+                        _bot_last_level[name] = b.level
                     self._send(bot_state(bots[name]))
                     return
                 bot = bots.get(name)
@@ -364,14 +426,21 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(f'no bot {name!r}; /spawn first', 404)
                     return
                 if u.path == '/state':
+                    _pump_on_level_change(bot)
                     self._send(bot_state(bot))
                 elif u.path == '/map':
+                    _pump_on_level_change(bot)
                     self._send(bot_map(bot))
                 elif u.path == '/log':
                     self._send(bot_log(bot))
                 elif u.path == '/act':
                     result = do_act(bot, q)
                     bot.update(0.3)
+                    # The action itself (e.g. a warp, or walking across a
+                    # GMAP segment edge) may be exactly what just changed the
+                    # level - give it the same extra beat before reporting
+                    # state back.
+                    _pump_on_level_change(bot)
                     self._send({'result': result, 'state': bot_state(bot)})
                 else:
                     self._send('unknown endpoint', 404)

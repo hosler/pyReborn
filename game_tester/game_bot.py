@@ -92,6 +92,12 @@ class GameBot:
         self._connected = False
         self._stuck_warned = False  # Only warn once when stuck
 
+        # Death/respawn tracking (parity with pygame_game.py's _was_dead):
+        # the server silently refills hearts and resets position on respawn,
+        # so without watching for the hearts>0 <-> hearts<=0 transition a
+        # kill is completely invisible to a playtest agent's /log.
+        self._was_dead = False
+
         # Parity with pygame client: swimming state
         self.is_swimming = False
 
@@ -216,6 +222,30 @@ class GameBot:
         # Check for stuck
         self._check_stuck()
 
+        # Check for death/respawn
+        self._check_death_respawn()
+
+    def _check_death_respawn(self):
+        """Detect a hearts>0 -> hearts<=0 (death) or hearts<=0 -> hearts>0
+        (respawn) transition and log it as an issue.
+
+        Without this, deaths are invisible to a playtest agent: the server
+        just silently refills hearts and warps the player back after a
+        short delay - hurt_received records the damage that was dealt, but
+        never that a hit was fatal, so a bot getting killed shows up in
+        /log as nothing more than an ordinary hurt event followed by an
+        unexplained position jump. Mirrors pygame_game.py's identical
+        `_was_dead` transition tracking (game/setup.py, pygame_game.py).
+        """
+        is_dead = self.client.player.hearts <= 0
+        if is_dead and not self._was_dead:
+            self._add_issue("MEDIUM", "combat",
+                           f"Bot died at ({self.client.x:.1f}, {self.client.y:.1f})")
+        elif self._was_dead and not is_dead:
+            self._add_issue("LOW", "combat",
+                           f"Bot respawned at ({self.client.x:.1f}, {self.client.y:.1f})")
+        self._was_dead = is_dead
+
     def move(self, dx: int, dy: int, check_collision: bool = True,
              follow_links: bool = True) -> bool:
         """Move in direction (dx, dy in -1, 0, 1).
@@ -310,6 +340,12 @@ class GameBot:
         start = time.time()
         tolerance = 0.5
         start_level = self.level
+        # Did we ever actually move during this call? Distinguishes a
+        # permanent hard strand (never moved a single step, even after the
+        # stuck-recovery sidestepping below tried other directions) from an
+        # ordinary timeout where progress was made but the target just
+        # wasn't reached in time - see the two _add_issue calls below.
+        moved_ever = False
 
         while time.time() - start < timeout:
             dx = target_x - self.client.x
@@ -359,8 +395,20 @@ class GameBot:
                     self._stuck_count = 0
             else:
                 self._stuck_count = 0
+                moved_ever = True
 
-        self._add_issue("LOW", "movement", f"walk_to timeout: target=({target_x}, {target_y})")
+        if moved_ever:
+            self._add_issue("LOW", "movement", f"walk_to timeout: target=({target_x}, {target_y})")
+        else:
+            # Never moved at all despite the full timeout (including the
+            # stuck-recovery sidestepping in every direction above) - this
+            # is a hard strand, not "ran out of time while making progress",
+            # and deserves a higher severity + the bot's actual position so
+            # it can be found on the map.
+            self._add_issue("MEDIUM", "movement",
+                           f"movement strand: no movement at all from "
+                           f"({self.client.x:.1f}, {self.client.y:.1f}) toward "
+                           f"target=({target_x}, {target_y})")
         self._log_action("walk_to", {"x": target_x, "y": target_y}, False, start)
         return False
 
@@ -660,13 +708,82 @@ class GameBot:
         self._log_action("pickup_item", {"x": x, "y": y}, result, start)
         return result
 
-    def open_chest(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
-        """Open chest at position."""
+    # Server-side proximity cap (pygserver items.py:handle_open_chest -
+    # abs(player.x - x) <= 3.0 and same for y, in LOCAL level coords). A
+    # request outside this is a guaranteed silent no-op server-side, so
+    # reject it here instead of burning a round trip.
+    CHEST_REACH = 3.0
+
+    def open_chest(self, x: Optional[float] = None, y: Optional[float] = None,
+                   poll_timeout: float = 1.0) -> Any:
+        """Open a chest.
+
+        With explicit (x, y) - LOCAL level coords, same frame as
+        client.chests' keys - opens the chest there if it's in reach.
+
+        Without coords, auto-targets the nearest known chest (from
+        client.chests, populated by the level's chest announcements on
+        entry) within reach, rather than silently defaulting to the BOT'S
+        OWN position: client.open_chest(None, None) resolves x/y to
+        player.x/player.y internally and still returns True ("packet sent
+        successfully"), even when there is no chest under the player at
+        all. Confirmed live via the playtest daemon: open_chest with no
+        args logged args {'x': None, 'y': None}, result:true, and no
+        chest_items/rupees change - a silent no-op reported as success.
+
+        Returns:
+            True  - the chest was confirmed opened (polled client.chests
+                    for up to poll_timeout seconds).
+            False - a real open request was sent (in reach, resolved
+                    coords) but no open confirmation arrived in time.
+            str   - no coords given and no chest is known within reach (or
+                    at all), or explicit coords are out of reach: an
+                    explanation instead of a misleading True.
+        """
         start = time.time()
-        result = self.client.open_chest(x, y)
-        self.update(0.1)
-        self._log_action("open_chest", {"x": x, "y": y}, result, start)
-        return result
+        # LOCAL (0-63) frame, matching client.chests' keys - self.client.x/y
+        # are WORLD coords on a GMAP (see walk_to's docstring), so this must
+        # wrap the same way bot_map()/_get_tile_at() do for level-local data.
+        local_px, local_py = self.client.x % 64, self.client.y % 64
+
+        if x is None or y is None:
+            chests = self.client.chests
+            if not chests:
+                msg = "no known chests in this level (client.chests is empty)"
+                self._log_action("open_chest", {"x": x, "y": y}, msg, start)
+                return msg
+            # Nearest chest wins; prefer an unopened one over an already-
+            # opened one at a similar distance so re-opening the same loot
+            # doesn't shadow a genuinely reachable fresh chest.
+            (cx, cy), opened = min(
+                chests.items(),
+                key=lambda item: (item[1], abs(local_px - item[0][0]) +
+                                            abs(local_py - item[0][1])))
+            if abs(local_px - cx) > self.CHEST_REACH or abs(local_py - cy) > self.CHEST_REACH:
+                msg = (f"nearest known chest ({cx},{cy}) is out of reach from "
+                      f"({local_px:.1f},{local_py:.1f}); walk closer or pass x=&y=")
+                self._log_action("open_chest", {"x": x, "y": y}, msg, start)
+                return msg
+            x, y = cx, cy
+        elif abs(local_px - x) > self.CHEST_REACH or abs(local_py - y) > self.CHEST_REACH:
+            msg = (f"chest ({x},{y}) is out of reach from "
+                  f"({local_px:.1f},{local_py:.1f}); reach is {self.CHEST_REACH} tiles")
+            self._log_action("open_chest", {"x": x, "y": y}, msg, start)
+            return msg
+
+        self.client.open_chest(x, y)
+
+        # Report success ONLY if the chest actually opened - poll
+        # client.chests briefly for the server's confirmation rather than
+        # trusting "packet sent" as "chest opened" (see docstring above).
+        deadline = time.time() + poll_timeout
+        opened_now = self.client.chests.get((x, y), False)
+        while not opened_now and time.time() < deadline:
+            self.update(0.1)
+            opened_now = self.client.chests.get((x, y), False)
+
+        self._log_action("open_chest", {"x": x, "y": y}, opened_now, start)
+        return opened_now
 
     def pickup_all_items(self) -> int:
         """Try to pick up all visible items. Returns count picked up."""

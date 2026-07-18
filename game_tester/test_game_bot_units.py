@@ -214,3 +214,199 @@ class TestWalkToStuckRecoveryDirection:
         assert calls[0] == (1, 1)
         unstick = calls[11:15]
         assert unstick == [(0, 1), (0, 1), (1, 0), (1, 0)]
+
+
+# =============================================================================
+# walk_to timeout must be reported as a hard "movement strand" (MEDIUM) when
+# the bot never moved at all, vs an ordinary "timeout" (LOW) when it made
+# some progress but didn't reach the target in time - previously every
+# walk_to failure logged the same [LOW] walk_to timeout regardless, so a
+# permanently stuck bot looked identical to one that was just running slow.
+# =============================================================================
+
+class TestWalkToStrandVsTimeout:
+    def test_never_moving_logs_medium_movement_strand(self):
+        bot = _bot()
+        bot.client.player.x = 10.0
+        bot.client.player.y = 10.0
+        bot.move = lambda dx, dy, check_collision=True, follow_links=True: False
+
+        bot.walk_to(20.0, 20.0, timeout=0.05)
+
+        issues = bot.get_issues()
+        assert len(issues) == 1
+        assert issues[0].severity == "MEDIUM"
+        assert issues[0].category == "movement"
+        assert "movement strand" in issues[0].description
+        assert "(10.0, 10.0)" in issues[0].description
+
+    def test_partial_progress_logs_low_timeout(self):
+        bot = _bot()
+        bot.client.player.x = 10.0
+        bot.client.player.y = 10.0
+        calls = []
+
+        def fake_move(dx, dy, check_collision=True, follow_links=True):
+            calls.append((dx, dy))
+            if len(calls) == 1:
+                # Move once, then get permanently stuck - moved_ever must
+                # still latch True from that first successful step.
+                bot.client.player.x += 1.0
+                return True
+            return False
+
+        bot.move = fake_move
+        bot.walk_to(20.0, 20.0, timeout=0.05)
+
+        issues = bot.get_issues()
+        assert len(issues) == 1
+        assert issues[0].severity == "LOW"
+        assert "walk_to timeout" in issues[0].description
+        assert "movement strand" not in issues[0].description
+
+
+# =============================================================================
+# _check_death_respawn - hearts<=0/>0 transition tracking (parity with
+# pygame_game.py's _was_dead). Deaths were previously invisible to /log:
+# hearts silently refill and position resets with no trace.
+# =============================================================================
+
+class TestCheckDeathRespawn:
+    def test_hearts_hitting_zero_logs_a_death_issue(self):
+        bot = _bot()
+        bot.client.player.hearts = 3.0
+        bot.client.player.x = 12.0
+        bot.client.player.y = 8.0
+        bot._check_death_respawn()  # baseline: alive -> alive, no issue
+
+        bot.client.player.hearts = 0.0
+        bot._check_death_respawn()
+
+        issues = bot.get_issues()
+        assert len(issues) == 1
+        assert issues[0].severity == "MEDIUM"
+        assert issues[0].category == "combat"
+        assert "died" in issues[0].description
+        assert "(12.0, 8.0)" in issues[0].description
+
+    def test_recovering_hearts_logs_a_respawn_issue(self):
+        bot = _bot()
+        bot.client.player.hearts = 0.0
+        bot._check_death_respawn()  # latch dead
+        bot.clear_tracking()
+
+        bot.client.player.hearts = 3.0
+        bot.client.player.x = 30.0
+        bot.client.player.y = 30.0
+        bot._check_death_respawn()
+
+        issues = bot.get_issues()
+        assert len(issues) == 1
+        assert issues[0].severity == "LOW"
+        assert "respawned" in issues[0].description
+
+    def test_no_issue_while_staying_alive_or_staying_dead(self):
+        bot = _bot()
+        bot.client.player.hearts = 3.0
+        bot._check_death_respawn()
+        bot.client.player.hearts = 2.0
+        bot._check_death_respawn()
+        assert bot.get_issues() == []
+
+        bot.client.player.hearts = 0.0
+        bot._check_death_respawn()
+        bot.clear_tracking()
+        bot.client.player.hearts = 0.0
+        bot._check_death_respawn()  # still dead, no repeat issue
+        assert bot.get_issues() == []
+
+
+# =============================================================================
+# open_chest - auto-targeting the nearest known chest within reach, explicit
+# out-of-reach rejection, and success reported only once the open is
+# actually confirmed (not just "packet sent"). See GameBot.open_chest's
+# docstring for the live bug this replaced: no-coords silently defaulted to
+# the bot's OWN position and reported result:true for a no-op.
+# =============================================================================
+
+class TestOpenChest:
+    def _bot_at(self, x, y):
+        bot = _bot()
+        bot.client.player.x = x
+        bot.client.player.y = y
+        return bot
+
+    def test_no_coords_no_known_chests_returns_error_string(self):
+        bot = self._bot_at(30.0, 30.0)
+        assert bot.client.chests == {}
+
+        result = bot.open_chest()
+
+        assert isinstance(result, str)
+        assert "no known chests" in result
+
+    def test_no_coords_nearest_chest_out_of_reach_returns_error_string(self):
+        bot = self._bot_at(30.0, 30.0)
+        bot.client.chests = {(40, 40): False}
+        sent = []
+        bot.client.open_chest = lambda x, y: sent.append((x, y)) or True
+
+        result = bot.open_chest()
+
+        assert isinstance(result, str)
+        assert "out of reach" in result
+        assert sent == []  # never even sent the packet
+
+    def test_explicit_out_of_reach_coords_returns_error_without_sending(self):
+        bot = self._bot_at(30.0, 30.0)
+        sent = []
+        bot.client.open_chest = lambda x, y: sent.append((x, y)) or True
+
+        result = bot.open_chest(40.0, 40.0)
+
+        assert isinstance(result, str)
+        assert "out of reach" in result
+        assert sent == []
+
+    def test_no_coords_auto_targets_nearest_unopened_chest_in_reach(self):
+        bot = self._bot_at(30.0, 30.0)
+        # A closer already-opened chest and a slightly farther unopened one
+        # (both in reach) - the unopened one should win despite being
+        # farther, per the docstring's "prefer unopened" tie-break.
+        bot.client.chests = {(30, 31): True, (32, 32): False}
+        sent = []
+
+        def fake_open_chest(x, y):
+            sent.append((x, y))
+            bot.client.chests[(x, y)] = True  # simulate server confirmation
+            return True
+
+        bot.client.open_chest = fake_open_chest
+        result = bot.open_chest(poll_timeout=0.2)
+
+        assert result is True
+        assert sent == [(32, 32)]
+
+    def test_explicit_coords_in_reach_confirms_open(self):
+        bot = self._bot_at(30.0, 30.0)
+        bot.client.chests = {(31, 31): False}
+
+        def fake_open_chest(x, y):
+            bot.client.chests[(x, y)] = True
+            return True
+
+        bot.client.open_chest = fake_open_chest
+        result = bot.open_chest(31.0, 31.0, poll_timeout=0.2)
+
+        assert result is True
+
+    def test_never_confirmed_returns_false_not_true(self):
+        bot = self._bot_at(30.0, 30.0)
+        bot.client.chests = {}
+        # In reach, but not a real chest (never flips to opened) - the
+        # packet-send path used to return True unconditionally here.
+        bot.client.open_chest = lambda x, y: True
+
+        result = bot.open_chest(31.0, 31.0, poll_timeout=0.1)
+
+        assert result is False
