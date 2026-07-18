@@ -139,6 +139,7 @@ def bot_map(bot, radius=14):
 def bot_log(bot):
     return {
         'chat_received': [(pid, msg) for pid, msg, _ in bot.chat_received[-15:]],
+        'npc_dialogue': [txt for txt, _ in getattr(bot, 'say2_received', [])[-10:]],
         'hurt_received': [(pid, dmg) for pid, dmg, _ in bot.hurt_received[-15:]],
         'pm_received': [(pid, msg) for pid, msg, _ in bot.pm_received[-10:]],
         'issues': [f'[{i.severity}] {i.description}' for i in bot.get_issues()][-15:],

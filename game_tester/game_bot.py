@@ -80,6 +80,7 @@ class GameBot:
         self.chat_received: List[Tuple[int, str, float]] = []  # (player_id, msg, time)
         self.hurt_received: List[Tuple[int, float, float]] = []  # (attacker, damage, time)
         self.pm_received: List[Tuple[int, str, float]] = []  # (from_id, msg, time)
+        self.say2_received: List[Tuple[str, float]] = []  # (text, time) NPC dialogue/signs
 
         # Setup callbacks
         self._setup_callbacks()
@@ -103,6 +104,7 @@ class GameBot:
         self.client.on_chat = self._on_chat
         self.client.on_hurt = self._on_hurt
         self.client.on_pm = self._on_pm
+        self.client.on_say2 = self._on_say2
 
     def _on_chat(self, player_id: int, message: str):
         """Track chat messages received."""
@@ -116,6 +118,13 @@ class GameBot:
     def _on_pm(self, from_id: int, message: str):
         """Track private messages received."""
         self.pm_received.append((from_id, message, time.time()))
+
+    def _on_say2(self, text: str):
+        """Track sign/NPC dialogue messages (PLO_SAY2 from say2/signs).
+
+        Without this, scripted NPC dialogue is invisible to bots and playtest
+        agents report working NPCs as silent."""
+        self.say2_received.append((text, time.time()))
 
     def _log_action(self, action: str, args: Dict[str, Any], result: Any,
                     start_time: float):
