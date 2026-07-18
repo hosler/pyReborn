@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 WARP_COORD_MIN = -16.0
 WARP_COORD_MAX = 111.5
 
+from reborn_protocol import BDPROP, BDMODE
+
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
 from .packets import (
@@ -73,6 +75,7 @@ from .packets import (
     build_baddy_hurt,
     build_open_chest,
     build_horse_add,
+    build_baddy_props,
     build_wantfile,
     parse_file,
     parse_filesendfailed,
@@ -332,6 +335,29 @@ class Client:
         self.bombs: Dict[Tuple[float, float], dict] = {}
         self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
         self.horses: Dict[Tuple[float, float], dict] = {}
+
+        # Victim-side arrow flight simulation (client-authoritative combat
+        # parity - see _tick_arrow_sims for the full design). Each entry:
+        # {owner_id, x, y, dx, dy, spawn_time, last_tick}.
+        self._arrow_sims: List[dict] = []
+        # Arrow hits our own sim detected but hasn't applied yet - see
+        # _ARROW_HIT_GRACE. Each entry: {owner_id, dx, dy, resolve_at}.
+        self._pending_arrow_hits: List[dict] = []
+        # owner_id -> suppress-until epoch time. Guards against double
+        # damage on servers (pygserver) that ALSO run their own independent
+        # server-side arrow simulation and send a real PLO_HURTPLAYER for
+        # the same hit - see _tick_arrow_sims's docstring.
+        self._arrow_hurt_suppress: Dict[int, float] = {}
+        # Arrows we fired ourselves, so an echo of our own PLI_ARROWADD
+        # coming back as PLO_ARROWADD (pygserver's handle_arrow_add
+        # broadcasts to the WHOLE level including the shooter; GServer-v2
+        # excludes the sender) isn't mistaken for an incoming attack and
+        # simulated against ourselves. pyReborn doesn't track its own
+        # numeric player id (PLO_PLAYERPROPS never carries one for "self"),
+        # so entries are matched heuristically on direction/position/timing
+        # instead of owner id - see _start_arrow_sim. Each entry:
+        # (fire_time, direction, x, y).
+        self._own_recent_arrows: List[Tuple[float, int, float, float]] = []
 
         # NPCs: maps npc_id -> {x, y, duration_ms, dx, dy, options} most recent
         # PLO_MOVE2/NPCMOVED update (in addition to self.npcs full props).
@@ -974,7 +1000,60 @@ class Client:
             forward = dx * fx + dy * fy
             lateral = abs(dx * fy) + abs(dy * fx)
             if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
-                self.hurt_baddy(bid, damage=damage, hurt_dx=fx, hurt_dy=fy)
+                if self.is_leader:
+                    # As this level's leader we're the one who resolves baddy
+                    # damage (see _leader_apply_baddy_damage) - apply it and
+                    # broadcast the result directly instead of sending
+                    # PLI_BADDYHURT, which the server would just relay back
+                    # to us (we ARE the leader) and double-apply through the
+                    # PLO_BADDYHURT handler below.
+                    self._leader_apply_baddy_damage(bid, int(damage * 2))
+                else:
+                    self.hurt_baddy(bid, damage=damage, hurt_dx=fx, hurt_dy=fy)
+
+    # ---- Leader-authoritative baddy damage (client-authoritative combat
+    # parity, task 2) -----------------------------------------------------
+    #
+    # GServer-v2 makes the level's LEADER (the first player to enter it,
+    # PLO_ISLEADER) the sole resolver of baddy damage: any other player's
+    # PLI_BADDYHURT is relayed to the leader ONLY (msgPLI_BADDYHURT,
+    # PlayerClientPackets.cpp:523-539 - `leader->sendPacket(...)`), and the
+    # leader is expected to apply the damage locally and report the result
+    # back via PLI_BADDYPROPS, which the server both stores server-side and
+    # relays to every OTHER player in the level (msgPLI_BADDYPROPS,
+    # PlayerClientPackets.cpp:494-521 - the leader itself is excluded from
+    # that relay). Without this, non-leader clients' PLI_BADDYHURT packets
+    # reach the leader and stop there - the leader's own baddies dict never
+    # updates and nobody else ever learns the baddy took damage or died.
+
+    def _leader_apply_baddy_damage(self, baddy_id: int, damage_half_hearts: float) -> bool:
+        """Apply damage to a baddy we (the leader) own and broadcast the
+        result. `damage_half_hearts` is in the same raw wire units as
+        PLO_BADDYHURT's power field (half-hearts) - baddy['power'] itself is
+        plain hit points (GServer-v2's BaddyProp::POWERIMAGE), not hearts;
+        this client already treats one half-heart of sword damage as one
+        point of baddy power (see the PLO_BADDYHURT handler, unchanged by
+        this task), so the units are kept consistent with that existing
+        convention rather than introduced fresh here.
+        """
+        baddy = self.baddies.get(baddy_id)
+        if baddy is None:
+            return False
+        new_power = max(0, baddy.get('power', 0) - damage_half_hearts)
+        baddy['power'] = new_power
+        baddy['mode'] = int(BDMODE.DEAD) if new_power <= 0 else int(BDMODE.HURT)
+        return self._leader_broadcast_baddy_props(baddy_id, baddy)
+
+    def _leader_broadcast_baddy_props(self, baddy_id: int, baddy: dict) -> bool:
+        """Send PLI_BADDYPROPS reporting this baddy's current POWERIMAGE +
+        MODE. Leader-only - see the docstring above this section."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_baddy_props(baddy_id, {
+            BDPROP.POWERIMAGE: (int(baddy.get('power', 0)), baddy.get('image', '') or ''),
+            BDPROP.MODE: int(baddy.get('mode', BDMODE.WALK)),
+        })
+        return self._protocol.send_packet(PacketID.PLI_BADDYPROPS, data)
 
     def drop_bomb(self, power: int = 1) -> bool:
         """
@@ -1388,6 +1467,18 @@ class Client:
         self.signs.clear()
         self.items.clear()
         self.baddies.clear()
+        # PLO_ISLEADER (GServer-v2 PlayerClient.cpp checkAndInformIfLevelLeader)
+        # is only ever sent to (re-)CONFIRM leadership on a level - there's no
+        # "you are NOT the leader" packet, so is_leader must default back to
+        # False on every real level change and wait to be reconfirmed, or a
+        # client that was ever a level's leader (even briefly alone on its
+        # spawn level before another player joined) stays stuck reporting
+        # is_leader=True forever afterward on levels it doesn't actually lead
+        # - which would make _leader_apply_baddy_damage fire on every such
+        # client at once. Live-verified against real gs2emu: without this
+        # reset, a second bot that had ever been alone on a level kept
+        # is_leader=True after warping onto a level someone else already led.
+        self.is_leader = False
         # Snapshot NPCs per level before clearing so we can restore them if we
         # come back and the server doesn't re-stream them (see _npc_cache).
         if cache_npcs:
@@ -1581,6 +1672,15 @@ class Client:
             self.player.arrows -= 1
             self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
                                        build_arrow_count(self.player.arrows))
+            # Record so a self-echo of this same arrow (servers that
+            # broadcast PLI_ARROWADD to the whole level, self included -
+            # see _own_recent_arrows) doesn't get simulated as an incoming
+            # attack against ourselves.
+            now = time.time()
+            self._own_recent_arrows.append((now, direction, float(x), float(y)))
+            self._own_recent_arrows = [
+                e for e in self._own_recent_arrows
+                if now - e[0] < self._OWN_ARROW_ECHO_WINDOW]
         return ok
 
     def remove_horse(self, x: float, y: float) -> bool:
@@ -1941,6 +2041,165 @@ class Client:
         return count
 
     # =========================================================================
+    # Victim-side arrow flight simulation (client-authoritative combat
+    # parity, task 1)
+    #
+    # GServer-v2 without a running NPCServer never runs its own arrow
+    # collision detection at all (msgPLI_ARROWADD, PlayerClientPackets.cpp:
+    # 287-311, only reaches level->addArrow() when m_server->hasNPCServer()
+    # is true) - it just relays PLO_ARROWADD to everyone else in the level
+    # and washes its hands of the projectile. That means on a real server,
+    # the VICTIM is the only one who can ever notice they got shot: each
+    # client must simulate every other player's arrow itself and apply
+    # damage to itself the instant its own collision box connects.
+    #
+    # Flight constants below are copied from pygserver's own server-side
+    # arrow simulation (pygserver/combat.py Arrow/CombatManager) as the best
+    # available reference for "how an arrow behaves", not because pygserver
+    # needs this client-side copy to work (pygserver already does its own
+    # authoritative simulation - see the double-damage guard below).
+    # =========================================================================
+
+    _ARROW_SPEED = 8.0    # tiles/sec (pygserver combat.py Arrow.speed)
+    _ARROW_LIFETIME = 2.0  # seconds (pygserver combat.py Arrow.expired)
+    _ARROW_DAMAGE = 0.5    # hearts = 1 half-heart (pygserver CombatManager.arrow_damage)
+    _ARROW_HIT_RADIUS = 1.0  # tiles, AABB half-extent (pygserver _update_arrow)
+    _ARROW_STEP = 0.05     # seconds/substep - matches pygserver's 50ms tick;
+                            # sub-stepping avoids tunneling through the
+                            # player's hitbox when update() is called at a
+                            # lower rate than the arrow crosses it.
+    # Grace period between "our own sim detected a hit" and actually
+    # applying it (see _tick_arrow_sims). pygserver runs its OWN
+    # independent server-side arrow simulation using the exact same speed/
+    # lifetime constants (that's where they're copied from), so it detects
+    # the same hit at very nearly the same simulated time - and unlike our
+    # side, applying it there is unconditional: pygserver's apply_damage()
+    # has no idea our client is also tracking this arrow, so it always
+    # subtracts once, on its own schedule, no matter what we do locally
+    # (confirmed live: self-applying immediately let a fresh server-side
+    # hit land moments later, silently overwriting our hearts via a second,
+    # independent CURPOWER push and taking a full 1.0 hearts off a single
+    # 0.5-heart arrow). Waiting this long before WE apply gives a
+    # server-authoritative hit - if one is coming at all - time to arrive
+    # and be recorded in _arrow_hurt_suppress first, so our own attempt
+    # backs off instead of adding a second reduction. On real GServer-v2 no
+    # such packet is ever sent (arrows are a pure client relay there), so
+    # this is a pure server-only concern; a quarter-second is small enough
+    # not to be felt as its own gameplay guard.
+    _ARROW_HIT_GRACE = 0.25
+    # Suppression window for the double-damage guard - matches pygserver's
+    # own post-hit invincibility duration (CombatManager.apply_damage sets
+    # `self._invincible[player.id] = time.time() + 1.0`), so it can't be
+    # tighter than the window during which a genuine second hit from
+    # anywhere wouldn't register server-side there anyway.
+    _ARROW_HURT_SUPPRESS_WINDOW = 1.0
+    _OWN_ARROW_ECHO_WINDOW = 0.5  # seconds to match a self-fired arrow's echo
+
+    _ARROW_DIR_VECTORS = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
+
+    def _start_arrow_sim(self, info: dict, now: Optional[float] = None):
+        """Begin victim-side flight simulation for another player's arrow
+        (PLO_ARROWADD). Skips arrows we fired ourselves (matched
+        heuristically against _own_recent_arrows - see its docstring) and
+        arrows with no usable direction vector."""
+        dir_vec = self._ARROW_DIR_VECTORS.get(info.get('direction'))
+        if dir_vec is None:
+            return
+        if now is None:
+            now = time.time()
+
+        self._own_recent_arrows = [
+            e for e in self._own_recent_arrows if now - e[0] < self._OWN_ARROW_ECHO_WINDOW]
+        for i, (fire_time, fdir, fx, fy) in enumerate(self._own_recent_arrows):
+            if (fdir == info.get('direction')
+                    and abs(fx - info['x']) < 1.0 and abs(fy - info['y']) < 1.0):
+                del self._own_recent_arrows[i]
+                return
+
+        self._arrow_sims.append({
+            'owner_id': info.get('owner_id', 0),
+            'x': info['x'], 'y': info['y'],
+            'dx': dir_vec[0], 'dy': dir_vec[1],
+            'spawn_time': now, 'last_tick': now,
+        })
+
+    def _advance_arrow_sim(self, sim: dict, now: float, my_x: float, my_y: float) -> bool:
+        """Step one arrow simulation forward from its last-checked time to
+        `now`, sub-stepping at _ARROW_STEP so a low update() call rate can't
+        let the arrow tunnel through the player's hitbox between checks.
+        Returns True (and leaves `sim` at the point of impact) on hit."""
+        dt_total = now - sim['last_tick']
+        if dt_total <= 0:
+            return False
+        steps = max(1, int(dt_total / self._ARROW_STEP) + 1)
+        step_dt = dt_total / steps
+        hit = False
+        for _ in range(steps):
+            sim['x'] += sim['dx'] * self._ARROW_SPEED * step_dt
+            sim['y'] += sim['dy'] * self._ARROW_SPEED * step_dt
+            if (abs(sim['x'] - my_x) < self._ARROW_HIT_RADIUS
+                    and abs(sim['y'] - my_y) < self._ARROW_HIT_RADIUS):
+                hit = True
+                break
+        sim['last_tick'] = now
+        return hit
+
+    def _resolve_pending_arrow_hit(self, pending: dict):
+        """Apply arrow damage to ourselves via the same self-authoritative
+        hearts-update path (respond_to_hurt) the PLO_HURTPLAYER handler
+        uses, unless a server hurt packet for this same owner already
+        landed during the grace period (see _tick_arrow_sims / the
+        double-damage guard docs above _ARROW_HIT_GRACE) - in which case
+        this is a duplicate and is dropped."""
+        owner_id = pending['owner_id']
+        now = time.time()
+        if owner_id in self._arrow_hurt_suppress and now < self._arrow_hurt_suppress[owner_id]:
+            return
+        self._arrow_hurt_suppress[owner_id] = now + self._ARROW_HURT_SUPPRESS_WINDOW
+        self.respond_to_hurt(self._ARROW_DAMAGE, self.hurt_animation)
+        if self.on_hurt:
+            # damage_type 2 = ARROW, matching pygserver's DamageType.ARROW.
+            self.on_hurt(owner_id, self._ARROW_DAMAGE, 2, pending['dx'], pending['dy'])
+
+    def _tick_arrow_sims(self, now: Optional[float] = None):
+        """Advance every tracked victim-side arrow simulation, queue
+        self-damage for any that connect with our own collision box this
+        tick (see _ARROW_HIT_GRACE for why it's queued rather than applied
+        immediately), and resolve anything whose grace period has elapsed.
+        Call regularly (update() does this automatically)."""
+        if now is None:
+            now = time.time()
+
+        if self._arrow_hurt_suppress:
+            self._arrow_hurt_suppress = {
+                oid: exp for oid, exp in self._arrow_hurt_suppress.items() if exp > now}
+
+        if self._arrow_sims:
+            my_x = self.player.x % 64
+            my_y = self.player.y % 64
+            alive = []
+            for sim in self._arrow_sims:
+                if now - sim['spawn_time'] >= self._ARROW_LIFETIME:
+                    continue  # expired - either a miss/dodge, or simply too old
+                if self._advance_arrow_sim(sim, now, my_x, my_y):
+                    self._pending_arrow_hits.append({
+                        'owner_id': sim['owner_id'], 'dx': sim['dx'], 'dy': sim['dy'],
+                        'resolve_at': now + self._ARROW_HIT_GRACE,
+                    })
+                    continue  # consumed on hit - handed off to the pending queue
+                alive.append(sim)
+            self._arrow_sims = alive
+
+        if self._pending_arrow_hits:
+            still_pending = []
+            for pending in self._pending_arrow_hits:
+                if now >= pending['resolve_at']:
+                    self._resolve_pending_arrow_hit(pending)
+                else:
+                    still_pending.append(pending)
+            self._pending_arrow_hits = still_pending
+
+    # =========================================================================
     # Update Loop
     # =========================================================================
 
@@ -1982,6 +2241,8 @@ class Client:
                             "not logged)", packet_id, type(e).__name__, e)
         finally:
             self._in_update = False
+
+        self._tick_arrow_sims()
 
         return packets
 
@@ -2186,10 +2447,39 @@ class Client:
                 attacker_id = hurt_info.get('player_id', 0)
                 damage = hurt_info.get('damage', 0)
 
+                # Double-damage guard: a server that runs its own
+                # independent arrow-flight simulation in parallel with ours
+                # (pygserver's CombatManager - see _tick_arrow_sims) can end
+                # up telling us about a hit we ALREADY applied to ourselves
+                # via that simulation. Real GServer-v2 never sends this for
+                # arrows at all (no NPCServer => arrows are a pure client-
+                # authoritative relay, see msgPLI_ARROWADD), so this is a
+                # pygserver-only concern in practice.
+                already_applied = (
+                    attacker_id in self._arrow_hurt_suppress
+                    and time.time() < self._arrow_hurt_suppress[attacker_id])
+
                 # We got hurt - client is source of truth for health
                 # Auto-respond with new health and hurt animation
-                if self.auto_respond_hurt and damage > 0:
+                if self.auto_respond_hurt and damage > 0 and not already_applied:
                     self.respond_to_hurt(damage, self.hurt_animation)
+                    # This may be the server's own independent detection of
+                    # a hit our own arrow sim hasn't caught up to yet (it
+                    # might not have even started - the PLO_ARROWADD relay
+                    # and this PLO_HURTPLAYER aren't guaranteed to arrive in
+                    # any particular order). Mark the owner suppressed
+                    # UNCONDITIONALLY (not just when a sim already exists -
+                    # a sim starting moments later must still respect this)
+                    # and drop any in-flight sims from them so ours doesn't
+                    # also apply this same hit once it resolves.
+                    self._arrow_hurt_suppress[attacker_id] = (
+                        time.time() + self._ARROW_HURT_SUPPRESS_WINDOW)
+                    if any(s['owner_id'] == attacker_id for s in self._arrow_sims):
+                        self._arrow_sims = [
+                            s for s in self._arrow_sims if s['owner_id'] != attacker_id]
+                    if any(p['owner_id'] == attacker_id for p in self._pending_arrow_hits):
+                        self._pending_arrow_hits = [
+                            p for p in self._pending_arrow_hits if p['owner_id'] != attacker_id]
 
                 # Callback (after responding, so player.hearts is updated)
                 if self.on_hurt:
@@ -2732,8 +3022,16 @@ class Client:
             bh = parse_baddy_hurt(data)
             bid = bh['baddy_id']
             if bid in self.baddies:
-                self.baddies[bid]['power'] = max(
-                    0, self.baddies[bid].get('power', 0) - bh['power'])
+                if self.is_leader:
+                    # We're this level's leader: GServer-v2 only ever relays
+                    # another player's PLI_BADDYHURT to us (see the
+                    # docstring above _leader_apply_baddy_damage) - nobody
+                    # else will apply it, so we must apply it locally and
+                    # tell the rest of the level the result.
+                    self._leader_apply_baddy_damage(bid, bh['power'])
+                else:
+                    self.baddies[bid]['power'] = max(
+                        0, self.baddies[bid].get('power', 0) - bh['power'])
             if self.on_baddy_hurt:
                 self.on_baddy_hurt(bid, bh['power'])
 
@@ -2772,6 +3070,7 @@ class Client:
                 self.arrows = self.arrows[-64:]
             if self.on_arrow_add:
                 self.on_arrow_add(info)
+            self._start_arrow_sim(info)
 
         # Horse placed/mounted by another player (packet 17).
         elif packet_id == PacketID.PLO_HORSEADD:

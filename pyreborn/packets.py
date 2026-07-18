@@ -8,7 +8,7 @@ Uses the shared reborn_protocol library for core protocol components.
 from typing import Dict, Any, Optional
 
 # Import shared protocol components
-from reborn_protocol import PacketReader, PacketBuilder, PLI, PLO, PLPROP
+from reborn_protocol import PacketReader, PacketBuilder, PLI, PLO, PLPROP, BDPROP
 
 
 # =============================================================================
@@ -2275,6 +2275,49 @@ def parse_baddy_props(data: bytes) -> dict:
                 pos += 1
 
     return props
+
+
+def build_baddy_props(baddy_id: int, props: dict) -> bytes:
+    """
+    Build PLI_BADDYPROPS (packet 15) - leader-authoritative baddy state
+    update.
+
+    Wire format (GServer-v2 msgPLI_BADDYPROPS, PlayerClientPackets.cpp:
+    494-521): {GUChar baddyId}{prop blocks, same encoding as PLO_BADDYPROPS}.
+    The server applies these directly to its own copy of the baddy
+    (`baddy->setPropsFromPacket(props)`) and relays PLO_BADDYPROPS to every
+    OTHER player in the level - the leader itself is excluded from that
+    relay because it already applied the change locally before sending this.
+
+    Only the leader ever sends this packet (see Client._leader_apply_baddy_
+    damage), and only after resolving a PLI_BADDYHURT hit, so only the two
+    props that hit resolution actually changes are implemented here (mirrors
+    pygserver's own build_baddy_props subset in protocol/packets.py):
+
+        BDPROP.POWERIMAGE (4) -> (power: int, image: str)
+        BDPROP.MODE       (5) -> mode: int
+
+    Args:
+        baddy_id: Baddy ID
+        props: {BDPROP id: value} - POWERIMAGE takes (power, image), MODE
+            takes a plain int mode
+
+    Returns:
+        Packet data for PLI_BADDYPROPS
+    """
+    builder = PacketBuilder()
+    builder.write_gchar(baddy_id)
+    for prop_id, value in props.items():
+        builder.write_gchar(int(prop_id))
+        if prop_id == BDPROP.POWERIMAGE:
+            power, image = value
+            builder.write_gchar(int(power))
+            builder.write_gstring(image or '')
+        elif prop_id == BDPROP.MODE:
+            builder.write_gchar(int(value))
+        else:
+            raise ValueError(f"build_baddy_props: unsupported prop id {prop_id!r}")
+    return builder.build()
 
 
 def build_open_chest(x: float, y: float) -> bytes:
