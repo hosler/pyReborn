@@ -437,6 +437,8 @@ class Client:
         self.on_freeze: Optional[Callable[[bool], None]] = None
         # Sign-style server message: handler(text) (PLO_SAY2).
         self.on_say2: Optional[Callable[[str], None]] = None
+        # A player left our level (JOINLEAVELVL=0): handler(player_id).
+        self.on_player_left: Optional[Callable[[int], None]] = None
         # Server warp target: handler(info) with name/host/port (PLO_SERVERWARP).
         # pyReborn does NOT auto-connect; the app decides.
         self.on_server_warp: Optional[Callable[[dict], None]] = None
@@ -880,12 +882,22 @@ class Client:
             return
         fx, fy = dir_vec
         my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
+        # self.players carries raw wire coords (level-local 0-63) while
+        # self.player.x/y are WORLD coords on a GMAP — without folding the
+        # attacker's segment offset in, every hit test off segment (0,0) is
+        # 64+ tiles wrong and swords silently never connect (live repro:
+        # chicken1.nw at world (84,94) vs target view (20,31.5)). Same-level
+        # players share the attacker's segment, so its offset applies.
+        seg_ox = (self.player.x // 64) * 64
+        seg_oy = (self.player.y // 64) * 64
         # Half a heart per sword power level, matching the classic client.
         damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
         for pid, p in list(self.players.items()):
             px, py = p.get('x'), p.get('y')
             if px is None or py is None:
                 continue
+            if px < 64 and py < 64:
+                px, py = px + seg_ox, py + seg_oy
             dx, dy = (px + 1.0) - my_cx, (py + 1.5) - my_cy
             forward = dx * fx + dy * fy
             lateral = abs(dx * fy) + abs(dy * fx)
@@ -2418,6 +2430,14 @@ class Client:
             props = parse_other_player(data, self._colors_len)
             if props and 'id' in props:
                 player_id = props['id']
+                # JOINLEAVELVL=0 is the server's "this player left your
+                # level" notification — drop them from the level roster
+                # (they'd otherwise linger as a ghost at their last position).
+                if props.get('joinleave') == 0:
+                    self.players.pop(player_id, None)
+                    if self.on_player_left:
+                        self.on_player_left(player_id)
+                    return
                 # A non-empty CURCHAT prop is another player's chat bubble — the
                 # primary in-level chat path. Surface it through on_chat.
                 chat = props.get('chat')

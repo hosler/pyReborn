@@ -843,6 +843,14 @@ def parse_other_player(data: bytes, colors_len: int = 5) -> dict:
                 val, pos = _read_string(data, pos)
                 if val is not None:
                     props['account'] = val
+            elif prop_id == 50:       # JOINLEAVELVL (1=joined level, 0=left)
+                # The server's level-leave notification IS this prop with
+                # value 0 (pygserver build_player_left; GServer-v2 sends the
+                # same shape). Without capturing it, departed players linger
+                # forever in the client's level roster as ghosts.
+                if pos < len(data):
+                    props['joinleave'] = data[pos] - 32
+                    pos += 1
             elif prop_id == 35:       # BODYIMG
                 val, pos = _read_string(data, pos)
                 if val is not None:

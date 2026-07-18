@@ -332,3 +332,58 @@ class TestGmapAdjacentPreloadLevelName:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+class TestPlayerLeftRoster:
+    """JOINLEAVELVL=0 in PLO_OTHERPLPROPS removes the player from the level
+    roster (the server's leave notification; without handling it, departed
+    players linger as ghosts at their last position)."""
+
+    @staticmethod
+    def _leave_packet(player_id):
+        # [gshort id][prop 50][value 0], gchar-encoded (+32)
+        return bytes([(player_id >> 7) + 32, (player_id & 0x7F) + 32, 50 + 32, 0 + 32])
+
+    def test_leave_removes_player(self):
+        c = _fake_connected_client()
+        c.players[7] = {"id": 7, "x": 25.0, "y": 27.0}
+        c._handle_packet(PacketID.PLO_OTHERPLPROPS, self._leave_packet(7))
+        assert 7 not in c.players
+
+    def test_leave_fires_callback(self):
+        c = _fake_connected_client()
+        c.players[7] = {"id": 7, "x": 25.0, "y": 27.0}
+        left = []
+        c.on_player_left = left.append
+        c._handle_packet(PacketID.PLO_OTHERPLPROPS, self._leave_packet(7))
+        assert left == [7]
+
+    def test_leave_for_unknown_player_is_noop(self):
+        c = _fake_connected_client()
+        c._handle_packet(PacketID.PLO_OTHERPLPROPS, self._leave_packet(9))
+        assert 9 not in c.players
+
+
+class TestSwordGmapSegmentFrame:
+    """Sword hit tests must fold the attacker's gmap segment offset into
+    target positions: self.player.x/y are world coords while the players
+    dict carries wire-local (0-63) coords. Live repro: attacker at world
+    (84,94) on chicken1.nw never hit a target it saw at (20,31.5)."""
+
+    def test_hits_target_on_nonzero_segment(self):
+        c = _fake_connected_client()
+        c.player.x, c.player.y = 84.0, 94.0      # local (20,30) + segment (1,1)*64
+        c.players[3] = {"id": 3, "x": 20.0, "y": 31.5}  # wire-local, same level
+        hits = []
+        c.attack_player = lambda pid, **kw: hits.append(pid)
+        c._sword_hit_players(2)  # facing down, gap 1.5 -> must hit
+        assert hits == [3]
+
+    def test_still_hits_on_origin_segment(self):
+        c = _fake_connected_client()
+        c.player.x, c.player.y = 20.0, 30.0
+        c.players[3] = {"id": 3, "x": 20.0, "y": 31.5}
+        hits = []
+        c.attack_player = lambda pid, **kw: hits.append(pid)
+        c._sword_hit_players(2)
+        assert hits == [3]
