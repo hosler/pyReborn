@@ -1,0 +1,167 @@
+"""Regression tests for the sticky-swimming bug: GameClient.is_swimming (the
+state backing the GS1 `playerswimming` flag and the pygame HUD swim badge)
+must recompute on warp/level-change, not just after a manual move().
+
+Live evidence: a bot stranded in water on chicken5.nw still reported
+swimming:true after warping into a dry indoor level (chicken_house1.nw).
+Root cause: _update_swimming_state() (pyreborn/game/actions.py) was only
+called from _move() and from the run() loop's per-frame catch-all - warp
+entry points (_use_door_link, _process_pending_warp) never called it
+directly, so any caller that doesn't drive the full run() loop (or checks
+state immediately after a warp within the same frame, before the catch-all
+runs) sees the previous level's stale value. Fixed by recomputing swimming
+state immediately at both warp sites.
+"""
+
+import os
+import sys
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
+
+import pytest
+
+from pyreborn import Client
+from pyreborn.game.actions import ActionsMixin
+from pyreborn.game.collision import CollisionMixin
+from pyreborn.game.setup import SetupMixin
+from pyreborn.tiletypes import TileType
+
+WATER_LEVEL = [1] * 4096  # tile id 1 forced to WATER via tile_corrections
+DRY_LEVEL = [0] * 4096
+
+
+class _NoopSound:
+    def play(self, *a, **k):
+        pass
+
+
+class _NoopAnim:
+    def set_animation(self, *a, **k):
+        pass
+
+
+class _NoopNpcHandler:
+    def update_npcs(self):
+        pass
+
+
+def _fake_connected_client():
+    c = Client("localhost", 14900)
+    c._authenticated = True
+
+    class _Stub:
+        connected = True
+
+        def send_packet(self, *a, **k):
+            return True
+
+    c._protocol = _Stub()
+    return c
+
+
+def _seed_levels(c):
+    c._current_level_name = "chicken5.nw"
+    c.levels["chicken5.nw"] = list(WATER_LEVEL)
+    c.tiles = c.levels["chicken5.nw"]
+    c.player.x, c.player.y = 30.0, 30.0
+    c.levels["chicken_house1.nw"] = list(DRY_LEVEL)
+
+
+class _SwimHarness(CollisionMixin, ActionsMixin):
+    """Minimal GameClient stand-in exercising just the swimming-state slice
+    of the mixins, without pygame display/asset/sound setup."""
+
+    def __init__(self, client):
+        self.client = client
+        self.is_swimming = False
+        self.current_anim_name = "idle"
+        self.is_moving = False
+        self.noclip = False
+        self.tile_corrections = {1: TileType.WATER}
+        self.sound_mgr = _NoopSound()
+        self.player_anim = _NoopAnim()
+        self.npc_handler = _NoopNpcHandler()
+        self.world_surface = None
+        self.visual_x = self.visual_y = 0.0
+
+    # _use_door_link also drives GS1/NPC bootstrap - not under test here.
+    def _load_npc_scripts(self):
+        pass
+
+    def _trigger_playerenters(self):
+        pass
+
+
+class _SwimHarnessWithSetup(SetupMixin, CollisionMixin, ActionsMixin):
+    """Same as _SwimHarness but mixes in SetupMixin for _process_pending_warp."""
+
+    def __init__(self, client):
+        self.client = client
+        self.is_swimming = False
+        self.current_anim_name = "idle"
+        self.is_moving = False
+        self.noclip = False
+        self.tile_corrections = {1: TileType.WATER}
+        self.sound_mgr = _NoopSound()
+        self.player_anim = _NoopAnim()
+
+
+class TestSwimmingStateRecompute:
+    def test_baseline_recompute_detects_water(self):
+        c = _fake_connected_client()
+        _seed_levels(c)
+        h = _SwimHarness(c)
+        h._update_swimming_state()
+        assert h.is_swimming is True
+
+    def test_door_link_warp_clears_swimming_into_dry_level(self):
+        c = _fake_connected_client()
+        _seed_levels(c)
+        h = _SwimHarness(c)
+        h._update_swimming_state()
+        assert h.is_swimming is True
+
+        h._use_door_link({
+            'dest_level': 'chicken_house1.nw', 'dest_x': '24', 'dest_y': '26',
+        })
+        assert c._current_level_name == "chicken_house1.nw"
+        # Recomputed immediately by _use_door_link, not left stale from
+        # chicken5.nw until the next run()-loop frame.
+        assert h.is_swimming is False
+
+    def test_gs1_pending_warp_clears_swimming_into_dry_level(self):
+        c = _fake_connected_client()
+        _seed_levels(c)
+        h = _SwimHarnessWithSetup(c)
+        h._update_swimming_state()
+        assert h.is_swimming is True
+
+        h._pending_gs1_warp = ("chicken_house1.nw", 24.0, 26.0)
+        h._process_pending_warp()
+        assert c._current_level_name == "chicken_house1.nw"
+        assert h.is_swimming is False
+
+    def test_warp_into_water_sets_swimming_true(self):
+        # Symmetric case: a dry-level door_link warp landing in water.
+        c = _fake_connected_client()
+        c._current_level_name = "chicken_house1.nw"
+        c.levels["chicken_house1.nw"] = list(DRY_LEVEL)
+        c.tiles = c.levels["chicken_house1.nw"]
+        c.player.x, c.player.y = 24.0, 26.0
+        c.levels["chicken5.nw"] = list(WATER_LEVEL)
+
+        h = _SwimHarness(c)
+        h._update_swimming_state()
+        assert h.is_swimming is False
+
+        h._use_door_link({'dest_level': 'chicken5.nw', 'dest_x': '30', 'dest_y': '30'})
+        assert c._current_level_name == "chicken5.nw"
+        assert h.is_swimming is True
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

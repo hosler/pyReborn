@@ -2134,23 +2134,39 @@ def build_hit_objects(power: float, x: float, y: float) -> bytes:
     return bytes(packet)
 
 
-def build_baddy_hurt(baddy_id: int, damage: float) -> bytes:
+def build_baddy_hurt(baddy_id: int, damage: float,
+                      hurt_dx: float = 0.0, hurt_dy: float = 0.0) -> bytes:
     """
     Build PLI_BADDYHURT (packet 16) - attack a baddy/enemy.
 
+    Wire format (GServer-v2 msgPLI_BADDYHURT, PlayerClientPackets.cpp:523-539,
+    commit e0cd07af9bb4be09c54c0335f222dd0eacb71c1): [GUChar baddyId][GChar
+    hurtDX][GChar hurtDY][GUChar damage, half-hearts]. hurtDX/hurtDY use the
+    "midpoint: 64" gchar idiom noted at that read site - a value of 0.0
+    encodes as byte 64+32, +1.0 as 128+32, -1.0 as 0+32 - the same convention
+    pygserver's own build_baddy_hurt (protocol/packets.py) uses for its
+    PLO_BADDYHURT relay, and the mirror of parse_baddy_hurt below.
+
     Args:
         baddy_id: ID of the baddy to hurt
-        damage: Damage amount in hearts
+        damage: Damage amount in hearts (encoded as half-hearts on the wire)
+        hurt_dx, hurt_dy: Attack direction, -1.0..1.0 per axis (0,0 = no
+            direction / environment hit)
 
     Returns:
         Packet data for PLI_BADDYHURT
     """
     packet = bytearray()
 
-    # Baddy ID (gchar)
+    # Baddy ID (GUChar)
     packet.append((baddy_id & 0x7F) + 32)
 
-    # Damage in half-hearts (gchar)
+    # hurtDX/hurtDY (GChar, midpoint 64) - clamp to the documented -1.0..1.0
+    # range before recentering so a stray large vector doesn't wrap the byte.
+    packet.append((int(max(-1.0, min(1.0, hurt_dx)) * 64) + 64 + 32) & 0xFF)
+    packet.append((int(max(-1.0, min(1.0, hurt_dy)) * 64) + 64 + 32) & 0xFF)
+
+    # Damage in half-hearts (GUChar)
     packet.append(int(damage * 2) + 32)
 
     return bytes(packet)
@@ -3078,12 +3094,23 @@ def parse_rpg_window(data: bytes) -> list:
 
 
 def parse_baddy_hurt(data: bytes) -> dict:
-    """PLO_BADDYHURT (27): relayed from PLI_BADDYHURT; first gchar is the baddy
-    id, remaining gchar(s) the hurt power. Forwarded to the level leader."""
+    """PLO_BADDYHURT (27): relayed from PLI_BADDYHURT, forwarded to the level
+    leader.
+
+    Wire format (GServer-v2 msgPLI_BADDYHURT, PlayerClientPackets.cpp:523-539,
+    commit e0cd07af9bb4be09c54c0335f222dd0eacb71c1): [GUChar baddyId][GChar
+    hurtDX][GChar hurtDY][GUChar damage, half-hearts]. hurtDX/hurtDY use the
+    "midpoint: 64" gchar idiom - value = read_gchar() - 64 (mirrors
+    build_baddy_hurt above and pygserver player.py:_handle_baddy_hurt, which
+    decode the same way).
+    """
     reader = PacketReader(data)
     baddy_id = reader.read_gchar() if reader.has_data() else 0
+    hurt_dx = (reader.read_gchar() - 64) if reader.has_data() else 0
+    hurt_dy = (reader.read_gchar() - 64) if reader.has_data() else 0
     power = reader.read_gchar() if reader.has_data() else 0
-    return {'baddy_id': baddy_id, 'power': power}
+    return {'baddy_id': baddy_id, 'power': power,
+            'knockback_x': hurt_dx, 'knockback_y': hurt_dy}
 
 
 # =============================================================================

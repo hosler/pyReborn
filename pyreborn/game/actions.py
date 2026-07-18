@@ -528,6 +528,11 @@ class ActionsMixin:
         self.visual_y = self.client.y
         # Force world surface redraw
         self.world_surface = None
+        # Recompute swimming immediately (don't wait for the next frame's
+        # blanket update in run()) so a door out of water into a dry level -
+        # or vice versa - never reports the old level's state, even for one
+        # frame or for callers that drive warps outside the run() loop.
+        self._update_swimming_state()
         # Load + run NPC scripts through the GS1 engine, THEN snapshot collision
         # shapes — setshape runs during playerenters, so shapes only exist after.
         self._load_npc_scripts()

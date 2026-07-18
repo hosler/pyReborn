@@ -95,6 +95,14 @@ class GameBot:
         # Parity with pygame client: swimming state
         self.is_swimming = False
 
+        # Door/link auto-traversal state (parity with pygame_game.py's
+        # ActionsMixin._try_link_warp): rising-edge latch so a link only
+        # fires the moment we step onto it, plus a post-warp suppression so
+        # we don't immediately bounce back through a return link or an
+        # overlapping link at the arrival point. See _maybe_follow_link().
+        self._was_on_link = False
+        self._link_arrival: Optional[Tuple[float, float]] = None
+
         # Collision settings (match pygame_game.py)
         self._feet_offset_x = 1.0  # Center of 2-tile wide sprite
         self._feet_offset_y = 3.0  # Bottom of 3-tile tall sprite
@@ -208,7 +216,8 @@ class GameBot:
         # Check for stuck
         self._check_stuck()
 
-    def move(self, dx: int, dy: int, check_collision: bool = True) -> bool:
+    def move(self, dx: int, dy: int, check_collision: bool = True,
+             follow_links: bool = True) -> bool:
         """Move in direction (dx, dy in -1, 0, 1).
 
         PARITY NOTE: This matches pygame_game.py:_move() which:
@@ -222,6 +231,14 @@ class GameBot:
             dx: X direction (-1, 0, 1)
             dy: Y direction (-1, 0, 1)
             check_collision: If True, check for blocking tiles (parity with pygame)
+            follow_links: If True (default), auto-warp through a door/link the
+                bot ends up standing on, matching the real client
+                (pygame_game.py's ActionsMixin calls _try_link_warp() after
+                every move). Link warps are CLIENT-initiated - the server
+                only streams link rectangles, it never triggers the warp -
+                so without this a headless bot silently walks straight
+                through doors/cave entrances and never enters them. Pass
+                False to inspect a link without taking it.
 
         Returns:
             True if moved, False if blocked or failed
@@ -238,8 +255,14 @@ class GameBot:
 
         # Check collision BEFORE moving (parity with pygame_game.py)
         if check_collision and self._is_position_blocked(dest_x, dest_y, dx, dy):
-            # Position is blocked - don't move
+            # Position is blocked - don't move. Still check for a link: cave/
+            # door entrances sit on solid tiles you can't step onto, so
+            # walking into one blocks the move but should still trigger the
+            # warp (pygame_game.py's _move() does the same - it calls
+            # _try_link_warp() from its "fully blocked" branch too).
             self._log_action("move", {"dx": dx, "dy": dy, "blocked": True}, False, start)
+            if follow_links:
+                self._maybe_follow_link()
             return False
 
         # Move only 0.25 tiles (client.move uses step=0.25 by default)
@@ -249,27 +272,44 @@ class GameBot:
         # Update swimming state after move (parity with pygame)
         self._update_swimming_state()
 
-        # Check for door link at new position
-        door_link = self.check_link_collision()
-        if door_link:
-            # Note: Don't auto-warp like pygame does - let test control this
-            pass
-
         # Check if actually moved
         moved = (abs(self.client.x - old_x) > 0.01 or
                  abs(self.client.y - old_y) > 0.01)
 
         self._log_action("move", {"dx": dx, "dy": dy}, moved, start)
+
+        # Check for door/edge link at the new position (auto-warp on
+        # walk-into, parity with pygame's _try_link_warp()).
+        if follow_links:
+            self._maybe_follow_link()
+
         return moved
 
-    def walk_to(self, target_x: float, target_y: float, timeout: float = 10.0) -> bool:
+    def walk_to(self, target_x: float, target_y: float, timeout: float = 10.0,
+                follow_links: bool = True) -> bool:
         """
         Walk to a target position using simple pathfinding.
 
-        Returns True if reached target, False if stuck/timeout.
+        target_x/target_y are in the same frame as self.x/self.y: WORLD
+        coordinates on a GMAP (local + grid*64, matching client.x/client.y
+        and the /state x/y the playtest daemon reports), local (0-63) on a
+        plain level. self.client.x/y already track world coords across a
+        GMAP without wrapping (client.move() never resets to local - it only
+        sends local coords over the wire), so this comparison is safe as
+        long as callers pass the same frame - do not pass a local (0-63)
+        target while on a GMAP.
+
+        follow_links: forwarded to move() - if True (default) walking into a
+        door/link along the way auto-warps through it, same as the real
+        client. If that happens mid-walk the target is almost certainly no
+        longer reachable in the new level, so this returns False rather than
+        continuing to burn the timeout comparing against a stale target.
+
+        Returns True if reached target, False if stuck/timeout/warped away.
         """
         start = time.time()
         tolerance = 0.5
+        start_level = self.level
 
         while time.time() - start < timeout:
             dx = target_x - self.client.x
@@ -286,19 +326,36 @@ class GameBot:
 
             # Try to move
             old_x, old_y = self.client.x, self.client.y
-            self.move(move_dx, move_dy)
+            self.move(move_dx, move_dy, follow_links=follow_links)
+
+            if follow_links and self.level != start_level:
+                # A link fired mid-walk (see move()/_maybe_follow_link) and
+                # dropped us on a different level - target_x/target_y were
+                # meant for start_level's frame and are now meaningless.
+                self._log_action("walk_to", {"x": target_x, "y": target_y,
+                                             "warped_to": self.level}, False, start)
+                return False
 
             # Check if stuck
             if abs(self.client.x - old_x) < 0.01 and abs(self.client.y - old_y) < 0.01:
                 self._stuck_count += 1
                 if self._stuck_count > 10:
-                    # Try alternate route
+                    # Try alternate route: sidestep along the axis we're NOT
+                    # blocked on, in the direction that actually helps reach
+                    # the target (sign of dx/dy) - not a fixed south-then-
+                    # east regardless of where the target is. The old fixed
+                    # heuristic could walk a bot further from a west/north
+                    # target every time it got stuck (live repro: action log
+                    # showed dx:+1 "east" move steps while the target was
+                    # west of the bot).
                     if move_dx != 0:
-                        self.move(0, 1)  # Try going around
-                        self.move(0, 1)
+                        step_y = 1 if dy >= 0 else -1
+                        self.move(0, step_y, follow_links=follow_links)
+                        self.move(0, step_y, follow_links=follow_links)
                     if move_dy != 0:
-                        self.move(1, 0)
-                        self.move(1, 0)
+                        step_x = 1 if dx >= 0 else -1
+                        self.move(step_x, 0, follow_links=follow_links)
+                        self.move(step_x, 0, follow_links=follow_links)
                     self._stuck_count = 0
             else:
                 self._stuck_count = 0
@@ -331,14 +388,57 @@ class GameBot:
 
     # ========== Collision Detection (Parity with pygame_game.py) ==========
 
+    def _resolve_level_name(self, x: Optional[float] = None,
+                             y: Optional[float] = None) -> str:
+        """Resolve which level owns a world position - robust to
+        client._current_level_name being a poor proxy for "the level the
+        player is standing in" while on a GMAP.
+
+        client.py's PLO_LEVELNAME handler updates _current_level_name on
+        EVERY level-name announcement it parses, including the board streams
+        for neighbouring segments that request_adjacent_levels() pulls in
+        right after a gmap loads (and again on every segment crossing) - it
+        really means "which segment's packets are we parsing right now", not
+        "where is the player". Confirmed live: connect to a gmap start
+        level, let it settle ~1s, and _current_level_name has silently
+        become whichever of the 8 neighbours streamed in last, even though
+        the player never moved (e.g. spawns on chicken1.nw at world
+        (94,94) and _current_level_name reads "chicken8.nw"). Every method
+        here that read tiles/links for "the current level" was keying off
+        that field and got the wrong board/links as soon as a bot loaded a
+        gmap - that's the root cause behind walk_to() reading blocking data
+        from a neighbouring segment's board and producing nonsensical
+        moves/timeouts, and check_link_collision() missing doors entirely.
+
+        Derives the level from the actual world position via the grid
+        instead (mirrors client.get_current_level_from_position(), but for
+        an arbitrary probed point rather than only the player's own
+        position - collision lookahead probes a point up to a tile away,
+        which can itself be across a segment boundary).
+        """
+        c = self.client
+        if x is None:
+            x = c.x
+        if y is None:
+            y = c.y
+        if c.is_gmap and c.gmap_grid:
+            grid_x = math.floor(x / 64)
+            grid_y = math.floor(y / 64)
+            name = c.gmap_grid.get((grid_x, grid_y))
+            if name:
+                return name
+        return c._current_level_name
+
     def _get_tile_at(self, x: float, y: float) -> int:
         """Get the tile ID at a given position (in tile coordinates).
 
         Matches pygame_game.py:_get_tile_at() for parity.
         """
-        # Get the current level's tiles
+        # Get the tiles for whichever level actually owns (x, y) - see
+        # _resolve_level_name for why this can't just be
+        # client._current_level_name on a GMAP.
         if self.client.is_gmap:
-            level_name = self.client._current_level_name
+            level_name = self._resolve_level_name(x, y)
             tiles = self.client.levels.get(level_name, self.client.tiles)
         else:
             tiles = self.client.tiles
@@ -428,9 +528,86 @@ class GameBot:
         """Check if bot is standing on a door/warp link.
 
         Returns the link dict if on a door link, None otherwise.
-        Wraps client.check_link_collision() for convenience.
+
+        Reimplemented rather than delegated to client.check_link_collision():
+        that method keys client.links off client._current_level_name, which
+        is not reliable as "the player's level" on a GMAP (see
+        _resolve_level_name). Same body-sampling / edge-link-filtering logic
+        as the client version, just keyed by the position-derived level.
         """
-        return self.client.check_link_collision()
+        c = self.client
+        level_name = self._resolve_level_name()
+        links = c.links.get(level_name, [])
+        if not links:
+            return None
+
+        # Sample the player's body down the centre column - head, mid, feet,
+        # bottom-of-feet - and the full horizontal foot span, matching
+        # client.check_link_collision()'s box (see that method's docstring
+        # for why single-point sampling misses off-centre/edge overlaps).
+        px, py = c.x, c.y
+        span_left = px % 64
+        span_right = span_left + 2.0
+        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5, 3.0)]
+
+        for link in links:
+            lx = link.get('x', 0)
+            ly = link.get('y', 0)
+            lw = link.get('width', 1)
+            lh = link.get('height', 1)
+
+            # Edge links (GMAP adjacency) don't trigger a warp for a segment
+            # we're already streamed - only for actual GMAP neighbours.
+            is_edge = (lx <= 1 or lx + lw >= 63 or ly <= 1 or ly + lh >= 63)
+            dest_level = link.get('dest_level', '')
+            is_adjacent = dest_level in c.get_adjacent_levels(level_name)
+            if is_edge and is_adjacent:
+                continue
+
+            if span_left < lx + lw and span_right > lx and \
+                    any(ly <= by < ly + lh for by in body_ys):
+                return link
+
+        return None
+
+    def _maybe_follow_link(self) -> bool:
+        """Auto-warp through a door/link the bot is standing on.
+
+        Parity with pygame_game.py's ActionsMixin._try_link_warp(): link
+        warps are CLIENT-initiated (the server only streams link rectangles,
+        it never triggers the warp itself), so a headless bot that never
+        runs this check can walk straight through/past a door and just keep
+        going - confirmed live (chicken_cave_entrance.nw's door at (30,5)
+        3x1 was walked onto and past without ever warping).
+
+        Only fires on the rising edge (was-off -> now-on) so a return link
+        doesn't immediately bounce back, and stays suppressed until the bot
+        physically moves away from where the last warp dropped it (the new
+        level's links can arrive a few frames late).
+
+        Returns True if a warp was triggered.
+        """
+        if self._link_arrival is not None:
+            ax, ay = self._link_arrival
+            if abs(self.client.x - ax) >= 1.5 or abs(self.client.y - ay) >= 1.5:
+                self._link_arrival = None
+
+        link = self.check_link_collision()
+        if not link:
+            self._was_on_link = False
+            return False
+        if self._link_arrival is not None:
+            self._was_on_link = True
+            return False
+        if not self._was_on_link:
+            start = time.time()
+            self._was_on_link = True
+            warped = self.use_link(link)
+            self.update(0.3)
+            self._link_arrival = (self.client.x, self.client.y)
+            self._log_action("auto_link_warp", {"link": link}, warped, start)
+            return warped
+        return False
 
     def use_link(self, link: dict) -> bool:
         """Warp through a link (door/cave entrance).
@@ -546,17 +723,22 @@ class GameBot:
     def warp_to(self, level_name: str, x: float = 30.0, y: float = 30.0) -> bool:
         """Warp to a level."""
         start = time.time()
-        old_level = self.client._current_level_name
+        old_level = self.level
         result = self.client.warp_to_level(level_name, x, y)
 
-        # Wait for level to load
+        # Wait for level to load. Uses self.level (position-derived), not
+        # client._current_level_name directly: warping onto a GMAP segment
+        # triggers the same adjacent-segment streaming burst that corrupts
+        # _current_level_name (see _resolve_level_name) - checking that raw
+        # field here made warp_to() spuriously report failure/timeout for a
+        # warp that actually succeeded.
         deadline = time.time() + 5.0
         while time.time() < deadline:
             self.update(0.1)
-            if self.client._current_level_name == level_name:
+            if self.level == level_name:
                 break
 
-        success = self.client._current_level_name == level_name
+        success = self.level == level_name
         if not success:
             self._add_issue("MEDIUM", "warp",
                            f"Warp failed: {old_level} -> {level_name}")
@@ -567,7 +749,7 @@ class GameBot:
     def use_nearest_door(self) -> bool:
         """Use the nearest door link."""
         start = time.time()
-        link = self.client.check_link_collision()
+        link = self.check_link_collision()
         if link:
             result = self.client.use_link(link)
             self.update(0.5)
@@ -641,7 +823,13 @@ class GameBot:
 
     @property
     def level(self) -> str:
-        return self.client._current_level_name
+        """The level the bot is actually standing in.
+
+        Uses _resolve_level_name() rather than client._current_level_name
+        directly - see that method's docstring for why the raw field is
+        unreliable on a GMAP.
+        """
+        return self._resolve_level_name()
 
     @property
     def hearts(self) -> float:

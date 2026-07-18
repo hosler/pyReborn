@@ -853,6 +853,23 @@ class Client:
     # Sword swing hitbox: how far the blade reaches in the facing direction
     # and how wide the arc is, measured between sprite centers (sprite center
     # = top-left + (1, 1.5)).
+    #
+    # BUG (fixed): the target side of the forward/lateral projection used to
+    # add +1.0 to the target's Y (px/py/nx/ny/wy + 1.0) while the attacker's
+    # own center used +1.5 (my_cy = self.player.y + 1.5) - i.e. attacker and
+    # target were measured from DIFFERENT points, not "center to center" as
+    # the comment above claimed. Work it out for a target directly above vs.
+    # below at the same sprite gap `g` (target y = my_y -/+ g):
+    #   up:   dy = (my_y - g + 1.0) - (my_y + 1.5) = -g - 0.5; fy=-1
+    #         forward = dy*fy = g + 0.5   -> needs g <= REACH - 0.5
+    #   down: dy = (my_y + g + 1.0) - (my_y + 1.5) =  g - 0.5; fy=+1
+    #         forward = dy*fy = g - 0.5   -> needs g <= REACH + 0.5
+    # So the effective up-swing reach was REACH-0.5 while down-swing was
+    # REACH+0.5 - a full 1-tile gap between them (matches the live playtest:
+    # down hit at a 2.2-tile gap, up needed <=~1.2-2.0). Left/right were fine
+    # because both sides already used the same +1.0 X offset. Fix: use +1.5
+    # for the target's Y too, so both sides measure the same center point and
+    # forward reduces to `g` symmetrically in every direction.
     _SWORD_REACH = 2.5
     _SWORD_WIDTH = 1.5
 
@@ -869,7 +886,7 @@ class Client:
             px, py = p.get('x'), p.get('y')
             if px is None or py is None:
                 continue
-            dx, dy = (px + 1.0) - my_cx, (py + 1.0) - my_cy
+            dx, dy = (px + 1.0) - my_cx, (py + 1.5) - my_cy
             forward = dx * fx + dy * fy
             lateral = abs(dx * fy) + abs(dy * fx)
             if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
@@ -898,7 +915,7 @@ class Client:
             ny = npc.get('world_y', npc.get('y'))
             if nx is None or ny is None:
                 continue
-            dx, dy = (nx + 1.0) - my_cx, (ny + 1.0) - my_cy
+            dx, dy = (nx + 1.0) - my_cx, (ny + 1.5) - my_cy
             forward = dx * fx + dy * fy
             lateral = abs(dx * fy) + abs(dy * fx)
             if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
@@ -928,11 +945,11 @@ class Client:
             if bx is None or by is None:
                 continue
             wx, wy = bx + seg_off_x, by + seg_off_y
-            dx, dy = (wx + 1.0) - my_cx, (wy + 1.0) - my_cy
+            dx, dy = (wx + 1.0) - my_cx, (wy + 1.5) - my_cy
             forward = dx * fx + dy * fy
             lateral = abs(dx * fy) + abs(dy * fx)
             if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
-                self.hurt_baddy(bid, damage=damage)
+                self.hurt_baddy(bid, damage=damage, hurt_dx=fx, hurt_dy=fy)
 
     def drop_bomb(self, power: int = 1) -> bool:
         """
@@ -1393,13 +1410,16 @@ class Client:
                 return pid
         return 0
 
-    def hurt_baddy(self, baddy_id: int, damage: float = 1.0) -> bool:
+    def hurt_baddy(self, baddy_id: int, damage: float = 1.0,
+                   hurt_dx: float = 0.0, hurt_dy: float = 0.0) -> bool:
         """
         Attack a baddy/enemy.
 
         Args:
             baddy_id: ID of the baddy to attack
             damage: Damage in hearts (default 1.0)
+            hurt_dx, hurt_dy: Attack direction, -1.0..1.0 per axis (default
+                0,0 = no direction / environment hit) - see build_baddy_hurt.
 
         Returns:
             True if packet sent successfully
@@ -1407,7 +1427,7 @@ class Client:
         if not self.connected or not self._authenticated:
             return False
 
-        data = build_baddy_hurt(baddy_id, damage)
+        data = build_baddy_hurt(baddy_id, damage, hurt_dx, hurt_dy)
         return self._protocol.send_packet(PacketID.PLI_BADDYHURT, data)
 
     def open_chest(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
@@ -1934,16 +1954,35 @@ class Client:
                 # whether level_name is one of the loaded gmap's segments.
                 is_gmap_segment = (self.gmap_width > 0 and
                                     level_name in self.gmap_grid.values())
-                if level_name != self._current_level_name:
+                if is_gmap_segment:
+                    # A GMAP segment's PLO_LEVELNAME is ambiguous on its own:
+                    # pygserver sends it both for a genuine warp/spawn (via
+                    # _send_level, always followed by PLO_PLAYERWARP2) AND for
+                    # a passive adjacent-segment preload (PLI_ADJACENTLEVEL,
+                    # sent by request_adjacent_levels() below and answered by
+                    # pygserver player.py _handle_adjacent_level, which streams
+                    # only [PLO_LEVELNAME, board] for a neighbour so the world
+                    # renders stitched — the player never moves and no warp
+                    # packet follows). Blindly trusting every one as "we are
+                    # now here" mislabels _current_level_name as whichever
+                    # neighbour preloaded last: e.g. spawning into chicken1.nw
+                    # (world (94, 94.5)) but ending up reporting chicken8.nw
+                    # once its 8 surrounding segments finish preloading, while
+                    # the NPCs/chests actually streamed still belong to
+                    # chicken1.nw. PLO_PLAYERWARP2 is the reliable "we actually
+                    # moved" signal — real warps/spawns always send it,
+                    # preloads never do — and its handler below already sets
+                    # _current_level_name from gmap_x/gmap_y, so leave it alone
+                    # here rather than trust this packet directly.
+                    pass
+                elif level_name != self._current_level_name:
                     self._current_level_name = level_name
-                    if not is_gmap_segment:
-                        # Real warp: drop the old level's chests/signs/items/
-                        # baddies/NPCs so stale entries (e.g. a link back
-                        # through a door that doesn't exist here) don't leak
-                        # into the new level.
-                        self._reset_level_state()
-                elif (not is_gmap_segment
-                      and level_name == self._awaiting_warp_confirm):
+                    # Real warp: drop the old level's chests/signs/items/
+                    # baddies/NPCs so stale entries (e.g. a link back
+                    # through a door that doesn't exist here) don't leak
+                    # into the new level.
+                    self._reset_level_state()
+                elif level_name == self._awaiting_warp_confirm:
                     # Client-initiated warp: _current_level_name already equals
                     # level_name (flipped optimistically at send), so the guard
                     # above missed. Reset now on the authoritative confirmation

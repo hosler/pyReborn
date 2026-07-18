@@ -89,8 +89,18 @@ class MultiBotTest:
 
         bot0, bot1 = self.bots[0], self.bots[1]
 
-        # Move bot0 to known position
-        target_x, target_y = 32.0, 32.0
+        # Move bot0 a short, always-reachable distance from wherever it
+        # spawned. A fixed absolute (32.0, 32.0) assumed the plain QA
+        # fixture's spawn is nearby (it is, ~30,30 local) - on a GMAP world
+        # (e.g. funtimes/chicken.gmap) a fresh spawn is a WORLD coordinate
+        # far from there (~94,94), so walk_to would spend the whole timeout
+        # crawling ~60 tiles toward an unreachable point - or, once
+        # walk_to's pathfinding actually works, cross segment boundaries
+        # trying to get there and leave bot0 on a different level than
+        # bot1, breaking visibility/pvp/chat for reasons that have nothing
+        # to do with what those tests are meant to check.
+        start_x, start_y = bot0.x, bot0.y
+        target_x, target_y = start_x + 2.0, start_y
         bot0.walk_to(target_x, target_y, timeout=5.0)
         # Force a position broadcast: the server only relays our position to
         # others when it changes, so if bot0 couldn't move (e.g. spawned against
@@ -249,10 +259,19 @@ class MultiBotTest:
                 issues=issues
             )
 
-        # Move bots close together
-        target_x, target_y = 32.0, 32.0
-        victim.walk_to(target_x, target_y, timeout=3.0)
-        attacker.walk_to(target_x - 1, target_y, timeout=3.0)  # Stand to left of victim
+        # Move the attacker next to wherever the victim already is, rather
+        # than walking both bots to a fixed absolute (32.0, 32.0). That
+        # assumed the plain QA fixture's spawn is nearby - on a GMAP world
+        # (e.g. funtimes/chicken.gmap) fresh spawn is a WORLD coordinate far
+        # from there (~94,94), so both bots would spend the timeout crawling
+        # toward an unreachable point instead of ending up next to each
+        # other (and, once walk_to's pathfinding actually works instead of
+        # stalling, could cross onto different segments trying to get
+        # there). The victim doesn't need to move at all - it's already
+        # stationary; using its live position as the rendezvous point works
+        # on any level.
+        target_x, target_y = victim.x, victim.y
+        attacker.walk_to(target_x - 1, target_y, timeout=5.0)  # Stand to left of victim
         self.update_all(0.5)
 
         # Attacker swings sword (direction 3 = right, towards victim)

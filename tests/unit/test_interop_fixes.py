@@ -248,5 +248,87 @@ class TestWarpFailedRestore:
         assert c._warp_fallback is None
 
 
+class TestGmapAdjacentPreloadLevelName:
+    """Regression for the spawn-level mislabel bug: pygserver's
+    PLI_ADJACENTLEVEL handler (player.py _handle_adjacent_level) streams a
+    neighbouring GMAP segment's [PLO_LEVELNAME, board] for stitched rendering
+    without ever moving the player and without a PLO_PLAYERWARP2 - the same
+    PLO_LEVELNAME wire shape a genuine warp/spawn uses. The client used to
+    trust every PLO_LEVELNAME("*.nw") that names a loaded gmap segment as "we
+    are now here", so request_adjacent_levels() (called right after the .gmap
+    downloads) would leave _current_level_name pointing at whichever neighbour
+    preloaded last - e.g. spawning into chicken1.nw (world (94, 94.5), grid
+    (1, 1)) but ending up reporting chicken8.nw (grid (2, 2)) even though the
+    NPCs/chests that streamed in were chicken1.nw's.
+    """
+
+    def _client_with_grid(self):
+        # 3x3 grid matching funtimes' chicken.gmap layout.
+        c = _fake_connected_client()
+        names = [
+            "chicken4.nw", "chicken5.nw", "chicken6.nw",
+            "chicken2.nw", "chicken1.nw", "chicken7.nw",
+            "chicken3.nw", "chicken9.nw", "chicken8.nw",
+        ]
+        c.gmap_width, c.gmap_height = 3, 3
+        for i, name in enumerate(names):
+            c.gmap_grid[(i % 3, i // 3)] = name
+        return c
+
+    def test_adjacent_preload_does_not_relabel_current_level(self):
+        c = self._client_with_grid()
+        c._current_level_name = "chicken1.nw"
+        c._pending_level_name = "chicken1.nw"
+        c.player.x, c.player.y = 94.0, 94.5  # world coords, grid (1, 1)
+
+        # Adjacent-preload push for a diagonal neighbour: PLO_LEVELNAME alone,
+        # no PLO_PLAYERWARP2 (pygserver never sends one for a preload).
+        c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken8.nw")
+
+        assert c._current_level_name == "chicken1.nw"
+        # Board-attribution target still moves so the incoming tiles land
+        # under the right level.
+        assert c._pending_level_name == "chicken8.nw"
+
+    def test_adjacent_preload_of_every_neighbour_leaves_level_alone(self):
+        # request_adjacent_levels() fires one PLI_ADJACENTLEVEL per neighbour;
+        # simulate all 8 responses landing after the real spawn segment.
+        c = self._client_with_grid()
+        c._current_level_name = "chicken1.nw"
+        c.player.x, c.player.y = 94.0, 94.5
+        for name in ["chicken4.nw", "chicken5.nw", "chicken6.nw", "chicken2.nw",
+                     "chicken7.nw", "chicken3.nw", "chicken9.nw", "chicken8.nw"]:
+            c._handle_packet(PacketID.PLO_LEVELNAME, name.encode('latin-1'))
+        assert c._current_level_name == "chicken1.nw"
+
+    def test_real_gmap_warp_still_updates_current_level(self):
+        # A genuine server-initiated warp within the gmap (RC teleport,
+        # respawn, scripted setlevel2) always follows PLO_LEVELNAME with
+        # PLO_PLAYERWARP2 - that packet is the authoritative "we moved"
+        # signal and must still relabel the current level.
+        c = self._client_with_grid()
+        c._current_level_name = "chicken1.nw"
+        c._pending_level_name = "chicken1.nw"
+        c.player.x, c.player.y = 94.0, 94.5
+
+        c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken6.nw")
+        # PLO_PLAYERWARP2: x, y, z, gmap_x, gmap_y (each gchar) + level name.
+        # Target is grid (2, 0) -> local (10, 12) half-tiles = *2.
+        warp2 = bytes([10 * 2 + 32, 12 * 2 + 32, 0 + 32, 2 + 32, 0 + 32]) + b"chicken6.nw"
+        c._handle_packet(PacketID.PLO_PLAYERWARP2, warp2)
+
+        assert c._current_level_name == "chicken6.nw"
+
+    def test_first_gmap_segment_announcement_still_sets_level(self):
+        # Before the .gmap grid loads (gmap_width == 0), the client can't yet
+        # tell an adjacent-preload apart from a real transition by segment
+        # membership - this path (login's very first PLO_LEVELNAME) must
+        # still work exactly as before: unconditional assignment + reset.
+        c = _fake_connected_client()
+        assert c.gmap_width == 0
+        c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken1.nw")
+        assert c._current_level_name == "chicken1.nw"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

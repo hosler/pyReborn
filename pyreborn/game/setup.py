@@ -572,6 +572,10 @@ class SetupMixin:
         try:
             self.client.warp_to_level(level, 30.0 if x is None else x,
                                       30.0 if y is None else y)
+            # Recompute swimming immediately for the new level/position -
+            # don't rely solely on the next frame's blanket run() update
+            # (see _use_door_link for the same reasoning on link warps).
+            self._update_swimming_state()
         except Exception:
             pass
 

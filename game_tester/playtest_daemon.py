@@ -6,11 +6,16 @@ pace (bots stay online + pumped between agent tool calls).
   GET  /state?name=X            JSON game state for the bot
   GET  /map?name=X              ASCII map of the current level (B=blocking,
                                 .=walkable, W=water, C=chest, @=you, P=player,
-                                N=npc, L=link)
+                                N=npc, D=baddy, L=link)
   GET  /act?name=X&cmd=...      perform an action, returns resulting state
        cmds: move&dx&dy | walkto&x&y | say&msg | sword[&dir] | bomb[&power]
-             arrow[&dir] | grab | attack&pid | pm&pid&msg | warp&level&x&y
-             open_chest[&x&y] | pickup[&x&y]
+             arrow[&dir] | grab | attack&pid | pm&pid&msg
+             warp&level&x&y[&force=1] | open_chest[&x&y] | pickup[&x&y]
+       move/walkto/warp accept follow_links=0 to disable auto-warping onto a
+       door mid-move (default is on, matching the real client - see
+       GameBot.move()). warp accepts force=1 to warp onto a tile that looks
+       blocking anyway (default refuses and returns an error string instead
+       of stranding the bot - see do_act()).
   GET  /log?name=X              recent events (chat/hurt/pm) + detected issues
   GET  /leave?name=X            disconnect just bot X (others keep playing)
   GET  /quit?confirm=shutdown   disconnect all bots and stop the daemon
@@ -20,10 +25,25 @@ pace (bots stay online + pumped between agent tool calls).
 Run: python -m game_tester.playtest_daemon [port]   (default 14990)
 Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
 
-Agent-prompt caveat: /map draws @ at the sprite's TOP-LEFT while collision is
-feet-only (rows y+2..y+3) — tell agents or they report false wall-clips.
+Agent-prompt caveats:
+  - /map draws @ at the sprite's TOP-LEFT while collision is feet-only (rows
+    y+2..y+3) — tell agents or they report false wall-clips.
+  - npc_dialogue in /log is PLO_SAY2 text (sign reads / NPC chatter) - without
+    it, scripted NPC dialogue is invisible to a playtest agent.
+  - Coordinate conventions per /state field (matters on a GMAP world like
+    funtimes/chicken.gmap, where a level segment's own tiles are always
+    0-63 but the *player* wanders far past that): x/y and npcs_nearby are
+    WORLD coordinates (local + grid*64) - the same frame /act's walkto
+    param takes, so `walkto&x&y` can target either your own or an NPC's
+    reported position directly. players_visible, chests, baddies_nearby and
+    links are LEVEL-LOCAL (0-63) - what the wire protocol actually sends for
+    another entity, with no reliable way here to attribute an arbitrary
+    baddy/chest to a world segment (see GameBot._resolve_level_name's
+    docstring for why level attribution on a GMAP is the hard part). /act's
+    warp param is also level-local, matching client.warp_to_level().
 """
 import json
+import math
 import os
 import sys
 import threading
@@ -54,6 +74,32 @@ def pump_loop():
         time.sleep(0.05)
 
 
+def _current_links(bot, limit=10):
+    """Dedupe + return the link rects for the level the bot is actually on.
+
+    Two things bite here if you read c.links.get(...) raw:
+    - client._current_level_name is not reliable as "the bot's level" on a
+      GMAP (see GameBot._resolve_level_name's docstring) - use bot.level,
+      which is derived from the bot's world position instead.
+    - client.links[level] accumulates duplicate entries: re-entering a level
+      you've already visited (e.g. crossing a GMAP segment boundary out and
+      back) makes the server re-stream that level's full data, and
+      client.py's PLO_LEVELLINK handler appends without checking for an
+      existing identical entry. Confirmed live: cross chicken1.nw ->
+      chicken7.nw -> chicken1.nw and chicken1's own links list gains a
+      second copy of one of its doors. Dedupe here at the point the daemon
+      serializes them rather than in client.py (shared/owned elsewhere).
+    """
+    c = bot.client
+    seen = {}
+    for l in (c.links.get(bot.level) or []):
+        key = (l.get('x'), l.get('y'), l.get('width'), l.get('height'), l.get('dest_level'))
+        seen.setdefault(key, l)
+    return [{'x': l.get('x'), 'y': l.get('y'), 'w': l.get('width'),
+             'h': l.get('height'), 'dest': l.get('dest_level')}
+            for l in list(seen.values())[:limit]]
+
+
 def bot_state(bot):
     c = bot.client
     p = c.player
@@ -64,8 +110,17 @@ def bot_state(bot):
     npcs = {}
     for nid, npc in list(c.npcs.items())[:30]:
         if isinstance(npc, dict):
-            npcs[nid] = {'x': npc.get('x'), 'y': npc.get('y'),
+            # world_x/world_y (set by client.py on PLO_NPCPROPS, see
+            # client.py:885) so this matches the x/y frame below instead of
+            # the raw level-local npc['x']/npc['y'].
+            npcs[nid] = {'x': npc.get('world_x', npc.get('x')),
+                         'y': npc.get('world_y', npc.get('y')),
                          'image': npc.get('image', '')[:30]}
+    baddies = {}
+    for bid, b in list(c.baddies.items())[:30]:
+        if isinstance(b, dict):
+            baddies[bid] = {'type': b.get('type'), 'x': b.get('x'), 'y': b.get('y'),
+                            'alive': b.get('power', 1) > 0}
     return {
         'name': bot.name, 'connected': bot.connected,
         'level': bot.level, 'x': round(bot.x, 1), 'y': round(bot.y, 1),
@@ -74,14 +129,12 @@ def bot_state(bot):
         'rupees': p.rupees, 'swimming': getattr(bot, 'is_swimming', False),
         'players_visible': others,
         'npcs_nearby': npcs,
+        'baddies_nearby': baddies,
         # chests: {(x,y): opened}; chest_items: {(x,y): item name}
         'chests': [{'x': x, 'y': y, 'opened': opened,
                     'item': c.chest_items.get((x, y))}
                    for (x, y), opened in list(c.chests.items())[:10]],
-        # links: {level_name: [link dicts]}
-        'links': [{'x': l.get('x'), 'y': l.get('y'), 'w': l.get('width'),
-                   'h': l.get('height'), 'dest': l.get('dest_level')}
-                  for l in (c.links.get(c._current_level_name) or [])][:10],
+        'links': _current_links(bot),
         'signs': len(c.signs or []),
     }
 
@@ -124,11 +177,17 @@ def bot_map(bot, radius=14):
 
     for (chx, chy) in c.chests:
         mark(chx, chy, 'C')
-    for l in (c.links.get(c._current_level_name) or []):
+    for l in _current_links(bot, limit=len(c.links.get(bot.level) or [])):
         mark(l.get('x', -1), l.get('y', -1), 'L')
     for npc in c.npcs.values():
+        # Level-local x/y here, not world_x/world_y: the map grid drawn
+        # above is always local 0-63 (one segment), same as bot.x % 64 used
+        # for cx/cy.
         if isinstance(npc, dict):
             mark(npc.get('x', -1), npc.get('y', -1), 'N')
+    for b in c.baddies.values():
+        if isinstance(b, dict) and b.get('power', 1) > 0:
+            mark(b.get('x', -1), b.get('y', -1), 'D')
     for pl in (bot.players or {}).values():
         mark(pl.get('x', -1), pl.get('y', -1), 'P')
     mark(bot.x, bot.y, '@')
@@ -148,13 +207,58 @@ def bot_log(bot):
     }
 
 
+def _blocking_tile_in_footprint(board, x, y):
+    """Return the first blocking tile id found under the feet-box footprint
+    at local (x, y) on `board` (a 4096-tile level array), or None if clear.
+
+    Same feet-box GameBot._is_position_blocked() checks (left/right
+    0.4-1.6, bottom 2.0-3.0 of a 2-wide x 3-tall top-left-anchored sprite),
+    not just the single tile under (x, y) - a warp landing with only its
+    top-left corner clear but its feet in a wall still strands the bot.
+    """
+    for ox, oy in ((0.4, 2.0), (1.6, 2.0), (0.4, 3.0), (1.6, 3.0), (1.0, 2.5)):
+        tx, ty = math.floor(x + ox), math.floor(y + oy)
+        if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
+            continue
+        tile = board[ty * 64 + tx]
+        if is_blocking(tile):
+            return tile
+    return None
+
+
+def _validate_warp_dest(level_name, x, y, board_lookup):
+    """Best-effort check that warping to local (x, y) on level_name won't
+    strand the bot on a blocking tile. Returns an error string if it would,
+    None if it looks clear OR the destination level's board isn't cached
+    yet (never having visited it, there's nothing to check against - let
+    the warp through rather than block on it)."""
+    board = board_lookup(level_name)
+    if not board or len(board) < 4096:
+        return None
+    tile = _blocking_tile_in_footprint(board, x, y)
+    if tile is not None:
+        return (f'warp destination ({x},{y}) on {level_name!r} is blocking '
+                f'(tile={tile}); pass force=1 to override')
+    return None
+
+
+def _flag(q, key, default=True):
+    """Parse a query-string boolean flag (follow_links=0/1, force=0/1)."""
+    v = q.get(key, [None])[0]
+    if v is None:
+        return default
+    return v not in ('0', 'false', 'False', '')
+
+
 def do_act(bot, q):
     cmd = q.get('cmd', [''])[0]
     g = lambda k, d=None: q.get(k, [d])[0]  # noqa: E731
     if cmd == 'move':
-        return bot.move(int(g('dx', 0)), int(g('dy', 0)))
+        return bot.move(int(g('dx', 0)), int(g('dy', 0)),
+                        follow_links=_flag(q, 'follow_links'))
     if cmd == 'walkto':
-        return bot.walk_to(float(g('x')), float(g('y')), timeout=8.0)
+        return bot.walk_to(float(g('x')), float(g('y')), timeout=8.0,
+                           follow_links=_flag(q, 'follow_links'))
     if cmd == 'say':
         return bot.say_and_wait_echo(g('msg', ''))
     if cmd == 'sword':
@@ -173,7 +277,27 @@ def do_act(bot, q):
     if cmd == 'pm':
         return bot.send_pm(int(g('pid')), g('msg', ''))
     if cmd == 'warp':
-        return bot.warp_to(g('level'), float(g('x', 30)), float(g('y', 30)))
+        level, x, y = g('level'), float(g('x', 30)), float(g('y', 30))
+        if not _flag(q, 'force', default=False):
+            # Prefer the live/active board (bot.client.tiles) when warping
+            # within the bot's own current level: client.levels[level] can
+            # hold a WRONG board for a level on a GMAP world - confirmed
+            # live, client.levels['chicken1.nw'] held a neighbouring
+            # segment's tiles while bot.client.tiles (and bot.level, via
+            # GameBot._resolve_level_name) correctly tracked chicken1.nw.
+            # Same root cause as the level-name corruption _resolve_level_name
+            # works around: adjacent-segment board streaming can get
+            # misattributed to the wrong level key. levels[level] is still
+            # the only thing available for a level the bot isn't currently
+            # on, so that's a best-effort fallback with the same caveat.
+            def board_lookup(lvl):
+                if lvl == bot.level:
+                    return bot.client.tiles
+                return bot.client.levels.get(lvl)
+            problem = _validate_warp_dest(level, x, y, board_lookup)
+            if problem:
+                return problem
+        return bot.warp_to(level, x, y)
     if cmd == 'open_chest':
         x, y = g('x'), g('y')
         return bot.open_chest(float(x) if x else None, float(y) if y else None)
