@@ -644,8 +644,9 @@ class TestScenarios:
                 cb.update(1.0)
             cb.update(0.5)
 
-            chests = dict(cb.client.chests)
-            items = dict(cb.client.chest_items)
+            level_name = cb.client.get_current_level_from_position()
+            chests = dict(cb.client.chests_in_level(level_name))
+            items = dict(cb.client.chest_items.get(level_name, {}))
             if not chests:
                 return TestResult(name="chest_interaction", passed=False,
                                   duration=time.time() - start,
@@ -673,7 +674,7 @@ class TestScenarios:
                 cb.update(0.5)
                 cb.client.open_chest(target[0], target[1])
                 cb.update(1.0)
-                if not cb.client.chests.get(target, False):
+                if not cb.client.get_chest_opened(level_name, *target):
                     passed = False
                     issues.append(Issue(timestamp=time.time(), severity="HIGH", category="chest",
                                         description=f"Chest {target} did not open", context={}))
@@ -724,7 +725,9 @@ class TestScenarios:
         checks["baddy"] = any(b.get("type") == 0 for b in bot.client.baddies.values())
 
         # Chest: a bluerupee chest announced with its item name.
-        checks["chest"] = any(it == "bluerupee" for it in bot.client.chest_items.values())
+        chest_item_levels = bot.client.chest_items.values()
+        checks["chest"] = any(
+            it == "bluerupee" for items in chest_item_levels for it in items.values())
 
         for name, ok in checks.items():
             if not ok:
@@ -732,7 +735,9 @@ class TestScenarios:
                                     description=f"Level feature not parsed: {name}",
                                     context={"signs": sign_texts, "links": links,
                                              "baddies": list(bot.client.baddies.values()),
-                                             "chest_items": list(bot.client.chest_items.values())}))
+                                             "chest_items": [it for items in
+                                                             bot.client.chest_items.values()
+                                                             for it in items.values()]}))
 
         # Return to the start level so account state stays consistent.
         bot.client.warp_to_level("onlinestartlocal.nw", 30, 30)

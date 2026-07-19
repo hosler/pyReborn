@@ -30,6 +30,17 @@ from .gs1_client import PLAYER_ATTR
 
 logger = logging.getLogger(__name__)
 
+# GS2 GUI-controls layer (showgui/GuiControl -- see gs2_gui.py's module
+# docstring for how `new GuiButtonCtrl(...) { onAction = function(){...}; }`
+# actually compiles). Lives under game/ (pygame-only, unlike the rest of this
+# module) so headless callers -- e.g. game_tester's GameBot, which imports
+# ClientGS2 with no pygame installed -- still work; GUI construction/builtins
+# just no-op when it's unavailable.
+try:
+    from .game.gs2_gui import GS2GuiManager
+except Exception:  # pragma: no cover - pygame not installed (headless use)
+    GS2GuiManager = None
+
 #: GS1 command names (from the shared lexer table) -- any GS2 builtin call
 #: with a matching name is routed to GS1ClientHost.call_command so both
 #: engines drive identical client behavior.
@@ -153,7 +164,21 @@ class _ThisObject(GS2Object):
     def get(self, key: str) -> Any:
         if key.lower() == "timeout":
             return self._rt2._timeouts.get(self._vm_key, 0.0)
-        return super().get(key)
+        v = super().get(key)
+        if v is None:
+            # `this.<name>` where <name> is a same-script function, not a
+            # stored member -- the shape `onAction = function(){...};` and
+            # plain `x = function(){...}; x();` lambdas both compile to
+            # this.<generated-function-name> (ExpressionFnObject; see
+            # game/gs2_gui.py's module docstring point 2). GS2VM.has_function/
+            # .call already recurse into joined classes, so this also
+            # resolves a handler defined inside a joined class's own script.
+            kind, key_ = self._vm_key
+            vm = self._rt2.vms.get(kind, {}).get(key_)
+            if vm is not None and vm.has_function(key):
+                fname = key.lower()
+                return lambda *args: vm.call(fname, *args)
+        return v
 
 
 class GS2ClientHost(GS2Host):
@@ -181,6 +206,13 @@ class GS2ClientHost(GS2Host):
         return None
 
     def create_object(self, classname: str, arg: Any) -> GS2Object:
+        # host.create_object() is already the VM's constructor hook for
+        # every `new` (see _op_new_object in reborn_protocol/gs2/vm.py) --
+        # no vm.py change was needed to wire this up. Any Gui*Ctrl classname
+        # builds a real control (tracked by GS2GuiManager); everything else
+        # keeps the prior behavior (an empty, untracked GS2Object).
+        if self.rt2.gui is not None and classname.lower().startswith("gui"):
+            return self.rt2.gui.create_control(classname, arg)
         return GS2Object(name=classname)
 
     def sleep(self, vm: GS2VM, seconds: float) -> None:
@@ -242,9 +274,38 @@ class GS2ClientHost(GS2Host):
                 if args:
                     rt2.join_class(vm, to_str(args[0]))
                 return 0.0
+            if name == "destroy" and rt2.gui is not None:
+                # ctrl.destroy() -- the object-method form (see the bare
+                # destroy(ctrl) global form below for the other one).
+                rt2.gui.destroy(obj)
+                return 0.0
             # other object methods with no member function bound: no GS1
             # equivalent
             return NOT_HANDLED
+
+        # GS2 GUI-controls builtins (showgui/GuiControl -- see gs2_gui.py's
+        # module docstring). addcontrol()'s single argument is always "the
+        # object this new-statement just constructed" (never a parent) --
+        # GS2GuiManager infers nesting from create/addcontrol call order.
+        if name == "addcontrol":
+            if rt2.gui is not None:
+                rt2.gui.addcontrol(args[0] if args else None)
+            return 0.0
+
+        if name == "showgui":
+            if rt2.gui is not None and args:
+                rt2.gui.show(args[0])
+            return 0.0
+
+        if name == "hidegui":
+            if rt2.gui is not None and args:
+                rt2.gui.hide(args[0])
+            return 0.0
+
+        if name == "destroy":
+            if rt2.gui is not None and args:
+                rt2.gui.destroy(args[0])
+            return 0.0
 
         if name == "settimer":
             rt2._timeouts[rt2._timeout_key(vm)] = (
@@ -347,6 +408,9 @@ class ClientGS2:
         self.globals_store: Dict[str, Any] = {}
         self.player_object = _PlayerObject(self)
         self.level_object = GS2Object(name="level")
+        # GUI-controls tree (showgui/GuiControl); None when pygame isn't
+        # installed (headless callers, e.g. game_tester's GameBot).
+        self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
         self._vm_keys: Dict[int, tuple] = {}      # id(vm) -> (kind, key)

@@ -61,6 +61,7 @@ class Prefs:
     last_server: Optional[ServerPref] = field(default=None)
     window_w: int = 1024
     window_h: int = 720
+    day_night: bool = True
 
     # -- persistence ------------------------------------------------------
 

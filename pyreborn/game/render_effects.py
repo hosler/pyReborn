@@ -24,11 +24,33 @@ from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
 from ..player import Player
+from ..prefs import Prefs
 from ..tiletypes import TileType, get_tile_type
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
 )
+
+
+def day_night_tint(minute_of_day):
+    """Return the ambient overlay tint for a minute in the daily cycle."""
+    minute = minute_of_day % 1440
+    night = (10, 10, 45, 110)
+    day = (10, 10, 45, 0)
+
+    if 420 <= minute < 1140:
+        return None
+    if 1260 <= minute or minute < 300:
+        return night
+    if 1140 <= minute < 1260:
+        progress = (minute - 1140) / 120
+        return tuple(round(start + (end - start) * progress)
+                     for start, end in zip(day, night))
+
+    progress = (minute - 300) / 120
+    tint = tuple(round(start + (end - start) * progress)
+                 for start, end in zip(night, day))
+    return tint if tint[3] else None
 
 
 class EffectsRenderMixin:
@@ -519,20 +541,35 @@ class EffectsRenderMixin:
             self._render_projectile_marker('arrow', screen_x, screen_y, direction, elapsed)
 
     def _render_screen_tint(self):
-        """Tier 3d: fullscreen tint from a GS1 `seteffect r,g,b,a` (wired in
-        game/setup.py's on_seteffect). Drawn under the HUD, over the world.
+        """Draw ambient and script-driven fullscreen tints under the HUD.
 
-        The overlay Surface is cached and only refilled/reallocated when the
-        tint color/alpha or the target size (self.screen - the real canvas,
-        or the smaller scene surface while zoomed) actually changes, instead
-        of allocating a fresh full-screen SRCALPHA surface every tinted frame."""
+        Overlay surfaces are cached by size and tint so steady colors do not
+        allocate or refill a full-screen surface every frame."""
+        size = self.screen.get_size()
+        if not hasattr(self, '_day_night_enabled'):
+            self._day_night_enabled = Prefs.load().day_night
+        server_time = getattr(self.client, 'server_time', 0)
+        if self._day_night_enabled and server_time:
+            minute_of_day = ((server_time * 5) // 60) % 1440
+            ambient = day_night_tint(minute_of_day)
+            if ambient and ambient[3] > 0:
+                color = tuple(round(channel / 4) * 4 for channel in ambient)
+                cache_key = (size, color)
+                if cache_key != getattr(self, '_day_night_overlay_key', None):
+                    self._day_night_overlay_key = cache_key
+                    overlay = getattr(self, '_day_night_overlay_surface', None)
+                    if overlay is None or overlay.get_size() != size:
+                        overlay = self._day_night_overlay_surface = pygame.Surface(
+                            size, pygame.SRCALPHA)
+                    overlay.fill(color)
+                self.screen.blit(self._day_night_overlay_surface, (0, 0))
+
         tint = self.screen_tint
         if not tint:
             return
         a = min(255, tint.get('a', 0))
         if a <= 0:
             return
-        size = self.screen.get_size()
         color = (tint.get('r', 0), tint.get('g', 0), tint.get('b', 0), a)
         cache_key = (size, color)
         if cache_key != getattr(self, '_tint_overlay_key', None):

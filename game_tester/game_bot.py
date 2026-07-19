@@ -745,9 +745,10 @@ class GameBot:
         # are WORLD coords on a GMAP (see walk_to's docstring), so this must
         # wrap the same way bot_map()/_get_tile_at() do for level-local data.
         local_px, local_py = self.client.x % 64, self.client.y % 64
+        level_name = self._resolve_level_name(self.client.x, self.client.y)
+        chests = self.client.chests_in_level(level_name)
 
         if x is None or y is None:
-            chests = self.client.chests
             if not chests:
                 msg = "no known chests in this level (client.chests is empty)"
                 self._log_action("open_chest", {"x": x, "y": y}, msg, start)
@@ -777,10 +778,10 @@ class GameBot:
         # client.chests briefly for the server's confirmation rather than
         # trusting "packet sent" as "chest opened" (see docstring above).
         deadline = time.time() + poll_timeout
-        opened_now = self.client.chests.get((x, y), False)
+        opened_now = self.client.get_chest_opened(level_name, x, y)
         while not opened_now and time.time() < deadline:
             self.update(0.1)
-            opened_now = self.client.chests.get((x, y), False)
+            opened_now = self.client.get_chest_opened(level_name, x, y)
 
         self._log_action("open_chest", {"x": x, "y": y}, opened_now, start)
         return opened_now

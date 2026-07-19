@@ -170,9 +170,8 @@ def bot_state(bot):
         if isinstance(b, dict):
             baddies[bid] = {'type': b.get('type'), 'x': b.get('x'), 'y': b.get('y'),
                             'alive': b.get('power', 1) > 0}
-    # signs is keyed per level ({level: {(x,y): text}}), so this is already
-    # naturally scoped to the bot's current level - unlike chests/baddies
-    # there's no cross-segment leak to filter out here.
+    # Signs and chests are keyed per level, so preserve their attribution in
+    # the serialized state.
     signs = [{'x': x, 'y': y, 'text': text}
              for (x, y), text in list((c.signs.get(bot.level) or {}).items())[:10]]
     return {
@@ -184,10 +183,10 @@ def bot_state(bot):
         'players_visible': others,
         'npcs_nearby': npcs,
         'baddies_nearby': baddies,
-        # chests: {(x,y): opened}; chest_items: {(x,y): item name}
-        'chests': [{'x': x, 'y': y, 'opened': opened,
-                    'item': c.chest_items.get((x, y))}
-                   for (x, y), opened in list(c.chests.items())[:10]],
+        'chests': [{'level': level_name, 'x': x, 'y': y, 'opened': opened,
+                    'item': c.chest_items.get(level_name, {}).get((x, y))}
+                   for level_name, level_chests in c.chests.items()
+                   for (x, y), opened in level_chests.items()][:10],
         'links': _current_links(bot),
         'signs': signs,
         # PLO_SAY2 text (sign reads / NPC chatter) - also in /log's
@@ -233,7 +232,7 @@ def bot_map(bot, radius=14):
         if 0 <= my < len(rows) and 0 <= mx < len(rows[my]):
             rows[my][mx] = ch
 
-    for (chx, chy) in c.chests:
+    for (chx, chy) in c.chests_in_level(bot.level):
         mark(chx, chy, 'C')
     for (sx, sy) in (c.signs.get(bot.level) or {}):
         mark(sx, sy, 'S')

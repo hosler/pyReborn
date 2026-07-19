@@ -258,14 +258,15 @@ class CollisionMixin:
     def _chest_blocks(self, x: float, y: float) -> bool:
         """True if (x, y) lies inside a chest's 2x2 footprint. Chests are solid
         objects (open or closed), so they block walking like a wall."""
-        chests = getattr(self.client, "chests", None)
-        if not chests:
-            return False
         # Chest keys are level-local (0-63; see client.py's PLO_LEVELCHEST
         # handler), but (x, y) is world-frame in a GMAP — fold it to the
         # current segment's local frame the same way tile lookups do, or
         # chests off the origin segment are never solid.
         tx, ty = self._world_to_level_local(x, y)
+        level_name, _ = self._level_tiles_at(x, y)
+        if not level_name:
+            return False
+        chests = self.client.chests_in_level(level_name)
         for (cx, cy) in chests:
             if cx <= tx <= cx + 1 and cy <= ty <= cy + 1:
                 return True

@@ -54,10 +54,11 @@ class ActionsMixin:
 
         chest = self._find_chest_in_front()
         if chest is not None:
-            if not self.client.chests.get(chest, False):
-                cx, cy = chest
+            cx, cy = chest
+            level_name = self._found_chest_level
+            if not self.client.get_chest_opened(level_name, cx, cy):
                 self.client.open_chest(cx, cy)
-                self.client.chests[chest] = True   # optimistic; server confirms
+                self.client.set_chest_opened(level_name, cx, cy)
             return
 
         # Sitting is walk-on: standing on a chair tile IS sitting (see
@@ -159,10 +160,11 @@ class ActionsMixin:
         # Open a chest in front of the player
         chest = self._find_chest_in_front()
         if chest is not None:
-            if not self.client.chests.get(chest, False):
-                cx, cy = chest
+            cx, cy = chest
+            level_name = self._found_chest_level
+            if not self.client.get_chest_opened(level_name, cx, cy):
                 self.client.open_chest(cx, cy)
-                self.client.chests[chest] = True   # optimistic; server confirms
+                self.client.set_chest_opened(level_name, cx, cy)
             return
 
         # Lift a bush/pot/rock in front — plain A lifts, classic style (no
@@ -405,21 +407,21 @@ class ActionsMixin:
             'range': 16.0,               # tiles of flight before landing
         })
     def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
-        """Return the (cx, cy) key of a chest whose 2x2 footprint the player is
-        facing, or None. Chests block, so the player stands adjacent and the
-        per-direction touch points land on the chest's tiles."""
-        chests = getattr(self.client, "chests", None)
-        if not chests:
-            return None
+        """Return the local key of the chest being faced."""
         for tx, ty in self._touch_points(self.client.player.direction):
             # Touch points are world coords (matter in a GMAP); chest keys
             # are level-local (0-63), so fold to the current segment's local
             # frame the same way collision.py's _chest_blocks does — else
             # chests off the origin segment are never found here.
             ftx, fty = self._world_to_level_local(tx, ty)
+            level_name, _ = self._level_tiles_at(tx, ty)
+            if not level_name:
+                continue
+            chests = self.client.chests_in_level(level_name)
             for (cx, cy) in chests:
                 if cx <= ftx <= cx + 1 and cy <= fty <= cy + 1:
-                    return (cx, cy)
+                    self._found_chest_level = level_name
+                    return cx, cy
         return None
     def _update_sitting_state(self):
         """Walk-on sitting: you're seated exactly while standing still on a

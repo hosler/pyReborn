@@ -471,7 +471,7 @@ class EntityRenderMixin:
                 # by packets.py/player.py, drives the body palette-swap in
                 # get_sprite_recolored() (sprites.py).
                 'colors': player.colors,
-            })
+            }, alpha=115 if self.client.ghost_mode else 255)
 
         # Render carried object above player's head
         if player.is_carrying():
@@ -622,7 +622,9 @@ class EntityRenderMixin:
         for i, p in enumerate(gani_params[:5], start=1):
             if p:
                 equip[f'attr{i}_image'] = p
-        self._render_animated_entity(x, y, anim, equip)
+        hidden = bool(int(pdata.get('status') or 0) & 0x02)
+        self._render_animated_entity(x, y, anim, equip,
+                                     alpha=115 if hidden else 255)
 
         # Render chat bubble above player (if they have chat text)
         chat_text = pdata.get('chat', '')
@@ -1358,7 +1360,7 @@ class EntityRenderMixin:
         return resolved
 
     def _render_animated_entity(self, x: float, y: float, anim: AnimationState,
-                                  equipment: dict):
+                                  equipment: dict, alpha: int = 255):
         """Render an entity using gani animation.
 
         The gani offsets position sprites within a bounding box.
@@ -1368,7 +1370,8 @@ class EntityRenderMixin:
 
         if not frame:
             # Fallback to placeholder - position at top-left
-            self.screen.blit(self.placeholder_sprite, (x, y))
+            sprite = self._sprite_with_alpha(self.placeholder_sprite, alpha)
+            self.screen.blit(sprite, (x, y))
             return
 
         # Gani sprite positions are relative to a 48px-wide frame canvas with
@@ -1407,7 +1410,32 @@ class EntityRenderMixin:
                 )
 
             if sprite:
+                sprite = self._sprite_with_alpha(sprite, alpha)
                 # Calculate screen position: base offset + gani sprite offset
                 screen_x = x + base_offset_x + ox
                 screen_y = y + base_offset_y + oy
                 self.screen.blit(sprite, (screen_x, screen_y))
+
+    def _sprite_with_alpha(self, sprite: pygame.Surface,
+                           alpha: int) -> pygame.Surface:
+        """Return a cached alpha copy without mutating a shared sprite.
+
+        The entry pins the source surface (strong ref) and re-checks
+        identity on hit: a bare id()-keyed cache serves stale pixels once
+        the sprite-manager LRUs evict and CPython reuses the freed
+        surface's address for a new same-size sprite."""
+        if alpha >= 255:
+            return sprite
+        cache = getattr(self, '_entity_alpha_cache', None)
+        if cache is None:
+            cache = self._entity_alpha_cache = {}
+        key = (id(sprite), alpha)
+        entry = cache.get(key)
+        if entry is not None and entry[0] is sprite:
+            return entry[1]
+        result = sprite.copy()
+        result.set_alpha(alpha)
+        if len(cache) > 600:
+            cache.clear()
+        cache[key] = (sprite, result)
+        return result

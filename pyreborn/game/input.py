@@ -40,6 +40,32 @@ class InputMixin:
     # every frame to find them).
     _vk_cache: Dict[int, int] = {}
 
+    def _gs2_gui_event(self, event) -> bool:
+        """Offer an event to the GS2 GUI layer (topmost overlay). True =
+        consumed. Mouse positions are remapped to virtual-canvas coordinates
+        first, per gs2_gui.handle_event's contract."""
+        gs2 = getattr(self, 'gs2', None)
+        mgr = getattr(gs2, 'gui', None) if gs2 is not None else None
+        if mgr is None:
+            return False
+        # Chat/PM composition keeps the keyboard: an incidentally-open GS2
+        # window must not swallow Esc (or any key) out from under it.
+        if event.type == KEYDOWN and (self.typing
+                                      or self.pm_target_id is not None):
+            return False
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+                          pygame.MOUSEMOTION):
+            vpos = self.viewport.window_to_virtual(*event.pos)
+            event = pygame.event.Event(event.type, {**event.dict, 'pos': vpos})
+        return mgr.handle_event(event)
+
+    def _gs2_gui_captures_keys(self) -> bool:
+        """True while a GS2 GUI text edit holds keyboard focus — held-key
+        gameplay movement must not run alongside typing into a dialog."""
+        gs2 = getattr(self, 'gs2', None)
+        mgr = getattr(gs2, 'gui', None) if gs2 is not None else None
+        return bool(mgr is not None and mgr.keyboard_captured)
+
     def _handle_events(self):
         """Handle pygame events."""
         # Reset just-pressed flags
@@ -48,6 +74,12 @@ class InputMixin:
         for event in pygame.event.get():
             if event.type == QUIT:
                 self.running = False
+
+            # GS2 GUI controls are topmost: a consumed event (click inside a
+            # control, keystroke into a focused text edit, Esc on a window)
+            # never reaches the overlays or gameplay below.
+            elif self._gs2_gui_event(event):
+                pass
 
             elif event.type == KEYDOWN:
                 self.key_just_pressed[event.key] = True
@@ -62,6 +94,11 @@ class InputMixin:
                     self._handle_server_list_key(event)
                 elif self.typing:
                     self._handle_chat_input(event)
+                elif getattr(self.client, 'input_frozen', False):
+                    # PLO_FULLSTOP/FULLSTOP2: client ignores normal input until
+                    # reconnect (no resume packet exists). Modal overlays above
+                    # stay usable so the local player isn't completely locked out.
+                    pass
                 else:
                     self._handle_key_press(event)
                     # GS1 `keypressed` event (weapon scripts, e.g. the sword
@@ -323,7 +360,9 @@ class InputMixin:
     def _handle_input(self, current_time: float):
         """Handle held key input."""
         if (self.typing or self.inventory_ui.visible or self.show_player_list
-                or self.show_server_list or self.pm_target_id is not None):
+                or self.show_server_list or self.pm_target_id is not None
+                or getattr(self.client, 'input_frozen', False)
+                or self._gs2_gui_captures_keys()):
             self._clear_gs1_input()
             return
 

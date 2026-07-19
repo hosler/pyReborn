@@ -273,6 +273,8 @@ class HUD:
         self.ui.update(g.viewport.mouse_pos())
 
     def draw(self):
+        if getattr(self.game.client, 'input_frozen', False):
+            return
         surf = self.game.screen
         self.ui.draw(surf)
         self._draw_dialogue(surf)

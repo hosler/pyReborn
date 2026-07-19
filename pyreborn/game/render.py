@@ -375,6 +375,10 @@ class RenderMixin:
         # Inventory overlay (drawn on top of everything)
         self.inventory_ui.render(self.client.player, self.weapons)
 
+        # GS2 GUI controls (showgui/GuiControl) draw last: topmost of all.
+        if getattr(self.gs2, "gui", None) is not None:
+            self.gs2.gui.render(self.screen, self.fonts, self.sprite_mgr)
+
     def _render_debug_hud(self):
         """Tile-editor readouts and hover info, shown only in debug mode."""
         player = self.client.player

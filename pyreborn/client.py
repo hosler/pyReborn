@@ -87,6 +87,8 @@ from .packets import (
     parse_flag_set,
     parse_npcweapondel,
     parse_start_message,
+    parse_fullstop,
+    parse_fullstop2,
     parse_server_text,
     parse_staff_guilds,
     parse_status_list,
@@ -171,6 +173,7 @@ def _build_handled_plo_ids() -> set:
         # Tier 3: server-control packets.
         "PLO_FREEZEPLAYER2", "PLO_UNFREEZEPLAYER", "PLO_SAY2", "PLO_HIDENPCS",
         "PLO_SERVERWARP", "PLO_TRIGGERACTION", "PLO_DISABLECLASSICMODE",
+        "PLO_FULLSTOP2",
         "PLO_PROFILE", "PLO_NPCSERVERADDR", "PLO_SETNETCOOKIE",
         # Tier 5: GS2 bytecode transport (parse + store only).
         "PLO_NPCBYTECODE", "PLO_GANISCRIPT", "PLO_NPCWEAPONSCRIPT",
@@ -419,6 +422,8 @@ class Client:
 
         # Ghost mode callback: handler(enabled) - ghost/spectator mode toggled
         self.on_ghost_mode: Optional[Callable[[bool], None]] = None
+        # Initial server message callback: handler(text).
+        self.on_start_message: Optional[Callable[[str], None]] = None
 
         # Board modify callback: handler(info) - info is the dict from
         # parse_board_modify/parse_board_modify2 (x, y, width, height, tiles,
@@ -461,6 +466,8 @@ class Client:
         # Server-control callbacks (tier 3).
         # Freeze state changed: handler(frozen: bool).
         self.on_freeze: Optional[Callable[[bool], None]] = None
+        # Normal-input/HUD stop state changed: handler(frozen: bool).
+        self.on_fullstop: Optional[Callable[[bool], None]] = None
         # Sign-style server message: handler(text) (PLO_SAY2).
         self.on_say2: Optional[Callable[[str], None]] = None
         # A player left our level (JOINLEAVELVL=0): handler(player_id).
@@ -484,11 +491,11 @@ class Client:
         # Ghost mode state
         self.ghost_mode = False
 
-        # Level chests: maps (x, y) -> opened (bool)
-        self.chests: Dict[Tuple[int, int], bool] = {}
-        # Item a chest holds: maps (x, y) -> item name (known only for unopened
-        # chests, which the server announces with item/sign on level entry).
-        self.chest_items: Dict[Tuple[int, int], str] = {}
+        # Level chests: maps level name -> {(x, y): opened (bool)}
+        self.chests: Dict[str, Dict[Tuple[int, int], bool]] = {}
+        # Items held by chests, keyed in the same per-level shape. Item names
+        # are known only for unopened chests announced on level entry.
+        self.chest_items: Dict[str, Dict[Tuple[int, int], str]] = {}
 
         # Level signs: maps (x, y) -> text
         self.signs: Dict[str, Dict[Tuple[float, float], str]] = {}  # level -> {(x,y): text}
@@ -520,6 +527,7 @@ class Client:
         # Server-control state (tier 3).
         self.frozen = False              # PLO_FREEZEPLAYER2 / PLO_UNFREEZEPLAYER
         self.classic_mode_disabled = False  # PLO_DISABLECLASSICMODE
+        self.input_frozen = False           # packets 176 / 177
         self.npcs_hidden = False         # PLO_HIDENPCS
         self.server_warp_info: Optional[dict] = None  # last PLO_SERVERWARP target
         self.profiles: Dict[str, dict] = {}  # account -> profile (PLO_PROFILE)
@@ -606,6 +614,10 @@ class Client:
         # see example_pygame.py's F8 server-switch loop — so this is
         # defensive, not load-bearing).
         self._authenticated = False
+        if self.input_frozen:
+            self.input_frozen = False
+            if self.on_fullstop:
+                self.on_fullstop(False)
         return self._protocol.connect()
 
     def disconnect(self):
@@ -2878,11 +2890,15 @@ class Client:
         elif packet_id == PacketID.PLO_LEVELCHEST:
             chest = parse_level_chest(data)
             if chest:
+                # Match sign attribution exactly: during gmap preloading the
+                # pending board owns streamed local coordinates, not necessarily
+                # the segment containing the player.
+                lvl = self._pending_level_name or self._current_level_name
                 key = (chest['x'], chest['y'])
-                self.chests[key] = chest['opened']
+                self.chests.setdefault(lvl, {})[key] = chest['opened']
                 # Remember the item an unopened chest holds (only sent on warp).
                 if 'item' in chest:
-                    self.chest_items[key] = chest['item']
+                    self.chest_items.setdefault(lvl, {})[key] = chest['item']
                 if self.on_chest:
                     self.on_chest(chest['x'], chest['y'], chest['opened'])
 
@@ -3189,6 +3205,15 @@ class Client:
         # Disable classic mode (packet 176) - fully-scripted server marker.
         elif packet_id == PacketID.PLO_DISABLECLASSICMODE:
             self.classic_mode_disabled = True
+            self.input_frozen = parse_fullstop(data)
+            if self.on_fullstop:
+                self.on_fullstop(self.input_frozen)
+
+        # Alternate blank input-stop command (packet 177).
+        elif packet_id == PacketID.PLO_FULLSTOP2:
+            self.input_frozen = parse_fullstop2(data)
+            if self.on_fullstop:
+                self.on_fullstop(self.input_frozen)
 
         # Another player's profile (packet 75).
         elif packet_id == PacketID.PLO_PROFILE:
@@ -3274,6 +3299,8 @@ class Client:
         # Server MOTD (packet 41).
         elif packet_id == PacketID.PLO_STARTMESSAGE:
             self.server_message = parse_start_message(data)
+            if self.on_start_message:
+                self.on_start_message(self.server_message)
 
         # Default weapon id (packet 43).
         elif packet_id == PacketID.PLO_DEFAULTWEAPON:
@@ -3302,6 +3329,9 @@ class Client:
         # Ghost icon toggle (packet 174).
         elif packet_id == PacketID.PLO_GHOSTICON:
             self.ghost_icon = parse_ghost_icon(data)
+            self.ghost_mode = self.ghost_icon
+            if self.on_ghost_mode:
+                self.on_ghost_mode(self.ghost_mode)
 
         # RPG-style text window (packet 179).
         elif packet_id == PacketID.PLO_RPGWINDOW:
@@ -3382,6 +3412,22 @@ class Client:
 
         # Look up level name at this grid position
         return self.gmap_grid.get((grid_x, grid_y), self._current_level_name)
+
+    def get_chest_opened(self, level_name: str, x: int, y: int) -> bool:
+        """Return whether the chest at local coordinates is open."""
+        return self.chests.get(level_name, {}).get((x, y), False)
+
+    def set_chest_opened(self, level_name: str, x: int, y: int) -> None:
+        """Mark the chest at local coordinates open in its owning level."""
+        self.chests.setdefault(level_name, {})[(x, y)] = True
+
+    def chests_in_level(self, level_name: str) -> Dict[Tuple[int, int], bool]:
+        """Return chest state for one level, or an empty mapping."""
+        # Accept the former flat shape when lightweight callers replace this
+        # attribute directly; live client state always uses the nested shape.
+        if self.chests and all(isinstance(key, tuple) for key in self.chests):
+            return self.chests  # type: ignore[return-value]
+        return self.chests.get(level_name, {})
 
     def check_link_collision(self) -> Optional[dict]:
         """

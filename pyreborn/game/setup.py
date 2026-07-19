@@ -31,6 +31,14 @@ from .constants import (
 )
 
 
+def append_start_message(chat_messages: list, text: str) -> None:
+    """Append at most five non-empty initial-message lines to chat."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    chat_messages.extend(f"[server] {line}" for line in lines[:5])
+    if len(chat_messages) > 10:
+        del chat_messages[:-10]
+
+
 class SetupMixin:
     """Mixin providing the above methods for GameClient."""
 
@@ -127,6 +135,10 @@ class SetupMixin:
                 self.chat_messages.append(f"[server] {text}")
                 if len(self.chat_messages) > 10:
                     self.chat_messages.pop(0)
+
+        def on_start_message(text: str):
+            """Put up to five non-empty initial-message lines in chat."""
+            append_start_message(self.chat_messages, text)
 
         # Tier 3b: PLO_RPGWINDOW - a scrollable RPG-style text window. Reuses
         # the existing dialogue-box path (hud.py's _draw_dialogue) rather than
@@ -264,6 +276,8 @@ class SetupMixin:
             self.client.on_board_layer = on_board_layer
         if hasattr(self.client, 'on_server_text'):
             self.client.on_server_text = on_server_text
+        if hasattr(self.client, 'on_start_message'):
+            self.client.on_start_message = on_start_message
         if hasattr(self.client, 'on_rpg_window'):
             self.client.on_rpg_window = on_rpg_window
         if hasattr(self.client, 'on_hit_objects'):

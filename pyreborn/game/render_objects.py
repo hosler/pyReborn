@@ -24,9 +24,45 @@ _ITEM_COLORS = {
 }
 _DEFAULT_ITEM_COLOR = (220, 220, 100)
 
+# item_type -> (sheet, x, y, w, h) tile-authentic pics1.png source rect for
+# LevelItem ground-item icons. Deliberately empty: a research pass (2026-07)
+# for the real crop table came up dry across every reference we're allowed to
+# use --
+#   - the C# client checkout (Preagonal) never ships pixel positions, only
+#     name<->index tables (getitemindex asm) plus per-item *default GS1
+#     scripts* returned by TGUIScriptLoader::getDefaultItemScript, which are
+#     zlib-compressed data blobs baked into the decompiled binary (not
+#     recoverable as text from the .s dumps we have)
+#   - GServer-v2's server/include/level/LevelItem.h and
+#     server/src/level/LevelItem.cpp only map LevelItemType <-> name/effect;
+#     the server never sends or knows a sprite rect (that's purely a client
+#     art concern)
+#   - pyReborn's own tools/chest_picker.py precedent (chests) and the
+#     funtimes GS1 level corpus have nothing for items either
+#   - eyeballing pyreborn/assets/dustynewpics1.png directly (dumped as a
+#     gridded contact sheet during this pass) shows a terrain/dungeon
+#     tileset with no distinct icon strip to identify rupees/hearts/bombs/
+#     swords/shields against, so guessing tile coordinates from that image
+#     would be exactly the "invent it blind" mistake to avoid
+# so every item currently falls through to the vector icon in
+# _get_item_sprite(). Add verified (sheet, x, y, w, h) entries here once a
+# real source turns up (e.g. a live-server capture, like chest_picker.py did
+# for chests) -- _get_item_sprite() already knows how to use them.
+_ITEM_SPRITE_TABLE = {}
+
 
 class LevelObjectsRenderMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _current_segment_info(self):
+        """Return the current segment's level name and world-tile origin."""
+        level_name = self.client._current_level_name
+        if self.client.in_gmap_segment:
+            grid = next((cell for cell, name in self.client.gmap_grid.items()
+                         if name == level_name), None)
+            if grid is not None:
+                return level_name, grid[0] * 64, grid[1] * 64
+        return level_name, 0, 0
 
     def _current_segment_origin(self):
         """World-tile (x, y) origin (top-left) of the CURRENT level segment:
@@ -34,29 +70,46 @@ class LevelObjectsRenderMixin:
         a GMAP. Used to fold level-local (0-63) state (chests, signs) into
         world coords, or vice versa, without a %64 wraparound -- see
         _check_and_render_signs / _render_chests."""
-        if self.client.in_gmap_segment:
-            grid = next((g for g, n in self.client.gmap_grid.items()
-                         if n == self.client._current_level_name), None)
-            if grid is not None:
-                return grid[0] * 64, grid[1] * 64
-        return 0, 0
+        _, origin_x, origin_y = self._current_segment_info()
+        return origin_x, origin_y
 
     def _get_item_sprite(self, item_type: str) -> pygame.Surface:
         """Build (and cache) a ground-item icon.
 
-        No verified pics1.png tile-position table for item sprites exists in
-        this repo (chests were hand-picked against a live server with
-        tools/chest_picker.py; items never were), so rather than guess wrong
-        tile coordinates - which would render authentic-looking garbage -
-        items are drawn as small colour/shape-coded vector icons, matching the
-        style already used for the HUD's rupee/bomb/arrow counters
-        (game/hud.py StatsPanel._stat_icon). Type-correct and pop on pickup;
-        just not pixel-authentic Reborn art."""
+        Looks up `item_type` in _ITEM_SPRITE_TABLE and, if present, crops the
+        tile-authentic pics1.png rect via sprite_mgr.get_sprite() (same path
+        _get_chest_sprite uses for the tileset). _ITEM_SPRITE_TABLE is
+        currently empty - see its module-level comment for the research that
+        came up dry - so every item falls through to the vector icon below,
+        matching the style already used for the HUD's rupee/bomb/arrow
+        counters (game/hud.py StatsPanel._stat_icon). Type-correct and pop on
+        pickup either way; the vector path just isn't pixel-authentic Reborn
+        art."""
         cache = getattr(self, "_item_sprite_cache", None)
         if cache is None:
             cache = self._item_sprite_cache = {}
         if item_type in cache:
             return cache[item_type]
+
+        rect = _ITEM_SPRITE_TABLE.get(item_type)
+        if rect is not None:
+            sheet, sx, sy, sw, sh = rect
+            cropped = self.sprite_mgr.get_sprite(sheet, sx, sy, sw, sh)
+            if cropped is not None:
+                if cropped.get_size() != (TILE_SIZE, TILE_SIZE):
+                    cropped = pygame.transform.scale(cropped, (TILE_SIZE, TILE_SIZE))
+                cache[item_type] = cropped
+                return cropped
+            # Table entry exists but the sheet/crop isn't available (e.g. a
+            # headless test with no asset search paths) - fall back to the
+            # vector icon, and only warn about it once per item type instead
+            # of every frame it's on the ground.
+            logged = getattr(self, "_item_sprite_miss_logged", None)
+            if logged is None:
+                logged = self._item_sprite_miss_logged = set()
+            if item_type not in logged:
+                logged.add(item_type)
+                print(f"Item sprite miss for '{item_type}': {sheet} unavailable, using vector fallback")
 
         surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
         color = _ITEM_COLORS.get(item_type, _DEFAULT_ITEM_COLOR)
@@ -142,7 +195,8 @@ class LevelObjectsRenderMixin:
         return surf
     def _render_chests(self):
         """Draw level chests from client state, reflecting open/closed."""
-        chests = getattr(self.client, "chests", None)
+        level_name, origin_x, origin_y = self._current_segment_info()
+        chests = self.client.chests_in_level(level_name)
         if not chests:
             return
 
@@ -154,7 +208,6 @@ class LevelObjectsRenderMixin:
         # segment's grid origin back on -- else every chest off the origin
         # gmap segment rendered at its bare local coordinate instead of its
         # real position.
-        origin_x, origin_y = self._current_segment_origin()
         for (cx, cy), opened in chests.items():
             sprite = self._get_chest_sprite(bool(opened))
             if sprite is None:

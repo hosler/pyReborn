@@ -66,6 +66,11 @@ class Player:
     # Hurt state tracking
     hurt_timeout: float = 0.0  # When hurt animation should end
 
+    @property
+    def is_hidden(self) -> bool:
+        """Whether the server marked this player as hidden."""
+        return bool(self.status & 0x02)
+
     def update_from_props(self, props: dict):
         """Update player state from parsed properties"""
         if 'account' in props:

@@ -932,19 +932,12 @@ def parse_newworldtime(data: bytes) -> dict:
 
     The server writes this with writeGInt4 (GServer-v2 server/src/Server.cpp:148):
     four G-encoded bytes (-32 each, 7 bits per byte, big-endian), NOT raw
-    little-endian bytes. reborn_protocol's PacketReader has no read_gint4, so
-    decode it inline the same way read_gint3/read_gint5 do.
+    little-endian bytes. PacketReader.read_gint4 performs the shared decode.
     """
     if len(data) < 4:
         return {'time': 0}
 
-    b1 = data[0] - 32
-    b2 = data[1] - 32
-    b3 = data[2] - 32
-    b4 = data[3] - 32
-
-    time_val = (b1 << 21) | (b2 << 14) | (b3 << 7) | b4
-    return {'time': time_val}
+    return {'time': PacketReader(data).read_gint4()}
 
 
 def parse_playerwarp(data: bytes) -> dict:
@@ -3125,6 +3118,22 @@ def parse_npcweapondel(data: bytes) -> str:
 def parse_start_message(data: bytes) -> str:
     """PLO_STARTMESSAGE (41): raw server MOTD (often HTML)."""
     return data.decode('latin-1', errors='replace')
+
+
+def parse_fullstop(data: bytes) -> bool:
+    """Parse packet 176 or 177 as a one-way input stop command.
+
+    The C# server sends packet 176 with an empty payload (Player.cpp:696), and
+    its protocol enum defines both packet ids as blank stop commands
+    (IEnums.h:292-293). There is no payload toggle or matching resume packet;
+    a new connection clears the state.
+    """
+    return True
+
+
+def parse_fullstop2(data: bytes) -> bool:
+    """Parse packet 177, which has the same blank one-way semantics."""
+    return parse_fullstop(data)
 
 
 def parse_server_text(data: bytes) -> str:
