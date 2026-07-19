@@ -235,9 +235,16 @@ class InventoryUI:
                     if scaled is None:
                         if len(self._sprite_scale_cache) > 100:
                             self._sprite_scale_cache.clear()
-                        scaled = pygame.transform.scale(sprite, target_size)
+                        sprite_w, sprite_h = sprite.get_size()
+                        fit_scale = min(target_size[0] / sprite_w,
+                                        target_size[1] / sprite_h)
+                        fitted_size = (max(1, round(sprite_w * fit_scale)),
+                                       max(1, round(sprite_h * fit_scale)))
+                        scaled = pygame.transform.scale(sprite, fitted_size)
                         self._sprite_scale_cache[scale_key] = scaled
-                    self.overlay.blit(scaled, (slot_x + 2, y + 2))
+                    icon_x = slot_x + (self.SLOT_SIZE - scaled.get_width()) // 2
+                    icon_y = y + (self.SLOT_SIZE - scaled.get_height()) // 2
+                    self.overlay.blit(scaled, (icon_x, icon_y))
 
             # Draw label below
             label = self._cached_text(self.font_small, name, self.LABEL_COLOR)

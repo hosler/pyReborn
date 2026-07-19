@@ -50,8 +50,8 @@ def test_public_render_crops_each_equipment_sheet_before_scaling():
     ui.render(_player())
 
     expected = [
-        ("equipped_sword.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['sword']),
-        ("equipped_shield.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['shield']),
+        ("equipped_sword.png", 32, 0, 32, 32),
+        ("equipped_shield.png", 0, 0, 19, 20),
         ("equipped_head.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['head']),
         ("equipped_body.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['body']),
     ]

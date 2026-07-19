@@ -89,16 +89,14 @@ _MAX_CACHED_SPRITES = 4000
 _MAX_CACHED_RECOLOR_SHEETS = 150
 _MAX_CACHED_RECOLOR_SPRITES = 4000
 
-# Representative equipment frames for UI previews.  These are the exact
-# down-facing definitions used by the player GANIs and consumed by
-# game/render_entities.py through SpriteManager.get_sprite().  Keeping the
-# rects here lets non-GANI renderers use the same sheet geometry and crop
-# path instead of scaling an entire sheet.
+# Representative full equipment frames for UI previews. Keeping the rects
+# here lets non-animation renderers use the same sheet geometry and crop path
+# instead of scaling an entire sheet.
 PLAYER_EQUIPMENT_PREVIEW_RECTS = {
     'head': (0, 64, 32, 32),
     'body': (64, 0, 32, 32),
-    'sword': (0, 12, 12, 24),
-    'shield': (14, 0, 16, 20),
+    'sword': (32, 0, 32, 32),
+    'shield': (0, 0, 19, 20),
 }
 
 
