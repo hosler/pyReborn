@@ -359,7 +359,7 @@ def decode_sign_text(body: bytes) -> str:
                 continue
         if 0 <= code < len(_SIGN_ALPHABET):
             out.append(_SIGN_ALPHABET[code])
-    return ''.join(out).replace('#K(13)', '')
+    return ''.join(out).replace('#K(13)', '').replace('##', '#')
 
 
 def parse_level_sign(data: bytes) -> dict:
