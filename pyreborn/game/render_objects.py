@@ -234,7 +234,9 @@ class LevelObjectsRenderMixin:
         # trigger.
         origin_x, origin_y = self._current_segment_origin()
 
-        px = self.client.player.x + 1.0 - origin_x
+        # Feet/ground-sample point matches collision.py's PLAYER_FEET_DX/DY
+        # (classic-engine spec: collision-box centre, x+1.5/y+2.5).
+        px = self.client.player.x + 1.5 - origin_x
         py = self.client.player.y + 2.5 - origin_y
 
         for (sx, sy), text in signs.items():

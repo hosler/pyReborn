@@ -170,10 +170,16 @@ class RenderMixin:
             self.visual_y += dy / dist * step
     # The camera aims at the player's body centre, not the sprite's top-left,
     # so the character sits at screen centre instead of reading low-and-right of
-    # it. Mirrors the C# client centring on PixelX+24,PixelY+32. The sprite bounding
-    # box is 2 tiles wide with feet at (+1, +3) tiles, so the torso is ~1 tile
-    # right and ~1.5 tiles down from the top-left.
-    CAMERA_BODY_DX = 1.0
+    # it. The sprite is honestly 3 tiles wide, top-left anchored (see
+    # render_entities.py's _render_player) — true horizontal centre is
+    # x+1.5 tiles, matching the classic-engine spec collision box's own
+    # horizontal centre (collision.py's PLAYER_FEET_DX). DX was previously
+    # 1.0, half a tile left of this box's true centre — the same
+    # mis-centering bug this pass fixes elsewhere; left uncorrected here the
+    # player would render visibly off-centre in the viewport once the
+    # sprite's own anchor became honest. DY (torso height, not the box's
+    # feet-centre) is a separate framing choice, left as-is.
+    CAMERA_BODY_DX = 1.5
     CAMERA_BODY_DY = 1.5
 
     def _sync_camera(self):

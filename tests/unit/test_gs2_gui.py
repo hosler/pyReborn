@@ -36,8 +36,8 @@ import pytest
 from reborn_protocol.gs2 import GS2VM
 from pyreborn.gs2_client import ClientGS2
 from pyreborn.game.gs2_gui import (
-    GS2GuiManager, GuiButtonCtrl, GuiCheckBoxCtrl, GuiTextCtrl,
-    GuiTextEditCtrl, GuiWindowCtrl,
+    GS2GuiManager, GuiBitmapCtrl, GuiButtonCtrl, GuiCheckBoxCtrl,
+    GuiRadioCtrl, GuiShowImgCtrl, GuiTextCtrl, GuiTextEditCtrl, GuiWindowCtrl,
 )
 
 pygame.init()
@@ -59,6 +59,28 @@ class _FakeFonts:
 def _click_events(pos):
     return (pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}),
             pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": pos, "button": 1}))
+
+
+def _mousedown(pos):
+    return pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1})
+
+
+def _mouseup(pos):
+    return pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": pos, "button": 1})
+
+
+def _mousemove(pos):
+    return pygame.event.Event(pygame.MOUSEMOTION, {"pos": pos, "rel": (0, 0), "buttons": (0, 0, 0)})
+
+
+class _FakeSpriteMgr:
+    """Minimal stand-in for SpriteManager: name -> Surface (or None)."""
+
+    def __init__(self, sheets=None):
+        self.sheets = sheets or {}
+
+    def load_sheet(self, name):
+        return self.sheets.get(name)
 
 
 class TestDirectHostConstruction:
@@ -463,3 +485,169 @@ class TestReviewRegressions:
         self.host.call_builtin(None, "addcontrol", [win])
         assert self.gui._construction_stack == []
         assert win in self.gui.roots
+
+
+# =============================================================================
+# Radio-group mutual exclusion
+# =============================================================================
+
+class TestRadioGroup:
+    """Radios that share an immediate parent container mutually exclude on
+    click -- see GS2GuiManager._select_radio."""
+
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.fired = []
+
+        self.win = GuiWindowCtrl("win")
+        self.win.x, self.win.y, self.win.width, self.win.height = 0, 0, 200, 150
+        self.gui.addcontrol(self.win)
+
+        self.r1 = self._make_radio("r1", 10, 30)
+        self.r2 = self._make_radio("r2", 10, 50)
+        self.r3 = self._make_radio("r3", 10, 70)
+
+        # A sibling radio group under a *different* parent must not be
+        # affected by clicks in the first group.
+        self.other_win = GuiWindowCtrl("otherwin")
+        self.other_win.x, self.other_win.y = 300, 300
+        self.other_win.width, self.other_win.height = 200, 150
+        self.gui.addcontrol(self.other_win)
+        self.outside = GuiRadioCtrl("outside")
+        self.outside.x, self.outside.y, self.outside.width, self.outside.height = 310, 330, 16, 16
+        self.outside.checked = True
+        self.other_win.add_child(self.outside)
+
+    def _make_radio(self, name, x, y):
+        r = GuiRadioCtrl(name)
+        r.x, r.y, r.width, r.height = x, y, 16, 16
+        r.set("onaction", lambda n=name: self.fired.append(n))
+        self.win.add_child(r)
+        return r
+
+    def _click(self, radio):
+        self.gui.handle_event(_mousedown((radio.x + 5, radio.y + 5)))
+        self.gui.handle_event(_mouseup((radio.x + 5, radio.y + 5)))
+
+    def test_click_checks_radio_and_fires_onaction(self):
+        self._click(self.r1)
+        assert self.r1.checked is True
+        assert self.fired == ["r1"]
+
+    def test_click_unchecks_sibling_radios(self):
+        self._click(self.r1)
+        self._click(self.r2)
+        assert self.r1.checked is False
+        assert self.r2.checked is True
+        assert self.r3.checked is False
+        assert self.fired == ["r1", "r2"]
+
+    def test_reclicking_checked_radio_is_a_noop(self):
+        self._click(self.r1)
+        self._click(self.r1)
+        assert self.r1.checked is True
+        # onAction only fires on an actual selection change.
+        assert self.fired == ["r1"]
+
+    def test_other_parent_group_unaffected(self):
+        self._click(self.r1)
+        assert self.outside.checked is True
+        assert "outside" not in self.fired
+
+
+# =============================================================================
+# GuiShowImgCtrl rendering (shares GuiBitmapCtrl's load/scale path)
+# =============================================================================
+
+class TestShowImgRendering:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+
+    def test_bitmap_and_image_property_aliases(self):
+        img = GuiShowImgCtrl("pic")
+        img.set("bitmap", "shop.png")
+        assert img.get("bitmap") == "shop.png"
+        assert img.get("image") == "shop.png"
+        img.set("image", "other.png")
+        assert img.get("bitmap") == "other.png"
+
+    def test_renders_loaded_sprite_stretched_to_rect(self):
+        img = GuiShowImgCtrl("pic")
+        img.x, img.y, img.width, img.height = 5, 5, 40, 20
+        img.set("bitmap", "shop.png")
+        self.gui.addcontrol(img)
+
+        sheet = pygame.Surface((16, 16))
+        sheet.fill((10, 20, 30))
+        sprite_mgr = _FakeSpriteMgr({"shop.png": sheet})
+
+        surf = pygame.Surface((320, 240))
+        self.gui.render(surf, fonts=None, sprite_mgr=sprite_mgr)
+
+        assert img._scaled_surf is not None
+        assert img._scaled_surf.get_size() == (40, 20)
+        # A pixel inside the control's rect now carries the sheet's color
+        # (proves the blit actually landed at the control's rect, not (0,0)).
+        assert surf.get_at((10, 10))[:3] == (10, 20, 30)
+
+    def test_missing_bitmap_falls_back_to_placeholder_box_no_raise(self):
+        img = GuiShowImgCtrl("pic")
+        img.x, img.y, img.width, img.height = 5, 5, 40, 20
+        self.gui.addcontrol(img)
+        surf = pygame.Surface((320, 240))
+        self.gui.render(surf, fonts=None, sprite_mgr=_FakeSpriteMgr())  # must not raise
+
+    def test_shares_bitmapctrl_class(self):
+        assert issubclass(GuiShowImgCtrl, GuiBitmapCtrl)
+
+
+# =============================================================================
+# Hover / pressed visual state
+# =============================================================================
+
+class TestHoverPressedState:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.btn = GuiButtonCtrl("btn")
+        self.btn.x, self.btn.y, self.btn.width, self.btn.height = 10, 10, 80, 20
+        self.gui.addcontrol(self.btn)
+
+    def test_mouse_move_over_button_sets_hovered(self):
+        self.gui.handle_event(_mousemove((20, 15)))
+        assert self.btn.hovered is True
+
+    def test_mouse_move_away_clears_hovered(self):
+        self.gui.handle_event(_mousemove((20, 15)))
+        self.gui.handle_event(_mousemove((500, 500)))
+        assert self.btn.hovered is False
+
+    def test_mouse_down_sets_pressed_mouse_up_clears_it(self):
+        self.gui.handle_event(_mousedown((20, 15)))
+        assert self.btn.pressed is True
+        self.gui.handle_event(_mouseup((20, 15)))
+        assert self.btn.pressed is False
+
+    def test_hide_button_releases_hover_and_pressed(self):
+        self.gui.handle_event(_mousemove((20, 15)))
+        self.gui.handle_event(_mousedown((20, 15)))
+        assert self.btn.hovered is True and self.btn.pressed is True
+        self.gui.hide(self.btn)
+        assert self.btn.hovered is False
+        assert self.btn.pressed is False
+
+    def test_checkbox_hover_tracked_too(self):
+        cb = GuiCheckBoxCtrl("cb")
+        cb.x, cb.y, cb.width, cb.height = 200, 10, 16, 16
+        self.gui.addcontrol(cb)
+        self.gui.handle_event(_mousemove((205, 15)))
+        assert cb.hovered is True
+        assert self.btn.hovered is False   # mutually exclusive, single hover slot
+
+    def test_render_with_hover_and_pressed_does_not_raise(self):
+        self.gui.handle_event(_mousemove((20, 15)))
+        self.gui.handle_event(_mousedown((20, 15)))
+        surf = pygame.Surface((320, 240))
+        self.gui.render(surf, _FakeFonts(), sprite_mgr=None)

@@ -228,6 +228,11 @@ class EntityRenderMixin:
         # on/near the same tile stagger instead of drawing on top of each
         # other (see _place_nameplate).
         self._frame_nameplate_rects = []
+        # drawaslight NPCs drawn this frame (eraser mask + screen pos), so
+        # render_effects.py's _render_screen_tint can punch their footprint
+        # out of the ambient darkness/tint overlay after every entity has
+        # drawn (see _render_light_sprite).
+        self._frame_light_sources = []
 
         # Add local player. Draw it through the camera at its true render-frame
         # top-left (set by _sync_camera) — same transform every other entity
@@ -289,22 +294,45 @@ class EntityRenderMixin:
                 if self._entity_on_screen(opx, opy, screen_size=screen_size):
                     entities.append(('other', vy, opx, opy, pdata, pid))
 
-        # Add NPCs - use world coords if available (for GMAP), else local
+        # Add NPCs - use world coords if available (for GMAP), else local.
+        # epoch_seen mirrors npc_visual (same lifetime - both are keyed by
+        # npc_id and only ever need to outlive the NPCs currently known to
+        # the client), but is lazily created rather than added to
+        # pygame_game.py's __init__ since it's purely an implementation
+        # detail of this interpolation loop (see _light_sprite_cache above
+        # for the same local-cache idiom). A stale leftover entry for a
+        # since-removed npc_id is harmless: client.py's epoch counter is
+        # monotonically increasing and never reused, so it can never collide
+        # with a *future* npc_id's real epoch and accidentally suppress a
+        # snap.
+        epoch_seen = getattr(self, '_npc_visual_epoch', None)
+        if epoch_seen is None:
+            epoch_seen = self._npc_visual_epoch = {}
         for npc_id, npc in self.client.npcs.items():
             # Prefer world coords (converted from local + grid offset)
             nx = npc.get('world_x', npc.get('x'))
             ny = npc.get('world_y', npc.get('y'))
             if nx is not None and ny is not None:
-                # Interpolate NPC position for smooth movement
-                if npc_id in self.npc_visual:
+                # Interpolate NPC position for smooth movement, UNLESS
+                # client.py just re-stamped this NPC's world_x/world_y for a
+                # reason other than it actually moving (gmap re-attribution,
+                # cache restore on level re-entry, initial stream - see
+                # client.py's _mark_npc_pos_snap/_pos_epoch). Lerping across
+                # one of those jumps is what made lights visibly "swoop into
+                # position" on level entry; snap instead, same as a
+                # brand-new npc_id.
+                epoch = npc.get('_pos_epoch')
+                if npc_id in self.npc_visual and epoch == epoch_seen.get(npc_id):
                     vx, vy = self.npc_visual[npc_id]
                     lerp = min(1.0, self.lerp_speed * self._frame_dt)
                     vx += (nx - vx) * lerp
                     vy += (ny - vy) * lerp
-                    self.npc_visual[npc_id] = (vx, vy)
                 else:
                     vx, vy = nx, ny
-                    self.npc_visual[npc_id] = (vx, vy)
+                self.npc_visual[npc_id] = (vx, vy)
+                epoch_seen[npc_id] = epoch
+                if len(epoch_seen) > 2000:
+                    epoch_seen.clear()
 
                 npx, npy = self.camera.world_to_screen(vx, vy)
                 if self._entity_on_screen(npx, npy, screen_size=screen_size):
@@ -452,6 +480,18 @@ class EntityRenderMixin:
             if self.debug_mode:
                 self.screen.blit(self.npc_placeholder, (x, y))
 
+    # _render_animated_entity/_render_speech_bubble are shared with NPC/baddy/
+    # horse/showani rendering and bake in a canvas shift (-8px) / centre
+    # offset (+16px) that assume a 2-tile-wide entity — correct for those
+    # other callers, which this task doesn't touch. The player's sprite is
+    # honestly 3 tiles wide per the classic-engine spec (48px GANI canvas ==
+    # 3 tiles, no fudge), so its true visual centre is x+1.5 tiles (+24px),
+    # half a tile right of what those shared helpers assume. Compensate ONLY
+    # at these player call sites by shifting the x they see +8px (TILE_SIZE
+    # // 2) so their internal -8/+16 math lands on the honest x+24 centre,
+    # without changing behavior for any other entity type.
+    _PLAYER_ANCHOR_FIX = TILE_SIZE // 2  # 8px: cancels the shared -8px/+16px assumption
+
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""
         # Check if player should flash (hurt effect)
@@ -461,8 +501,9 @@ class EntityRenderMixin:
             # Blink every 0.1 seconds
             hurt_visible = int(hurt_elapsed * 10) % 2 == 0
 
+        anchor_x = x + self._PLAYER_ANCHOR_FIX
         if hurt_visible:
-            self._render_animated_entity(x, y, anim, {
+            self._render_animated_entity(anchor_x, y, anim, {
                 'body_image': player.body_image or 'body.png',
                 'head_image': player.head_image or 'head0.png',
                 'sword_image': player.sword_image or 'sword1.png',
@@ -479,7 +520,7 @@ class EntityRenderMixin:
 
         # Render local player's chat bubble (if active and not timed out)
         if self.local_chat_text and time.time() - self.local_chat_time < self.chat_bubble_duration:
-            self._render_speech_bubble(x, y, self.local_chat_text)
+            self._render_speech_bubble(anchor_x, y, self.local_chat_text)
 
         # Render nickname below local player
         nickname = player.nickname or player.account
@@ -488,7 +529,9 @@ class EntityRenderMixin:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
             name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
-            name_x = x - name_surf.get_width() // 2 + 16
+            # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
+            # (24px) — the sprite is 3 tiles wide, top-left anchored at x.
+            name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
             name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
             shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
@@ -497,29 +540,33 @@ class EntityRenderMixin:
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
-            # Entity position (x, y) is TOP-LEFT of sprite bounding box.
-            # Feet/shadow are at the standing point: +1 tile right, +2.5
-            # tiles down (collision.py's PLAYER_FEET_DX/DY - the point
-            # chairs/pickups/signs interact against), not the box's bottom
-            # edge (+3 tiles).
-            feet_x = x + TILE_SIZE
+            # Entity position (x, y) is TOP-LEFT of the 3x3-tile sprite.
+            # Ground-sample point is the classic-engine spec's collision-box
+            # CENTRE: +1.5 tiles right, +2.5 tiles down (collision.py's
+            # PLAYER_FEET_DX/DY — the point chairs/pickups/signs interact
+            # against and swim/grass/etc are sampled at), not the box's
+            # bottom edge.
+            feet_x = x + TILE_SIZE * 1.5
             feet_y = y + TILE_SIZE * 2.5
 
-            # Current position marker (red dot at feet)
+            # Current position marker (red dot at the ground-sample centre)
             pygame.draw.circle(self.screen, (255, 0, 0), (int(feet_x), int(feet_y)), 4)
 
-            # Collision box around player feet
-            box_left = feet_x - 0.3 * TILE_SIZE
-            box_right = feet_x + 0.3 * TILE_SIZE
-            box_top = feet_y - 0.5 * TILE_SIZE
+            # True collision box: 2x2 tiles centred on (feet_x, feet_y),
+            # spanning x+0.5..x+2.5 by y+1.5..y+3.5 (collision.py's
+            # _FEET_LEFT/_FEET_RIGHT/_FEET_TOP/_FEET_BOTTOM).
+            box_left = x + TILE_SIZE * 0.5
+            box_right = x + TILE_SIZE * 2.5
+            box_top = y + TILE_SIZE * 1.5
+            box_bottom = y + TILE_SIZE * 3.5
             collision_rect = pygame.Rect(
                 int(box_left), int(box_top),
-                int(box_right - box_left), int(feet_y - box_top)
+                int(box_right - box_left), int(box_bottom - box_top)
             )
             pygame.draw.rect(self.screen, (0, 255, 0), collision_rect, 2)
 
             # Tile grid around player feet
-            feet_world_x = self.client.x + 1.0
+            feet_world_x = self.client.x + 1.5
             feet_world_y = self.client.y + 2.5
             tile_offset_x = (feet_world_x - int(feet_world_x)) * TILE_SIZE
             tile_offset_y = (feet_world_y - int(feet_world_y)) * TILE_SIZE
@@ -540,14 +587,14 @@ class EntityRenderMixin:
         obj_width = TILE_SIZE * 2
         obj_height = TILE_SIZE * 2
 
-        # (x, y) is the sprite's top-left; the sprite is ~2 tiles wide (center at
-        # x + TILE_SIZE) with the head near the top. Hold the object centered
-        # over the head, resting just above it, so the carry gani's raised
-        # hands read as holding each side of the object. (Verified centered
-        # against dusty's bush by pixel measurement — an apparent lean there
-        # is the art's asymmetric transparency letting the head show through
-        # one quadrant, not a placement offset.)
-        obj_x = (x + TILE_SIZE) - obj_width // 2
+        # (x, y) is the sprite's top-left; the sprite is 3 tiles wide (true
+        # centre at x + TILE_SIZE * 1.5) with the head near the top. Hold the
+        # object centered over the head, resting just above it, so the carry
+        # gani's raised hands read as holding each side of the object.
+        # (Verified centered against dusty's bush by pixel measurement — an
+        # apparent lean there is the art's asymmetric transparency letting
+        # the head show through one quadrant, not a placement offset.)
+        obj_x = (x + TILE_SIZE * 1.5) - obj_width // 2
         obj_y = y - obj_height + 8
 
         # Render the 4 tiles
@@ -623,13 +670,18 @@ class EntityRenderMixin:
             if p:
                 equip[f'attr{i}_image'] = p
         hidden = bool(int(pdata.get('status') or 0) & 0x02)
-        self._render_animated_entity(x, y, anim, equip,
+        # See _render_player's _PLAYER_ANCHOR_FIX comment: the shared
+        # animated-entity/speech-bubble helpers assume a 2-tile-wide entity;
+        # other players are the same honestly-3-tile-wide sprite as the
+        # local player, so cancel that assumption the same way.
+        anchor_x = x + self._PLAYER_ANCHOR_FIX
+        self._render_animated_entity(anchor_x, y, anim, equip,
                                      alpha=115 if hidden else 255)
 
         # Render chat bubble above player (if they have chat text)
         chat_text = pdata.get('chat', '')
         if chat_text:
-            self._render_speech_bubble(x, y, chat_text)
+            self._render_speech_bubble(anchor_x, y, chat_text)
 
         # Render nickname below player
         nickname = pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or ''
@@ -638,8 +690,10 @@ class EntityRenderMixin:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
             name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
-            # Center name below player (player sprite is ~48 pixels tall)
-            name_x = x - name_surf.get_width() // 2 + 16
+            # Center name below player (player sprite is ~48 pixels tall).
+            # True horizontal centre is x+1.5 tiles (24px), same as the local
+            # player (see _render_player).
+            name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
             name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
             # Add shadow for readability
@@ -1224,6 +1278,20 @@ class EntityRenderMixin:
             # User testing confirmed this positioning is correct for light
             # effects. Render with additive blending for light effect.
             self.screen.blit(light_sprite, (x, y), special_flags=pygame.BLEND_ADD)
+
+            # A light source should also punch through the ambient darkness/
+            # tint overlay, not just glow additively on top of an otherwise
+            # unchanged dark scene. Queue an erase mask (see
+            # _light_tint_eraser) for render_effects.py's _render_screen_tint
+            # to subtract from this frame's overlay once every entity has
+            # drawn. Only queued when the caller actually reset the list this
+            # frame (_render_entities) - render smoke/tests that call this
+            # directly without going through the full entity loop just skip
+            # the tint-punching side effect.
+            sources = getattr(self, '_frame_light_sources', None)
+            if sources is not None:
+                strength = _c255(alpha_frac)
+                sources.append((self._light_tint_eraser(sprite, strength), x, y))
         else:
             # Non-additive path: a plain blit DOES respect set_alpha(), so
             # this one is unaffected by the BLEND_ADD alpha quirk above.
@@ -1238,6 +1306,38 @@ class EntityRenderMixin:
                     cache.clear()
                 cache[key] = light_sprite
             self.screen.blit(light_sprite, (x, y))
+
+    def _light_tint_eraser(self, sprite: pygame.Surface, strength: int) -> pygame.Surface:
+        """Cached alpha-only erase mask for punching a drawaslight NPC's
+        footprint out of the ambient darkness/tint overlay (consumed by
+        render_effects.py's _render_screen_tint via BLEND_RGBA_SUB).
+
+        RGB is zeroed with BLEND_RGBA_MULT so the subtraction only ever
+        reduces the overlay's alpha (brightening that spot) without shifting
+        its tint color - only the sprite's own alpha channel does the
+        erasing, which gives the hole the light's natural soft-edged shape
+        instead of a hard rectangle. `strength` scales that alpha down for a
+        dim/fading coloreffect, same intensity source as the additive glow
+        above.
+
+        Keyed by (sprite identity, strength) and identity-checked like
+        _sprite_with_alpha: a bare id()-keyed cache would serve a stale mask
+        once the sprite manager's LRU evicts and CPython reuses the freed
+        surface's address for an unrelated same-size sprite."""
+        cache = getattr(self, '_light_eraser_cache', None)
+        if cache is None:
+            cache = self._light_eraser_cache = {}
+        key = (id(sprite), strength)
+        entry = cache.get(key)
+        if entry is not None and entry[0] is sprite:
+            return entry[1]
+        eraser = sprite.copy()
+        eraser.fill((0, 0, 0, strength), special_flags=pygame.BLEND_RGBA_MULT)
+        if len(cache) > 300:
+            cache.clear()
+        cache[key] = (sprite, eraser)
+        return eraser
+
     def _resolve_gani_layers(self, anim: AnimationState, frame, equipment: dict) -> list:
         """Resolve frame.sprites -> (image, sprite-rect) per layer, memoized
         per (gani, direction, frame, equipment). This is the expensive part

@@ -13,7 +13,8 @@ from pygame.locals import (
     QUIT, KEYDOWN, MOUSEBUTTONDOWN,
     K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
     K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE, K_TAB,
-    K_F1, K_F2, K_F7, K_F8, K_1, K_2, K_3, K_4, K_5, K_6, K_7
+    K_F1, K_F2, K_F7, K_F8, K_F9, K_PAGEUP, K_PAGEDOWN,
+    K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
 from .. import Client
@@ -26,8 +27,8 @@ from ..player import Player
 from ..tiletypes import TileType, get_tile_type
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
-    pygame_key_to_vk,
+    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CHAT_HISTORY_CAP,
+    parse_npc_visual_effects, pygame_key_to_vk,
 )
 
 
@@ -39,6 +40,35 @@ class InputMixin:
     # _feed_gs1_input (once per held key, but the whole key range is scanned
     # every frame to find them).
     _vk_cache: Dict[int, int] = {}
+
+    # Chat scrollback (PageUp/PageDown -- see _handle_key_press/_draw_chat).
+    # Class-level defaults so `self.chat_scroll` is safe to read before the
+    # first keypress, same trick as _vk_cache above. `chat_scroll` counts
+    # messages back from the live tail (0 = at bottom); `_chat_scroll_baseline`
+    # is the history length when scrolling started, so hud.py can show "N new"
+    # while scrolled without needing its own per-frame bookkeeping.
+    chat_scroll: int = 0
+    _chat_scroll_baseline: int = 0
+    # Monotonic count of chat-log appends (advanced by _append_chat): unlike
+    # len(chat_messages) it keeps growing at the history cap, so the scroll
+    # indicator's "N new" stays honest once the log is full.
+    chat_seq: int = 0
+
+    def _ensure_settings_ui(self):
+        """Lazily creates the F9 settings overlay (game/settings_ui.py) and
+        applies prefs.json's saved values into live state the first time
+        it's touched. Mirrors InventoryUI's self-owned-state pattern rather
+        than a `self.show_x` flag -- GameClient.__init__ (pygame_game.py)
+        isn't a file this module wires into, so there's no earlier
+        "at construction" hook available here; this runs on the very first
+        `_handle_events()` call of the game loop instead, before the first
+        frame is drawn."""
+        su = getattr(self, 'settings_ui', None)
+        if su is None:
+            from .settings_ui import SettingsOverlay
+            su = self.settings_ui = SettingsOverlay(self)
+            su.apply_saved_prefs()
+        return su
 
     def _gs2_gui_event(self, event) -> bool:
         """Offer an event to the GS2 GUI layer (topmost overlay). True =
@@ -68,6 +98,10 @@ class InputMixin:
 
     def _handle_events(self):
         """Handle pygame events."""
+        # Make sure the settings overlay exists before the dispatch chain
+        # below checks its .visible flag (see _ensure_settings_ui).
+        self._ensure_settings_ui()
+
         # Reset just-pressed flags
         self.key_just_pressed.clear()
 
@@ -85,13 +119,16 @@ class InputMixin:
                 self.key_just_pressed[event.key] = True
 
                 # Modal overlays consume input while open, in priority order:
-                # composing a PM > player list > server list > chat > gameplay.
+                # composing a PM > player list > server list > settings > chat
+                # > gameplay.
                 if self.pm_target_id is not None:
                     self._handle_pm_input(event)
                 elif self.show_player_list:
                     self._handle_player_list_key(event)
                 elif self.show_server_list:
                     self._handle_server_list_key(event)
+                elif self.settings_ui.visible:
+                    self.settings_ui.handle_key(event)
                 elif self.typing:
                     self._handle_chat_input(event)
                 elif getattr(self.client, 'input_frozen', False):
@@ -128,9 +165,7 @@ class InputMixin:
                 self.local_chat_text = self.chat_input
                 self.local_chat_time = time.time()
                 # Also add to chat log
-                self.chat_messages.append(f"[You] {self.chat_input}")
-                if len(self.chat_messages) > 10:
-                    self.chat_messages.pop(0)
+                self._append_chat(f"[You] {self.chat_input}")
             self.chat_input = ""
             self.typing = False
         elif event.key == K_ESCAPE:
@@ -184,9 +219,7 @@ class InputMixin:
             if msg:
                 self.client.send_pm(self.pm_target_id, msg)
                 name = self._player_label(self.pm_target_id)
-                self.chat_messages.append(f"[PM to {name}] {msg}")
-                if len(self.chat_messages) > 10:
-                    self.chat_messages.pop(0)
+                self._append_chat(f"[PM to {name}] {msg}")
             self.pm_target_id = None
             self.pm_input = ""
         elif event.key == K_ESCAPE:
@@ -218,9 +251,13 @@ class InputMixin:
         """Handle single key press events."""
         if event.key == K_ESCAPE:
             # Consistent with the other modal overlays (PM/player-list/server
-            # -list/chat all close on Escape instead of quitting): close the
-            # inventory first rather than falling through to quit the app.
-            if self.inventory_ui.visible:
+            # -list/chat all close on Escape instead of quitting): resume the
+            # live chat tail first if scrolled back, then close the
+            # inventory, then fall through to quit the app.
+            if self.chat_scroll > 0:
+                self.chat_scroll = 0
+                self._chat_scroll_baseline = 0
+            elif self.inventory_ui.visible:
                 self.inventory_ui.toggle()
             else:
                 self.running = False
@@ -273,13 +310,36 @@ class InputMixin:
             # Toggle the player list (PM other players from it).
             self.show_player_list = not self.show_player_list
             self.show_server_list = False
+            self.settings_ui.close()
             self.player_list_sel = 0
 
         elif event.key == K_F8:
             # Toggle the server list (connect to a different server).
             self.show_server_list = not self.show_server_list
             self.show_player_list = False
+            self.settings_ui.close()
             self.server_list_sel = 0
+
+        elif event.key == K_F9:
+            # Toggle the settings overlay (sound/music/day-night/minimap/zoom).
+            self.settings_ui.toggle()
+            self.show_player_list = False
+            self.show_server_list = False
+
+        elif event.key == K_PAGEUP:
+            # Scroll the chat log backward 5 messages at a time, up to the
+            # stored history (CHAT_HISTORY_CAP) -- see hud.py's _draw_chat.
+            if self.chat_messages:
+                if self.chat_scroll == 0:
+                    self._chat_scroll_baseline = self.chat_seq
+                max_scroll = max(0, len(self.chat_messages) - 5)
+                self.chat_scroll = min(max_scroll, self.chat_scroll + 5)
+
+        elif event.key == K_PAGEDOWN:
+            # Scroll forward; hitting the bottom resumes the live tail.
+            self.chat_scroll = max(0, self.chat_scroll - 5)
+            if self.chat_scroll == 0:
+                self._chat_scroll_baseline = 0
 
         elif event.key == K_h:
             # Toggle the controls/help overlay
@@ -361,6 +421,7 @@ class InputMixin:
         """Handle held key input."""
         if (self.typing or self.inventory_ui.visible or self.show_player_list
                 or self.show_server_list or self.pm_target_id is not None
+                or self._ensure_settings_ui().visible
                 or getattr(self.client, 'input_frozen', False)
                 or self._gs2_gui_captures_keys()):
             self._clear_gs1_input()

@@ -109,9 +109,11 @@ class GameBot:
         self._was_on_link = False
         self._link_arrival: Optional[Tuple[float, float]] = None
 
-        # Collision settings (match pygame_game.py)
-        self._feet_offset_x = 1.0  # Center of 2-tile wide sprite
-        self._feet_offset_y = 3.0  # Bottom of 3-tile tall sprite
+        # Collision settings (match pygame_game.py). Classic-engine spec:
+        # collision box centred on (x+1.5, y+2.5); sprite itself is 3 tiles
+        # wide, 3 tall, top-left anchored.
+        self._feet_offset_x = 1.5  # Centre of the collision box
+        self._feet_offset_y = 2.5  # Centre of the collision box
 
     def _setup_callbacks(self):
         """Setup client callbacks for tracking."""
@@ -520,25 +522,28 @@ class GameBot:
         parity note), so this probes the LEADING EDGE of the sprite's
         footprint in the direction of travel, not a fixed point. Duplicated
         inline rather than importing pyreborn/game/collision.py's box-based
-        _is_position_blocked (left/right 0.4-1.6, top/bottom 2.0-3.0 from the
-        sprite's top-left) to avoid a pygame-dependent import in the headless
-        bot; the sprite is 2 tiles wide x 3 tall, top-left anchored.
+        _is_position_blocked (a 2x2-tile box centred on x+1.5/y+2.5, spanning
+        x+0.5..x+2.5 by y+1.5..y+3.5 from the sprite's top-left) to avoid a
+        pygame-dependent import in the headless bot; the sprite itself is 3
+        tiles wide x 3 tall, top-left anchored.
 
-        The probed points are the leading edge of collision.py's FEET box
-        {x+0.4..x+1.6} x {y+2.0..y+3.0} (collision is feet-only, classic
-        style: the head/torso may overlap walls). A single feet-center
-        point (the previous version) missed walls that clip only one side
-        of the box, and probing the head row for upward moves blocked the
-        bot where the real client walks.
+        The probed points are the leading edge of collision.py's collision
+        box. A single feet-center point (an early version) missed walls
+        that clip only one side of the box, and probing the head row for
+        upward moves blocked the bot where the real client walks.
         """
-        box_l, box_r, box_cx = 0.4, 1.6, 1.0
-        box_t, box_b = 2.0, 3.0
+        box_l, box_r, box_cx = 0.5, 2.5, 1.5
+        box_t, box_b, box_cy = 1.5, 3.5, 2.5
         check_offsets = []
 
+        # The box is now 2.0 tiles tall/wide on both axes (it grew from the
+        # old 1.0-tall box), so a leading-edge column/row can itself span 3
+        # tile rows/columns when unaligned - sample the middle too, mirroring
+        # collision.py's _feet_samples fix for the same reason.
         if dx < 0:      # Moving left: leading edge is the box's left column
-            check_offsets += [(box_l, box_t), (box_l, box_b)]
+            check_offsets += [(box_l, box_t), (box_l, box_cy), (box_l, box_b)]
         elif dx > 0:    # Moving right: the box's right column
-            check_offsets += [(box_r, box_t), (box_r, box_b)]
+            check_offsets += [(box_r, box_t), (box_r, box_cy), (box_r, box_b)]
 
         if dy < 0:      # Moving up: leading edge is the box's top row
             check_offsets += [(box_l, box_t), (box_cx, box_t), (box_r, box_t)]
@@ -567,9 +572,10 @@ class GameBot:
         """Update swimming state based on current position.
 
         Matches pygame_game.py:_update_swimming_state() for parity: sample the
-        player's FEET (sprite top-left + (1.0, 2.5)), not the top-left corner.
+        collision box's centre (sprite top-left + (1.5, 2.5)), not the
+        top-left corner.
         """
-        self.is_swimming = self._check_water_at_position(self.client.x + 1.0,
+        self.is_swimming = self._check_water_at_position(self.client.x + 1.5,
                                                          self.client.y + 2.5)
 
     def check_link_collision(self) -> Optional[dict]:
@@ -589,14 +595,15 @@ class GameBot:
         if not links:
             return None
 
-        # Sample the player's body down the centre column - head, mid, feet,
-        # bottom-of-feet - and the full horizontal foot span, matching
-        # client.check_link_collision()'s box (see that method's docstring
-        # for why single-point sampling misses off-centre/edge overlaps).
+        # Match client.check_link_collision(): the reference engine uses one
+        # directional probe, floors it to a whole tile, then folds that point
+        # into the level-local coordinate frame.
         px, py = c.x, c.y
-        span_left = px % 64
-        span_right = span_left + 2.0
-        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5, 3.0)]
+        probe_offsets = ((1.5, 1.0), (0.0, 2.0),
+                         (1.5, 3.5), (3.0, 2.0))
+        dx, dy = probe_offsets[c.player.direction & 3]
+        tile_x = math.floor(px + dx) % 64
+        tile_y = math.floor(py + dy) % 64
 
         for link in links:
             lx = link.get('x', 0)
@@ -612,8 +619,7 @@ class GameBot:
             if is_edge and is_adjacent:
                 continue
 
-            if span_left < lx + lw and span_right > lx and \
-                    any(ly <= by < ly + lh for by in body_ys):
+            if lx <= tile_x <= lx + lw and ly <= tile_y <= ly + lh:
                 return link
 
         return None

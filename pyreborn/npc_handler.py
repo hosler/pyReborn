@@ -30,14 +30,16 @@ from dataclasses import dataclass, field
 # from here would be circular.
 #
 # player_x/player_y (as passed to check_touch) are the sprite's TOP-LEFT, same
-# as CollisionMixin's self.client.x/y — the sprite is 2 tiles wide, 3 tall.
-PLAYER_FEET_DX = 1.0
+# as CollisionMixin's self.client.x/y. Character sprite is 3x3 tiles, but this
+# geometry follows the classic-engine spec collision box (2x2, centred on
+# x+1.5/y+2.5 — x+0.5..x+2.5 by y+1.5..y+3.5), not the wider visual sprite.
+PLAYER_FEET_DX = 1.5
 PLAYER_FEET_DY = 2.5
 TOUCH_OFFSETS = {
-    0: [(0.5, 1.5), (1.5, 1.5)],    # up:    both columns, row above the feet box
-    1: [(-0.5, 2.5), (-0.5, 1.5)],  # left:  adjacent column, feet + torso
-    2: [(0.5, 3.5), (1.5, 3.5)],    # down:  both columns, row below the feet box
-    3: [(2.5, 2.5), (2.5, 1.5)],    # right: adjacent column, feet + torso
+    0: [(1.0, 1.0), (2.0, 1.0)],    # up:    both box columns, row above the box
+    1: [(0.0, 2.5), (0.0, 1.5)],    # left:  adjacent column, feet + torso
+    2: [(1.0, 4.0), (2.0, 4.0)],    # down:  both box columns, row below the box
+    3: [(3.0, 2.5), (3.0, 1.5)],    # right: adjacent column, feet + torso
 }
 
 

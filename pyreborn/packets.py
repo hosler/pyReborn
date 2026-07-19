@@ -403,7 +403,14 @@ _NPC_STRING_PROPS = frozenset({
     21,                      # HORSEIMAGE
     35,                      # BODYIMAGE
     49, 50, 51, 52,          # SCRIPTER, NAME, TYPE, CURLEVEL (NC-only, normally not sent)
-    *range(36, 48),          # GATTRIB1-12  (36-47)
+    # GATTRIBs are NOT contiguous here: NPC.h interleaves GMAPLEVELX(41),
+    # GMAPLEVELY(42) and Z(43) - all 1-byte numerics - between GATTRIB5(40)
+    # and GATTRIB6(44). Treating 41-43 as strings misaligned the parser on
+    # every gmap-level NPC gs2emu sends (their gchar values became bogus
+    # string lengths that swallowed the rest of the packet, losing X2/Y2 and
+    # filling 'script' with raw prop bytes).
+    *range(36, 41),          # GATTRIB1-5   (36-40)
+    *range(44, 48),          # GATTRIB6-9   (44-47)
     *range(53, 74),          # GATTRIB10-30 (53-73)
 })
 # NPCProp single-byte numeric props (PropertyNumeric<GBYTE1> / flags / Z-tile).
@@ -493,6 +500,15 @@ def parse_npc_props(data: bytes) -> dict:
             pos += 1
             if prop_id == 13:
                 props['visflags'] = v
+            elif prop_id == 41:
+                # GMAPLEVELX: grid column of the segment this NPC lives in.
+                # On a gmap, gs2emu streams ALL the map's NPCs under
+                # PLO_SETACTIVELEVEL <map>.gmap (the whole gmap is one level
+                # server-side), so this pair is the ONLY segment attribution
+                # the client gets - see client.py's PLO_NPCPROPS handler.
+                props['gmaplevelx'] = v
+            elif prop_id == 42:
+                props['gmaplevely'] = v
 
         elif prop_id == 5:  # RUPEES - GBYTE3 (also covers 17 ID below)
             pos += 3
@@ -1590,8 +1606,14 @@ def build_animation(gani_name: str, x: float, y: float, direction: int) -> bytes
     packet.append(len(gani_bytes) + 32)
     packet.extend(gani_bytes)
 
-    # PLPROP_ID (14) - direction
-    packet.append(14 + 32)
+    # PLPROP_SPRITE (17) - direction (0=up, 1=left, 2=down, 3=right).
+    # NOT prop 14: PLPROP_ID is a 2-byte prop, so sending it with 1 byte
+    # misaligns the server's parser - the X2 marker byte gets eaten as ID's
+    # second byte and the X2 HIGH byte is then read as a prop id. Depending on
+    # the player's x position that garbage prop id could be COLORS (13), whose
+    # 5-byte read overruns the packet and got the session kicked by GServer
+    # ("Not enough data to deserialize PropertyArray.").
+    packet.append(17 + 32)
     packet.append(direction + 32)
 
     # PLPROP_X2 (78) - pixel X position
@@ -1678,8 +1700,9 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
     packet.append(len(gani_bytes) + 32)
     packet.extend(gani_bytes)
 
-    # PLPROP_ID (14) - direction
-    packet.append(14 + 32)
+    # PLPROP_SPRITE (17) - direction (see build_animation: prop 14/ID is
+    # 2 bytes and misaligns the server parser if sent with 1 byte).
+    packet.append(17 + 32)
     packet.append(direction + 32)
 
     # PLPROP_X2 (78) - pixel X position
@@ -3798,7 +3821,8 @@ def parse_push_away(data: bytes) -> dict:
 
 
 # =============================================================================
-# NPC movement: PLO_NPCMOVED / PLO_MOVE2 (protocol parity tier 2c)
+# NPC movement/lifecycle: PLO_NPCMOVED / PLO_MOVE2 / PLO_MOVE / PLO_NPCDEL2
+# (protocol parity tier 2c)
 # =============================================================================
 
 def parse_npcmoved(data: bytes) -> dict:
@@ -3847,6 +3871,57 @@ def parse_move2(data: bytes) -> dict:
         'dx': dx / 16.0, 'dy': dy / 16.0,
         'duration_ms': time_increments * 50, 'options': options,
     }
+
+
+def parse_move(data: bytes) -> dict:
+    """
+    Parse PLO_MOVE (165) - NPC move-queue update for legacy clients (version
+    < CLVER_2_3); the GCHAR-precision counterpart to PLO_MOVE2 (189)
+    (server/src/object/NPC.cpp getMoveQueuePacketData, 'result.first' branch,
+    lines 447-457; sent from sendMoveQueueToPlayer/sendMoveQueueToLevel,
+    NPC.cpp:473/496).
+    Format:
+        {GINT3 npc_id}
+        {GCHAR posX/8}{GCHAR posY/8}      - local pixel position, 1/8 precision
+        {GCHAR (dx/8)+100}{GCHAR (dy/8)+100} - pixel delta to target, offset so
+                                                small negative deltas stay positive
+        {GSHORT time_50ms_increments}
+        {GCHAR options}
+    Same fields as parse_move2, coarser precision (matches the 1/8-tile scale
+    PLO_NPCMOVED also uses for its GCHAR position).
+    """
+    reader = PacketReader(data)
+    npc_id = reader.read_gint3()
+    pos_x8 = reader.read_gchar()
+    pos_y8 = reader.read_gchar()
+    dx_units = reader.read_gchar() - 100
+    dy_units = reader.read_gchar() - 100
+    time_increments = reader.read_gshort()
+    options = reader.read_gchar()
+    return {
+        'npc_id': npc_id, 'x': pos_x8 * 8 / 16.0, 'y': pos_y8 * 8 / 16.0,
+        'dx': dx_units * 8 / 16.0, 'dy': dy_units * 8 / 16.0,
+        'duration_ms': time_increments * 50, 'options': options,
+    }
+
+
+def parse_npcdel2(data: bytes) -> dict:
+    """
+    Parse PLO_NPCDEL2 (150) - NPC delete scoped to an explicit level name,
+    sent (instead of the plain PLO_NPCDEL) when the target player's active
+    level differs from the NPC's level - e.g. the NPC's clientside script was
+    reloaded while the player was elsewhere but still holds a cached copy
+    from a past visit (server/src/Server.cpp:1950-1954; also
+    player/PlayerProps.cpp:641 and object/NPC.cpp:865
+    sendScriptUpdatesToLevel, which explicitly targets
+    sendPacketToLevelAndPastVisitorsAfter - i.e. it's meant to reach clients
+    with a stale per-level cache, not just the current level roster).
+    Format: {GCHAR level_length}{level, raw}{GINT3 npc_id}
+    """
+    reader = PacketReader(data)
+    level = reader.read_gstring()
+    npc_id = reader.read_gint3()
+    return {'level': level, 'npc_id': npc_id}
 
 
 def parse_flag_del(data: bytes) -> str:

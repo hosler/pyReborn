@@ -79,30 +79,39 @@ class CollisionMixin:
             return "rock"
         return ""
 
-    # Player feet offset from the sprite's top-left (sprite is 2 wide, 3 tall).
-    # Interactions (chairs, pickups, signs) happen relative to where the player
-    # visually stands, NOT the sprite's top-left corner.
-    PLAYER_FEET_DX = 1.0
+    # Ground-sample point (swim/grass/chair/bed/shallow-water/lava) and default
+    # touch point, per the classic-engine spec: the CENTRE of the player's 2x2
+    # collision box, which is itself centred on (x+1.5, y+2.5) — NOT the
+    # sprite's top-left corner. (Character sprite is 3x3 tiles, top-left
+    # anchored at (x, y); the collision/ground-sample geometry is the
+    # narrower box below.) Corroborated by GServer-v2's touchTest tables
+    # (PlayerClient.cpp:1825 testForLinks, :1760 testForTouch), which probe
+    # around the same x+1.5 horizontal centre — see _feet_samples below.
+    PLAYER_FEET_DX = 1.5
     PLAYER_FEET_DY = 2.5
     def _player_feet(self) -> Tuple[float, float]:
-        """World-tile coordinates of the player's feet (standing point)."""
+        """World-tile coordinates of the ground-sample centre point."""
         return (self.client.x + self.PLAYER_FEET_DX,
                 self.client.y + self.PLAYER_FEET_DY)
 
     # Per-facing interaction offsets — the original Reborn client's Player._touchtestd
     # idea. Each entry lists the (dx, dy) tile offsets from the sprite's TOP-LEFT to
     # the point(s) probed when grabbing / lifting / reading something in that
-    # direction. The feet footprint is the 2-wide box at columns {x, x+1}, row y+2
-    # (see _check_collision). Up/down probe both feet columns one row beyond the
-    # box; left/right probe the *adjacent* column at feet- and torso-height. This
-    # replaces a single feet point plus a symmetric unit delta, which only ever
-    # probed the feet row and — because the feet point sits on the box's right edge
-    # — probed the player's own left column instead of the tile to its left.
+    # direction. Reach is derived from the spec collision box's edges/centre
+    # (_FEET_LEFT/_FEET_RIGHT/_FEET_TOP/_FEET_BOTTOM below: 0.5/2.5/1.5/3.5),
+    # NOT the wider 3-tile visual sprite — up/down probe the box's two
+    # half-width columns (x+1.0, x+2.0) one row beyond the box's top/bottom
+    # edge; left/right probe one column beyond the box's left/right edge at
+    # feet- and torso-height (unchanged from before: the box's vertical
+    # centre/DY didn't move). This replaces a single feet point plus a
+    # symmetric unit delta, which only ever probed the feet row and —
+    # because the feet point sits on the box's right edge — probed the
+    # player's own left column instead of the tile to its left.
     TOUCH_OFFSETS = {
-        0: [(0.5, 1.5), (1.5, 1.5)],    # up:    both columns, row above the box
-        1: [(-0.5, 2.5), (-0.5, 1.5)],  # left:  adjacent column, feet + torso
-        2: [(0.5, 3.5), (1.5, 3.5)],    # down:  both columns, row below the box
-        3: [(2.5, 2.5), (2.5, 1.5)],    # right: adjacent column, feet + torso
+        0: [(1.0, 1.0), (2.0, 1.0)],    # up:    both box columns, row above the box
+        1: [(0.0, 2.5), (0.0, 1.5)],    # left:  adjacent column, feet + torso
+        2: [(1.0, 4.0), (2.0, 4.0)],    # down:  both box columns, row below the box
+        3: [(3.0, 2.5), (3.0, 1.5)],    # right: adjacent column, feet + torso
     }
 
     def _touch_points(self, direction: int) -> List[Tuple[float, float]]:
@@ -177,13 +186,11 @@ class CollisionMixin:
 
         Uses corrected tile types from user edits.
 
-        Player world position (x, y) is the TOP-LEFT of the sprite. The sprite is
-        2 tiles wide and 3 tall; collision is checked against the "feet" box
-        covering both feet at the bottom row. The box is inset 0.4 from the
-        sprite's side edges: the outer pixels of the 2-wide cell are transparent
-        margin, so a full-width box (tried) stops visibly short of walls —
-        "too aggressive" — while the old 0.5-inset let half of each foot clip
-        into walls. (dx, dy) is the movement direction.
+        Player world position (x, y) is the TOP-LEFT of the 3x3-tile sprite.
+        Collision is checked against the classic-engine spec's 2x2-tile box
+        CENTRED on (x+1.5, y+2.5): it spans x+0.5..x+2.5 horizontally and
+        y+1.5..y+3.5 vertically (see _feet_samples). (dx, dy) is the movement
+        direction.
         """
         for cx, cy in self._feet_samples(x, y):
             if self._is_blocked_at(cx, cy):
@@ -191,22 +198,34 @@ class CollisionMixin:
 
         return False
 
-    # Feet box geometry: left/right inset 0.4 from the 2-wide sprite's edges,
-    # box covers the bottom row (y+2..y+3). The box is half-open: its
-    # right/bottom edge sitting exactly on a tile boundary does NOT occupy the
-    # next tile. Without the epsilon, a feet edge flush against a wall (e.g.
-    # 35.0) floors into the wall tile and the player stops a step (~4px)
-    # short. Inset the far edges so you can move flush against walls.
+    # Collision box geometry, per the classic-engine spec: a 2x2-tile box
+    # centred on (x+1.5, y+2.5) — x+0.5..x+2.5 horizontally, y+1.5..y+3.5
+    # vertically. (Previously this was a narrower, off-centre "feet" box
+    # (x+0.4..x+1.6, y+2.0..y+3.0) that put the horizontal centre at x+1.0
+    # instead of x+1.5 — exactly the "lands 0.5 tiles left of doorways" bug.)
+    # The box is half-open: its right/bottom edge sitting exactly on a tile
+    # boundary does NOT occupy the next tile. Without the epsilon, an edge
+    # flush against a wall (e.g. 35.0) floors into the wall tile and the
+    # player stops a step (~4px) short. Inset the far edges so you can move
+    # flush against walls.
     _FEET_EPS = 1e-3
-    _FEET_LEFT, _FEET_RIGHT = 0.4, 1.6
-    _FEET_TOP, _FEET_BOTTOM = 2.0, 3.0
+    _FEET_LEFT, _FEET_RIGHT = 0.5, 2.5
+    _FEET_TOP, _FEET_BOTTOM = 1.5, 3.5
 
     def _feet_samples(self, x: float, y: float):
-        """Sample points covering the feet box at player position (x, y).
-        Three x-samples: a >1-wide box can span 3 tile columns when unaligned,
-        and corner-only sampling would miss the middle one."""
-        for cx in (x + self._FEET_LEFT, x + 1.0, x + self._FEET_RIGHT - self._FEET_EPS):
-            for cy in (y + self._FEET_TOP, y + self._FEET_BOTTOM - self._FEET_EPS):
+        """Sample points covering the collision box at player position (x, y).
+
+        Three x-samples AND three y-samples: the box is 2.0 tiles wide/tall
+        on both axes, so an unaligned position can span 3 tile columns *and*
+        3 tile rows (e.g. box top/bottom at y+1.8/y+3.8 covers rows y+1,
+        y+2, y+3) — corner-only sampling would miss the middle row/column.
+        (The old box was only 1.0 tile tall, which by construction can never
+        span more than 2 rows, so 2 y-samples used to be enough; growing the
+        box to the spec's 2x2 size reopened that same class of tunneling gap
+        on the y-axis, so the fix is mirrored here too.)
+        """
+        for cx in (x + self._FEET_LEFT, x + 1.5, x + self._FEET_RIGHT - self._FEET_EPS):
+            for cy in (y + self._FEET_TOP, y + 2.5, y + self._FEET_BOTTOM - self._FEET_EPS):
                 yield cx, cy
 
     def _blocked_sample_count(self, x: float, y: float) -> int:

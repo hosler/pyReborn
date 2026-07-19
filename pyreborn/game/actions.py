@@ -61,9 +61,9 @@ class ActionsMixin:
                 self.client.set_chest_opened(level_name, cx, cy)
             return
 
-        # Sitting is walk-on: standing on a chair tile IS sitting (see
+        # Sitting is walk-on: having your feet on a chair tile IS sitting (see
         # _update_sitting_state) — movement is never intercepted or blocked
-        # for chairs, it's just a different idle ani.
+        # for chairs, you just ride across them in the sit ani.
 
         step = MOVE_STEP
         # Candidate moves: the full input first, then each single axis as a slide.
@@ -404,7 +404,7 @@ class ActionsMixin:
             'dx': ddx, 'dy': ddy,
             'speed': 20.0,               # tiles/second
             'dist': 0.0,
-            'range': 16.0,               # tiles of flight before landing
+            'range': 10.5,               # tiles of flight before landing
         })
     def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
         """Return the local key of the chest being faced."""
@@ -424,12 +424,13 @@ class ActionsMixin:
                     return cx, cy
         return None
     def _update_sitting_state(self):
-        """Walk-on sitting: you're seated exactly while standing still on a
-        chair tile. Movement is completely normal — walking onto, across, and
-        off a chair is just walking; only the stationary ani differs."""
+        """Walk-on sitting: you're seated for as long as your feet are on a
+        chair tile — riding across a run of chairs keeps the sit ani at
+        normal movement speed, same as walking. Movement is completely
+        normal — walking onto, across, and off a chair is just walking;
+        only the ani differs. Only leaving chair tiles stands you up."""
         player = self.client.player
-        on_chair = (not self.is_moving and not player.is_carrying()
-                    and not self.is_swimming
+        on_chair = (not player.is_carrying() and not self.is_swimming
                     and self._is_tile_chair(self._get_tile_at(*self._player_feet())))
         if on_chair and not player.is_sitting:
             if player.sit_down(player.direction):
@@ -577,9 +578,9 @@ class ActionsMixin:
     def _update_swimming_state(self):
         """Update swimming state based on current position."""
         was_swimming = self.is_swimming
-        # Sample the feet, not the sprite's top-left (1 tile left, 2.5 tiles
-        # above where the player actually stands) — otherwise swimming is
-        # judged a tile off from where the player visibly is.
+        # Sample the collision box's centre point (x+1.5, y+2.5), not the
+        # sprite's top-left — otherwise swimming is judged off from where
+        # the player visibly stands.
         self.is_swimming = self._check_water_at_position(*self._player_feet())
 
         # If swimming state changed, update animation

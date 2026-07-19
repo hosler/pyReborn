@@ -17,6 +17,12 @@ TILESET_COLS = 128
 TILESET_ROWS = 32
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 
+# Scrollback cap for chat_messages (game/hud.py's PageUp/PageDown scrollback,
+# game/input.py's chat/PM append sites, game/setup.py's server/roster/PM
+# append sites). Was 10 (no scrollback existed); raised so PageUp actually has
+# history to page through.
+CHAT_HISTORY_CAP = 200
+
 # GS1's keydown2(keycode, edge) builtin reports keys using the Windows
 # Virtual-Key (VK) code table the real Reborn client runs on (confirmed via the
 # decompiled C# client, TInput.cpp: A-Z at VK 0x41-0x5A, 0-9 at VK

@@ -31,6 +31,11 @@ class SoundManager:
         self.search_paths = search_paths or []
         self.enabled = enabled
         self.volume = 1.0  # Master volume (0.0 - 1.0)
+        # Separate gate for streamed background music (see play_music below) --
+        # `enabled` above only ever gated one-shot Sound effects, not
+        # mixer.music, so the settings overlay's "Music" toggle needs its own
+        # flag (game/settings_ui.py).
+        self.music_enabled = True
         self.sound_cache: Dict[str, pygame.mixer.Sound] = {}
         self._initialized = False
 
@@ -237,7 +242,7 @@ class SoundManager:
         Downloaded music is written to a temp file because SDL_mixer's MIDI
         backend loads by path, not from a file object.
         """
-        if not self.enabled:
+        if not self.enabled or not self.music_enabled:
             return False
         self.initialize()
         if not self._initialized:
@@ -294,12 +299,33 @@ class SoundManager:
             self.load(name)
 
     def set_volume(self, volume: float):
-        """Set master volume (0.0 - 1.0)."""
+        """Set master volume (0.0 - 1.0).
+
+        Also pushed to mixer.music immediately if it's already
+        initialized/playing: unlike Sound.set_volume (applied fresh on every
+        play()), mixer.music has one persistent volume that play_music()
+        only sets at load time, so a live volume change (e.g. the settings
+        overlay's slider) would otherwise not affect a track already
+        streaming.
+        """
         self.volume = max(0.0, min(1.0, volume))
+        if PYGAME_AVAILABLE and self._initialized:
+            try:
+                pygame.mixer.music.set_volume(self.volume)
+            except Exception:
+                pass
 
     def set_enabled(self, enabled: bool):
         """Enable or disable sound."""
         self.enabled = enabled
+
+    def set_music_enabled(self, enabled: bool):
+        """Enable or disable streamed background music (see music_enabled
+        above). Disabling stops whatever's currently playing, mirroring
+        set_enabled's immediate-effect semantics."""
+        self.music_enabled = enabled
+        if not enabled:
+            self.stop_music()
 
     def stop_all(self):
         """Stop all currently playing sounds."""

@@ -131,10 +131,10 @@ class TestCheckLinkCollision:
 
     def test_detects_link_on_position_derived_level(self):
         bot = self._gmap_bot_with_link()
-        # World (64+11, 64*0+10) -> local (11, 10) on the east segment,
-        # standing squarely on the link.
-        bot.client.player.x = 64 + 11.0
-        bot.client.player.y = 10.0
+        # Facing down, the directional probe lands at local (11, 10).
+        bot.client.player.x = 64 + 9.5
+        bot.client.player.y = 6.5
+        bot.client.player.direction = 2
         link = bot.check_link_collision()
         assert link is not None
         assert link["dest_level"] == "cave.nw"

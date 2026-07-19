@@ -7,6 +7,7 @@ In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
 import logging
+import math
 import re
 import sys
 import time
@@ -118,6 +119,8 @@ from .packets import (
     parse_push_away,
     parse_npcmoved,
     parse_move2,
+    parse_move,
+    parse_npcdel2,
     parse_flag_del,
     parse_say2,
     parse_server_warp,
@@ -169,7 +172,7 @@ def _build_handled_plo_ids() -> set:
         # Tier 2: entity families + NPC movement.
         "PLO_BOMBADD", "PLO_BOMBDEL", "PLO_ARROWADD", "PLO_HORSEADD",
         "PLO_HORSEDEL", "PLO_FIRESPY", "PLO_THROWCARRIED", "PLO_NPCMOVED",
-        "PLO_MOVE2", "PLO_FLAGDEL", "PLO_PUSHAWAY",
+        "PLO_MOVE2", "PLO_MOVE", "PLO_NPCDEL2", "PLO_FLAGDEL", "PLO_PUSHAWAY",
         # Tier 3: server-control packets.
         "PLO_FREEZEPLAYER2", "PLO_UNFREEZEPLAYER", "PLO_SAY2", "PLO_HIDENPCS",
         "PLO_SERVERWARP", "PLO_TRIGGERACTION", "PLO_DISABLECLASSICMODE",
@@ -315,6 +318,14 @@ class Client:
         # repopulates its NPCs even when the server only streams them on first
         # entry. Maps level_name -> {npc_id: props}.
         self._npc_cache: Dict[str, Dict[int, dict]] = {}
+        # Monotonic counter backing npc['_pos_epoch'] (see _mark_npc_pos_snap):
+        # bumped whenever an NPC's world_x/world_y is set OUTSIDE an actual
+        # movement update (initial stream, gmap re-attribution, cache restore),
+        # so the pygame renderer (render_entities.py's _render_entities) can
+        # tell "the NPC's world position field jumped because it moved" apart
+        # from "it jumped because we just found out where it really is" and
+        # snap the visual position instead of lerping across the jump.
+        self._npc_pos_epoch = 0
 
         # Other players: maps player_id -> player dict with x, y, nickname, account, etc.
         # This is the IN-LEVEL set (from PLO_OTHERPLPROPS), used for rendering.
@@ -481,6 +492,10 @@ class Client:
         self.on_profile: Optional[Callable[[dict], None]] = None
         # NPCs hidden by server: handler() (PLO_HIDENPCS).
         self.on_hide_npcs: Optional[Callable[[], None]] = None
+        # Login-complete notification: handler() (PLO_UNKNOWN168, blank -
+        # see Player.cpp:709 "This seems to inform the client that they
+        # have logged in.").
+        self.on_login_complete: Optional[Callable[[], None]] = None
 
         # Chest callback: handler(x, y, opened) - level chest state
         self.on_chest: Optional[Callable[[int, int, bool], None]] = None
@@ -529,6 +544,7 @@ class Client:
         self.classic_mode_disabled = False  # PLO_DISABLECLASSICMODE
         self.input_frozen = False           # packets 176 / 177
         self.npcs_hidden = False         # PLO_HIDENPCS
+        self.login_complete = False      # PLO_UNKNOWN168 (blank "you're logged in" marker)
         self.server_warp_info: Optional[dict] = None  # last PLO_SERVERWARP target
         self.profiles: Dict[str, dict] = {}  # account -> profile (PLO_PROFILE)
         self.npcserver_addr: Optional[dict] = None  # PLO_NPCSERVERADDR
@@ -1413,11 +1429,10 @@ class Client:
             self.tiles = self.levels[level_name]
             self._tiles_level_name = level_name
 
-        # Restore any NPCs we cached for this level on a previous visit. If the
-        # server re-streams them, the fresh PLO_NPCPROPS just overwrites these.
-        cached_npcs = self._npc_cache.get(level_name)
-        if cached_npcs:
-            self.npcs.update(cached_npcs)
+        # Restore any NPCs we cached for this level (and, for a gmap segment,
+        # its sibling segments) on a previous visit. If the server re-streams
+        # them, the fresh PLO_NPCPROPS just overwrites these.
+        self._restore_cached_npcs(level_name)
 
         # Mark the warp as awaiting the server's authoritative confirmation.
         # We flipped _current_level_name above optimistically (for instant
@@ -1463,9 +1478,8 @@ class Client:
             self.npcs.update(cached_npcs)
 
     def _reset_level_state(self, cache_npcs: bool = True):
-        """Clear per-level state on a full level change so chests, chest items,
-        signs, ground items, baddies and NPCs from the old level don't leak into
-        the new one. (Links/signs are keyed by level name; the rest are flat.)
+        """Clear per-level state on a full level change so ground items,
+        baddies and NPCs from the old level don't leak into the new one.
 
         Not called on seamless GMAP segment crossing (that goes through move(),
         not warp_to_level), so the stitched world keeps its entities.
@@ -1473,10 +1487,15 @@ class Client:
         cache_npcs=False skips the per-level NPC snapshot: on a client-warp
         confirmation the NPCs present may be transit-window leaks stamped with
         the WRONG (optimistically-flipped) level, so caching them would poison
-        _npc_cache for that level."""
-        self.chests.clear()
-        self.chest_items.clear()
-        self.signs.clear()
+        _npc_cache for that level.
+
+        Signs/chests/chest_items are NOT cleared: they're keyed by level name
+        (no cross-level leakage possible) and gs2emu keeps a per-session
+        level cache (PlayerClient.cpp sendStaticLevelData) - signs are only
+        streamed on the FIRST entry of a level each session, so wiping them
+        here made every sign in the world go dead after the first re-entered
+        level (live-verified: re-warping into chicken_house1.nw streamed no
+        PLO_LEVELSIGN at all). They mirror the server's own session cache."""
         self.items.clear()
         self.baddies.clear()
         # PLO_ISLEADER (GServer-v2 PlayerClient.cpp checkAndInformIfLevelLeader)
@@ -1499,6 +1518,38 @@ class Client:
                 if lvl:
                     self._npc_cache.setdefault(lvl, {})[nid] = npc
         self.npcs.clear()
+
+    def _mark_npc_pos_snap(self, npc: dict) -> None:
+        """Stamp `npc` with a fresh _pos_epoch so the renderer snaps its
+        visual position instead of lerping to it. Call this whenever
+        world_x/world_y is set/changed for a reason OTHER than the NPC
+        actually moving during play (new NPC streamed in, gmap
+        re-attribution, cache restore on level re-entry) - see the
+        _npc_pos_epoch comment in __init__."""
+        self._npc_pos_epoch += 1
+        npc['_pos_epoch'] = self._npc_pos_epoch
+
+    def _restore_cached_npcs(self, level_name: str) -> None:
+        """Repopulate self.npcs from _npc_cache for level_name - and, when
+        it's a segment of the loaded gmap, for EVERY segment of that gmap
+        (the stitched world renders neighbours too, and gs2emu's per-session
+        level cache means none of them get re-streamed on re-entry). Fresh
+        PLO_NPCPROPS from the server simply overwrite these afterwards."""
+        if not level_name:
+            return
+        names = [level_name]
+        if self.gmap_grid and level_name in self.gmap_grid.values():
+            names = list(self.gmap_grid.values())
+        for name in names:
+            cached = self._npc_cache.get(name)
+            if cached:
+                # Restored NPCs reappear at their last-known position - the
+                # renderer must snap to it, not lerp from wherever a
+                # same-numbered NPC happened to be visually parked before
+                # (see _mark_npc_pos_snap).
+                for npc in cached.values():
+                    self._mark_npc_pos_snap(npc)
+                self.npcs.update(cached)
 
     def send_pm(self, player_id: int, message: str) -> bool:
         """
@@ -1973,12 +2024,44 @@ class Client:
                 self.player.x = self.player.x + spawn_pos[0] * 64
                 self.player.y = self.player.y + spawn_pos[1] * 64
 
+        # Re-entering a gmap from an interior level: the warp-time restore in
+        # warp_to_level/_handle_packet only saw the target segment (the grid
+        # was cleared by _exit_gmap), so now that the grid is rebuilt, pull
+        # the sibling segments' cached NPCs back in too - gs2emu's session
+        # cache won't re-stream any of them.
+        self._restore_cached_npcs(self._current_level_name)
+
         # Update existing NPC coords to world coords now that we have the GMAP grid
         self._update_npc_world_coords()
 
     def _update_npc_world_coords(self):
-        """Update NPC world coordinates based on their level's grid position."""
+        """Update NPC world coordinates based on their level's grid position.
+
+        Runs after load_gmap builds the grid, fixing up NPCs that arrived
+        BEFORE the .gmap file download finished. NPCs carrying GMAPLEVELX/
+        GMAPLEVELY props (gs2emu gmap streams - see the PLO_NPCPROPS handler)
+        are re-attributed from those; at stream time the grid was empty so
+        they were stamped with the .gmap name and local-as-world coords."""
         for npc_id, npc in self.npcs.items():
+            gx = npc.get('gmaplevelx')
+            gy = npc.get('gmaplevely')
+            if gx is not None and gy is not None and (gx, gy) in self.gmap_grid:
+                npc['_level'] = self.gmap_grid[(gx, gy)]
+                if 'x' in npc:
+                    raw_x = npc['x']
+                    npc['world_x'] = (raw_x if (raw_x >= 64 or raw_x < 0)
+                                       else raw_x + gx * 64)
+                if 'y' in npc:
+                    raw_y = npc['y']
+                    npc['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
+                                       else raw_y + gy * 64)
+                # Re-attribution, not movement: the NPC didn't actually walk,
+                # we just learned its real world position now that the grid
+                # is built. Snap the renderer's visual position (see
+                # _mark_npc_pos_snap) instead of letting it lerp across the
+                # jump from the interim local-as-world guess.
+                self._mark_npc_pos_snap(npc)
+                continue
             npc_level = npc.get('_level')
             if not npc_level:
                 continue  # No level info
@@ -1998,6 +2081,9 @@ class Client:
                         raw_y = npc['y']
                         npc['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
                                            else raw_y + gy * 64)
+                    # Re-attribution, not movement - see the snap comment on
+                    # the gmaplevelx/y branch above.
+                    self._mark_npc_pos_snap(npc)
                     break
 
     def get_adjacent_levels(self, level_name: str) -> List[str]:
@@ -2300,11 +2386,13 @@ class Client:
                     pass
                 elif level_name != self._current_level_name:
                     self._current_level_name = level_name
-                    # Real warp: drop the old level's chests/signs/items/
-                    # baddies/NPCs so stale entries (e.g. a link back
-                    # through a door that doesn't exist here) don't leak
-                    # into the new level.
+                    # Real warp: drop the old level's items/baddies/NPCs so
+                    # stale entries (e.g. a link back through a door that
+                    # doesn't exist here) don't leak into the new level,
+                    # then restore this level's NPCs from the session cache
+                    # (gs2emu won't re-stream them on a re-entry).
                     self._reset_level_state()
+                    self._restore_cached_npcs(level_name)
                 elif level_name == self._awaiting_warp_confirm:
                     # Client-initiated warp: _current_level_name already equals
                     # level_name (flipped optimistically at send), so the guard
@@ -2312,9 +2400,16 @@ class Client:
                     # to purge any old-level NPC/chest props that leaked in
                     # during the send->confirm window. cache_npcs=False: those
                     # leaks are mis-stamped with THIS level, so caching them
-                    # would poison _npc_cache. The server re-streams the real
-                    # NPCs right after this packet.
+                    # would poison _npc_cache. On a FIRST visit the server
+                    # streams the real NPCs right after this packet; on a
+                    # re-entry it streams nothing (per-session level cache),
+                    # so restore this level's NPCs from our own session
+                    # cache - warp_to_level's optimistic restore was just
+                    # wiped by the reset above. (_npc_cache only ever holds
+                    # entries snapshotted with cache_npcs=True, i.e. stamped
+                    # BEFORE the warp, so no transit-window leak comes back.)
                     self._reset_level_state(cache_npcs=False)
+                    self._restore_cached_npcs(level_name)
                 if self._awaiting_warp_confirm:
                     # Any authoritative level announcement supersedes the
                     # pending client warp: either it's the confirmation
@@ -2755,8 +2850,34 @@ class Client:
             props = parse_npc_props(data)
             if props and 'id' in props:
                 npc_id = props['id']
-                # Associate NPC with the pending/current level
+                # Associate the NPC with a level. Preference order:
+                #   1. GMAPLEVELX/GMAPLEVELY props (41/42) -> gmap segment.
+                #      gs2emu streams a gmap's NPCs under PLO_SETACTIVELEVEL
+                #      <map>.gmap (the whole gmap is one level server-side,
+                #      PlayerClient.cpp sendDynamicLevelData), so the pending
+                #      level name is the .gmap - useless for placement. The
+                #      grid cell carried in the props is the real attribution.
+                #   2. The level this (already-known) NPC was previously
+                #      attributed to - a partial runtime update without level
+                #      info must not re-stamp it with whatever level happened
+                #      to stream last (e.g. a stale neighbour-preload name).
+                #   3. The pending/current level (fresh NPC on a plain level).
                 npc_level = self._pending_level_name or self._current_level_name
+                grid_cell = None
+                gx = props.get('gmaplevelx')
+                gy = props.get('gmaplevely')
+                if gx is not None and gy is not None and (gx, gy) in self.gmap_grid:
+                    grid_cell = (gx, gy)
+                    npc_level = self.gmap_grid[grid_cell]
+                else:
+                    known = self.npcs.get(npc_id)
+                    if (known is not None and known.get('_level')
+                            and gx is None and gy is None):
+                        npc_level = known['_level']
+                    if self.gmap_grid and npc_level:
+                        grid_cell = next(
+                            (cell for cell, name in self.gmap_grid.items()
+                             if name == npc_level), None)
                 props['_level'] = npc_level
 
                 # Convert NPC local coords to world coords if in GMAP.
@@ -2771,20 +2892,17 @@ class Client:
                 # then reverting. Guard the same way as the OTHERPLPROPS
                 # merge (BUG 1): only fold in the segment offset for a
                 # value that's still in the local 0-63 range.
-                if self.gmap_grid and npc_level:
-                    # Find the level's grid position
-                    for (gx, gy), level_name in self.gmap_grid.items():
-                        if level_name == npc_level:
-                            if 'x' in props:
-                                raw_x = props['x']
-                                props['world_x'] = (raw_x if (raw_x >= 64 or raw_x < 0)
-                                                     else raw_x + gx * 64)
-                            if 'y' in props:
-                                raw_y = props['y']
-                                props['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
-                                                     else raw_y + gy * 64)
-                            break
-                else:
+                if grid_cell is not None:
+                    cgx, cgy = grid_cell
+                    if 'x' in props:
+                        raw_x = props['x']
+                        props['world_x'] = (raw_x if (raw_x >= 64 or raw_x < 0)
+                                             else raw_x + cgx * 64)
+                    if 'y' in props:
+                        raw_y = props['y']
+                        props['world_y'] = (raw_y if (raw_y >= 64 or raw_y < 0)
+                                             else raw_y + cgy * 64)
+                elif not self.gmap_grid:
                     # Not in GMAP - local coords are world coords
                     if 'x' in props:
                         props['world_x'] = props['x']
@@ -2793,6 +2911,11 @@ class Client:
                 if npc_id in self.npcs:
                     self.npcs[npc_id].update(props)
                 else:
+                    # First sighting of this NPC (not an in-play movement
+                    # update of an already-known one) - mark it so the
+                    # renderer snaps its visual position rather than lerping
+                    # in from wherever a stale same-id visual entry sits.
+                    self._mark_npc_pos_snap(props)
                     self.npcs[npc_id] = props
 
         # NPC deleted
@@ -2805,6 +2928,23 @@ class Client:
                     del self.npcs[npc_id]
                     if self.on_npc_del:
                         self.on_npc_del(npc_id)
+
+        # NPC deleted, scoped to an explicit level (packet 150) - sent instead
+        # of PLO_NPCDEL when the target player's active level isn't the NPC's
+        # level, so it also purges any stale per-level cache entry (see
+        # packets.parse_npcdel2 for why: GServer-v2 targets clients with a
+        # past-visit cached copy, not just the current level roster).
+        elif packet_id == PacketID.PLO_NPCDEL2:
+            info = parse_npcdel2(data)
+            npc_id = info['npc_id']
+            level = info['level']
+            if npc_id in self.npcs:
+                del self.npcs[npc_id]
+                if self.on_npc_del:
+                    self.on_npc_del(npc_id)
+            cached = self._npc_cache.get(level)
+            if cached is not None:
+                cached.pop(npc_id, None)
 
         # Other player properties
         elif packet_id == PacketID.PLO_OTHERPLPROPS:
@@ -3147,6 +3287,21 @@ class Client:
             if self.on_npc_move:
                 self.on_npc_move(info)
 
+        # NPC move-queue update, legacy pre-CLVER_2_3 clients (packet 165) -
+        # the GCHAR-precision counterpart to PLO_MOVE2 above. GServer-v2 sends
+        # exactly one of MOVE/MOVE2 per move-queue update depending on the
+        # recipient's negotiated version (NPC.cpp:472-475), so mirror MOVE2's
+        # handling rather than treating this as a separate stream.
+        elif packet_id == PacketID.PLO_MOVE:
+            info = parse_move(data)
+            npc = self.npcs.get(info['npc_id'])
+            if npc is not None:
+                npc['x'] = info['x']
+                npc['y'] = info['y']
+            self.npc_moves[info['npc_id']] = info
+            if self.on_npc_move:
+                self.on_npc_move(info)
+
         # ---- Server-control packets (tier 3) -------------------------------
 
         # Freeze / unfreeze player (packets 154/155) - empty payloads.
@@ -3322,9 +3477,15 @@ class Client:
             # Route level-scoped data (board/chest/sign) to this level too.
             self._pending_level_name = self.active_level
 
-        # Login-server marker, blank (packet 168) - no-op.
+        # Login-complete marker, blank (packet 168). GServer-v2 sends this
+        # once per connection, right after PLO_HASNPCSERVER, purely to signal
+        # "you have finished logging in" - see server/src/player/Player.cpp:
+        # 700-709 ("This seems to inform the client that they have logged
+        # in."). No payload to parse; just latch the flag.
         elif packet_id == PacketID.PLO_UNKNOWN168:
-            pass
+            self.login_complete = True
+            if self.on_login_complete:
+                self.on_login_complete()
 
         # Ghost icon toggle (packet 174).
         elif packet_id == PacketID.PLO_GHOSTICON:
@@ -3343,7 +3504,12 @@ class Client:
         elif packet_id == PacketID.PLO_STATUSLIST:
             self.status_list = parse_status_list(data)
 
-        # Blank marker before weapon list (packet 190) - no-op.
+        # Blank marker before weapon list (packet 190) - no-op. NOTE:
+        # GServer-v2 (this workspace's ground truth) never actually sends
+        # this packet - dependencies/gs2lib/include/IEnums.h:306 and
+        # server/src/player/Player.cpp only list it in the packet-name enum
+        # table, with no sendPacket call anywhere in server/src. Kept as a
+        # defensive no-op in case another server implementation emits it.
         elif packet_id == PacketID.PLO_UNKNOWN190:
             pass
 
@@ -3445,22 +3611,18 @@ class Client:
         if not links:
             return None
 
-        # Sample the player's body down the centre column — head, mid, feet, and
-        # the very bottom of the feet — not a single point. Walking *down* onto a
-        # link the feet reach it; walking *up* to a door (cave entrances sit on
-        # blocking tiles you can't stand on, only the head overlaps) the upper
-        # points reach it. The 3.0 sample matters for DOWNWARD edge/door links:
-        # collision stops the feet (py+3) at the link row, but the old max sample
-        # (2.5) fell half a tile short, so you'd jam against a downward warp and
-        # have to noclip through it.
+        # The reference engine tests one whole-tile directional probe, not
+        # collision-box overlap. These offsets are GServer-v2
+        # PlayerClient.cpp testForLinks()'s touchTest table; Level.cpp
+        # getLink() then performs an inclusive point-in-bounding-box test.
+        # Floor the world point before folding it into a 64-tile segment so
+        # the probe wraps coherently when it crosses a GMAP seam.
         px, py = self.player.x, self.player.y
-        # Horizontal span of the feet box (both feet: columns x .. x+2), not
-        # just the single centre column — a 1-tile-wide door must trigger when
-        # any part of the body overlaps it, otherwise standing half a tile
-        # off-centre walks straight past the warp.
-        span_left = px % 64
-        span_right = span_left + 2.0
-        body_ys = [(py + d) % 64 for d in (0.5, 1.5, 2.5, 3.0)]
+        probe_offsets = ((1.5, 1.0), (0.0, 2.0),
+                         (1.5, 3.5), (3.0, 2.0))
+        dx, dy = probe_offsets[self.player.direction & 3]
+        tile_x = math.floor(px + dx) % 64
+        tile_y = math.floor(py + dy) % 64
 
         for link in links:
             lx = link.get('x', 0)
@@ -3479,10 +3641,7 @@ class Client:
             if is_edge and is_adjacent:
                 continue
 
-            # Triggered if the feet span overlaps the link rect horizontally
-            # and any body sample falls inside it vertically.
-            if span_left < lx + lw and span_right > lx and \
-                    any(ly <= by < ly + lh for by in body_ys):
+            if lx <= tile_x <= lx + lw and ly <= tile_y <= ly + lh:
                 return link
 
         return None

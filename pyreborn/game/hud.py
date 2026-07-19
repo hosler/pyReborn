@@ -20,11 +20,26 @@ render.py — it is editor UI, not the play HUD.
 """
 
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import pygame
 
 from .ui import UIManager, Panel, Label, Widget, TOPLEFT, TOPRIGHT, MIDTOP
+
+
+def chat_window(total: int, scroll: int, window: int = 5) -> Tuple[int, int]:
+    """[start, end) indices into chat_messages for the visible chat-log slice.
+
+    `scroll` is messages back from the live tail (0 = tail, matching
+    game/input.py's PageUp/PageDown bookkeeping). Pure function (no pygame,
+    no widget state) so the scroll-window math is unit-testable on its own --
+    see HUD._draw_chat, the only caller.
+    """
+    if scroll <= 0:
+        return max(0, total - window), total
+    end = max(0, total - scroll)
+    start = max(0, end - window)
+    return start, end
 
 
 class Badge(Widget):
@@ -198,6 +213,8 @@ class HUD:
         ("F2", "Unstick: warp to (30,30)"),
         ("F7", "Player list / PM"),
         ("F8", "Server list"),
+        ("F9", "Settings"),
+        ("PageUp/Down", "Scroll chat log"),
         ("H", "Close this help"),
     ]
 
@@ -230,9 +247,15 @@ class HUD:
         self.ui.root.add(self.hint, self.ghost)
 
         # Per-message (text, plate) surfaces for the chat log, rebuilt only
-        # when the last-5 slice of chat_messages actually changes.
+        # when the visible 5-message window of chat_messages actually changes
+        # (that window is the live tail normally, or a PageUp/PageDown
+        # scrollback slice -- see _draw_chat).
         self._chat_cache = {}
         self._chat_slice = None
+        # Cached "-- N back, M new (PageDown/Esc to resume) --" scroll
+        # indicator surface, rebuilt only when its text changes.
+        self._scroll_indicator_text = None
+        self._scroll_indicator_surf = None
 
     # -- per-frame --------------------------------------------------------
     def update(self):
@@ -287,6 +310,9 @@ class HUD:
             self._draw_player_list(surf)
         if self.game.show_server_list:
             self._draw_server_list(surf)
+        settings_ui = getattr(self.game, 'settings_ui', None)
+        if settings_ui is not None and settings_ui.visible:
+            self._draw_settings(surf)
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):
@@ -343,7 +369,11 @@ class HUD:
 
     def _draw_chat(self, surf):
         g = self.game
-        slice_ = tuple(g.chat_messages[-5:])
+        total = len(g.chat_messages)
+        scroll = g.chat_scroll   # 0 = live tail; >0 = PageUp'd back that many messages
+        start, end = chat_window(total, scroll)
+        slice_ = tuple(g.chat_messages[start:end])
+
         if slice_ != self._chat_slice:
             old_cache = self._chat_cache
             self._chat_cache = {
@@ -358,6 +388,21 @@ class HUD:
             surf.blit(plate, (5, y - 2))
             surf.blit(ts, (10, y))
             y -= 20
+
+        if scroll > 0:
+            # New messages that arrived while scrolled back still get
+            # appended to chat_messages (and counted here) even though
+            # they're off-screen until PageDown/Esc resumes the live tail.
+            new_count = max(0, g.chat_seq - g._chat_scroll_baseline)
+            label = f"-- {scroll} back"
+            if new_count:
+                label += f", {new_count} new"
+            label += " (PageDown/Esc to resume) --"
+            if label != self._scroll_indicator_text:
+                self._scroll_indicator_text = label
+                self._scroll_indicator_surf = g.font_small.render(
+                    label, True, (255, 220, 120))
+            surf.blit(self._scroll_indicator_surf, (10, y))
 
         if g.typing:
             pygame.draw.rect(surf, (0, 0, 0),
@@ -473,3 +518,11 @@ class HUD:
             rows.append(f"{name}  ({pc})" if pc != "" else str(name))
         self._draw_list_overlay(surf, "Servers", rows, sel,
                                 "Up/Down select · Enter to connect · F8/Esc close")
+
+    # -- F9 settings overlay ------------------------------------------------
+    def _draw_settings(self, surf):
+        g = self.game
+        su = g.settings_ui
+        self._draw_list_overlay(
+            surf, "Settings", su.rows(), su.selected,
+            "Up/Down select · Left/Right/Enter adjust · F9/Esc close")

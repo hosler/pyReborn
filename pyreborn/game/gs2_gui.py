@@ -137,6 +137,14 @@ def _resolve_profile(name: str) -> GuiProfile:
     return prof
 
 
+def _shade(color: Tuple[int, int, int], factor: float) -> Tuple[int, int, int]:
+    """Multiply an RGB tuple's channels by `factor`, clamped to 0-255 --
+    used for the interactive-control hover (lighter)/pressed (darker) visual
+    states (GS2GuiManager tracks hover/press by mouse position; see its
+    `_set_hover`/`_set_pressed`)."""
+    return tuple(max(0, min(255, int(c * factor))) for c in color)
+
+
 def _wrap_text(font: pygame.font.Font, text: str, max_width: int) -> List[str]:
     """Greedy word-wrap for GuiMLTextCtrl; preserves explicit newlines."""
     lines: List[str] = []
@@ -185,6 +193,11 @@ class GuiControl(GS2Object):
         self.profile_name = _DEFAULT_PROFILE_NAME
         self.parent: Optional["GuiControl"] = None
         self.children: List["GuiControl"] = []
+        # Render-only mouse state, maintained by GS2GuiManager the same way
+        # it maintains GuiTextEditCtrl.focused -- not script-visible (not
+        # routed through get()/set()).
+        self.hovered = False
+        self.pressed = False
 
     # -- GS2Object property bridge ------------------------------------------
 
@@ -312,7 +325,12 @@ class GuiButtonCtrl(GuiControl):
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = _resolve_profile(self.profile_name)
         r = self.rect()
-        pygame.draw.rect(surf, prof.title_bg, r, border_radius=4)
+        fill = prof.title_bg
+        if self.pressed:
+            fill = _shade(fill, 0.75)
+        elif self.hovered:
+            fill = _shade(fill, 1.2)
+        pygame.draw.rect(surf, fill, r, border_radius=4)
         pygame.draw.rect(surf, prof.border, r, 1, border_radius=4)
         if self.text and fonts is not None:
             label = fonts.get("small").render(self.text, True, prof.fg)
@@ -439,8 +457,10 @@ class GuiCheckBoxCtrl(GuiControl):
         prof = _resolve_profile(self.profile_name)
         r = self.rect()
         box = pygame.Rect(r.x, r.y, min(r.width, r.height) or 16, min(r.width, r.height) or 16)
-        pygame.draw.rect(surf, prof.bg, box)
-        pygame.draw.rect(surf, prof.border, box, 1)
+        bg = _shade(prof.bg, 0.75) if self.pressed else prof.bg
+        border = (150, 190, 255) if self.hovered else prof.border
+        pygame.draw.rect(surf, bg, box)
+        pygame.draw.rect(surf, border, box, 1)
         if self.checked:
             pygame.draw.line(surf, prof.fg, box.topleft, box.bottomright, 2)
             pygame.draw.line(surf, prof.fg, box.bottomleft, box.topright, 2)
@@ -450,8 +470,11 @@ class GuiCheckBoxCtrl(GuiControl):
 
 
 class GuiRadioCtrl(GuiCheckBoxCtrl):
-    """Stub-but-track: same as GuiCheckBoxCtrl visually (a filled circle
-    instead of a box); real per-group mutual-exclusion is not replicated."""
+    """Same as GuiCheckBoxCtrl visually (a filled circle instead of a box).
+    Per-group mutual-exclusion is handled by GS2GuiManager._select_radio:
+    clicking a radio checks it and unchecks its siblings (the children of
+    its immediate parent container -- there is no separate group-name
+    property on the wire, matching the C# client's reference semantics)."""
 
     CTRL_CLASS = "GuiRadioCtrl"
 
@@ -460,8 +483,10 @@ class GuiRadioCtrl(GuiCheckBoxCtrl):
         r = self.rect()
         d = min(r.width, r.height) or 16
         center = (r.x + d // 2, r.y + d // 2)
-        pygame.draw.circle(surf, prof.bg, center, d // 2)
-        pygame.draw.circle(surf, prof.border, center, d // 2, 1)
+        bg = _shade(prof.bg, 0.75) if self.pressed else prof.bg
+        border = (150, 190, 255) if self.hovered else prof.border
+        pygame.draw.circle(surf, bg, center, d // 2)
+        pygame.draw.circle(surf, border, center, d // 2, 1)
         if self.checked:
             pygame.draw.circle(surf, prof.fg, center, max(1, d // 4))
         if self.text and fonts is not None:
@@ -507,14 +532,15 @@ class GuiBitmapCtrl(GuiControl):
         pygame.draw.rect(surf, (120, 120, 130), r, 1)
 
 
-class GuiShowImgCtrl(GuiControl):
-    """Log-once stub: no known real-world usage exercised yet."""
+class GuiShowImgCtrl(GuiBitmapCtrl):
+    """Same image control as GuiBitmapCtrl (filename via the `bitmap`/`image`
+    property, resolved through the game's SpriteManager and stretched to
+    fit, cached by (bitmap-name, rect-size) -- see GuiBitmapCtrl). Some GS2
+    scripts spell this control's class name one way, some the other; the
+    C# client renders both identically, so this subclass only changes
+    CTRL_CLASS and reuses GuiBitmapCtrl's get/set/_draw_self as-is."""
 
     CTRL_CLASS = "GuiShowImgCtrl"
-
-    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        _log_once(("draw", self.CTRL_CLASS),
-                  "GS2 GUI: %s rendering not implemented (stub)", self.CTRL_CLASS)
 
 
 class GuiPopUpEditCtrl(GuiControl):
@@ -568,6 +594,13 @@ class GS2GuiManager:
         self._construction_stack: List[GuiControl] = []
         self._focus: Optional[GuiTextEditCtrl] = None
         self._drag: Optional[Tuple[GuiWindowCtrl, float, float]] = None
+        # Render-only mouse state for hover/pressed visuals (button + check-
+        # box/radio) -- maintained the same way as `_focus`, via mouse
+        # events already flowing through handle_event() (see input.py's
+        # _gs2_gui_event, which remaps every MOUSEMOTION into virtual-canvas
+        # coordinates before forwarding it here).
+        self._hover: Optional[GuiControl] = None
+        self._pressed: Optional[GuiControl] = None
 
     @property
     def keyboard_captured(self) -> bool:
@@ -628,15 +661,21 @@ class GS2GuiManager:
         self._release_pointers_under(ctrl)
 
     def _release_pointers_under(self, ctrl: GuiControl) -> None:
-        """Drop keyboard focus / an active drag held by ctrl OR any of its
-        descendants. Scripts close whole windows (hidegui/destroy on the
-        container), so an exact-identity check would leave a vanished text
-        edit holding focus — and keyboard_captured would block player
-        movement with nothing visible on screen."""
+        """Drop keyboard focus / an active drag / hover / pressed state held
+        by ctrl OR any of its descendants. Scripts close whole windows
+        (hidegui/destroy on the container), so an exact-identity check would
+        leave a vanished text edit holding focus — and keyboard_captured
+        would block player movement with nothing visible on screen. Same
+        reasoning applies to a vanished button being left permanently
+        "hovered"/"pressed"."""
         if self._focus is not None and self._is_or_descends(self._focus, ctrl):
             self._set_focus(None)
         if self._drag is not None and self._is_or_descends(self._drag[0], ctrl):
             self._drag = None
+        if self._hover is not None and self._is_or_descends(self._hover, ctrl):
+            self._set_hover(None)
+        if self._pressed is not None and self._is_or_descends(self._pressed, ctrl):
+            self._set_pressed(None)
 
     @staticmethod
     def _is_or_descends(node: GuiControl, ancestor: GuiControl) -> bool:
@@ -740,6 +779,41 @@ class GS2GuiManager:
         if ctrl is not None:
             ctrl.focused = True
 
+    def _set_hover(self, ctrl: Optional[GuiControl]) -> None:
+        if self._hover is ctrl:
+            return
+        if self._hover is not None:
+            self._hover.hovered = False
+        self._hover = ctrl
+        if ctrl is not None:
+            ctrl.hovered = True
+
+    def _set_pressed(self, ctrl: Optional[GuiControl]) -> None:
+        if self._pressed is ctrl:
+            return
+        if self._pressed is not None:
+            self._pressed.pressed = False
+        self._pressed = ctrl
+        if ctrl is not None:
+            ctrl.pressed = True
+
+    def _select_radio(self, radio: "GuiRadioCtrl") -> None:
+        """Radio-group mutual exclusion: checking one radio unchecks its
+        siblings -- the other children of the same immediate parent
+        container (roots, if the radio has no parent), per the module
+        docstring's "no group-name property on the wire" note. Matches real
+        radio-button UX: clicking the already-checked radio is a no-op (it
+        doesn't uncheck itself), and onAction only fires on an actual
+        selection change, not on every click."""
+        if radio.checked:
+            return
+        siblings = radio.parent.children if radio.parent is not None else self.roots
+        for sib in siblings:
+            if sib is not radio and isinstance(sib, GuiRadioCtrl) and sib.checked:
+                sib.checked = False
+        radio.checked = True
+        radio.fire_action()
+
     def _shift(self, ctrl: GuiControl, dx: float, dy: float) -> None:
         ctrl.x += dx
         ctrl.y += dy
@@ -786,20 +860,28 @@ class GS2GuiManager:
             return True
 
         self._set_focus(None)
-        if isinstance(hit, GuiCheckBoxCtrl):           # covers GuiRadioCtrl too
+        if isinstance(hit, GuiRadioCtrl):
+            self._set_pressed(hit)
+            self._select_radio(hit)
+        elif isinstance(hit, GuiCheckBoxCtrl):
+            self._set_pressed(hit)
             hit.toggle()
             hit.fire_action()
         elif isinstance(hit, GuiButtonCtrl):
+            self._set_pressed(hit)
             hit.fire_action()
         return True
 
     def _on_mouse_up(self, pos) -> bool:
+        self._set_pressed(None)
         if self._drag is not None:
             self._drag = None
             return True
         return self.hit_test(pos) is not None
 
     def _on_mouse_move(self, pos) -> bool:
+        hit = self.hit_test(pos)
+        self._set_hover(hit if isinstance(hit, (GuiButtonCtrl, GuiCheckBoxCtrl)) else None)
         if self._drag is None:
             return False
         win, off_x, off_y = self._drag

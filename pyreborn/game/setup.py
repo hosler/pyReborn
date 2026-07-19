@@ -27,20 +27,39 @@ from ..player import Player
 from ..tiletypes import TileType, get_tile_type
 from .constants import (
     PACKAGE_DIR, TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CHAT_HISTORY_CAP,
+    parse_npc_visual_effects,
 )
 
 
-def append_start_message(chat_messages: list, text: str) -> None:
-    """Append at most five non-empty initial-message lines to chat."""
+def append_start_message(chat_messages: list, text: str) -> int:
+    """Append at most five non-empty initial-message lines to chat.
+
+    Returns the number of lines appended so the caller can advance
+    chat_seq (the monotonic append counter the scroll indicator uses).
+    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    chat_messages.extend(f"[server] {line}" for line in lines[:5])
-    if len(chat_messages) > 10:
-        del chat_messages[:-10]
+    added = [f"[server] {line}" for line in lines[:5]]
+    chat_messages.extend(added)
+    if len(chat_messages) > CHAT_HISTORY_CAP:
+        del chat_messages[:-CHAT_HISTORY_CAP]
+    return len(added)
 
 
 class SetupMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _append_chat(self, message: str) -> None:
+        """Append one chat-log line, trim to the cap, and advance chat_seq.
+
+        chat_seq is a monotonic count of appends: unlike len(chat_messages),
+        it keeps growing once the log is at CHAT_HISTORY_CAP (where every
+        append pops a line), so the scroll indicator's "N new" math works.
+        """
+        self.chat_messages.append(message)
+        if len(self.chat_messages) > CHAT_HISTORY_CAP:
+            self.chat_messages.pop(0)
+        self.chat_seq += 1
 
     def _setup_asset_paths(self) -> List[Path]:
         """Setup asset search paths."""
@@ -72,16 +91,12 @@ class SetupMixin:
         self._pushaway_velocity = (0.0, 0.0)   # PLO_PUSHAWAY knockback, tiles/sec
 
         def on_chat(player_id, message):
-            self.chat_messages.append(f"[{player_id}] {message}")
-            if len(self.chat_messages) > 10:
-                self.chat_messages.pop(0)
+            self._append_chat(f"[{player_id}] {message}")
 
         def on_pm(from_id, message):
             # Show received private messages in the chat log, named by sender.
             name = self._player_label(from_id)
-            self.chat_messages.append(f"[PM {name}] {message}")
-            if len(self.chat_messages) > 10:
-                self.chat_messages.pop(0)
+            self._append_chat(f"[PM {name}] {message}")
 
         def _roster_name(info):
             return info.get('nickname') or info.get('account') or "?"
@@ -90,14 +105,10 @@ class SetupMixin:
             # The server dumps the whole roster on login; only announce joins
             # that arrive after that settles (roster_ready_time, set in run()).
             if time.time() >= self.roster_ready_time:
-                self.chat_messages.append(f"-> {_roster_name(info)} entered")
-                if len(self.chat_messages) > 10:
-                    self.chat_messages.pop(0)
+                self._append_chat(f"-> {_roster_name(info)} entered")
 
         def on_del_player(pid, info):
-            self.chat_messages.append(f"<- {_roster_name(info)} left")
-            if len(self.chat_messages) > 10:
-                self.chat_messages.pop(0)
+            self._append_chat(f"<- {_roster_name(info)} left")
 
         def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
             # Spawn floating damage number at player position
@@ -132,13 +143,11 @@ class SetupMixin:
         # incoming message so it isn't silently dropped.
         def on_server_text(text: str):
             if text:
-                self.chat_messages.append(f"[server] {text}")
-                if len(self.chat_messages) > 10:
-                    self.chat_messages.pop(0)
+                self._append_chat(f"[server] {text}")
 
         def on_start_message(text: str):
             """Put up to five non-empty initial-message lines in chat."""
-            append_start_message(self.chat_messages, text)
+            self.chat_seq += append_start_message(self.chat_messages, text)
 
         # Tier 3b: PLO_RPGWINDOW - a scrollable RPG-style text window. Reuses
         # the existing dialogue-box path (hud.py's _draw_dialogue) rather than

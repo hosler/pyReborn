@@ -562,7 +562,7 @@ class EffectsRenderMixin:
                         overlay = self._day_night_overlay_surface = pygame.Surface(
                             size, pygame.SRCALPHA)
                     overlay.fill(color)
-                self.screen.blit(self._day_night_overlay_surface, (0, 0))
+                self._blit_tint_overlay(self._day_night_overlay_surface, size)
 
         tint = self.screen_tint
         if not tint:
@@ -578,7 +578,40 @@ class EffectsRenderMixin:
             if overlay is None or overlay.get_size() != size:
                 overlay = self._tint_overlay_surface = pygame.Surface(size, pygame.SRCALPHA)
             overlay.fill(color)
-        self.screen.blit(self._tint_overlay_surface, (0, 0))
+        self._blit_tint_overlay(self._tint_overlay_surface, size)
+
+    def _blit_tint_overlay(self, overlay: pygame.Surface, size: Tuple[int, int]):
+        """Blit a cached darkness/tint overlay to the screen, first punching
+        this frame's drawaslight NPC footprints out of it (queued by
+        render_entities.py's _render_light_sprite/_light_tint_eraser, reset
+        each frame in _render_entities) so a light source genuinely
+        brightens that spot instead of just glowing additively on top of
+        otherwise-unchanged darkness.
+
+        `overlay` is one of the size/color-keyed caches above and must stay
+        clean for reuse next frame - the holes go into a separate per-frame
+        scratch copy instead, so a light that moves (or a frame with no
+        visible lights at all) never leaves a stale hole behind. Degrades to
+        the old direct blit whenever there's nothing to punch (the common
+        case: daytime, or a tinted scene with no light NPCs on screen)."""
+        lights = getattr(self, '_frame_light_sources', None)
+        if not lights:
+            self.screen.blit(overlay, (0, 0))
+            return
+        scratch = getattr(self, '_tint_hole_scratch', None)
+        if scratch is None or scratch.get_size() != size:
+            scratch = self._tint_hole_scratch = pygame.Surface(size, pygame.SRCALPHA)
+        # An exact copy, not an alpha-composite: overlay's own per-pixel
+        # alpha would otherwise get baked into scratch's RGB (premultiplied)
+        # by a plain blit, applying it a second time when scratch is later
+        # alpha-blitted onto the screen and washing the tint out far weaker
+        # than the direct (no-lights) path above. Clear-then-saturating-add
+        # is a straight byte copy regardless of alpha.
+        scratch.fill((0, 0, 0, 0))
+        scratch.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+        for eraser, lx, ly in lights:
+            scratch.blit(eraser, (int(lx), int(ly)), special_flags=pygame.BLEND_RGBA_SUB)
+        self.screen.blit(scratch, (0, 0))
 
     def _render_server_explosions(self):
         """Render explosions received from server (PLO_EXPLOSION packets)."""

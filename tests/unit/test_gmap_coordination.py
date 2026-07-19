@@ -321,5 +321,105 @@ class TestNpcWorldCoordDoubleOffsetGuard:
         assert c.npcs[42]['world_y'] == 94.0
 
 
+# =============================================================================
+# NPC position snap-mark ('_pos_epoch') - 2026-07-19 "lights swoop into
+# position on level entry" fix. NPCs stream in under the gmap's active level
+# with local coords, then get re-attributed to world coords once the .gmap
+# grid is known/restored (_update_npc_world_coords, _restore_cached_npcs).
+# The pygame renderer (render_entities.py's _render_entities) used to lerp
+# smoothly across that re-attribution jump like it does for real movement,
+# which read as the NPC visibly sliding into place. client.py stamps a fresh
+# `npc['_pos_epoch']` (see _mark_npc_pos_snap) every time it changes
+# world_x/world_y for a reason OTHER than the NPC actually moving, so the
+# renderer can tell the two apart and snap instead of lerping.
+# =============================================================================
+
+def _gmap_level_prop(prop_id: int, v: int) -> bytes:
+    """NPCPROP.GMAPLEVELX/Y (41/42): 1-byte prop id, 1-byte value."""
+    return bytes([prop_id + 32, v + 32])
+
+
+class TestNpcPosEpochSnapMark:
+    def test_new_npc_is_marked_for_a_snap(self):
+        """A genuinely new NPC's first PLO_NPCPROPS stamps a _pos_epoch."""
+        c = _client_with_grid()
+        c._current_level_name = "chicken1.nw"
+        c._pending_level_name = "chicken1.nw"
+        c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
+            42, _classic_pos(2, 20.0), _classic_pos(3, 30.0)))
+        assert c.npcs[42].get('_pos_epoch') is not None
+
+    def test_in_play_movement_update_does_not_remark(self):
+        """A PLO_NPCPROPS update for an ALREADY-KNOWN npc_id (the wire form
+        of an NPC walking around during play) must leave _pos_epoch alone -
+        the renderer needs to keep lerping this one smoothly."""
+        c = _client_with_grid()
+        c._current_level_name = "chicken1.nw"
+        c._pending_level_name = "chicken1.nw"
+        c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
+            42, _classic_pos(2, 20.0), _classic_pos(3, 30.0)))
+        epoch_after_create = c.npcs[42]['_pos_epoch']
+
+        c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
+            42, _classic_pos(2, 21.0), _classic_pos(3, 30.0)))
+        assert c.npcs[42]['x'] == 21.0  # the update did apply...
+        assert c.npcs[42]['_pos_epoch'] == epoch_after_create  # ...without remarking
+
+    def test_update_npc_world_coords_gmaplevel_branch_remarks(self):
+        """The GMAPLEVELX/Y-attributed branch of _update_npc_world_coords
+        (gs2emu's gmap streaming path) re-attributes coords and must mark
+        the NPC for a snap even though it was already known."""
+        c = _client_with_grid()
+        c.npcs[42] = {'id': 42, 'x': 20.0, 'y': 30.0,
+                      'gmaplevelx': 1, 'gmaplevely': 1, '_pos_epoch': 5}
+        c._update_npc_world_coords()
+        npc = c.npcs[42]
+        assert npc['world_x'] == 20.0 + 64
+        assert npc['world_y'] == 30.0 + 64
+        assert npc['_level'] == "chicken1.nw"
+        assert npc['_pos_epoch'] != 5
+
+    def test_update_npc_world_coords_level_lookup_branch_remarks(self):
+        """The `_level` name-lookup branch (no GMAPLEVELX/Y on the wire, the
+        NPC was previously stamped with a level name) must also remark."""
+        c = _client_with_grid()
+        c.npcs[42] = {'id': 42, '_level': 'chicken1.nw', 'x': 20.0, 'y': 30.0,
+                      '_pos_epoch': 5}
+        c._update_npc_world_coords()
+        npc = c.npcs[42]
+        assert npc['world_x'] == 20.0 + 64
+        assert npc['world_y'] == 30.0 + 64
+        assert npc['_pos_epoch'] != 5
+
+    def test_restore_cached_npcs_remarks_every_restored_npc(self):
+        """Re-entering a level repopulates self.npcs from the session cache
+        (gs2emu won't re-stream them) - every restored NPC must be marked so
+        a stale same-id npc_visual entry from before the level clear gets
+        snapped past rather than lerped into from wherever it last was."""
+        c = _client_with_grid()
+        c._npc_cache["chicken1.nw"] = {
+            42: {'id': 42, '_level': 'chicken1.nw', 'x': 20.0, 'y': 30.0,
+                 '_pos_epoch': 5},
+            43: {'id': 43, '_level': 'chicken1.nw', 'x': 40.0, 'y': 10.0},
+        }
+        c._restore_cached_npcs("chicken1.nw")
+        assert 42 in c.npcs and 43 in c.npcs
+        assert c.npcs[42]['_pos_epoch'] != 5
+        assert c.npcs[43].get('_pos_epoch') is not None
+
+    def test_pos_epoch_is_monotonic_across_marks(self):
+        """Every _mark_npc_pos_snap call hands out a strictly larger epoch,
+        so a stale leftover entry in the renderer's epoch-seen cache can
+        never accidentally match a *later* mark for the same or a
+        different/reused npc_id."""
+        c = _client_with_grid()
+        npc_a, npc_b = {'id': 1}, {'id': 2}
+        c._mark_npc_pos_snap(npc_a)
+        c._mark_npc_pos_snap(npc_b)
+        c._mark_npc_pos_snap(npc_a)
+        assert npc_a['_pos_epoch'] > npc_b['_pos_epoch']
+        assert npc_b['_pos_epoch'] > 0
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
