@@ -15,6 +15,7 @@ sword hits"):
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -111,13 +112,13 @@ class TestKeypressed:
         gs1 = ClientGS1(c)
         gs1.load_script(
             'npc_1',
-            "if (keypressed) { this.code = #p(0); this.ch = #p(1); "
+            "if (keypressed) { this.code = #p(0); setstring this.ch,#p(1); "
             "this.down5 = keydown(5); this.down0 = keydown(0); }",
             npc_id=1)
         gs1.keys_dir = {5}   # sword (S) held this frame
         gs1.fire_keypress(83, 's')
         this = _this(gs1, 'npc_1')
-        assert this['code'] == '83'
+        assert this['code'] == 83.0
         assert this['ch'] == 's'
         assert this['down5'] == 1.0
         assert this['down0'] == 0.0
@@ -150,7 +151,7 @@ class TestLevelMessageCode:
         c.player.level = "playerlevel.nw"
         c.npcs[1] = {'x': 0.0, 'y': 0.0, '_level': 'npclevel.nw'}
         gs1 = ClientGS1(c)
-        gs1.load_script('npc_1', "if (created) { this.lvl = #L; }", npc_id=1)
+        gs1.load_script('npc_1', "if (created) { setstring this.lvl,#L; }", npc_id=1)
         gs1.trigger_npc_event(1, 'created')
         assert _this(gs1, 'npc_1')['lvl'] == 'npclevel.nw'
 
@@ -159,7 +160,7 @@ class TestLevelMessageCode:
         c.player.level = "playerlevel.nw"
         c.npcs[1] = {'x': 0.0, 'y': 0.0}
         gs1 = ClientGS1(c)
-        gs1.load_script('npc_1', "if (created) { this.lvl = #L; }", npc_id=1)
+        gs1.load_script('npc_1', "if (created) { setstring this.lvl,#L; }", npc_id=1)
         gs1.trigger_npc_event(1, 'created')
         assert _this(gs1, 'npc_1')['lvl'] == 'playerlevel.nw'
 
@@ -255,13 +256,61 @@ class TestNewBuiltinFlags:
         gs1 = ClientGS1(c)
         gs1.load_script('npc_1', "if (created) { this.ft = playerfreezetime; }", npc_id=1)
         gs1.trigger_npc_event(1, 'created')
-        assert _this(gs1, 'npc_1')['ft'] == 0.0
+        assert _this(gs1, 'npc_1')['ft'] == -1.0
 
         gs1.load_weapon('w', "freezeplayer 2;")
         gs1.trigger_event('created', name='weapon_w')
         gs1.trigger_npc_event(1, 'created')
         ft = _this(gs1, 'npc_1')['ft']
         assert 0.0 < ft <= 2.0
+
+    def test_weapon_message_codes_selected_index_image_and_oob(self):
+        c = Client("localhost", 14900)
+        c.weapons = {
+            "bomb": {"name": "bomb", "image": "bomb.png"},
+            "bow": {"name": "bow", "image": "bow.png"},
+        }
+        gs1 = ClientGS1(c)
+        gs1.selected_weapon_index = lambda: 1
+        gs1.load_script(
+            "npc_1",
+            "if (created) { setstring this.n,#w; setstring this.i,#W; "
+            "setstring this.n0,#w(0); setstring this.i0,#W(0); "
+            "setstring this.bad,#w(9); }",
+            npc_id=1,
+        )
+        gs1.trigger_npc_event(1, "created")
+        values = _this(gs1, "npc_1")
+        assert (values["n"], values["i"]) == ("bow", "bow.png")
+        assert (values["n0"], values["i0"]) == ("bomb", "bomb.png")
+        assert values["bad"] == ""
+
+    def test_timevar2_is_live_monotonic_milliseconds(self):
+        c = Client("localhost", 14900)
+        gs1 = ClientGS1(c)
+        gs1.load_script("npc_1", "if (created) { this.t=timevar2; }", npc_id=1)
+        gs1.trigger_npc_event(1, "created")
+        first = _this(gs1, "npc_1")["t"]
+        time.sleep(0.002)
+        gs1.trigger_npc_event(1, "created")
+        second = _this(gs1, "npc_1")["t"]
+        assert isinstance(first, float)
+        assert second > first
+
+    def test_player_and_npc_glovepower_scales_are_asymmetric(self):
+        c = Client("localhost", 14900)
+        c.player.glove_power = 2
+        gs1 = ClientGS1(c)
+        gs1.load_script(
+            "npc_1",
+            "if (created) { this.glovepower=1; this.pg=playerglovepower; "
+            "this.ng=this.glovepower; }",
+            npc_id=1,
+        )
+        gs1.trigger_npc_event(1, "created")
+        values = _this(gs1, "npc_1")
+        assert values["pg"] == 3.0
+        assert values["ng"] == 1.0
 
 
 if __name__ == '__main__':

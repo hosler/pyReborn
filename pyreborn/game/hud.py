@@ -241,7 +241,7 @@ class HUD:
 
         # Top-right "H: Help" hint and centered ghost-mode banner.
         self.hint = Label("H: Help", role="small", color=(210, 210, 210),
-                          anchor=TOPRIGHT, offset=(-10, 10))
+                          anchor=TOPRIGHT, offset=(-10, 10), shadow=True)
         self.ghost = Badge("GHOST MODE", color=(200, 200, 255),
                            anchor=MIDTOP, offset=(0, 50), visible=False)
         self.ui.root.add(self.hint, self.ghost)

@@ -49,7 +49,7 @@ PLAYER_ATTR = {
     "playerhearts": "hearts", "playerfullhearts": "max_hearts",
     "playerarrows": "arrows", "playerbombs": "bombs",
     "playerswordpower": "sword_power", "playershieldpower": "shield_power",
-    "playerglovepower": "glove_power", "playernick": "nickname",
+    "playernick": "nickname",
     "playeraccount": "account", "playerhead": "head_image",
     "playerbody": "body_image", "playersword": "sword_image",
     "playershield": "shield_image",
@@ -57,7 +57,7 @@ PLAYER_ATTR = {
 # unprefixed builtin -> key on the client NPC dict (the NPC running the script)
 NPC_ATTR = {
     "x": "x", "y": "y", "dir": "direction", "image": "image", "ani": "gani",
-    "nick": "nickname", "message": "message",
+    "nick": "nickname", "message": "message", "glovepower": "glove_power",
 }
 # command -> NPC dict key it writes (so the renderer reflects the change).
 # Image commands are handled explicitly in _dispatch (they also manage the
@@ -141,6 +141,10 @@ class GS1ClientHost(Host):
                 return float(getattr(self.rt.client, "y", 0))
             if name in PLAYER_ATTR:
                 return _num_or_str(getattr(player, PLAYER_ATTR[name], 0))
+            if name == "playerglovepower":
+                # Player script values use 1/2/3 (none/glove1/glove2), while
+                # NPC glovepower and the wire-backed Player field use 0/1/2.
+                return float(getattr(player, "glove_power", 0) + 1)
             if name == "playeronline":
                 return 1.0
             # playerswimming: no dedicated swim-state on the core Client (that
@@ -159,8 +163,8 @@ class GS1ClientHost(Host):
             # layer locks movement for).
             if name == "playerfreezetime":
                 import time as _t
-                remaining = self.rt._freeze_until - _t.time()
-                return remaining if remaining > 0 else 0.0
+                remaining = self.rt._freeze_until - _t.monotonic()
+                return remaining if remaining > 0 else -1.0
             # carry* flags: pyReborn only models bush/rock/pot lift objects
             # (game/collision.py _get_liftable_name); "rock"/"pot" are the
             # same objects Reborn's docs call "stone"/"vase". The remaining
@@ -199,6 +203,9 @@ class GS1ClientHost(Host):
             # out of scale + decimal, which broke the room-timer comparisons.
             import time as _t
             return float(int((_t.time() - 981048814) / 5))
+        if name == "timevar2":
+            import time as _t
+            return float(_t.monotonic() * 1000.0)
         # arena GUI/screen + game-role builtins (read-only)
         if name == "screenwidth":
             return float(self.rt.screen_w)
@@ -271,6 +278,9 @@ class GS1ClientHost(Host):
         player = self._player
         if player is not None and name in PLAYER_ATTR:
             setattr(player, PLAYER_ATTR[name], value)
+            return True
+        if player is not None and name == "playerglovepower":
+            setattr(player, "glove_power", max(0, int(to_num(value)) - 1))
             return True
         return False
 
@@ -377,7 +387,7 @@ class GS1ClientHost(Host):
             if rt.on_freezeplayer:
                 rt.on_freezeplayer(secs)
             import time as _t
-            rt._freeze_until = _t.time() + max(0.0, secs)
+            rt._freeze_until = _t.monotonic() + max(0.0, secs)
             return
         # hitobjects power,x,y — client-side sword-hit emulation (see
         # npcserver.md "Emulating sword hits"): fire `washit` on NPCs and hurt
@@ -755,13 +765,21 @@ class GS1ClientHost(Host):
             key = _CHARPROP_NPC.get(code)
             if key is not None:
                 return to_str(npc.get(key, ""))
-        if code == "#w" and args and self.rt.client is not None:
-            names = list(getattr(self.rt.client, "weapons", {}) or {})
-            try:
-                return names[int(float(args[0]))]
-            except (ValueError, IndexError, TypeError):
-                return ""
         return ""
+
+    def weapon_message_code(self, code, index, ctx) -> str:
+        client = self.rt.client
+        if client is None:
+            return ""
+        weapons = list((getattr(client, "weapons", {}) or {}).items())
+        if index is None:
+            index = self.rt.selected_weapon_index()
+        if index < 0 or index >= len(weapons):
+            return ""
+        name, data = weapons[index]
+        if code == "#w":
+            return to_str(name)
+        return to_str(data.get("image", "")) if isinstance(data, dict) else ""
 
 
 class _ServerFlagScope(dict):
@@ -848,7 +866,8 @@ class ClientGS1:
         self.is_leader = None
         self.default_movement = True   # disabledefmovement: arena weapons drive movement
         self.weapons_enabled = True    # enableweapons/disableweapons -> `weaponsenabled`
-        self._freeze_until = 0.0       # time.time() a freezeplayer call unfreezes -> `playerfreezetime`
+        self._freeze_until = 0.0       # monotonic deadline used by `playerfreezetime`
+        self.selected_weapon_index = lambda: 0
         self.keys_dir: set = set()
         self.keys_raw: set = set()
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge

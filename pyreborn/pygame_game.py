@@ -145,6 +145,7 @@ class GameClient(
 
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
+        self.gs1.selected_weapon_index = lambda: self.inventory_ui.selected_weapon_idx
         self.heart_display = HeartDisplay(10, 10)
         self.hud = HUD(self)
 
@@ -447,4 +448,3 @@ class GameClient(
         # If the player picked another server from the F8 list, hand it back to
         # the launcher so it can reconnect. None = normal quit.
         return self.switch_server
-

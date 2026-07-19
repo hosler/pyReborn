@@ -6,6 +6,8 @@ Provides a simple inventory/equipment management UI for the pygame client.
 
 from typing import List, Optional, Tuple
 
+from .sprites import PLAYER_EQUIPMENT_PREVIEW_RECTS
+
 try:
     import pygame
     PYGAME_AVAILABLE = True
@@ -17,7 +19,7 @@ class InventoryUI:
     """Inventory and equipment overlay UI."""
 
     # UI Colors
-    BG_COLOR = (20, 20, 40, 200)
+    BG_COLOR = (20, 20, 40, 220)
     BORDER_COLOR = (100, 100, 150)
     SELECTED_COLOR = (255, 200, 50)
     TEXT_COLOR = (255, 255, 255)
@@ -61,7 +63,7 @@ class InventoryUI:
         # render time (see render()) so a window resize keeps it centered -
         # the game only ever reassigns .screen, it never recreates this UI.
         self.ui_width = 300
-        self.ui_height = 400
+        self.ui_height = 440
         self.ui_x = 0
         self.ui_y = 0
 
@@ -151,16 +153,17 @@ class InventoryUI:
         # Weapons section
         self._render_weapons(y, weapons)
 
-        # Blit overlay to screen
-        self.screen.blit(self.overlay, (self.ui_x, self.ui_y))
-
-        # Draw help text below
+        # Footer stays inside the panel so it remains readable over a busy
+        # world and is included in the panel border/background.
         help_text = self._cached_text(self.font_small,
                                        "Q: Close | S+A: Cycle Weapons | D: Use",
                                        self.LABEL_COLOR)
-        help_x = (self.screen.get_width() - help_text.get_width()) // 2
-        help_y = self.ui_y + self.ui_height + 10
-        self.screen.blit(help_text, (help_x, help_y))
+        help_x = (self.ui_width - help_text.get_width()) // 2
+        help_y = self.ui_height - self.PADDING - help_text.get_height()
+        self.overlay.blit(help_text, (help_x, help_y))
+
+        # Blit overlay to screen
+        self.screen.blit(self.overlay, (self.ui_x, self.ui_y))
 
     def _render_stats(self, y: int, player: 'Player') -> int:
         """Render player stats section."""
@@ -181,11 +184,12 @@ class InventoryUI:
         self.overlay.blit(rupees, (self.PADDING + 10, y))
         y += rupees.get_height() + 3
 
-        # Arrows and Bombs
-        items_text = f"Arrows: {player.arrows}  Bombs: {player.bombs}"
-        items = self._cached_text(self.font_medium, items_text, self.TEXT_COLOR)
-        self.overlay.blit(items, (self.PADDING + 10, y))
-        y += items.get_height() + 3
+        # Arrows and bombs use aligned columns instead of running together.
+        arrows = self._cached_text(self.font_medium, f"Arrows: {player.arrows}", self.TEXT_COLOR)
+        bombs = self._cached_text(self.font_medium, f"Bombs: {player.bombs}", self.TEXT_COLOR)
+        self.overlay.blit(arrows, (self.PADDING + 10, y))
+        self.overlay.blit(bombs, (self.ui_width // 2 + 5, y))
+        y += max(arrows.get_height(), bombs.get_height()) + 3
 
         return y
 
@@ -198,15 +202,19 @@ class InventoryUI:
 
         # Equipment slots in a row
         equipment = [
-            ("Sword", player.sword_image, player.sword_power),
-            ("Shield", player.shield_image, player.shield_power),
-            ("Head", player.head_image, None),
-            ("Body", player.body_image, None),
+            ("Sword", "sword", player.sword_image or
+             (f"sword{player.sword_power}.png" if player.sword_power > 0 else ""),
+             player.sword_power),
+            ("Shield", "shield", player.shield_image or
+             (f"shield{player.shield_power}.png" if player.shield_power > 0 else ""),
+             player.shield_power),
+            ("Head", "head", player.head_image, None),
+            ("Body", "body", player.body_image, None),
         ]
 
         slot_x = self.PADDING + 10
         target_size = (self.SLOT_SIZE - 4, self.SLOT_SIZE - 4)
-        for name, image, power in equipment:
+        for name, layer, image, power in equipment:
             # Draw slot background
             pygame.draw.rect(self.overlay, (40, 40, 60),
                            (slot_x, y, self.SLOT_SIZE, self.SLOT_SIZE))
@@ -215,13 +223,14 @@ class InventoryUI:
 
             # Draw equipment image if available
             if image and self.sprite_mgr:
-                sprite = self.sprite_mgr.load_sheet(image)
+                sprite = self.sprite_mgr.get_sprite(
+                    image, *PLAYER_EQUIPMENT_PREVIEW_RECTS[layer])
                 if sprite:
                     # Scale to fit slot (cached per equipment image name +
                     # target size — NOT id(sprite): the sprite manager can
                     # free/reallocate sheet surfaces, so a stale id() could
                     # alias a freed surface onto an unrelated image).
-                    scale_key = (image, target_size)
+                    scale_key = (image, PLAYER_EQUIPMENT_PREVIEW_RECTS[layer], target_size)
                     scaled = self._sprite_scale_cache.get(scale_key)
                     if scaled is None:
                         if len(self._sprite_scale_cache) > 100:

@@ -35,22 +35,29 @@ from .constants import (
 def day_night_tint(minute_of_day):
     """Return the ambient overlay tint for a minute in the daily cycle."""
     minute = minute_of_day % 1440
-    night = (10, 10, 45, 110)
-    day = (10, 10, 45, 0)
-
-    if 420 <= minute < 1140:
+    # The duplicated midnight endpoints make this a simple linear curve while
+    # retaining a distinct dusk, deep-night plateau, and pink-violet dawn.
+    keyframes = (
+        (0, (5, 5, 35, 155)),
+        (240, (5, 5, 35, 155)),
+        (300, (180, 80, 120, 65)),
+        (330, (205, 105, 135, 42)),
+        (420, (220, 140, 150, 0)),
+        (1080, (255, 120, 55, 0)),
+        (1170, (255, 120, 55, 38)),
+        (1200, (235, 120, 45, 42)),
+        (1320, (10, 10, 45, 110)),
+        (1440, (5, 5, 35, 155)),
+    )
+    if 420 <= minute <= 1080:
         return None
-    if 1260 <= minute or minute < 300:
-        return night
-    if 1140 <= minute < 1260:
-        progress = (minute - 1140) / 120
-        return tuple(round(start + (end - start) * progress)
-                     for start, end in zip(day, night))
-
-    progress = (minute - 300) / 120
-    tint = tuple(round(start + (end - start) * progress)
-                 for start, end in zip(night, day))
-    return tint if tint[3] else None
+    for (start_minute, start), (end_minute, end) in zip(keyframes, keyframes[1:]):
+        if start_minute <= minute <= end_minute:
+            progress = (minute - start_minute) / (end_minute - start_minute)
+            tint = tuple(round(a + (b - a) * progress)
+                         for a, b in zip(start, end))
+            return tint if tint[3] else None
+    return None
 
 
 class EffectsRenderMixin:
@@ -553,7 +560,8 @@ class EffectsRenderMixin:
             minute_of_day = ((server_time * 5) // 60) % 1440
             ambient = day_night_tint(minute_of_day)
             if ambient and ambient[3] > 0:
-                color = tuple(round(channel / 4) * 4 for channel in ambient)
+                # /4 quantization can round 255 up to 256 — clamp back into range.
+                color = tuple(min(255, round(channel / 4) * 4) for channel in ambient)
                 cache_key = (size, color)
                 if cache_key != getattr(self, '_day_night_overlay_key', None):
                     self._day_night_overlay_key = cache_key

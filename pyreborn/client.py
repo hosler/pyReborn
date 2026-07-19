@@ -35,6 +35,7 @@ from .packets import (
     parse_bigmap,
     parse_board_layer,
     parse_npc_props,
+    parse_npc_showimgs,
     parse_player_props,
     parse_playerwarp,
     parse_playerwarp2,
@@ -154,6 +155,7 @@ def _build_handled_plo_ids() -> set:
         "PLO_PRIVATEMESSAGE", "PLO_BADDYPROPS", "PLO_BOARDPACKET", "PLO_RAWDATA",
         "PLO_FILE", "PLO_FILESENDFAILED", "PLO_NEWWORLDTIME", "PLO_PLAYERWARP",
         "PLO_PLAYERWARP2", "PLO_LEVELLINK", "PLO_NPCPROPS", "PLO_OTHERPLPROPS",
+        "PLO_SHOWIMGNPC",
         "PLO_LEVELCHEST", "PLO_DISCMESSAGE", "PLO_LEVELSIGN", "PLO_EXPLOSION",
         "PLO_HITOBJECTS", "PLO_MINIMAP", "PLO_BOARDLAYER", "PLO_GHOSTMODE",
         "PLO_WARPFAILED",
@@ -2917,6 +2919,22 @@ class Client:
                     # in from wherever a stale same-id visual entry sits.
                     self._mark_npc_pos_snap(props)
                     self.npcs[npc_id] = props
+
+        # Server-owned GS1 showimg layers. Updates are sparse and mutate the
+        # same npc['imgs'] records used by locally interpreted GS1 commands.
+        elif packet_id == PacketID.PLO_SHOWIMGNPC:
+            info = parse_npc_showimgs(data)
+            npc_id = info.get('npc_id')
+            if npc_id is not None:
+                npc = self.npcs.setdefault(npc_id, {})
+                imgs = npc.setdefault('imgs', {})
+                if info['clear']:
+                    imgs.clear()
+                for index, changes in info['records'].items():
+                    rec = imgs.setdefault(index, {})
+                    rec.update(changes)
+                    rec.setdefault('screen', False)
+                    rec.setdefault('vis', 4)
 
         # NPC deleted
         elif packet_id == PLO_NPCDEL:

@@ -33,6 +33,9 @@ for _enum, _prefix in ((PLO, "PLO_"), (PLI, "PLI_")):
         setattr(PacketID, _prefix + _member.name, int(_member))
 del _enum, _prefix, _member
 
+# Not present in the shared beta4 enum; used by the GS1 server showimg stream.
+PacketID.PLO_SHOWIMGNPC = 166
+
 
 # =============================================================================
 # Player property parsing helpers
@@ -235,6 +238,69 @@ def _parse_with_colors_retry(run_once, colors_len: int):
 # =============================================================================
 # Packet Parsers
 # =============================================================================
+
+def parse_npc_showimgs(data: bytes) -> dict:
+    """Parse PLO_SHOWIMGNPC (166) into NPC showimg layer updates."""
+    def read_gchar(position):
+        if position >= len(data):
+            return None, len(data)
+        return data[position] - 32, position + 1
+
+    npc_id, pos = _read_gbyte(data, 0, 3)
+    result = {'npc_id': npc_id, 'clear': False, 'records': {}}
+    current = None
+    while pos < len(data):
+        selector = data[pos] - 32
+        pos += 1
+        if selector == 9:
+            result['clear'] = True
+            current = None
+            continue
+        if selector >= 10:
+            index = selector - 10
+            current = result['records'].setdefault(index, {}) if index <= 199 else None
+            continue
+        if current is None:
+            break
+        if selector == 0:
+            value, pos = _read_string(data, pos)
+            if value is not None:
+                current['image'] = value
+        elif selector in (1, 2, 3, 6, 8):
+            value, pos = read_gchar(pos)
+            if value is None:
+                break
+            key = {1: 'x', 2: 'y', 3: 'vis', 6: 'zoom', 8: 'mode'}[selector]
+            current[key] = value / 2.0 if selector in (1, 2) else (
+                value / 10.0 if selector == 6 else value)
+        elif selector == 4:
+            enabled, pos = read_gchar(pos)
+            if enabled is None:
+                break
+            if not enabled:
+                current['part'] = None
+            else:
+                x, pos = _read_gbyte(data, pos, 2)
+                y, pos = _read_gbyte(data, pos, 2)
+                width, pos = read_gchar(pos)
+                height, pos = read_gchar(pos)
+                current['part'] = (x, y, width, height)
+        elif selector == 5:
+            values = []
+            for _ in range(4):
+                value, pos = read_gchar(pos)
+                values.append(value)
+            if None in values:
+                break
+            current['colors'] = tuple(value / 200.0 for value in values)
+        elif selector == 7:
+            value, pos = read_gchar(pos)
+            if value is None:
+                break
+            current['z'] = value - 50
+        else:
+            break
+    return result
 
 def parse_level_name(data: bytes) -> str:
     """Parse PLO_LEVELNAME (packet 6) - returns level name"""
