@@ -240,7 +240,11 @@ class LevelObjectsRenderMixin:
         py = self.client.player.y + 2.5 - origin_y
 
         for (sx, sy), text in signs.items():
-            if abs(px - sx) < 2 and abs(py - sy) < 2:
+            # Compare against the sign TILE CENTRE (+0.5): flush against a
+            # blocking sign the feet sample sits exactly 2.0 tiles from the
+            # anchor, so an anchor-based `< 2` misses at the only distance a
+            # walking player can actually reach.
+            if abs(px - (sx + 0.5)) < 2 and abs(py - (sy + 0.5)) < 2:
                 self._render_sign_popup(text)
                 break  # Only show one sign at a time
     def _render_sign_popup(self, text: str):
