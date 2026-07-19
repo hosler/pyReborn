@@ -133,9 +133,23 @@ class MultiBotTest:
                 break
 
         if found and found_player_data:
-            # Verify position is close
-            px = found_player_data.get('x', 0)
-            py = found_player_data.get('y', 0)
+            # found_player_data['x']/['y'] are LEVEL-LOCAL (0-63) - client.py's
+            # PLO_OTHERPLPROPS handler always normalizes other players' x/y to
+            # that frame - while target_x/target_y are WORLD (bot0.x/bot0.y,
+            # and GameBot.x/.y return client.x/.y, which are WORLD on a gmap
+            # per PLO_PLAYERWARP2's handler). Comparing them directly flagged
+            # every multi_visibility run on a gmap world as a "position
+            # desync" even when bot1 saw bot0 exactly where it stood. Prefer
+            # the wire's own world_x/world_y when present (came straight off
+            # X2/Y2), else derive it via bot1's own segment offset (bot1 only
+            # keeps players in bot1.players that share bot1's level - see the
+            # JOINLEAVELVL handling in client.py's PLO_OTHERPLPROPS handler).
+            px = found_player_data.get('world_x')
+            py = found_player_data.get('world_y')
+            if px is None or py is None:
+                px, py = BugDetector.to_world_pos(
+                    found_player_data.get('x', 0), found_player_data.get('y', 0),
+                    bot1.level, bot1.client.gmap_grid)
             result = BugDetector.check_position_sync(
                 type('obj', (), {'x': px, 'y': py})(),
                 target_x, target_y, tolerance=5.0  # More tolerant for sync delay

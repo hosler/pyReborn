@@ -114,18 +114,18 @@ def _pump_on_level_change(bot):
 def _current_links(bot, limit=10):
     """Dedupe + return the link rects for the level the bot is actually on.
 
-    Two things bite here if you read c.links.get(...) raw:
     - client._current_level_name is not reliable as "the bot's level" on a
       GMAP (see GameBot._resolve_level_name's docstring) - use bot.level,
       which is derived from the bot's world position instead.
-    - client.links[level] accumulates duplicate entries: re-entering a level
-      you've already visited (e.g. crossing a GMAP segment boundary out and
-      back) makes the server re-stream that level's full data, and
-      client.py's PLO_LEVELLINK handler appends without checking for an
-      existing identical entry. Confirmed live: cross chicken1.nw ->
-      chicken7.nw -> chicken1.nw and chicken1's own links list gains a
-      second copy of one of its doors. Dedupe here at the point the daemon
-      serializes them rather than in client.py (shared/owned elsewhere).
+    - client.links[level] used to accumulate duplicate entries on revisit
+      (re-entering a level - e.g. crossing a GMAP segment boundary out and
+      back - makes the server re-stream that level's full data, and
+      client.py's PLO_LEVELLINK handler appended without checking for an
+      existing identical entry; confirmed live: cross chicken1.nw ->
+      chicken7.nw -> chicken1.nw and chicken1's own links list gained a
+      second copy of one of its doors). client.py now dedupes at insertion,
+      so this is a defensive no-op kept for the size-limiting/serialization
+      shape rather than as the primary fix.
     """
     c = bot.client
     seen = {}

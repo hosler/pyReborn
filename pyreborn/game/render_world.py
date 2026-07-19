@@ -312,6 +312,12 @@ class WorldRenderMixin:
 
         surf = entry['surface']
         surf_w, surf_h = surf.get_size()
+        # Drop every animated-index entry inside the patched rect up front -
+        # simpler than diffing per-cell, and the rect is re-populated below
+        # from the freshly-patched tile data so nothing is lost.
+        animated = entry['animated']
+        animated[:] = [(atx, aty, aid) for (atx, aty, aid) in animated
+                        if not (x <= atx < x + w and y <= aty < y + h)]
         for row in range(h):
             ty = y + row
             if ty < 0 or ty >= 64:
@@ -326,6 +332,14 @@ class WorldRenderMixin:
                 tile_id = tiles[ty * 64 + tx]
                 tile = self.tileset_mgr.get_tile_or_color(tile_id)
                 surf.blit(tile, (dest_x, dest_y))
+                if get_tile_type(tile_id) in self._ANIMATED_TILE_TYPES:
+                    animated.append((tx, ty, tile_id))
+
+        # _refresh_animated_tiles_cache keys off id(entry['surface']), which
+        # doesn't change for an in-place patch like this one - force it to
+        # re-fold so the animated-index edit above actually reaches the
+        # per-frame shimmer list instead of being masked by a stale key hit.
+        self._animated_tiles_key = None
 
     # Tier 4a: tile types eligible for the water/lava shimmer.
     _ANIMATED_TILE_TYPES = (TileType.WATER, TileType.NEAR_WATER,

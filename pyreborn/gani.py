@@ -5,10 +5,18 @@ Parses GANI animation (.gani) files and provides an animation state machine
 for rendering animated sprites.
 """
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, Callable
 import re
+
+# Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
+# per-segment surface cache and sprites.py's sheet/sprite caches. A real
+# session's distinct ganis (player/NPC/baddy/weapon animations) rarely
+# exceeds a few hundred, but nothing stops a long crawl through many custom
+# NPCs/weapons from growing this unbounded otherwise.
+_MAX_CACHED_GANIS = 500
 
 
 @dataclass
@@ -83,7 +91,7 @@ class GaniParser:
     def __init__(self, search_paths: Optional[List[Path]] = None):
         """Initialize parser with optional search paths for gani files."""
         self.search_paths = search_paths or []
-        self.cache: Dict[str, Gani] = {}
+        self.cache: "OrderedDict[str, Gani]" = OrderedDict()
 
     def add_search_path(self, path: Path):
         """Add a search path for finding gani files."""
@@ -108,11 +116,21 @@ class GaniParser:
 
         return None
 
+    def put_cache(self, name: str, gani: Optional[Gani]):
+        """Store a parsed gani under `name` (bare, no .gani suffix expected)
+        and evict the least-recently-used entry if that pushes the cache over
+        _MAX_CACHED_GANIS. Used both by parse() below and by callers that
+        parse server-streamed gani bytes directly (game/setup.py's on_file)."""
+        self.cache[name] = gani
+        while len(self.cache) > _MAX_CACHED_GANIS:
+            self.cache.popitem(last=False)
+
     def parse(self, name: str) -> Optional[Gani]:
         """Parse a gani file by name, using cache if available."""
         # Check cache
         cache_key = name.replace('.gani', '')
         if cache_key in self.cache:
+            self.cache.move_to_end(cache_key)
             return self.cache[cache_key]
 
         # Find file
@@ -123,7 +141,7 @@ class GaniParser:
         # Parse file
         gani = self.parse_file(file_path)
         if gani:
-            self.cache[cache_key] = gani
+            self.put_cache(cache_key, gani)
         return gani
 
     def parse_file(self, file_path: Path) -> Optional[Gani]:

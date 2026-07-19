@@ -498,9 +498,12 @@ class EntityRenderMixin:
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
             # Entity position (x, y) is TOP-LEFT of sprite bounding box.
-            # Feet/shadow are at BOTTOM-CENTER: +1 tile right, +3 tiles down.
+            # Feet/shadow are at the standing point: +1 tile right, +2.5
+            # tiles down (collision.py's PLAYER_FEET_DX/DY - the point
+            # chairs/pickups/signs interact against), not the box's bottom
+            # edge (+3 tiles).
             feet_x = x + TILE_SIZE
-            feet_y = y + TILE_SIZE * 3
+            feet_y = y + TILE_SIZE * 2.5
 
             # Current position marker (red dot at feet)
             pygame.draw.circle(self.screen, (255, 0, 0), (int(feet_x), int(feet_y)), 4)
@@ -517,7 +520,7 @@ class EntityRenderMixin:
 
             # Tile grid around player feet
             feet_world_x = self.client.x + 1.0
-            feet_world_y = self.client.y + 3.0
+            feet_world_y = self.client.y + 2.5
             tile_offset_x = (feet_world_x - int(feet_world_x)) * TILE_SIZE
             tile_offset_y = (feet_world_y - int(feet_world_y)) * TILE_SIZE
             for ty in range(-3, 2):

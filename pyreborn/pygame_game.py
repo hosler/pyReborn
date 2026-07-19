@@ -425,13 +425,13 @@ class GameClient(
             self._update_swimming_state()
 
             # Update visual position (smooth interpolation)
-            self._update_visual_position(dt)
+            self._update_visual_position(self._frame_dt)
 
             # Update animations
-            self._update_animations(dt)
+            self._update_animations(self._frame_dt)
 
             # Update and render projectiles (needs dt for movement)
-            self._last_dt = dt
+            self._last_dt = self._frame_dt
 
             # Render
             self._render()

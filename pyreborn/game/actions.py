@@ -198,11 +198,17 @@ class ActionsMixin:
         if not signs:
             return None
 
+        # Touch points are world coords (matter in a GMAP); sign keys are
+        # level-local, so fold via a signed offset from the current
+        # segment's grid origin — same helper/pattern as render_objects.py's
+        # _check_and_render_signs. A raw %64 wrap snaps a touch point just
+        # past a segment's edge back to a low local value, missing near-edge
+        # signs and falsely matching signs on the level's opposite edge.
+        origin_x, origin_y = self._current_segment_origin()
+
         player = self.client.player
         for tx, ty in self._touch_points(player.direction):
-            # Touch points are world coords (matter in a GMAP); sign keys are
-            # level-local, so wrap the same way render_objects.py does.
-            lx, ly = tx % 64, ty % 64
+            lx, ly = tx - origin_x, ty - origin_y
             for (sx, sy), text in signs.items():
                 if abs(lx - sx) < 1.5 and abs(ly - sy) < 1.5:
                     return text
@@ -406,7 +412,11 @@ class ActionsMixin:
         if not chests:
             return None
         for tx, ty in self._touch_points(self.client.player.direction):
-            ftx, fty = math.floor(tx), math.floor(ty)
+            # Touch points are world coords (matter in a GMAP); chest keys
+            # are level-local (0-63), so fold to the current segment's local
+            # frame the same way collision.py's _chest_blocks does — else
+            # chests off the origin segment are never found here.
+            ftx, fty = self._world_to_level_local(tx, ty)
             for (cx, cy) in chests:
                 if cx <= ftx <= cx + 1 and cy <= fty <= cy + 1:
                     return (cx, cy)

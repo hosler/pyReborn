@@ -2728,7 +2728,15 @@ class Client:
             if link and level_for_link:
                 if level_for_link not in self.links:
                     self.links[level_for_link] = []
-                self.links[level_for_link].append(link)
+                # Re-entering a level the server has already streamed us
+                # (e.g. crossing a GMAP segment boundary out and back)
+                # re-sends every PLO_LEVELLINK for that level, and this
+                # handler used to append unconditionally - links list grew
+                # a duplicate per revisit. Identity here is the parsed
+                # fields themselves (dest/rect), matching how callers
+                # de-duplicate downstream (see playtest_daemon._current_links).
+                if link not in self.links[level_for_link]:
+                    self.links[level_for_link].append(link)
 
         # NPC properties
         elif packet_id == PacketID.PLO_NPCPROPS:

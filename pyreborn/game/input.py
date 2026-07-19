@@ -180,7 +180,13 @@ class InputMixin:
     def _handle_key_press(self, event):
         """Handle single key press events."""
         if event.key == K_ESCAPE:
-            self.running = False
+            # Consistent with the other modal overlays (PM/player-list/server
+            # -list/chat all close on Escape instead of quitting): close the
+            # inventory first rather than falling through to quit the app.
+            if self.inventory_ui.visible:
+                self.inventory_ui.toggle()
+            else:
+                self.running = False
 
         elif event.key == K_RETURN:
             self.typing = True
@@ -410,7 +416,7 @@ class InputMixin:
         if a_held and (dx != 0 or dy != 0):
             fresh = any(self.key_just_pressed.get(k, False)
                         for k in (K_a, K_UP, K_DOWN, K_LEFT, K_RIGHT))
-            if fresh:
+            if fresh and current_time - self.last_action_time > self.action_delay:
                 self._try_pickup(dx, dy)
                 self.last_action_time = current_time
             return

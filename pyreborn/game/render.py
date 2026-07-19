@@ -253,15 +253,25 @@ class RenderMixin:
     def _render_scene_zoomed(self, zoom: float):
         """Render the world layer at 1:1 into a smaller offscreen surface, then
         scale it onto the canvas. One scale here zooms every world-space draw
-        uniformly, so the per-sprite blits don't each need a zoom factor."""
+        uniformly, so the per-sprite blits don't each need a zoom factor.
+
+        The scratch surface + scene camera are cached and only reallocated
+        when their size actually changes (zoom level or window resize) -
+        otherwise this ran a fresh Surface allocation + transform.scale
+        every single frame while zoomed."""
         sw = math.ceil(self.screen_w / zoom)
         sh = math.ceil(self.screen_h / zoom)
-        scene = pygame.Surface((sw, sh))
+        cache_key = (sw, sh, self.camera.tile_size)
+        if cache_key != getattr(self, '_zoom_scene_key', None):
+            self._zoom_scene_key = cache_key
+            self._zoom_scene_surface = pygame.Surface((sw, sh))
+            self._zoom_scene_cam = Camera2D(sw, sh, self.camera.tile_size)
+        scene = self._zoom_scene_surface
         scene.fill((0, 0, 0))
 
-        # Swap in a 1:1 camera centered where the real one is, sized to the scene.
+        # Swap in the cached 1:1 camera, re-centered where the real one is.
         canvas, real_cam = self.screen, self.camera
-        scene_cam = Camera2D(sw, sh, self.camera.tile_size)
+        scene_cam = self._zoom_scene_cam
         scene_cam.set_center(*real_cam.center)
         self.screen, self.camera = scene, scene_cam
         try:
@@ -269,9 +279,10 @@ class RenderMixin:
         finally:
             self.screen, self.camera = canvas, real_cam
 
-        # Nearest-neighbour scale keeps the pixel art crisp.
-        self.screen.blit(pygame.transform.scale(scene, (self.screen_w, self.screen_h)),
-                         (0, 0))
+        # Nearest-neighbour scale directly into self.screen (same size as
+        # (self.screen_w, self.screen_h) by construction) - skips allocating
+        # a fresh scaled Surface every frame just to blit-and-discard it.
+        pygame.transform.scale(scene, (self.screen_w, self.screen_h), self.screen)
     def _world_to_screen(self, world_x: float, world_y: float) -> Tuple[float, float]:
         """Convert world (render-frame) tile coordinates to screen pixels.
 

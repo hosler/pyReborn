@@ -217,8 +217,11 @@ class InventoryUI:
             if image and self.sprite_mgr:
                 sprite = self.sprite_mgr.load_sheet(image)
                 if sprite:
-                    # Scale to fit slot (cached per sprite identity + target size)
-                    scale_key = (id(sprite), target_size)
+                    # Scale to fit slot (cached per equipment image name +
+                    # target size — NOT id(sprite): the sprite manager can
+                    # free/reallocate sheet surfaces, so a stale id() could
+                    # alias a freed surface onto an unrelated image).
+                    scale_key = (image, target_size)
                     scaled = self._sprite_scale_cache.get(scale_key)
                     if scaled is None:
                         if len(self._sprite_scale_cache) > 100:

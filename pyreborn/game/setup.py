@@ -152,8 +152,8 @@ class SetupMixin:
                 # missing-asset placeholder. Keyed by the bare name (no .gani).
                 name = filename[:-5] if filename.lower().endswith('.gani') else filename
                 try:
-                    self.gani_parser.cache[name] = self.gani_parser.parse_content(
-                        data.decode('latin-1'), name)
+                    self.gani_parser.put_cache(
+                        name, self.gani_parser.parse_content(data.decode('latin-1'), name))
                 except Exception:
                     pass
             elif self.sound_mgr.is_music(filename):
@@ -457,8 +457,15 @@ class SetupMixin:
         def on_tiledef(block, image):
             if block is None:
                 self.tileset_mgr.clear_tiledefs()
+                self.world_surface = None
                 return
             self.tileset_mgr.set_tiledef(block, image)
+            # tileset_mgr's tile_cache is cleared above, but the baked
+            # per-segment surfaces in render_world.py's _segments() cache
+            # are keyed off tiles_id/layers_snapshot only - a tiledef swap
+            # doesn't touch either, so they'd keep returning stale bakes
+            # from the old tileset. Force a full rebuild.
+            self.world_surface = None
             if not self.sprite_mgr.has_sheet(image):
                 try:
                     self.client.request_file(image)
@@ -610,6 +617,23 @@ class SetupMixin:
             cache = getattr(self, attr, None)
             if isinstance(cache, dict):
                 cache.clear()
+        # Combat effects are level-local (bomb/arrow/thrown-object flight,
+        # break bursts) — carrying them across a warp let a bomb armed in the
+        # old level keep ticking (and eventually exploding) on top of the
+        # new one.
+        for attr in ('active_projectiles', 'thrown_objects', 'active_bombs',
+                     'active_bomb_explosions', 'break_effects'):
+            effects = getattr(self, attr, None)
+            if isinstance(effects, list):
+                effects.clear()
+        # First-seen timestamps for server-relayed bombs (used to derive
+        # local fuse-flash/explosion timing from client.bombs, which carries
+        # no 'time' field) are keyed by bomb position -- a key re-used by an
+        # unrelated bomb in the new level must not inherit a fuse clock that
+        # was already ticking in the old one.
+        seen = getattr(self, '_server_bomb_seen', None)
+        if isinstance(seen, dict):
+            seen.clear()
         self.visual_x, self.visual_y = self.client.x, self.client.y
         self.world_surface = None
         self._gs1_level = lvl

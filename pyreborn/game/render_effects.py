@@ -520,16 +520,28 @@ class EffectsRenderMixin:
 
     def _render_screen_tint(self):
         """Tier 3d: fullscreen tint from a GS1 `seteffect r,g,b,a` (wired in
-        game/setup.py's on_seteffect). Drawn under the HUD, over the world."""
+        game/setup.py's on_seteffect). Drawn under the HUD, over the world.
+
+        The overlay Surface is cached and only refilled/reallocated when the
+        tint color/alpha or the target size (self.screen - the real canvas,
+        or the smaller scene surface while zoomed) actually changes, instead
+        of allocating a fresh full-screen SRCALPHA surface every tinted frame."""
         tint = self.screen_tint
         if not tint:
             return
-        a = tint.get('a', 0)
+        a = min(255, tint.get('a', 0))
         if a <= 0:
             return
-        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((tint.get('r', 0), tint.get('g', 0), tint.get('b', 0), min(255, a)))
-        self.screen.blit(overlay, (0, 0))
+        size = self.screen.get_size()
+        color = (tint.get('r', 0), tint.get('g', 0), tint.get('b', 0), a)
+        cache_key = (size, color)
+        if cache_key != getattr(self, '_tint_overlay_key', None):
+            self._tint_overlay_key = cache_key
+            overlay = getattr(self, '_tint_overlay_surface', None)
+            if overlay is None or overlay.get_size() != size:
+                overlay = self._tint_overlay_surface = pygame.Surface(size, pygame.SRCALPHA)
+            overlay.fill(color)
+        self.screen.blit(self._tint_overlay_surface, (0, 0))
 
     def _render_server_explosions(self):
         """Render explosions received from server (PLO_EXPLOSION packets)."""

@@ -5,6 +5,7 @@ Handles loading, caching, and extracting sprites from sprite sheets.
 Works with pygame surfaces.
 """
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import os
@@ -77,6 +78,18 @@ def palette_index_to_rgb(index) -> Tuple[int, int, int]:
     return REBORN_PALETTE_RGB.get(name, (255, 255, 255))
 
 
+# Bounds on the below caches, same LRU-eviction idea as render_world.py's
+# per-segment surface cache: a long play session (many downloaded NPC/baddy
+# sheets, many player recolors) must not accumulate surfaces forever. Sized
+# generously above what a normal session touches at once - sheets/recolored
+# sheets are whole images (worth capping tighter), sprites/recolored sprites
+# are small sub-surface cuts (cheaper individually, so a bigger cap).
+_MAX_CACHED_SHEETS = 300
+_MAX_CACHED_SPRITES = 4000
+_MAX_CACHED_RECOLOR_SHEETS = 150
+_MAX_CACHED_RECOLOR_SPRITES = 4000
+
+
 class SpriteManager:
     """Manages loading and caching of sprite sheets."""
 
@@ -91,12 +104,15 @@ class SpriteManager:
             raise RuntimeError("pygame is required for SpriteManager")
 
         self.search_paths = search_paths or []
-        self.sheet_cache: Dict[str, pygame.Surface] = {}
-        self.sprite_cache: Dict[Tuple[str, int, int, int, int], pygame.Surface] = {}
+        # OrderedDicts so recently-used entries can be pushed to the end and
+        # stale ones evicted from the front once the matching _MAX_CACHED_*
+        # bound is exceeded (see _evict_lru).
+        self.sheet_cache: "OrderedDict[str, pygame.Surface]" = OrderedDict()
+        self.sprite_cache: "OrderedDict[Tuple[str, int, int, int, int], pygame.Surface]" = OrderedDict()
         # Tier 2a: palette-swapped body sheets/sprites, cached per (image,
         # colors-tuple) so a re-render doesn't re-run the pixel remap.
-        self._recolor_sheet_cache: Dict[Tuple[str, Tuple[int, ...]], Optional[pygame.Surface]] = {}
-        self._recolor_sprite_cache: Dict[tuple, Optional[pygame.Surface]] = {}
+        self._recolor_sheet_cache: "OrderedDict[Tuple[str, Tuple[int, ...]], Optional[pygame.Surface]]" = OrderedDict()
+        self._recolor_sprite_cache: "OrderedDict[tuple, Optional[pygame.Surface]]" = OrderedDict()
         # normalized-colors-tuple cache for get_sprite_recolored/recolor_body,
         # keyed by id(colors) - see _colors_key().
         self._colors_key_cache: Dict[int, Tuple[list, Tuple[int, ...]]] = {}
@@ -104,6 +120,12 @@ class SpriteManager:
         # Subdirectories to search within each path
         self.subdirs = ['', 'bodies', 'heads', 'swords', 'shields', 'hats',
                         'images', 'sprites', 'ganis', 'npcs', 'baddies', 'bomys']
+
+    @staticmethod
+    def _evict_lru(cache: "OrderedDict", max_size: int):
+        """Drop least-recently-used entries once `cache` exceeds `max_size`."""
+        while len(cache) > max_size:
+            cache.popitem(last=False)
 
     def add_search_path(self, path: Path):
         """Add a search path for finding sprite images."""
@@ -141,6 +163,7 @@ class SpriteManager:
         """
         # Check cache (a cached None is a remembered miss — see below)
         if name in self.sheet_cache:
+            self.sheet_cache.move_to_end(name)
             return self.sheet_cache[name]
 
         # Find file
@@ -150,6 +173,7 @@ class SpriteManager:
             # (huge cost with many NPCs whose images are still downloading). When
             # the file arrives, on_file -> load_bytes overwrites this None.
             self.sheet_cache[name] = None
+            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return None
 
         # Load image
@@ -161,10 +185,12 @@ class SpriteManager:
             else:
                 surface = surface.convert()
             self.sheet_cache[name] = surface
+            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
         except Exception as e:
             print(f"Error loading sprite sheet {name}: {e}")
             self.sheet_cache[name] = None   # don't retry an unloadable file each frame
+            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return None
 
     def has_sheet(self, name: str) -> bool:
@@ -187,10 +213,12 @@ class SpriteManager:
             else:
                 surface = surface.convert()
             self.sheet_cache[name] = surface
+            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
         except Exception as e:
             print(f"Error loading downloaded sheet {name}: {e}")
             self.sheet_cache[name] = None   # remember the miss; stop retrying
+            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return None
 
     def get_sprite(self, sheet_name: str, x: int, y: int,
@@ -211,6 +239,7 @@ class SpriteManager:
         # Check sprite cache
         cache_key = (sheet_name, x, y, width, height)
         if cache_key in self.sprite_cache:
+            self.sprite_cache.move_to_end(cache_key)
             return self.sprite_cache[cache_key]
 
         # Load sheet
@@ -234,6 +263,7 @@ class SpriteManager:
             # Create subsurface
             sprite = sheet.subsurface((x, y, width, height)).copy()
             self.sprite_cache[cache_key] = sprite
+            self._evict_lru(self.sprite_cache, _MAX_CACHED_SPRITES)
             return sprite
         except Exception as e:
             print(f"Error extracting sprite from {sheet_name} at ({x},{y},{width},{height}): {e}")
@@ -276,6 +306,7 @@ class SpriteManager:
             return None
         key = (sheet_name, self._colors_key(colors))
         if key in self._recolor_sheet_cache:
+            self._recolor_sheet_cache.move_to_end(key)
             return self._recolor_sheet_cache[key]
 
         base = self.load_sheet(sheet_name)
@@ -292,6 +323,7 @@ class SpriteManager:
         finally:
             del arr
         self._recolor_sheet_cache[key] = surf
+        self._evict_lru(self._recolor_sheet_cache, _MAX_CACHED_RECOLOR_SHEETS)
         return surf
 
     def get_sprite_recolored(self, sheet_name: str, colors, x: int, y: int,
@@ -304,6 +336,7 @@ class SpriteManager:
 
         cache_key = (sheet_name, self._colors_key(colors), x, y, width, height)
         if cache_key in self._recolor_sprite_cache:
+            self._recolor_sprite_cache.move_to_end(cache_key)
             return self._recolor_sprite_cache[cache_key]
 
         sheet = self.recolor_body(sheet_name, colors)
@@ -321,6 +354,7 @@ class SpriteManager:
         except Exception:
             return None
         self._recolor_sprite_cache[cache_key] = sprite
+        self._evict_lru(self._recolor_sprite_cache, _MAX_CACHED_RECOLOR_SPRITES)
         return sprite
 
     def clear_cache(self):

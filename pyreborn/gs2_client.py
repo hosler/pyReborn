@@ -94,10 +94,17 @@ class _PlayerObject(GS2Object):
     def get(self, key: str) -> Any:
         key = key.lower()
         cl = self._rt2.client
+        # WORLD-frame tile position (local + segment*64 on a gmap), matching
+        # GServer-v2's scriptParameters "x"/"y" binding (Character::
+        # getTilePosition = mapX*64 + local, shared by GS1's playerx/playery
+        # and GS2's player.x/player.y - GS1Variables.cpp builds "player"+name
+        # straight off the same scriptParameters map).
+        # client.x/y (self.player.x/y) are already stored world-frame in
+        # pyReborn (see client.py's gmap warp/spawn code), so no folding here.
         if key == "x":
-            return float(getattr(cl, "x", 0)) % 64 if cl else 0.0
+            return float(getattr(cl, "x", 0)) if cl else 0.0
         if key == "y":
-            return float(getattr(cl, "y", 0)) % 64 if cl else 0.0
+            return float(getattr(cl, "y", 0)) if cl else 0.0
         p = self._player()
         if p is not None:
             if key in _PLAYER_MEMBER_ATTR:
@@ -111,8 +118,10 @@ class _PlayerObject(GS2Object):
         key = key.lower()
         p = self._player()
         if key in ("x", "y") and p is not None:
-            cur = float(getattr(p, key, 0))
-            setattr(p, key, (int(cur) // 64) * 64 + to_num(value))
+            # p.x/p.y (== client.x/y) are already world-frame - see get()'s
+            # comment - so the assigned value is written straight through,
+            # no re-folding against the current segment's grid origin.
+            setattr(p, key, to_num(value))
             return
         if key == "chat" and self._rt2.gs1 is not None:
             # same path GS1's setplayerprop #c takes (chat bubble + server sync)
@@ -187,13 +196,30 @@ class GS2ClientHost(GS2Host):
         if secs <= 0:
             return
         client = rt2.client
-        if (client is None or not getattr(client, "connected", False)
-                or getattr(client, "_in_update", False) or rt2._sleeping):
-            # No client to pump, or we're inside the packet loop already (an
-            # onAction handler fired from PLO_TRIGGERACTION) or inside another
-            # script's sleep: recursing into update() would re-enter packet
-            # handling, so just wait.
-            time.sleep(min(secs, 0.05))
+        if client is None or not getattr(client, "connected", False) or rt2._sleeping:
+            # No client to pump (disconnected), or we're already inside
+            # another script's sleep() pumping update() further up the
+            # stack: recursing into update() here would re-enter packet
+            # handling, but plain time.sleep() carries no such risk, so wait
+            # out the FULL duration (in bounded slices, never one big block)
+            # instead of truncating it to 50ms.
+            end = time.time() + secs
+            while time.time() < end:
+                time.sleep(min(0.05, end - time.time()))
+            return
+        if getattr(client, "_in_update", False):
+            # Inside client._handle_packet itself (an onAction handler fired
+            # from PLO_TRIGGERACTION): blocking here for the full duration
+            # would stall the socket read loop, and pumping update() would
+            # re-enter packet handling. The VM has no suspension, so the
+            # instructions right after this sleep() run immediately either
+            # way -- defer the unpaid remainder onto this VM's next sleep()
+            # call (chained short in-packet sleeps then catch back up to
+            # real elapsed time) rather than silently dropping it.
+            owed = min(rt2._sleep_debt.get(id(vm), 0.0) + secs, 1.0)
+            wait = min(owed, 0.05)
+            time.sleep(wait)
+            rt2._sleep_debt[id(vm)] = owed - wait
             return
         rt2._sleeping = True
         try:
@@ -221,7 +247,7 @@ class GS2ClientHost(GS2Host):
             return NOT_HANDLED
 
         if name == "settimer":
-            rt2._timeouts[rt2._vm_keys.get(id(vm), ("weapon", vm.name))] = (
+            rt2._timeouts[rt2._timeout_key(vm)] = (
                 max(0.0, to_num(args[0])) if args else 0.0)
             return 0.0
 
@@ -324,12 +350,22 @@ class ClientGS2:
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
         self._vm_keys: Dict[int, tuple] = {}      # id(vm) -> (kind, key)
+        # id(joined-class instance) -> the joiner's own (kind, key). Multiple
+        # weapon/npc VMs can join the same class, each getting its own
+        # instantiated GS2VM over the shared class bytecode (_attach_class);
+        # those instances all carry _vm_keys[id(inst)] == ("class", cname)
+        # for join-detection purposes, but settimer()/timeout resolution
+        # must use the *joiner's* identity or two joiners of one class
+        # clobber each other's single ("class", cname) timeout slot. See
+        # _timeout_key().
+        self._vm_owners: Dict[int, tuple] = {}
         self._pending_joins: Dict[str, List[GS2VM]] = {}
         self._prev_bytecode_cb = None
         # Bytecode that arrived inside the client's packet loop, waiting to
         # be loaded/run from the game loop (see _on_bytecode).
         self._pending_bytecode: List[tuple] = []
         self._sleeping = False                    # a script sleep() is pumping update()
+        self._sleep_debt: Dict[int, float] = {}   # id(vm) -> unpaid in-packet sleep() time
 
     # -- wiring --------------------------------------------------------------
 
@@ -387,9 +423,18 @@ class ClientGS2:
             for joiner in waiting:
                 self._attach_class(joiner, norm_key, vm)
 
-        if kind in ("weapon", "npc") and old is None:
+        if kind in ("weapon", "npc"):
+            # Toplevel runs on every (re)load, not just the first: idiomatic
+            # scripts put join("class") calls in toplevel, and skipping it on
+            # a re-send (e.g. a hot-reloaded/admin-edited weapon) left the
+            # new VM's class attachments permanently empty -- rejoining here
+            # rebuilds them via the same join_class() path the fresh-load
+            # case uses. this. state already carries over via vm.this above,
+            # so a re-send is a continuation of the same object, not a new
+            # one: onCreated (constructor semantics, like GS1's load_weapon
+            # never re-firing an equivalent hook) only fires the first time.
             vm.run_toplevel()
-            if vm.has_function("onCreated"):
+            if old is None and vm.has_function("onCreated"):
                 vm.call("onCreated")
         return vm
 
@@ -433,8 +478,24 @@ class ClientGS2:
         inst = GS2VM(class_vm.container, name=f"class:{cname}", host=self.host)
         inst.this = joiner.this
         inst.thiso = joiner.thiso
+        # ("class", cname) is kept for join-detection (join_class's "already
+        # joined?" scan) and _gs1_ctx -- but a settimer() call executing on
+        # this instance must resolve back to the joiner's own identity (see
+        # _timeout_key), not the shared class name, since every joiner of
+        # `cname` gets its own `inst` here.
         self._vm_keys[id(inst)] = ("class", cname)
+        self._vm_owners[id(inst)] = self._vm_keys.get(id(joiner), ("weapon", joiner.name))
         joiner.joined.append(inst)
+
+    def _timeout_key(self, vm: GS2VM) -> tuple:
+        """The (kind, key) identity a VM's settimer()/onTimeout state files
+        under. A joined-class instance resolves to its joiner's own key
+        (multiple joiners share one class's bytecode but never its timeout
+        slot); a top-level weapon/npc/gani VM resolves to its own key."""
+        owner = self._vm_owners.get(id(vm))
+        if owner is not None:
+            return owner
+        return self._vm_keys.get(id(vm), ("weapon", vm.name))
 
     # -- events --------------------------------------------------------------
 
@@ -503,7 +564,14 @@ class ClientGS2:
 
     def process_timeouts(self, dt: float):
         """Count down each VM's pending timeout and fire onTimeout when it
-        elapses (handlers typically re-arm via settimer/this.timeout)."""
+        elapses (handlers typically re-arm via settimer/this.timeout).
+
+        vm_key here is always a top-level weapon/npc/gani VM's own key --
+        never ("class", cname) -- because settimer()/this.timeout both file
+        under the *joiner's* identity (see _timeout_key), so this always
+        resolves to the actual joiner instance, not the shared class
+        definition. onTimeout may still be defined on a joined class; call()
+        finds it there via has_function()'s joined-VM fallback."""
         self.pump_pending()
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt

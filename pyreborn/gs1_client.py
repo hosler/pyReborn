@@ -131,10 +131,14 @@ class GS1ClientHost(Host):
         player = self._player
         npc = ctx.this_obj
         if player is not None:
+            # World-frame like upstream: Character.h getTilePosition() binds
+            # mapX*64 + local into playerx/playery (same source GS2's player.x
+            # uses). On non-gmap levels world == local, so classic servers
+            # (e.g. Bomber Arena) are unaffected.
             if name == "playerx":
-                return float(getattr(self.rt.client, "x", 0)) % 64
+                return float(getattr(self.rt.client, "x", 0))
             if name == "playery":
-                return float(getattr(self.rt.client, "y", 0)) % 64
+                return float(getattr(self.rt.client, "y", 0))
             if name in PLAYER_ATTR:
                 return _num_or_str(getattr(player, PLAYER_ATTR[name], 0))
             if name == "playeronline":
@@ -159,9 +163,9 @@ class GS1ClientHost(Host):
                 return remaining if remaining > 0 else 0.0
             # carry* flags: pyReborn only models bush/rock/pot lift objects
             # (game/collision.py _get_liftable_name); "rock"/"pot" are the
-            # same objects Reborn's docs call "stone"/"vase". carriesblackstone/
-            # -sign/-npc have no client-side backing (nothing lifts those) and
-            # are intentionally left unimplemented.
+            # same objects Reborn's docs call "stone"/"vase". The remaining
+            # carry flags are defined for script compatibility, but nothing in
+            # this client can currently lift those object types.
             if name == "carrying":
                 return 1.0 if player.is_carrying() else 0.0
             if name == "carriesbush":
@@ -170,6 +174,8 @@ class GS1ClientHost(Host):
                 return 1.0 if player.carried_object_type == "rock" else 0.0
             if name == "carriesvase":
                 return 1.0 if player.carried_object_type == "pot" else 0.0
+            if name in ("carriessign", "carriesblackstone", "carriesnpc"):
+                return 0.0
         if isinstance(npc, dict) and name in NPC_ATTR:
             return _num_or_str(npc.get(NPC_ATTR[name], 0))
         # visible: True unless `hide`/`destroy` cleared it (npc dict has no
@@ -251,13 +257,12 @@ class GS1ClientHost(Host):
             return False
         # playerx/playery: the arena weapons drive movement by assigning these.
         # client.x/y are read-only and resolve to player.x/y, so write the player
-        # handle. Preserve the GMAP segment (the value is the local 0-63 part).
+        # handle. World-frame both ways (matches the getter and upstream), so a
+        # read-modify-write round trip stays consistent on gmap segments.
         if name in ("playerx", "playery"):
             p = self._player
             if p is not None:
-                axis = name[-1]                      # 'x' or 'y'
-                cur = float(getattr(p, axis, 0))
-                setattr(p, axis, (int(cur) // 64) * 64 + to_num(value))
+                setattr(p, name[-1], to_num(value))
                 return True
             return False
         if isinstance(npc, dict) and name in NPC_ATTR:

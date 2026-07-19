@@ -127,23 +127,43 @@ class CollisionMixin:
         name = self.client._current_level_name
         return name, (self.client.levels.get(name) or self.client.tiles)
 
-    def _get_tile_at(self, x: float, y: float) -> int:
-        """Get the tile ID at a given position (in tile coordinates)."""
-        _, tiles = self._level_tiles_at(x, y)
-        if not tiles:
-            return 0  # Default to walkable
-
-        # Convert to tile indices (floor, not int(): int() truncates toward
-        # zero and mis-tiles fractional negatives). Only GMAP world coords get
-        # the %64 localization — on a standalone level an off-board probe must
-        # read as out-of-world (blocking), not wrap to the far column the way
-        # floor(-1.5) % 64 == 63 would (edge lifts/touches sampled the
-        # opposite side of the board).
+    def _world_to_level_local(self, x: float, y: float) -> Tuple[int, int]:
+        """Floor (x, y) to the level-local tile frame (0-63) that per-level
+        state (tiles, chests, ...) is keyed by. Only GMAP world coords get
+        the %64 localization — on a standalone level an off-board probe must
+        read as out-of-world, not wrap to the far column the way
+        floor(-1.5) % 64 == 63 would (edge lifts/touches sampled the
+        opposite side of the board)."""
         tx = math.floor(x)
         ty = math.floor(y)
         if self.client.in_gmap_segment:
             tx %= 64
             ty %= 64
+        return tx, ty
+
+    def _get_tile_at(self, x: float, y: float) -> int:
+        """Get the tile ID at a given position (in tile coordinates)."""
+        _, tiles = self._level_tiles_at(x, y)
+        if not tiles:
+            # No tile data resolves here. A gmap cell with no known segment
+            # at all (a hole in the grid, or straight off its edge) is
+            # genuinely outside the world and must block, matching the
+            # in-board OOB path below -- treating it as walkable let players
+            # walk clean through unstreamed/absent segments. A *known*
+            # segment (or a standalone level) whose board simply hasn't
+            # streamed in yet is different: that's exactly the window right
+            # after connect/warp before PLO_BOARDPACKET arrives, and
+            # blocking it would freeze movement dead at spawn -- stay
+            # walkable there.
+            if self.client.in_gmap_segment:
+                grid = (math.floor(x / 64), math.floor(y / 64))
+                if grid not in self.client.gmap_grid:
+                    return -1  # out of world: blocking, not water/liftable
+            return 0  # Default to walkable
+
+        # Convert to tile indices (floor, not int(): int() truncates toward
+        # zero and mis-tiles fractional negatives).
+        tx, ty = self._world_to_level_local(x, y)
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
             return -1  # out of world: blocking, not water/liftable
 
@@ -241,7 +261,11 @@ class CollisionMixin:
         chests = getattr(self.client, "chests", None)
         if not chests:
             return False
-        tx, ty = math.floor(x), math.floor(y)
+        # Chest keys are level-local (0-63; see client.py's PLO_LEVELCHEST
+        # handler), but (x, y) is world-frame in a GMAP — fold it to the
+        # current segment's local frame the same way tile lookups do, or
+        # chests off the origin segment are never solid.
+        tx, ty = self._world_to_level_local(x, y)
         for (cx, cy) in chests:
             if cx <= tx <= cx + 1 and cy <= ty <= cy + 1:
                 return True

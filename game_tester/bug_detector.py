@@ -34,9 +34,43 @@ class BugDetector:
     # ========== Position Checks ==========
 
     @staticmethod
+    def to_world_pos(x: float, y: float, level: Optional[str],
+                     gmap_grid: Optional[Dict[Tuple[int, int], str]]) -> Tuple[float, float]:
+        """Convert a level-local (0-63) position to gmap world coords.
+
+        Mirrors the `world = local + grid_position * 64` convention used
+        throughout this codebase - see pyreborn/client.py's
+        `_update_npc_world_coords` and `GameBot._resolve_level_name` for the
+        same lookup (level name -> grid cell in gmap_grid). A value that's
+        already world (>=64 or negative - only possible from a high-precision
+        X2/Y2 prop) is passed through unchanged, so this is safe to call on
+        positions that might already be normalized. Returns (x, y) unchanged
+        if `level` isn't in `gmap_grid` (non-gmap, or an unknown segment).
+        """
+        if not gmap_grid or not level:
+            return x, y
+        for (gx, gy), name in gmap_grid.items():
+            if name == level:
+                wx = x if (x >= 64 or x < 0) else x + gx * 64
+                wy = y if (y >= 64 or y < 0) else y + gy * 64
+                return wx, wy
+        return x, y
+
+    @staticmethod
     def check_position_sync(client, expected_x: float, expected_y: float,
                             tolerance: float = 0.5) -> CheckResult:
-        """Check if client position matches expected position."""
+        """Check if client position matches expected position.
+
+        Both `client.x`/`client.y` and `expected_x`/`expected_y` must
+        already be in the SAME coordinate frame (both world, or both
+        level-local) - this check is a plain delta comparison and has no
+        way to detect a frame mismatch on its own. On a gmap, a level-local
+        (0-63) other-player position compared against a world position (as
+        `pyreborn.Client.x`/`.y` are on a gmap - see PLO_PLAYERWARP2's
+        handler) looks like a huge, spurious desync. Callers with a
+        level-local value should normalize it first via `to_world_pos()`
+        (see multi_bot.py's run_visibility_test for the pattern).
+        """
         dx = abs(client.x - expected_x)
         dy = abs(client.y - expected_y)
 

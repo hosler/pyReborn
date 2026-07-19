@@ -28,6 +28,19 @@ _DEFAULT_ITEM_COLOR = (220, 220, 100)
 class LevelObjectsRenderMixin:
     """Mixin providing the above methods for GameClient."""
 
+    def _current_segment_origin(self):
+        """World-tile (x, y) origin (top-left) of the CURRENT level segment:
+        (0, 0) on a standalone level, or the gmap grid cell's origin when in
+        a GMAP. Used to fold level-local (0-63) state (chests, signs) into
+        world coords, or vice versa, without a %64 wraparound -- see
+        _check_and_render_signs / _render_chests."""
+        if self.client.in_gmap_segment:
+            grid = next((g for g, n in self.client.gmap_grid.items()
+                         if n == self.client._current_level_name), None)
+            if grid is not None:
+                return grid[0] * 64, grid[1] * 64
+        return 0, 0
+
     def _get_item_sprite(self, item_type: str) -> pygame.Surface:
         """Build (and cache) a ground-item icon.
 
@@ -136,13 +149,19 @@ class LevelObjectsRenderMixin:
         # Cull against the actual draw surface — while zoomed that's the smaller
         # offscreen scene, not the full canvas, so SCREEN_WIDTH/HEIGHT are wrong.
         surf_w, surf_h = self.screen.get_size()
+        # Chest keys are level-local (0-63; see client.py's PLO_LEVELCHEST
+        # handler); _world_to_screen wants world coords, so add the current
+        # segment's grid origin back on -- else every chest off the origin
+        # gmap segment rendered at its bare local coordinate instead of its
+        # real position.
+        origin_x, origin_y = self._current_segment_origin()
         for (cx, cy), opened in chests.items():
             sprite = self._get_chest_sprite(bool(opened))
             if sprite is None:
                 continue
             # Chest tile (cx, cy) is the top-left of its 2x2 footprint, and the
             # sprite is exactly 2 tiles wide, so it maps straight to that tile.
-            sx, sy = self._world_to_screen(cx, cy)
+            sx, sy = self._world_to_screen(cx + origin_x, cy + origin_y)
             if sx < -sprite.get_width() or sx > surf_w or \
                sy < -sprite.get_height() or sy > surf_h:
                 continue
@@ -153,10 +172,17 @@ class LevelObjectsRenderMixin:
         if not signs:
             return
 
-        # Sign coords are LOCAL (0-63); compare against the player's local feet
-        # position so it works in a GMAP (where player.x/y are world coords).
-        px = (self.client.player.x + 1.0) % 64
-        py = (self.client.player.y + 2.5) % 64
+        # Sign coords are LOCAL (0-63); fold the player's world feet position
+        # to the CURRENT level segment's local frame via a signed offset from
+        # that segment's grid origin, not a raw %64 wrap -- wrapping snaps a
+        # position just past a segment's edge (e.g. world x=64.9 in gmap
+        # segment (0,0)) back to a low local value, making near-edge signs
+        # look far away and signs on the level's opposite edge falsely
+        # trigger.
+        origin_x, origin_y = self._current_segment_origin()
+
+        px = self.client.player.x + 1.0 - origin_x
+        py = self.client.player.y + 2.5 - origin_y
 
         for (sx, sy), text in signs.items():
             if abs(px - sx) < 2 and abs(py - sy) < 2:
