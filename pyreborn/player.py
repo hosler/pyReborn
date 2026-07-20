@@ -49,7 +49,7 @@ class Player:
     # Carrying state
     carry_sprite: int = 0
     carry_npc: int = 0
-    carried_object_type: str = ""  # "bush", "rock", "pot", or "" for none
+    carried_object_type: str = ""  # "bush", "rock", "pot", "sign", or ""
     carried_tile_ids: tuple = ()  # 4 tile IDs for 2x2 object: (tl, tr, bl, br)
     carried_tile_pos: tuple = ()  # Position where object was picked up: (x, y)
 
@@ -141,10 +141,10 @@ class Player:
         return self.carried_object_type != ""
 
     def pickup_object(self, object_type: str, tile_ids: tuple, pos: tuple):
-        """Pick up a 2x2 object (bush, rock, pot).
+        """Pick up a 2x2 liftable object.
 
         Args:
-            object_type: Type of object ("bush", "rock", "pot")
+            object_type: Type of carried object
             tile_ids: Tuple of 4 tile IDs (top-left, top-right, bottom-left, bottom-right)
             pos: Position where object was picked up (x, y)
         """

@@ -24,6 +24,12 @@ from reborn_protocol import BDPROP, BDMODE
 
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
+from .game.constants import (
+    PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
+    PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
+    PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
+    PLAYER_STAND_X, PLAYER_STAND_Y,
+)
 from .packets import (
     PacketID,
     parse_level_name,
@@ -290,6 +296,15 @@ class Client:
         # Destination of a client-initiated warp awaiting the server's
         # authoritative PLO_LEVELNAME confirmation (see warp_to_level).
         self._awaiting_warp_confirm = ""
+        # A client-initiated, standalone level change whose destination board
+        # has not become the active board yet.  This is deliberately separate
+        # from _pending_level_name: gmap neighbour streaming changes that field
+        # without moving the local player.
+        self._local_level_transition = ""
+        # Bumped when a held transition finishes (or is rolled back).  The
+        # pygame renderer consumes this to snap even when the coordinate jump
+        # is small enough that ordinary movement would interpolate it.
+        self._local_level_transition_epoch = 0
         # Pre-warp (level, x, y) snapshot to restore if the server rejects
         # the warp with PLO_WARPFAILED (warp_to_level flips state
         # optimistically, so a rejected warp would otherwise strand us at a
@@ -729,7 +744,8 @@ class Client:
     # Actions
     # =========================================================================
 
-    def move(self, dx: int, dy: int, step: float = 0.25) -> bool:
+    def move(self, dx: int, dy: int, step: float = 0.25,
+             face_direction: Optional[int] = None) -> bool:
         """
         Move the player.
 
@@ -737,6 +753,13 @@ class Client:
             dx: X direction (-1=left, 0=none, 1=right)
             dy: Y direction (-1=up, 0=none, 1=down)
             step: Movement step size in tiles (default 0.5 for half-tile precision)
+            face_direction: Override the facing direction sent/stored instead
+                of the one inferred from (dx, dy). Used by the pygame
+                client's corner-assist (game/actions.py's _move): a
+                perpendicular nudge around a doorway/corner moves the
+                player sideways for a frame, but they should keep facing
+                whichever cardinal direction was actually pressed, not
+                whichever way the assist nudged them.
 
         Returns:
             True if packet sent successfully
@@ -754,7 +777,9 @@ class Client:
         new_y = self.player.y + dy * step
 
         # Determine direction
-        if dx > 0:
+        if face_direction is not None:
+            direction = face_direction
+        elif dx > 0:
             direction = 3  # right
         elif dx < 0:
             direction = 1  # left
@@ -908,28 +933,29 @@ class Client:
                 PacketID.PLI_HITOBJECTS, build_hit_objects(power, probe_x, probe_y))
         return sent
 
-    # Sword swing hitbox: how far the blade reaches in the facing direction
-    # and how wide the arc is, measured between sprite centers (sprite center
-    # = top-left + (1, 1.5)).
-    #
-    # BUG (fixed): the target side of the forward/lateral projection used to
-    # add +1.0 to the target's Y (px/py/nx/ny/wy + 1.0) while the attacker's
-    # own center used +1.5 (my_cy = self.player.y + 1.5) - i.e. attacker and
-    # target were measured from DIFFERENT points, not "center to center" as
-    # the comment above claimed. Work it out for a target directly above vs.
-    # below at the same sprite gap `g` (target y = my_y -/+ g):
-    #   up:   dy = (my_y - g + 1.0) - (my_y + 1.5) = -g - 0.5; fy=-1
-    #         forward = dy*fy = g + 0.5   -> needs g <= REACH - 0.5
-    #   down: dy = (my_y + g + 1.0) - (my_y + 1.5) =  g - 0.5; fy=+1
-    #         forward = dy*fy = g - 0.5   -> needs g <= REACH + 0.5
-    # So the effective up-swing reach was REACH-0.5 while down-swing was
-    # REACH+0.5 - a full 1-tile gap between them (matches the live playtest:
-    # down hit at a 2.2-tile gap, up needed <=~1.2-2.0). Left/right were fine
-    # because both sides already used the same +1.0 X offset. Fix: use +1.5
-    # for the target's Y too, so both sides measure the same center point and
-    # forward reduces to `g` symmetrically in every direction.
-    _SWORD_REACH = 2.5
-    _SWORD_WIDTH = 1.5
+    # The blade rectangle starts at the attacker's body center. A target is
+    # hittable when its canonical 2x2 collision box overlaps that rectangle.
+    # These dimensions retain the former center-test envelope: adding the
+    # target box's one-tile half-size gives 2.5 forward and 1.5 lateral tiles.
+    _SWORD_REACH = 1.5
+    _SWORD_HALF_WIDTH = 0.5
+
+    def _target_in_sword_arc(self, target_x: float, target_y: float,
+                             fx: int, fy: int) -> bool:
+        """Whether a target collision box overlaps the facing sword arc."""
+        my_cx = self.player.x + PLAYER_BODY_CENTER_X
+        my_cy = self.player.y + PLAYER_BODY_CENTER_Y
+        corners = (
+            (target_x + PLAYER_COLLISION_LEFT, target_y + PLAYER_COLLISION_TOP),
+            (target_x + PLAYER_COLLISION_LEFT, target_y + PLAYER_COLLISION_BOTTOM),
+            (target_x + PLAYER_COLLISION_RIGHT, target_y + PLAYER_COLLISION_TOP),
+            (target_x + PLAYER_COLLISION_RIGHT, target_y + PLAYER_COLLISION_BOTTOM),
+        )
+        forwards = [(x - my_cx) * fx + (y - my_cy) * fy for x, y in corners]
+        laterals = [(x - my_cx) * fy - (y - my_cy) * fx for x, y in corners]
+        return (max(forwards) > 0 and min(forwards) <= self._SWORD_REACH
+                and max(laterals) >= -self._SWORD_HALF_WIDTH
+                and min(laterals) <= self._SWORD_HALF_WIDTH)
 
     def _sword_hit_players(self, direction: int):
         """Send PLI_HURTPLAYER for every other player inside the sword arc."""
@@ -937,7 +963,6 @@ class Client:
         if not dir_vec:
             return
         fx, fy = dir_vec
-        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
         # self.players['x'/'y'] are now always LEVEL-LOCAL (0-63) - the
         # PLO_OTHERPLPROPS handler normalizes both classic X/Y and
         # high-precision X2/Y2 into that one frame at merge time - while
@@ -967,10 +992,7 @@ class Client:
                 if px is None or py is None:
                     continue
                 px, py = px + seg_ox, py + seg_oy
-            dx, dy = (px + 1.0) - my_cx, (py + 1.5) - my_cy
-            forward = dx * fx + dy * fy
-            lateral = abs(dx * fy) + abs(dy * fx)
-            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+            if self._target_in_sword_arc(px, py, fx, fy):
                 self.attack_player(pid, damage=damage,
                                    knockback_x=fx * 2, knockback_y=fy * 2)
 
@@ -988,7 +1010,6 @@ class Client:
         if not dir_vec:
             return
         fx, fy = dir_vec
-        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
         for npc_id, npc in list(self.npcs.items()):
             if npc.get('visible', True) is False or npc.get('dontblock'):
                 continue
@@ -996,10 +1017,7 @@ class Client:
             ny = npc.get('world_y', npc.get('y'))
             if nx is None or ny is None:
                 continue
-            dx, dy = (nx + 1.0) - my_cx, (ny + 1.5) - my_cy
-            forward = dx * fx + dy * fy
-            lateral = abs(dx * fy) + abs(dy * fx)
-            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+            if self._target_in_sword_arc(nx, ny, fx, fy):
                 self.on_sword_hit_npc(npc_id)
 
     def _sword_hit_baddies(self, direction: int):
@@ -1012,7 +1030,6 @@ class Client:
         if not dir_vec:
             return
         fx, fy = dir_vec
-        my_cx, my_cy = self.player.x + 1.0, self.player.y + 1.5
         seg_off_x = seg_off_y = 0
         if self.gmap_grid:
             seg = next((g for g, n in self.gmap_grid.items()
@@ -1026,10 +1043,7 @@ class Client:
             if bx is None or by is None:
                 continue
             wx, wy = bx + seg_off_x, by + seg_off_y
-            dx, dy = (wx + 1.0) - my_cx, (wy + 1.5) - my_cy
-            forward = dx * fx + dy * fy
-            lateral = abs(dx * fy) + abs(dy * fx)
-            if 0 < forward <= self._SWORD_REACH and lateral <= self._SWORD_WIDTH:
+            if self._target_in_sword_arc(wx, wy, fx, fy):
                 if self.is_leader:
                     # As this level's leader we're the one who resolves baddy
                     # damage (see _leader_apply_baddy_damage) - apply it and
@@ -1446,6 +1460,8 @@ class Client:
         if level_name not in self.gmap_grid.values():
             self._awaiting_warp_confirm = level_name
             self._warp_fallback = pre_warp_state
+            if level_name != pre_warp_state[0]:
+                self._local_level_transition = level_name
 
         # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
@@ -1461,6 +1477,9 @@ class Client:
         target = self._awaiting_warp_confirm
         self._awaiting_warp_confirm = ""
         self._warp_fallback = None
+        if self._local_level_transition:
+            self._local_level_transition = ""
+            self._local_level_transition_epoch += 1
         if not fallback:
             return
         prev_level, prev_x, prev_y = fallback
@@ -2422,6 +2441,13 @@ class Client:
                     # rejection by the PLO_PLAYERPROPS fallback below.
                     self._awaiting_warp_confirm = ""
                     self._warp_fallback = None
+                if (self._local_level_transition
+                        and level_name != self._local_level_transition):
+                    # The server anchored us somewhere other than the
+                    # optimistic destination.  Release the held view; the
+                    # rollback/player-warp packets provide the real position.
+                    self._local_level_transition = ""
+                    self._local_level_transition_epoch += 1
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
@@ -2687,6 +2713,9 @@ class Client:
             if level_for_tiles == self._current_level_name:
                 self.tiles = tiles
                 self._tiles_level_name = level_for_tiles
+                if level_for_tiles == self._local_level_transition:
+                    self._local_level_transition = ""
+                    self._local_level_transition_epoch += 1
             if self.on_level:
                 self.on_level(tiles)
 
@@ -3508,9 +3537,6 @@ class Client:
         # Ghost icon toggle (packet 174).
         elif packet_id == PacketID.PLO_GHOSTICON:
             self.ghost_icon = parse_ghost_icon(data)
-            self.ghost_mode = self.ghost_icon
-            if self.on_ghost_mode:
-                self.on_ghost_mode(self.ghost_mode)
 
         # RPG-style text window (packet 179).
         elif packet_id == PacketID.PLO_RPGWINDOW:
@@ -3587,7 +3613,17 @@ class Client:
         Calculate which GMAP level the player is in based on position.
         Returns the level name, or _current_level_name if not in GMAP.
         """
-        if not self.gmap_grid:
+        # A configured grid can outlive the player's presence in that world
+        # (for example after a server-side warp to a standalone level).  Only
+        # interpret player coordinates as world coordinates while the
+        # authoritative current level still identifies that world.  Do not use
+        # _pending_level_name/active_level here: adjacent-level preloads change
+        # those stream-routing fields without moving the player.
+        current_is_gmap = (
+            self._current_level_name in self.gmap_grid.values()
+            or bool(self.gmap_name and self._current_level_name == self.gmap_name)
+        )
+        if not self.gmap_grid or not current_is_gmap:
             return self._current_level_name
 
         # Player coords are GMAP-relative, so grid position is simply x // 64

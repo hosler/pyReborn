@@ -6,7 +6,7 @@ from typing import Optional
 
 import pygame
 
-from .constants import TILE_SIZE
+from .constants import TILE_SIZE, PLAYER_STAND_X, PLAYER_STAND_Y
 
 
 _ITEM_COLORS = {
@@ -49,6 +49,10 @@ _DEFAULT_ITEM_COLOR = (220, 220, 100)
 # real source turns up (e.g. a live-server capture, like chest_picker.py did
 # for chests) -- _get_item_sprite() already knows how to use them.
 _ITEM_SPRITE_TABLE = {}
+
+_CHEST_REVEAL_DURATION_MS = 1500
+_CHEST_REVEAL_FADE_MS = 400
+_CHEST_REVEAL_RISE_TILES = 0.5
 
 
 class LevelObjectsRenderMixin:
@@ -160,6 +164,85 @@ class LevelObjectsRenderMixin:
                 continue
             self.screen.blit(sprite, (int(sx), int(sy)))
 
+    def _sync_chest_reveals(self, now_ms: int) -> None:
+        """Start a reveal when a known chest changes from closed to open."""
+        level_name = self.client._current_level_name
+        chests = self.client.chests_in_level(level_name)
+        snapshots = getattr(self, "_chest_reveal_snapshots", None)
+        if snapshots is None:
+            snapshots = self._chest_reveal_snapshots = {}
+        previous = snapshots.get(level_name)
+        current = dict(chests)
+        snapshots[level_name] = current
+
+        # The first observation establishes a baseline. This avoids replaying
+        # reveals for chests that were already open when the level arrived.
+        if previous is None:
+            return
+
+        level_items = getattr(self.client, "chest_items", {}).get(level_name, {})
+        reveals = getattr(self, "_chest_reveals", None)
+        if reveals is None:
+            reveals = self._chest_reveals = []
+        for position, opened in current.items():
+            if not opened or previous.get(position, False):
+                continue
+            item_type = level_items.get(position)
+            if not item_type:
+                continue
+            reveals[:] = [entry for entry in reveals
+                           if not (entry["level"] == level_name and
+                                   entry["position"] == position)]
+            reveals.append({"level": level_name, "position": position,
+                            "item_type": item_type, "started_ms": now_ms})
+
+    @staticmethod
+    def _chest_reveal_visual(reveal, now_ms: int):
+        """Return (rise in tiles, alpha), or None once the reveal expires."""
+        age = max(0, now_ms - reveal["started_ms"])
+        if age >= _CHEST_REVEAL_DURATION_MS:
+            return None
+        progress = age / _CHEST_REVEAL_DURATION_MS
+        rise = progress * _CHEST_REVEAL_RISE_TILES
+        fade_start = _CHEST_REVEAL_DURATION_MS - _CHEST_REVEAL_FADE_MS
+        if age <= fade_start:
+            alpha = 255
+        else:
+            alpha = round(255 * (_CHEST_REVEAL_DURATION_MS - age) /
+                          _CHEST_REVEAL_FADE_MS)
+        return rise, alpha
+
+    def _render_chest_reveals(self, now_ms: Optional[int] = None) -> None:
+        """Update and draw short-lived item reveals above opened chests."""
+        if now_ms is None:
+            now_ms = pygame.time.get_ticks()
+        self._sync_chest_reveals(now_ms)
+        reveals = getattr(self, "_chest_reveals", [])
+        if not reveals:
+            return
+
+        level_name, origin_x, origin_y = self._current_segment_info()
+        active = []
+        for reveal in reveals:
+            visual = self._chest_reveal_visual(reveal, now_ms)
+            if visual is None:
+                continue
+            active.append(reveal)
+            if reveal["level"] != level_name:
+                continue
+            rise, alpha = visual
+            cx, cy = reveal["position"]
+            # Chests occupy two tiles. Offset by half a tile so the one-tile
+            # icon is horizontally centered, starting just above the lid.
+            sx, sy = self._world_to_screen(cx + origin_x + 0.5,
+                                           cy + origin_y - 1.0 - rise)
+            sprite = self._get_item_sprite(reveal["item_type"])
+            if alpha < 255:
+                sprite = sprite.copy()
+                sprite.set_alpha(alpha)
+            self.screen.blit(sprite, (int(sx), int(sy)))
+        self._chest_reveals = active
+
     def _get_chest_sprite(self, opened: bool) -> Optional[pygame.Surface]:
         """Build (and cache) the chest sprite from tileset tiles.
 
@@ -236,8 +319,8 @@ class LevelObjectsRenderMixin:
 
         # Feet/ground-sample point matches collision.py's PLAYER_FEET_DX/DY
         # (classic-engine spec: collision-box centre, x+1.5/y+2.5).
-        px = self.client.player.x + 1.5 - origin_x
-        py = self.client.player.y + 2.5 - origin_y
+        px = self.client.player.x + PLAYER_STAND_X - origin_x
+        py = self.client.player.y + PLAYER_STAND_Y - origin_y
 
         for (sx, sy), text in signs.items():
             # Compare against the sign TILE CENTRE (+0.5): flush against a

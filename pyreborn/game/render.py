@@ -29,6 +29,7 @@ from ..tiletypes import TileType, get_tile_type
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    PLAYER_STAND_X, PLAYER_STAND_Y,
 )
 
 
@@ -77,6 +78,27 @@ class RenderMixin:
             if self.current_anim_name not in ("sit", "sword", "lift"):
                 self.player_anim.set_animation("sit", self.client.player.direction)
                 self.current_anim_name = "sit"
+
+        # Push/grab/pull hold state (game/actions.py's _update_push_hold /
+        # _update_grab_pull_state, driven every frame from game/input.py's
+        # held-key handling). Those already keep current_anim_name in sync
+        # while the state is active; this is the release path — A/the
+        # movement key let go (or carrying/sitting took over) clears the
+        # state but doesn't itself touch the gani, so fall back to idle here
+        # instead of leaving "push"/"grab"/"pull" stuck on screen.
+        if self.grab_state and self.current_anim_name != self.grab_state:
+            self.player_anim.set_animation(self.grab_state, self._grab_direction, force=True)
+            self.current_anim_name = self.grab_state
+        elif not self.grab_state and self.current_anim_name in ("grab", "pull"):
+            self.player_anim.set_animation("idle", self.client.player.direction)
+            self.current_anim_name = "idle"
+
+        if self.is_pushing and self.current_anim_name != "push":
+            self.player_anim.set_animation("push", self.client.player.direction, force=True)
+            self.current_anim_name = "push"
+        elif not self.is_pushing and self.current_anim_name == "push":
+            self.player_anim.set_animation("idle", self.client.player.direction)
+            self.current_anim_name = "idle"
 
         # If not moving, switch to appropriate idle animation
         if not self.is_moving and self.current_anim_name in ("walk", "swim"):
@@ -149,6 +171,21 @@ class RenderMixin:
         on the player (the C# client snaps its camera to the player every frame) and
         only a large correction eases in.
         """
+        # A discrete local level warp changes authoritative x/y before its
+        # board arrives.  Keep the last stable view until that board is active.
+        if getattr(self.client, '_local_level_transition', ''):
+            return
+
+        transition_epoch = getattr(
+            self.client, '_local_level_transition_epoch', 0)
+        seen_epoch = getattr(self, '_seen_level_transition_epoch',
+                             transition_epoch)
+        if transition_epoch != seen_epoch:
+            self.visual_x = self.client.x
+            self.visual_y = self.client.y
+            self._seen_level_transition_epoch = transition_epoch
+            return
+
         target_x = self.client.x
         target_y = self.client.y
         dx = target_x - self.visual_x
@@ -179,8 +216,8 @@ class RenderMixin:
     # player would render visibly off-centre in the viewport once the
     # sprite's own anchor became honest. DY (torso height, not the box's
     # feet-centre) is a separate framing choice, left as-is.
-    CAMERA_BODY_DX = 1.5
-    CAMERA_BODY_DY = 1.5
+    CAMERA_BODY_DX = PLAYER_STAND_X
+    CAMERA_BODY_DY = PLAYER_STAND_Y
 
     def _sync_camera(self):
         """Point the camera at the player's GMAP-relative visual position.
@@ -247,13 +284,11 @@ class RenderMixin:
         self._render_entities()                     # depth-sorted by Y (incl. horses)
         self._render_damage_numbers()
         self._render_bombs()
-        self._render_server_bombs()                  # other players' PLI_BOMBADD bombs
-        self._render_server_arrows()                 # other players' PLI_ARROWADD arrows
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
         self._update_and_render_thrown(getattr(self, '_last_dt', 0.016))
         self._render_break_effects()
+        self._render_chest_reveals()
         self._render_server_explosions()
-        self._render_server_bomb_explosions()
         self._render_screen_tint()                   # seteffect overlay, under HUD
 
     def _render_scene_zoomed(self, zoom: float):

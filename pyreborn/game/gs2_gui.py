@@ -544,13 +544,102 @@ class GuiShowImgCtrl(GuiBitmapCtrl):
 
 
 class GuiPopUpEditCtrl(GuiControl):
-    """Log-once stub: no known real-world usage exercised yet."""
+    """Single-selection combo box with a manager-rendered popup list."""
 
     CTRL_CLASS = "GuiPopUpEditCtrl"
 
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 150.0, 22.0
+        self.rows: List[Tuple[Any, str]] = []
+        self.selected_row = -1
+        self.popup_open = False
+        self.hover_row = -1
+
+    def add_row(self, row_id: Any, text: Any) -> float:
+        self.rows.append((row_id, to_str(text)))
+        return float(len(self.rows) - 1)
+
+    def clear_rows(self) -> float:
+        self.rows.clear()
+        self.selected_row = -1
+        self.text = ""
+        self.popup_open = False
+        self.hover_row = -1
+        return 0.0
+
+    def get_selected_row(self) -> Any:
+        if 0 <= self.selected_row < len(self.rows):
+            return self.rows[self.selected_row][0]
+        return -1.0
+
+    def get_row_text(self, row_id: Any) -> str:
+        for item_id, text in self.rows:
+            if item_id == row_id or to_str(item_id) == to_str(row_id):
+                return text
+        return ""
+
+    def select_row(self, index: int) -> bool:
+        if not 0 <= index < len(self.rows) or index == self.selected_row:
+            return False
+        self.selected_row = index
+        row_id, self.text = self.rows[index]
+        handler = self.get("onselect")
+        if callable(handler):
+            try:
+                handler(row_id, self.text)
+            except Exception:
+                logger.exception("GS2 GUI: onSelect handler for %s raised",
+                                 self.ctrl_name or self.CTRL_CLASS)
+        self.fire_action()
+        return True
+
+    def popup_rect(self) -> pygame.Rect:
+        r = self.rect()
+        return pygame.Rect(r.x, r.bottom, r.width, int(self.height) * len(self.rows))
+
+    def popup_row_at(self, pos) -> int:
+        pr = self.popup_rect()
+        if not pr.collidepoint(pos) or not self.rows:
+            return -1
+        return min(len(self.rows) - 1,
+                   (pos[1] - pr.y) // max(1, int(self.height)))
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        _log_once(("draw", self.CTRL_CLASS),
-                  "GS2 GUI: %s rendering not implemented (stub)", self.CTRL_CLASS)
+        prof = _resolve_profile(self.profile_name)
+        r = self.rect()
+        fill = prof.title_bg
+        if self.pressed:
+            fill = _shade(fill, 0.75)
+        elif self.hovered:
+            fill = _shade(fill, 1.2)
+        pygame.draw.rect(surf, fill, r)
+        pygame.draw.rect(surf, prof.border, r, 1)
+        arrow_w = min(r.height, 20)
+        arrow = pygame.Rect(r.right - arrow_w, r.y, arrow_w, r.height)
+        pygame.draw.line(surf, prof.border, arrow.topleft, arrow.bottomleft, 1)
+        cx, cy = arrow.center
+        pygame.draw.polygon(surf, prof.fg,
+                            [(cx - 4, cy - 2), (cx + 4, cy - 2), (cx, cy + 3)])
+        if self.text and fonts is not None:
+            label = fonts.get("small").render(self.text, True, prof.fg)
+            surf.blit(label, (r.x + 4, r.centery - label.get_height() // 2))
+
+    def draw_popup(self, surf, fonts) -> None:
+        if not self.popup_open or not self.rows:
+            return
+        prof = _resolve_profile(self.profile_name)
+        pr = self.popup_rect()
+        row_h = max(1, int(self.height))
+        pygame.draw.rect(surf, prof.bg, pr)
+        for index, (_row_id, text) in enumerate(self.rows):
+            rr = pygame.Rect(pr.x, pr.y + index * row_h, pr.width, row_h)
+            if index == self.hover_row:
+                pygame.draw.rect(surf, _shade(prof.title_bg, 1.2), rr)
+            if fonts is not None:
+                label = fonts.get("small").render(text, True, prof.fg)
+                surf.blit(label, (rr.x + 4, rr.centery - label.get_height() // 2))
+        pygame.draw.rect(surf, prof.border, pr, 1)
 
 
 _CONTROL_CLASSES: Dict[str, type] = {
@@ -601,6 +690,7 @@ class GS2GuiManager:
         # coordinates before forwarding it here).
         self._hover: Optional[GuiControl] = None
         self._pressed: Optional[GuiControl] = None
+        self._open_popup: Optional[GuiPopUpEditCtrl] = None
 
     @property
     def keyboard_captured(self) -> bool:
@@ -676,6 +766,9 @@ class GS2GuiManager:
             self._set_hover(None)
         if self._pressed is not None and self._is_or_descends(self._pressed, ctrl):
             self._set_pressed(None)
+        if (self._open_popup is not None and
+                self._is_or_descends(self._open_popup, ctrl)):
+            self._close_popup()
 
     @staticmethod
     def _is_or_descends(node: GuiControl, ancestor: GuiControl) -> bool:
@@ -722,8 +815,12 @@ class GS2GuiManager:
 
     def render(self, surf: pygame.Surface, fonts=None, sprite_mgr=None) -> None:
         self._reap_construction_leak()
+        self._close_invalid_popup()
         for root in self.roots:
             self._draw_node(root, surf, fonts, sprite_mgr, None)
+        if self._open_popup is not None:
+            surf.set_clip(None)
+            self._open_popup.draw_popup(surf, fonts)
         surf.set_clip(None)
 
     def _draw_node(self, node: GuiControl, surf, fonts, sprite_mgr, clip) -> None:
@@ -797,6 +894,34 @@ class GS2GuiManager:
         if ctrl is not None:
             ctrl.pressed = True
 
+    def _close_popup(self) -> None:
+        if self._open_popup is None:
+            return
+        self._open_popup.popup_open = False
+        self._open_popup.hover_row = -1
+        self._open_popup = None
+        self._set_hover(None)
+        self._set_pressed(None)
+
+    def _open_popup_for(self, ctrl: GuiPopUpEditCtrl) -> None:
+        if self._open_popup is not ctrl:
+            self._close_popup()
+        self._open_popup = ctrl
+        ctrl.popup_open = True
+
+    def _close_invalid_popup(self) -> None:
+        popup = self._open_popup
+        if popup is None:
+            return
+        node: Optional[GuiControl] = popup
+        while node is not None:
+            if not node.visible:
+                self._close_popup()
+                return
+            node = node.parent
+        if popup.parent is None and popup not in self.roots:
+            self._close_popup()
+
     def _select_radio(self, radio: "GuiRadioCtrl") -> None:
         """Radio-group mutual exclusion: checking one radio unchecks its
         siblings -- the other children of the same immediate parent
@@ -828,6 +953,7 @@ class GS2GuiManager:
         (the pygame_screens.py convention: the caller remaps window coords
         via viewport.window_to_virtual() before calling in)."""
         self._reap_construction_leak()
+        self._close_invalid_popup()
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             return self._on_mouse_down(event.pos)
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -841,6 +967,16 @@ class GS2GuiManager:
         return False
 
     def _on_mouse_down(self, pos) -> bool:
+        if self._open_popup is not None:
+            popup = self._open_popup
+            row = popup.popup_row_at(pos)
+            if row >= 0:
+                self._set_pressed(popup)
+                popup.select_row(row)
+                self._close_popup()
+                return True
+            self._close_popup()
+            return True
         hit = self.hit_test(pos)
         if hit is None:
             self._set_focus(None)
@@ -857,6 +993,12 @@ class GS2GuiManager:
 
         if isinstance(hit, GuiTextEditCtrl):
             self._set_focus(hit)
+            return True
+
+        if isinstance(hit, GuiPopUpEditCtrl):
+            self._set_focus(None)
+            self._set_pressed(hit)
+            self._open_popup_for(hit)
             return True
 
         self._set_focus(None)
@@ -880,8 +1022,15 @@ class GS2GuiManager:
         return self.hit_test(pos) is not None
 
     def _on_mouse_move(self, pos) -> bool:
+        if self._open_popup is not None:
+            popup = self._open_popup
+            popup.hover_row = popup.popup_row_at(pos)
+            self._set_hover(popup if (popup.hover_row >= 0 or
+                                      popup.rect().collidepoint(pos)) else None)
+            return True
         hit = self.hit_test(pos)
-        self._set_hover(hit if isinstance(hit, (GuiButtonCtrl, GuiCheckBoxCtrl)) else None)
+        self._set_hover(hit if isinstance(
+            hit, (GuiButtonCtrl, GuiCheckBoxCtrl, GuiPopUpEditCtrl)) else None)
         if self._drag is None:
             return False
         win, off_x, off_y = self._drag
@@ -902,6 +1051,9 @@ class GS2GuiManager:
 
     def _on_keydown(self, event) -> bool:
         if event.key == pygame.K_ESCAPE:
+            if self._open_popup is not None:
+                self._close_popup()
+                return True
             top = self._topmost_window()
             if top is not None:
                 self.hide(top)

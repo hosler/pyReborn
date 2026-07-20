@@ -26,7 +26,8 @@ from ..player import Player
 from ..tiletypes import TileType, get_tile_type
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    TILESET_COLS, TILESET_ROWS, MOVE_STEP, PUSH_HOLD_TIME,
+    parse_npc_visual_effects,
 )
 
 
@@ -90,6 +91,20 @@ class ActionsMixin:
                 mdx, mdy = cdx, cdy
                 break
 
+        # Corner-assist: a blocked pure-cardinal press (no diagonal slide
+        # applied above) that's only blocked by being slightly off a
+        # doorway/corner opening gets nudged perpendicular instead of
+        # stopping dead (see collision.py's _corner_assist_offset for the
+        # geometry). Facing stays the PRESSED cardinal direction throughout
+        # — the nudge is a positional aid, not a real turn, so the sprite
+        # doesn't flip to face the nudge axis while sliding through.
+        corner_assist_dir = None
+        if mdx == 0 and mdy == 0 and not stuck_count:
+            nudge = self._corner_assist_offset(dx, dy)
+            if nudge:
+                mdx, mdy = nudge
+                corner_assist_dir = facing
+
         if mdx == 0 and mdy == 0:
             # Fully blocked - still face where we tried to go.
             blocked_dir = direction_from_delta(dx, dy)
@@ -102,13 +117,22 @@ class ActionsMixin:
             # walking into them blocks. Treat pushing into a warp link as
             # entering it (the body-sample detection sees the overlapped door).
             self._try_link_warp()
+            # Held-into-a-wall push feel — see _update_push_hold's docstring.
+            self._update_push_hold(dx, dy)
             return
 
-        # Move is allowed (full or slid onto a free axis).
-        self.client.move(mdx, mdy)
+        # A move went through — no longer holding into a wall.
+        self._clear_push_hold()
 
-        # Face the direction we actually moved.
-        direction = direction_from_delta(mdx, mdy)
+        # Move is allowed (full, slid onto a free axis, or a corner-assist
+        # nudge). A corner-assist nudge keeps the originally-pressed facing
+        # instead of the inferred nudge-axis direction (see face_direction).
+        self.client.move(mdx, mdy, face_direction=corner_assist_dir)
+
+        # Face the direction we actually moved (or the pressed direction,
+        # for a corner-assist nudge).
+        direction = corner_assist_dir if corner_assist_dir is not None \
+            else direction_from_delta(mdx, mdy)
 
         # Check NPC touch after movement
         self.npc_handler.process_movement(self.client.x, self.client.y, direction)
@@ -133,6 +157,118 @@ class ActionsMixin:
 
         # Check for door/edge link at new position (auto-warp on walk-into).
         self._try_link_warp()
+
+    def _update_push_hold(self, dx: int, dy: int):
+        """Track how long the currently-pressed direction has been held
+        fully blocked; past PUSH_HOLD_TIME switches to the "push" gani
+        (classic-engine feel: lean on a wall for a moment and the character
+        visibly pushes against it). Called every frame _move() ends up
+        fully blocked, including after a failed corner-assist — a real
+        flat/solid wall, not a clearable corner.
+
+        _clear_push_hold (called from _move whenever a move actually
+        succeeds, and from input.py when no movement key is held at all)
+        resets this; render.py's _update_animations falls back to idle if
+        is_pushing goes False while the gani is still showing "push"."""
+        # Carrying/sitting already own the gani (carry, sit) — walking a
+        # carried object or a chair into a wall shouldn't switch to "push".
+        if self.client.player.is_carrying() or self.client.player.is_sitting:
+            self._clear_push_hold()
+            return
+
+        now = time.time()
+        if self._push_hold_dir != (dx, dy):
+            self._push_hold_dir = (dx, dy)
+            self._push_hold_start = now
+            self.is_pushing = False
+            return
+        if not self.is_pushing and now - self._push_hold_start >= PUSH_HOLD_TIME:
+            self.is_pushing = True
+        if self.is_pushing:
+            direction = direction_from_delta(dx, dy)
+            self.player_anim.set_direction(direction)
+            if self.current_anim_name != "push":
+                self.player_anim.set_animation("push", direction, force=True)
+                self.current_anim_name = "push"
+                # Broadcast the push gani the same way the sit/sword states
+                # do (client.set_animation -> PLI_PLAYERPROPS with PLPROP_GANI
+                # + PLPROP_SPRITE direction — never the legacy prop 14).
+                self.client.set_animation("push")
+
+    def _clear_push_hold(self):
+        """Stop tracking a held-blocked direction (a move succeeded, the key
+        was released, or something else — grab, sword, sitting — took
+        over)."""
+        self._push_hold_dir = None
+        self.is_pushing = False
+
+    def _update_grab_pull_state(self, dx: int, dy: int):
+        """Continuous per-frame update while the grab key (A) is held —
+        called every frame from input.py's A-held branches, in addition to
+        (not instead of) _try_grab's one-shot fresh-press dispatch.
+
+        Holding A while facing a plain blocking wall tile (nothing
+        liftable/interactable there — a bush/pot/rock, a chest, a door link,
+        or a sign all keep taking priority and are handled, one-shot, by
+        _try_grab) shows the "grab" gani. Once grabbing, additionally
+        holding the movement key OPPOSITE the grabbed facing switches to
+        "pull". Facing is pinned to whatever it was when the grab started —
+        pulling doesn't spin the player to face the direction they're
+        pulling toward. Releasing A (see _clear_grab_state, called from
+        input.py) exits back to idle/walk.
+
+        This never actually moves a block — there's no server support for
+        pushable/pullable tiles; it's purely the character's held-against-
+        a-wall animation."""
+        player = self.client.player
+        # Lifting/carrying/sitting/swimming already own current_anim_name —
+        # never fight them with a grab gani of our own.
+        if player.is_carrying() or player.is_sitting or self.is_swimming:
+            self._clear_grab_state()
+            return
+
+        # Facing is pinned once a grab starts (see docstring); otherwise use
+        # whatever we're currently facing to decide whether one CAN start.
+        direction = self._grab_direction if self.grab_state is not None else player.direction
+
+        # A liftable/chest/door/sign in front is already handled, with
+        # priority, by _try_grab's one-shot dispatch — don't show a grab
+        # gani over top of it.
+        points = self._touch_points(direction)
+        interactable = (
+            any(self._is_tile_liftable(self._get_tile_at(tx, ty)) for tx, ty in points)
+            or self._find_chest_in_front() is not None
+            or self._get_non_edge_door() is not None
+            or self._check_sign_nearby() is not None
+        )
+        if interactable:
+            self._clear_grab_state()
+            return
+
+        if not any(self._is_blocked_at(tx, ty) for tx, ty in points):
+            self._clear_grab_state()
+            return
+
+        opposite = {0: 2, 1: 3, 2: 0, 3: 1}[direction]
+        pulling = self.grab_state is not None and (dx, dy) == self._facing_delta(opposite)
+        new_state = "pull" if pulling else "grab"
+
+        if self.grab_state != new_state:
+            if self.grab_state is None:
+                self._grab_direction = direction
+            self.grab_state = new_state
+            self.player_anim.set_animation(new_state, self._grab_direction, force=True)
+            self.current_anim_name = new_state
+            # Same broadcast mechanism as push/sit/sword (see _update_push_hold).
+            self.client.set_animation(new_state)
+        self.is_moving = False
+
+    def _clear_grab_state(self):
+        """Stop the grab/pull hold state (A released, or a lift/chest/door/
+        sign/carry/sit took over)."""
+        self.grab_state = None
+        self._grab_direction = None
+
     def _swing_sword(self):
         """Swing sword attack."""
         player = self.client.player
@@ -167,7 +303,7 @@ class ActionsMixin:
                 self.client.set_chest_opened(level_name, cx, cy)
             return
 
-        # Lift a bush/pot/rock in front — plain A lifts, classic style (no
+        # Lift an object in front — plain A lifts, classic style (no
         # arrow needed).
         if self._lift_in_front(player.direction):
             return
@@ -224,7 +360,7 @@ class ActionsMixin:
         """Dismiss the current dialogue."""
         self.dialogue_text = None
     def _try_pickup(self, dx: int, dy: int):
-        """A + arrow: lift a 2x2 object (bush/rock/pot) in that direction, or
+        """A + arrow: lift a 2x2 object in that direction, or
         throw the carried one."""
         player = self.client.player
 
@@ -246,7 +382,7 @@ class ActionsMixin:
             self.client.pickup_item(px, py)
 
     def _lift_in_front(self, direction: int) -> bool:
-        """Lift the 2x2 liftable (bush/pot/rock) at the touch points for the
+        """Lift the 2x2 liftable at the touch points for the
         given facing, if any and glove power allows. Returns True if lifted."""
         player = self.client.player
 
@@ -487,8 +623,10 @@ class ActionsMixin:
                     'x': self.client.player.x,
                     'y': self.client.player.y,
                     'time': time.time(),
+                    'fuse_time': self.bomb_fuse_time,
                     'power': self.client.player.bomb_power,
                     'exploded': False,
+                    'source': 'local',
                 })
             else:
                 # Default to sword attack
@@ -536,9 +674,11 @@ class ActionsMixin:
     def _use_door_link(self, door_link: dict):
         """Use a door link to warp to another level."""
         self.client.use_link(door_link)
-        # Update visual position to match new position
-        self.visual_x = self.client.x
-        self.visual_y = self.client.y
+        # Standalone cross-level warps hold the old visual position until the
+        # destination board is active. Same-level and gmap warps still snap now.
+        if not getattr(self.client, '_local_level_transition', ''):
+            self.visual_x = self.client.x
+            self.visual_y = self.client.y
         # Force world surface redraw
         self.world_surface = None
         # Recompute swimming immediately (don't wait for the next frame's

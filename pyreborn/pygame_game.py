@@ -197,6 +197,19 @@ class GameClient(
         self.current_anim_name = "idle"
         self.is_moving = False
         self.is_swimming = False  # Track if player is in water
+
+        # Push/grab/pull hold-state (classic-engine feel — see
+        # game/actions.py's _update_push_hold / _update_grab_pull_state and
+        # game/input.py's held-key wiring). Push: holding a movement key
+        # into a wall for PUSH_HOLD_TIME. Grab/pull: holding A (grab) into a
+        # plain wall, optionally pulling by also holding the opposite
+        # movement key. Purely a feel/animation state — no server support
+        # for actually pushing/pulling a tile.
+        self._push_hold_dir = None    # (dx, dy) of the currently-blocked held direction
+        self._push_hold_start = 0.0   # time.time() the block started
+        self.is_pushing = False       # True once held blocked past PUSH_HOLD_TIME
+        self.grab_state = None        # None | "grab" | "pull"
+        self._grab_direction = None   # facing direction pinned for the current grab
         # Link-warp guards. `_was_on_link`: True while standing on a warp link, so
         # links only fire on the rising edge (stepping ON) — no bounce across
         # overlapping links. `_link_arrival`: the spot a warp last dropped us;
@@ -209,6 +222,8 @@ class GameClient(
         # Smooth movement - visual position tracks the authoritative position.
         self.visual_x = 0.0
         self.visual_y = 0.0
+        self._seen_level_transition_epoch = (
+            self.client._local_level_transition_epoch)
         # Player sprite top-left in render frame, set each frame by _sync_camera.
         self._player_render_pos = (0.0, 0.0)
         # How fast the camera/local-player visual chases the real position. Kept
@@ -221,7 +236,7 @@ class GameClient(
         self.damage_numbers: List[dict] = []
         self.hurt_flash_time = 0.0  # Time when player was last hurt (for flash effect)
 
-        # Active bombs - each: {'x': float, 'y': float, 'time': float, 'power': int, 'exploded': bool}
+        # Unified local/remote bomb registry.
         self.active_bombs: List[dict] = []
         self.bomb_fuse_time = 2.0  # Seconds before bomb explodes
         self.explosion_duration = 0.5  # How long explosion visual lasts
@@ -229,7 +244,7 @@ class GameClient(
         # Active projectiles - each: {'x': float, 'y': float, 'dx': float, 'dy': float, 'time': float, 'gani': str}
         self.active_projectiles: List[dict] = []
 
-        # Thrown liftables (bush/pot/rock) in flight — see _throw_object /
+        # Thrown liftables in flight — see _throw_object /
         # _update_and_render_thrown. Each: {'tiles', 'x', 'y', 'z', 'z0',
         # 'dx', 'dy', 'speed', 'dist', 'range'}.
         self.thrown_objects: List[dict] = []
@@ -237,13 +252,7 @@ class GameClient(
         # 'time', 'color'} with a handful of scattering particles.
         self.break_effects: List[dict] = []
 
-        # Tier 1: server-relayed entity families (other players' bombs/arrows/
-        # horses - read from client.bombs/arrows/horses each frame, like baddies).
-        # _server_bomb_seen tracks first-seen wall-clock time per bomb key so we
-        # can compute local fuse-flash/explosion timing without a 'time' field
-        # on the packet-parsed dict (client.py doesn't add one).
-        self._server_bomb_seen: Dict[Tuple[float, float], float] = {}
-        self.active_bomb_explosions: List[dict] = []  # {'x','y','time'} - server bomb went off
+        self.active_bomb_explosions: List[dict] = []
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
 
         # Tier 3d: seteffect screen tint - {'r','g','b','a'} 0..255 or None.

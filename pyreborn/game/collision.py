@@ -27,7 +27,12 @@ from ..player import Player
 from ..tiletypes import TileType, get_tile_type, type_is_blocking
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CORNER_ASSIST_MAX,
+    parse_npc_visual_effects,
+    PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
+    PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
+    PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
+    PLAYER_STAND_X, PLAYER_STAND_Y,
 )
 
 
@@ -54,16 +59,17 @@ class CollisionMixin:
         tile_type = self._get_corrected_tile_type(tile_id)
         return tile_type == TileType.CHAIR
     def _is_tile_liftable(self, tile_id: int) -> bool:
-        """Check if tile is liftable (bush/rock/pot), using corrections."""
+        """Check if tile is liftable, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
-        return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT)
+        return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT,
+                             TileType.SIGN)
     def _get_tile_lift_power(self, tile_id: int) -> int:
         """Get required glove power to lift tile, using corrections.
 
-        Bushes and pots lift bare-handed (power 0); rocks need a glove (power 1).
+        Bushes, pots, and post signs lift bare-handed; rocks need a glove.
         """
         tile_type = self._get_corrected_tile_type(tile_id)
-        if tile_type in (TileType.BUSH, TileType.POT):
+        if tile_type in (TileType.BUSH, TileType.POT, TileType.SIGN):
             return 0
         elif tile_type == TileType.ROCK:
             return 1
@@ -77,18 +83,14 @@ class CollisionMixin:
             return "pot"
         elif tile_type == TileType.ROCK:
             return "rock"
+        elif tile_type == TileType.SIGN:
+            return "sign"
         return ""
 
-    # Ground-sample point (swim/grass/chair/bed/shallow-water/lava) and default
-    # touch point, per the classic-engine spec: the CENTRE of the player's 2x2
-    # collision box, which is itself centred on (x+1.5, y+2.5) — NOT the
-    # sprite's top-left corner. (Character sprite is 3x3 tiles, top-left
-    # anchored at (x, y); the collision/ground-sample geometry is the
-    # narrower box below.) Corroborated by GServer-v2's touchTest tables
-    # (PlayerClient.cpp:1825 testForLinks, :1760 testForTouch), which probe
-    # around the same x+1.5 horizontal centre — see _feet_samples below.
-    PLAYER_FEET_DX = 1.5
-    PLAYER_FEET_DY = 2.5
+    # Ground sampling uses the standing point between the feet. It is distinct
+    # from the collision box's centre after the box's half-tile upward shift.
+    PLAYER_FEET_DX = PLAYER_STAND_X
+    PLAYER_FEET_DY = PLAYER_STAND_Y
     def _player_feet(self) -> Tuple[float, float]:
         """World-tile coordinates of the ground-sample centre point."""
         return (self.client.x + self.PLAYER_FEET_DX,
@@ -187,10 +189,9 @@ class CollisionMixin:
         Uses corrected tile types from user edits.
 
         Player world position (x, y) is the TOP-LEFT of the 3x3-tile sprite.
-        Collision is checked against the classic-engine spec's 2x2-tile box
-        CENTRED on (x+1.5, y+2.5): it spans x+0.5..x+2.5 horizontally and
-        y+1.5..y+3.5 vertically (see _feet_samples). (dx, dy) is the movement
-        direction.
+        Collision is checked against the 2x2-tile box spanning
+        x+0.5..x+2.5 horizontally and y+1.0..y+3.0 vertically. (dx, dy) is
+        the movement direction.
         """
         for cx, cy in self._feet_samples(x, y):
             if self._is_blocked_at(cx, cy):
@@ -198,9 +199,8 @@ class CollisionMixin:
 
         return False
 
-    # Collision box geometry, per the classic-engine spec: a 2x2-tile box
-    # centred on (x+1.5, y+2.5) — x+0.5..x+2.5 horizontally, y+1.5..y+3.5
-    # vertically. (Previously this was a narrower, off-centre "feet" box
+    # Collision box geometry: a 2x2-tile box centred on (x+1.5, y+2.0),
+    # spanning x+0.5..x+2.5 and y+1.0..y+3.0. (Previously this was a narrower, off-centre "feet" box
     # (x+0.4..x+1.6, y+2.0..y+3.0) that put the horizontal centre at x+1.0
     # instead of x+1.5 — exactly the "lands 0.5 tiles left of doorways" bug.)
     # The box is half-open: its right/bottom edge sitting exactly on a tile
@@ -209,8 +209,8 @@ class CollisionMixin:
     # player stops a step (~4px) short. Inset the far edges so you can move
     # flush against walls.
     _FEET_EPS = 1e-3
-    _FEET_LEFT, _FEET_RIGHT = 0.5, 2.5
-    _FEET_TOP, _FEET_BOTTOM = 1.5, 3.5
+    _FEET_LEFT, _FEET_RIGHT = PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT
+    _FEET_TOP, _FEET_BOTTOM = PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM
 
     def _feet_samples(self, x: float, y: float):
         """Sample points covering the collision box at player position (x, y).
@@ -224,8 +224,10 @@ class CollisionMixin:
         box to the spec's 2x2 size reopened that same class of tunneling gap
         on the y-axis, so the fix is mirrored here too.)
         """
-        for cx in (x + self._FEET_LEFT, x + 1.5, x + self._FEET_RIGHT - self._FEET_EPS):
-            for cy in (y + self._FEET_TOP, y + 2.5, y + self._FEET_BOTTOM - self._FEET_EPS):
+        for cx in (x + self._FEET_LEFT, x + PLAYER_BODY_CENTER_X,
+                   x + self._FEET_RIGHT - self._FEET_EPS):
+            for cy in (y + self._FEET_TOP, y + PLAYER_BODY_CENTER_Y,
+                       y + self._FEET_BOTTOM - self._FEET_EPS):
                 yield cx, cy
 
     def _blocked_sample_count(self, x: float, y: float) -> int:
@@ -294,3 +296,63 @@ class CollisionMixin:
         """Check if the position is in water."""
         tile_id = self._get_tile_at(x, y)
         return self._is_tile_water(tile_id)
+
+    def _corner_assist_offset(self, dx: int, dy: int) -> Optional[Tuple[int, int]]:
+        """Classic-engine "corner assist": for a blocked pure-cardinal press
+        (dx, dy) — exactly one of the two nonzero, e.g. walking straight up
+        into a doorway — find a small perpendicular nudge that would let it
+        through, so walking slightly off-center through an opening slides
+        you flush with it instead of stopping dead.
+
+        Returns a one-MOVE_STEP nudge direction (ddx, ddy), each in
+        {-1, 0, 1} with exactly one nonzero, to move THIS call instead of
+        (dx, dy); the caller re-evaluates every subsequent frame, so a wider
+        gap gets closed one step at a time until the plain cardinal move
+        succeeds on its own. Returns None if no nudge within
+        CORNER_ASSIST_MAX would help.
+
+        Diagonal presses (both dx and dy nonzero) already have their own
+        axis-slide in _move and don't use this. A flat wall — blocked at
+        every offset within range — and a solid corner — where nudging
+        doesn't unblock the destination — both correctly return None here,
+        so the player stays blocked exactly like an unassisted flat wall.
+        """
+        if (dx != 0) == (dy != 0):
+            return None  # both zero (no input) or both nonzero (diagonal)
+
+        x, y = self.client.x, self.client.y
+        step = MOVE_STEP
+        max_k = max(1, round(CORNER_ASSIST_MAX / step))
+
+        for k in range(1, max_k + 1):
+            for sign in (1, -1):
+                if dx != 0:
+                    nudge_ddx, nudge_ddy = 0, sign
+                else:
+                    nudge_ddx, nudge_ddy = sign, 0
+
+                # Every intermediate nudge position up to k steps must itself
+                # be walkable — a destination that only clears at k=2 is no
+                # good if the k=1 step we'd actually take this call walks
+                # into a different wall.
+                path_clear = True
+                for j in range(1, k + 1):
+                    px = x + nudge_ddx * step * j
+                    py = y + nudge_ddy * step * j
+                    if (self._position_out_of_bounds(px, py)
+                            or self._is_position_blocked(px, py)):
+                        path_clear = False
+                        break
+                if not path_clear:
+                    continue
+
+                # From the k-step nudge, does the ORIGINAL cardinal move clear?
+                dest_x = x + nudge_ddx * step * k + dx * step
+                dest_y = y + nudge_ddy * step * k + dy * step
+                if self._position_out_of_bounds(dest_x, dest_y):
+                    continue
+                if self._is_position_blocked(dest_x, dest_y, dx, dy):
+                    continue
+
+                return (nudge_ddx, nudge_ddy)
+        return None

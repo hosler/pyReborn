@@ -110,10 +110,9 @@ class GameBot:
         self._link_arrival: Optional[Tuple[float, float]] = None
 
         # Collision settings (match pygame_game.py). Classic-engine spec:
-        # collision box centred on (x+1.5, y+2.5); sprite itself is 3 tiles
-        # wide, 3 tall, top-left anchored.
-        self._feet_offset_x = 1.5  # Centre of the collision box
-        self._feet_offset_y = 2.5  # Centre of the collision box
+        # Standing point between the feet; distinct from the shifted box centre.
+        self._feet_offset_x = 1.5
+        self._feet_offset_y = 2.5
 
     def _setup_callbacks(self):
         """Setup client callbacks for tracking."""
@@ -471,7 +470,10 @@ class GameBot:
             x = c.x
         if y is None:
             y = c.y
-        if c.is_gmap and c.gmap_grid:
+        # A loaded grid can remain configured while the player is on a
+        # standalone level.  Only probe it when the authoritative current
+        # level identifies a member segment, matching Client's resolver.
+        if c.in_gmap_segment and c.gmap_grid:
             grid_x = math.floor(x / 64)
             grid_y = math.floor(y / 64)
             name = c.gmap_grid.get((grid_x, grid_y))
@@ -522,8 +524,8 @@ class GameBot:
         parity note), so this probes the LEADING EDGE of the sprite's
         footprint in the direction of travel, not a fixed point. Duplicated
         inline rather than importing pyreborn/game/collision.py's box-based
-        _is_position_blocked (a 2x2-tile box centred on x+1.5/y+2.5, spanning
-        x+0.5..x+2.5 by y+1.5..y+3.5 from the sprite's top-left) to avoid a
+        _is_position_blocked (a 2x2-tile box centred on x+1.5/y+2.0, spanning
+        x+0.5..x+2.5 by y+1.0..y+3.0 from the sprite's top-left) to avoid a
         pygame-dependent import in the headless bot; the sprite itself is 3
         tiles wide x 3 tall, top-left anchored.
 
@@ -533,7 +535,7 @@ class GameBot:
         upward moves blocked the bot where the real client walks.
         """
         box_l, box_r, box_cx = 0.5, 2.5, 1.5
-        box_t, box_b, box_cy = 1.5, 3.5, 2.5
+        box_t, box_b, box_cy = 1.0, 3.0, 2.0
         check_offsets = []
 
         # The box is now 2.0 tiles tall/wide on both axes (it grew from the
@@ -572,8 +574,8 @@ class GameBot:
         """Update swimming state based on current position.
 
         Matches pygame_game.py:_update_swimming_state() for parity: sample the
-        collision box's centre (sprite top-left + (1.5, 2.5)), not the
-        top-left corner.
+        standing point between the feet (sprite top-left + (1.5, 2.5)), not
+        the collision box centre or top-left corner.
         """
         self.is_swimming = self._check_water_at_position(self.client.x + 1.5,
                                                          self.client.y + 2.5)

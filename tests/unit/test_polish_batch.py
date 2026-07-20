@@ -49,6 +49,22 @@ def test_fullstop_packets_set_and_connection_reset_clears_state():
     assert changes == [True, True, False]
 
 
+def test_ghost_icon_and_mode_packets_have_independent_state():
+    client = Client()
+    mode_changes = []
+    client.on_ghost_mode = mode_changes.append
+
+    client._handle_packet(PacketID.PLO_GHOSTMODE, b"\x01")
+    client._handle_packet(PacketID.PLO_GHOSTICON, b"!")
+    assert client.ghost_mode is True
+    assert client.ghost_icon is True
+
+    client._handle_packet(PacketID.PLO_GHOSTICON, b" ")
+    assert client.ghost_mode is True
+    assert client.ghost_icon is False
+    assert mode_changes == [True]
+
+
 def test_newworldtime_decodes_four_gbytes():
     value = 160_000_000
     encoded = bytes(32 + ((value >> shift) & 0x7f)

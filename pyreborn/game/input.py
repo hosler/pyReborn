@@ -469,8 +469,14 @@ class InputMixin:
         a_held = keys[K_a]
         s_held = keys[K_s]
 
+        # Grab/pull is an A-held gesture only — anything else (cycling
+        # weapons, swinging, shooting) drops it.
+        if not a_held:
+            self._clear_grab_state()
+
         # S + A = Cycle weapons
         if s_held and a_held:
+            self._clear_push_hold()
             if self.key_just_pressed.get(K_a, False) or self.key_just_pressed.get(K_s, False):
                 if current_time - self.last_action_time > self.action_delay:
                     self._cycle_weapon()
@@ -493,6 +499,7 @@ class InputMixin:
 
         # Use weapon (D)
         elif keys[K_d]:
+            self._clear_push_hold()
             if self.key_just_pressed.get(K_d, False):
                 if current_time - self.last_action_time > self.action_delay:
                     self._use_weapon()
@@ -510,23 +517,44 @@ class InputMixin:
         elif keys[K_RIGHT]:
             dx = 1
 
+        # A + Arrow, with an established grab already facing a wall (see
+        # _update_grab_pull_state) and the arrow OPPOSITE that facing: this
+        # is "pull", not a fresh lift/pickup attempt in a new direction —
+        # skip _try_pickup entirely so an active grab isn't reinterpreted as
+        # "turn and lift/throw", and keep facing pinned on the grabbed wall.
+        if a_held and self.grab_state is not None and self._grab_direction is not None \
+                and (dx, dy) == self._facing_delta({0: 2, 1: 3, 2: 0, 3: 1}[self._grab_direction]):
+            self._update_grab_pull_state(dx, dy)
+            return
+
         # A + Arrow = Pickup/throw — only on a fresh press of A or the arrow.
         # The old held-repeat re-fired this every 300ms, so lifting a bush and
         # keeping the keys held threw it right back out of your hands.
         if a_held and (dx != 0 or dy != 0):
+            # Re-aiming away from an established grab (not the opposite
+            # direction, handled above as "pull") is a fresh aim-and-lift
+            # attempt in a new direction, not a continuation of the old
+            # grab — drop the stale pinned facing before _try_pickup turns
+            # to face this arrow.
+            if self.grab_state is not None:
+                self._clear_grab_state()
             fresh = any(self.key_just_pressed.get(k, False)
                         for k in (K_a, K_UP, K_DOWN, K_LEFT, K_RIGHT))
             if fresh and current_time - self.last_action_time > self.action_delay:
                 self._try_pickup(dx, dy)
                 self.last_action_time = current_time
+            self._update_grab_pull_state(dx, dy)
             return
 
-        # A alone = Grab/interact
+        # A alone = Grab/interact. The one-shot dispatch (lift/chest/sign/
+        # door/pickup) only fires on a fresh press; the continuous hold-state
+        # update runs every frame A is held so a plain wall shows "grab".
         if a_held and dx == 0 and dy == 0:
             if self.key_just_pressed.get(K_a, False):
                 if current_time - self.last_action_time > self.action_delay:
                     self._try_grab()
                     self.last_action_time = current_time
+            self._update_grab_pull_state(0, 0)
             return
 
         # Movement (arrow keys only, no A held)
@@ -536,6 +564,7 @@ class InputMixin:
             # resume walking.
             if self.current_anim_name in ("sword", "lift"):
                 self.is_moving = False
+                self._clear_push_hold()
                 return
             # Frame-rate independent movement: accumulate distance at walk_speed
             # and apply it in MOVE_STEP-sized steps so speed is identical
@@ -553,3 +582,4 @@ class InputMixin:
             # on stop would re-seat the player every time they tapped to stand.)
             self.is_moving = False
             self._move_accum = 0.0
+            self._clear_push_hold()

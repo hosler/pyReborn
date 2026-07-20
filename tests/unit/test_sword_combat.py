@@ -134,17 +134,11 @@ class TestSwordHitBaddies:
         assert any(pid == int(PacketID.PLI_BADDYHURT) for pid, _ in c._protocol.sent)
 
 
-class TestSwordArcSymmetry:
-    """Regression for the up/down reach asymmetry: the target side of the
-    forward-distance projection used to add +1.0 to the target's Y while the
-    attacker's own center used +1.5, so up and down swings measured against
-    different reference points (see the comment on Client._SWORD_REACH).
-    Down-swing effective reach was REACH+0.5, up-swing REACH-0.5 - a full
-    1-tile gap - while left/right (which never had the mismatch) were fine.
-    """
+class TestSwordArcGeometry:
+    """Sword and target geometry share the collision-box center axes."""
 
-    GAP_HITS = 2.2   # within the fixed symmetric reach (2.5) on every side
-    GAP_MISSES = 2.6  # just past the fixed symmetric reach on every side
+    GAP_HITS = 1.8
+    GAP_MISSES = 3.1
 
     DIRECTIONS = {
         0: (0, -1),  # up
@@ -166,17 +160,68 @@ class TestSwordArcSymmetry:
         return hits == [1]
 
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_symmetric_hit_at_same_gap(self, direction):
+    def test_hit_at_same_near_gap(self, direction):
         assert self._hit(direction, self.GAP_HITS) is True
 
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_symmetric_miss_at_same_gap(self, direction):
+    def test_miss_at_same_far_gap(self, direction):
         assert self._hit(direction, self.GAP_MISSES) is False
 
-    def test_up_and_down_reach_match(self):
-        # The specific live-playtest evidence: down hit at a 2.2-tile gap,
-        # up did not (needed <= ~1.2-2.0 pre-fix). Both must now agree.
-        assert self._hit(0, self.GAP_HITS) == self._hit(2, self.GAP_HITS)
+    @pytest.mark.parametrize("gap", [2.2, 2.5, 2.6])
+    def test_opposite_directions_have_symmetric_reach(self, gap):
+        assert self._hit(0, gap) == self._hit(2, gap)
+        assert self._hit(1, gap) == self._hit(3, gap)
+
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_front_gap_reach_envelope_is_preserved(self, direction):
+        # A 1.5-tile blade plus the target box's 1.0-tile half-size
+        # reaches a target whose body center is exactly 2.5 tiles away.
+        assert self._hit(direction, 2.5) is True
+        assert self._hit(direction, 2.5001) is False
+
+
+class TestSwordArcDirections:
+    DIRECTIONS = {
+        0: (0, -1),
+        1: (-1, 0),
+        2: (0, 1),
+        3: (1, 0),
+    }
+
+    @staticmethod
+    def _hits(kind, direction, offset):
+        c = _fake_connected_client()
+        c.player.x, c.player.y = 30.0, 30.0
+        x, y = 30.0 + offset[0], 30.0 + offset[1]
+        hits = []
+        if kind == "player":
+            c.players[1] = {'x': x, 'y': y, 'world_x': x, 'world_y': y}
+            c.attack_player = lambda player_id, **kwargs: hits.append(player_id)
+            c._sword_hit_players(direction)
+        else:
+            c.npcs[1] = {'x': x, 'y': y, 'world_x': x, 'world_y': y}
+            c.on_sword_hit_npc = hits.append
+            c._sword_hit_npcs(direction)
+        return hits
+
+    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_target_directly_in_front_is_hit(self, kind, direction):
+        fx, fy = self.DIRECTIONS[direction]
+        assert self._hits(kind, direction, (fx * 1.8, fy * 1.8)) == [1]
+
+    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_target_behind_is_not_hit(self, kind, direction):
+        fx, fy = self.DIRECTIONS[direction]
+        assert self._hits(kind, direction, (-fx * 2.2, -fy * 2.2)) == []
+
+    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_target_beside_arc_is_not_hit(self, kind, direction):
+        fx, fy = self.DIRECTIONS[direction]
+        assert self._hits(kind, direction, (fx * 1.0 + fy * 3.0,
+                                             fy * 1.0 - fx * 3.0)) == []
 
 
 class TestBaddyHurtWireFormat:

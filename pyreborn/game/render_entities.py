@@ -9,7 +9,12 @@ import pygame
 
 from ..gani import AnimationState
 from ..player import Player
-from .constants import TILE_SIZE, parse_npc_visual_effects
+from .constants import (
+    TILE_SIZE, parse_npc_visual_effects,
+    PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
+    PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
+    PLAYER_STAND_X, PLAYER_STAND_Y,
+)
 
 
 def _c255(v: float) -> int:
@@ -206,6 +211,36 @@ class BaddySheet:
 class EntityRenderMixin:
     """Mixin providing the above methods for GameClient."""
 
+    @staticmethod
+    def _depth_sort_key(world_y: float, height_tiles: float) -> float:
+        """Bottom edge of an entity image in world-tile coordinates."""
+        return world_y + height_tiles
+
+    def _npc_height_tiles(self, npc: dict) -> float:
+        """Best-known rendered height for an NPC, in tiles."""
+        part = npc.get('imagepart')
+        if part and len(part) >= 4 and part[3] > 0:
+            return part[3] / TILE_SIZE
+        image = npc.get('image')
+        if image and not npc.get('gani', npc.get('animation')):
+            sprite = self.sprite_mgr.load_sheet(image)
+            if sprite is not None:
+                return sprite.get_height() / TILE_SIZE
+        return 3.0
+
+    def _baddy_height_tiles(self, baddy: dict) -> float:
+        image = baddy.get('image') or _BADDY_IMAGES.get(
+            baddy.get('type', 0), _BADDY_DEFAULT_IMAGE)
+        sheet = self.sprite_mgr.load_sheet(image)
+        if sheet is not None:
+            _, height, _ = BaddySheet(self.sprite_mgr, image)._sheet_layout(sheet)
+            return height / TILE_SIZE
+        return 3.0
+
+    def _horse_height_tiles(self, horse: dict) -> float:
+        sprite = self.sprite_mgr.load_sheet(horse.get('image') or 'horse.png')
+        return sprite.get_height() / TILE_SIZE if sprite is not None else 3.0
+
     def _entity_on_screen(self, px: float, py: float, margin: int = 96,
                            screen_size: Optional[Tuple[int, int]] = None) -> bool:
         """True if a sprite at screen pixel (px, py) is near enough the canvas to
@@ -238,13 +273,13 @@ class EntityRenderMixin:
         # top-left (set by _sync_camera) — same transform every other entity
         # uses — so it stays correct under zoom and the camera can aim at the
         # body centre without dragging the sprite off its real position.
-        player = self.client.player
-        # Depth-sort key must be in the SAME frame as every other entity (world
-        # tiles). Other players/NPCs use world Y, so taking the local player's
-        # %64 here made them sort behind everyone in a gmap. visual_y is already
-        # world-frame.
-        px, py = self.camera.world_to_screen(*self._player_render_pos)
-        entities.append(('player', self.visual_y, px, py, player))
+        if not getattr(self.client, '_local_level_transition', ''):
+            player = self.client.player
+            # Depth-sort key must be in the SAME frame as every other entity
+            # (world tiles). visual_y is already world-frame.
+            px, py = self.camera.world_to_screen(*self._player_render_pos)
+            entities.append(('player', self._depth_sort_key(self.visual_y, 3.0),
+                             px, py, player))
 
         # Reverse lookup (level_name -> grid pos), built once per frame instead
         # of rescanning client.gmap_grid for every remote player below (mirrors
@@ -292,7 +327,8 @@ class EntityRenderMixin:
 
                 opx, opy = self.camera.world_to_screen(vx, vy)
                 if self._entity_on_screen(opx, opy, screen_size=screen_size):
-                    entities.append(('other', vy, opx, opy, pdata, pid))
+                    entities.append(('other', self._depth_sort_key(vy, 3.0),
+                                     opx, opy, pdata, pid))
 
         # Add NPCs - use world coords if available (for GMAP), else local.
         # epoch_seen mirrors npc_visual (same lifetime - both are keyed by
@@ -336,7 +372,8 @@ class EntityRenderMixin:
 
                 npx, npy = self.camera.world_to_screen(vx, vy)
                 if self._entity_on_screen(npx, npy, screen_size=screen_size):
-                    entities.append(('npc', vy, npx, npy, npc, npc_id))
+                    entities.append(('npc', self._depth_sort_key(
+                        vy, self._npc_height_tiles(npc)), npx, npy, npc, npc_id))
 
         # Add baddies (enemies). Their x/y are local to the current segment, so
         # fold in that segment's gmap offset to line them up with the world.
@@ -354,7 +391,8 @@ class EntityRenderMixin:
             wx, wy = bx + seg_off_x, by + seg_off_y
             sx, sy = self.camera.world_to_screen(wx, wy)
             if self._entity_on_screen(sx, sy, screen_size=screen_size):
-                entities.append(('baddy', wy, sx, sy, baddy, bid))
+                entities.append(('baddy', self._depth_sort_key(
+                    wy, self._baddy_height_tiles(baddy)), sx, sy, baddy, bid))
 
         # Add horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
         # like baddies, so fold in the current segment's gmap offset.
@@ -366,9 +404,10 @@ class EntityRenderMixin:
             whx, why = hx + seg_off_x, hy + seg_off_y
             hsx, hsy = self.camera.world_to_screen(whx, why)
             if self._entity_on_screen(hsx, hsy, screen_size=screen_size):
-                entities.append(('horse', why, hsx, hsy, horse, hkey))
+                entities.append(('horse', self._depth_sort_key(
+                    why, self._horse_height_tiles(horse)), hsx, hsy, horse, hkey))
 
-        # Sort by Y for depth
+        # Every key is the image's bottom edge in the same world-tile frame.
         entities.sort(key=lambda e: e[1])
 
         # Render each entity
@@ -541,24 +580,24 @@ class EntityRenderMixin:
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
             # Entity position (x, y) is TOP-LEFT of the 3x3-tile sprite.
-            # Ground-sample point is the classic-engine spec's collision-box
-            # CENTRE: +1.5 tiles right, +2.5 tiles down (collision.py's
+            # Ground-sample point is the standing point between the feet:
+            # +1.5 tiles right, +2.5 tiles down (collision.py's
             # PLAYER_FEET_DX/DY — the point chairs/pickups/signs interact
             # against and swim/grass/etc are sampled at), not the box's
             # bottom edge.
-            feet_x = x + TILE_SIZE * 1.5
-            feet_y = y + TILE_SIZE * 2.5
+            feet_x = x + TILE_SIZE * PLAYER_STAND_X
+            feet_y = y + TILE_SIZE * PLAYER_STAND_Y
 
             # Current position marker (red dot at the ground-sample centre)
             pygame.draw.circle(self.screen, (255, 0, 0), (int(feet_x), int(feet_y)), 4)
 
-            # True collision box: 2x2 tiles centred on (feet_x, feet_y),
-            # spanning x+0.5..x+2.5 by y+1.5..y+3.5 (collision.py's
+            # True collision box: 2x2 tiles centred above the standing point,
+            # spanning x+0.5..x+2.5 by y+1.0..y+3.0 (collision.py's
             # _FEET_LEFT/_FEET_RIGHT/_FEET_TOP/_FEET_BOTTOM).
-            box_left = x + TILE_SIZE * 0.5
-            box_right = x + TILE_SIZE * 2.5
-            box_top = y + TILE_SIZE * 1.5
-            box_bottom = y + TILE_SIZE * 3.5
+            box_left = x + TILE_SIZE * PLAYER_COLLISION_LEFT
+            box_right = x + TILE_SIZE * PLAYER_COLLISION_RIGHT
+            box_top = y + TILE_SIZE * PLAYER_COLLISION_TOP
+            box_bottom = y + TILE_SIZE * PLAYER_COLLISION_BOTTOM
             collision_rect = pygame.Rect(
                 int(box_left), int(box_top),
                 int(box_right - box_left), int(box_bottom - box_top)
@@ -566,8 +605,8 @@ class EntityRenderMixin:
             pygame.draw.rect(self.screen, (0, 255, 0), collision_rect, 2)
 
             # Tile grid around player feet
-            feet_world_x = self.client.x + 1.5
-            feet_world_y = self.client.y + 2.5
+            feet_world_x = self.client.x + PLAYER_STAND_X
+            feet_world_y = self.client.y + PLAYER_STAND_Y
             tile_offset_x = (feet_world_x - int(feet_world_x)) * TILE_SIZE
             tile_offset_y = (feet_world_y - int(feet_world_y)) * TILE_SIZE
             for ty in range(-3, 2):

@@ -19,9 +19,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 import pygame.locals as pgl
 import pytest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from pyreborn.game.camera import Camera2D
-from pyreborn.game.hud import chat_window
+from pyreborn.game.hud import HUD, chat_window
 from pyreborn.game.settings_ui import SettingsOverlay
 from pyreborn.prefs import Prefs
 from pyreborn.sounds import SoundManager
@@ -46,6 +48,34 @@ class _FakeGame:
         self.camera = Camera2D(640, 480)
         self.minimap_visible = True
         self._day_night_enabled = True
+
+
+def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
+    hud = HUD.__new__(HUD)
+    hud.game = SimpleNamespace(
+        client=SimpleNamespace(input_frozen=True), screen=object(), typing=True,
+        show_player_list=True, show_server_list=True,
+        settings_ui=SimpleNamespace(visible=True),
+    )
+    hud.ui = Mock()
+    hud._draw_dialogue = Mock()
+    hud._draw_chat = Mock()
+    hud._draw_minimap = Mock()
+    hud._draw_help_overlay = Mock()
+    hud._draw_player_list = Mock()
+    hud._draw_server_list = Mock()
+    hud._draw_settings = Mock()
+
+    hud.draw()
+
+    hud.ui.draw.assert_not_called()
+    hud._draw_dialogue.assert_not_called()
+    hud._draw_minimap.assert_not_called()
+    hud._draw_help_overlay.assert_not_called()
+    hud._draw_chat.assert_called_once_with(hud.game.screen, show_log=False)
+    hud._draw_player_list.assert_called_once_with(hud.game.screen)
+    hud._draw_server_list.assert_called_once_with(hud.game.screen)
+    hud._draw_settings.assert_called_once_with(hud.game.screen)
 
 
 @pytest.fixture

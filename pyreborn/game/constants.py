@@ -17,6 +17,21 @@ TILESET_COLS = 128
 TILESET_ROWS = 32
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 
+# Classic-engine movement feel (collision.py's corner-assist, actions.py's
+# push/grab/pull hold state — see their docstrings).
+CORNER_ASSIST_MAX = 0.5  # tiles - max perpendicular nudge near a doorway/corner
+PUSH_HOLD_TIME = 0.5     # seconds a blocked direction must be held before "push"
+
+# Player collision geometry relative to the 3x3 sprite's top-left anchor.
+PLAYER_COLLISION_LEFT = 0.5
+PLAYER_COLLISION_RIGHT = 2.5
+PLAYER_COLLISION_TOP = 1.0
+PLAYER_COLLISION_BOTTOM = 3.0
+PLAYER_BODY_CENTER_X = (PLAYER_COLLISION_LEFT + PLAYER_COLLISION_RIGHT) / 2
+PLAYER_BODY_CENTER_Y = (PLAYER_COLLISION_TOP + PLAYER_COLLISION_BOTTOM) / 2
+PLAYER_STAND_X = 1.5
+PLAYER_STAND_Y = 2.5
+
 # Scrollback cap for chat_messages (game/hud.py's PageUp/PageDown scrollback,
 # game/input.py's chat/PM append sites, game/setup.py's server/roster/PM
 # append sites). Was 10 (no scrollback existed); raised so PageUp actually has
@@ -100,4 +115,3 @@ def parse_npc_visual_effects(script: str, image_name: str = '') -> dict:
                 effects['coloreffect'] = (r, g, b, a)
 
     return effects
-

@@ -30,11 +30,12 @@ class TileType(IntEnum):
     JUMP_STONE = 21        # Jump tiles (block walking)
     BLOCKING = 22          # Solid walls and obstacles
     # Liftable objects (a pyReborn client mechanic, not in the base type data).
-    # The standard tile data only knows these as BLOCKING; bush/rock/pot are
+    # The standard tile data only knows these as blocking; object kinds are
     # distinguished via the tile-corrections overlay so glove power can gate them.
     BUSH = 23              # Bushes - bare-handed (glove power 0)
     ROCK = 24              # Rocks - need a glove (power 1)
     POT = 25               # Pots - bare-handed (glove power 0)
+    SIGN = 26              # Standalone post signs - bare-handed
 
 
 _DAT_PATH = os.path.join(os.path.dirname(__file__), "tiletypes1.dat")
@@ -90,7 +91,7 @@ def type_is_blocking(tile_type: int) -> bool:
 
     Mirrors the C# client's IsOnWall, which is just a threshold: anything at
     THROW_THROUGH (20) or above blocks — throw-through, jump-stone, solid walls,
-    and the liftable bush/rock/pot objects (23-25). Beds (4/5) block too, so they
+    and the liftable object types (23-26). Beds (4/5) block too, so they
     are the one explicit addition below the threshold.
     """
     return (tile_type >= TileType.THROW_THROUGH or
@@ -127,9 +128,9 @@ def is_chair(tile_id: int) -> bool:
 
 
 def is_liftable(tile_id: int) -> bool:
-    """Check if a tile is a liftable object (bush, rock, pot)."""
+    """Check if a tile is a liftable object."""
     tile_type = get_tile_type(tile_id)
-    return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT)
+    return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT, TileType.SIGN)
 
 
 def get_lift_power_required(tile_id: int) -> int:
@@ -137,7 +138,7 @@ def get_lift_power_required(tile_id: int) -> int:
     Get the glove power required to lift a tile.
 
     Returns:
-        0 = bushes and pots (bare-handed) or not liftable
+        0 = bushes, pots, and post signs (bare-handed) or not liftable
         1 = rocks (need a glove)
     """
     tile_type = get_tile_type(tile_id)
@@ -155,4 +156,6 @@ def get_liftable_type_name(tile_id: int) -> str:
         return "pot"
     elif tile_type == TileType.ROCK:
         return "rock"
+    elif tile_type == TileType.SIGN:
+        return "sign"
     return ""

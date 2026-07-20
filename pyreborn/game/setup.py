@@ -194,13 +194,14 @@ class SetupMixin:
                 except Exception:
                     pass
 
-        # Tier 1a: a server-relayed bomb (another player's) went off. The
-        # entity itself is read live from client.bombs each frame (see
-        # render_effects._render_server_bombs); this just adds the flash +
-        # sound the removal packet doesn't otherwise convey.
+        def on_bomb_add(info):
+            self._add_remote_bomb(info)
+
         def on_bomb_del(x, y):
-            self.active_bomb_explosions.append({'x': x, 'y': y, 'time': time.time()})
-            self.sound_mgr.play("explode.wav")
+            self._detonate_bomb_at(x, y)
+
+        def on_arrow_add(info):
+            self._add_remote_arrow(info)
 
         # Tier 1b: a board tile delta arrived - patch just the affected rect
         # into the cached world_surface instead of a full rebuild.
@@ -279,6 +280,10 @@ class SetupMixin:
         self.client.on_ghost_mode = on_ghost_mode
         if hasattr(self.client, 'on_bomb_del'):
             self.client.on_bomb_del = on_bomb_del
+        if hasattr(self.client, 'on_bomb_add'):
+            self.client.on_bomb_add = on_bomb_add
+        if hasattr(self.client, 'on_arrow_add'):
+            self.client.on_arrow_add = on_arrow_add
         if hasattr(self.client, 'on_board_modify'):
             self.client.on_board_modify = on_board_modify
         if hasattr(self.client, 'on_board_layer'):
@@ -649,14 +654,6 @@ class SetupMixin:
             effects = getattr(self, attr, None)
             if isinstance(effects, list):
                 effects.clear()
-        # First-seen timestamps for server-relayed bombs (used to derive
-        # local fuse-flash/explosion timing from client.bombs, which carries
-        # no 'time' field) are keyed by bomb position -- a key re-used by an
-        # unrelated bomb in the new level must not inherit a fuse clock that
-        # was already ticking in the old one.
-        seen = getattr(self, '_server_bomb_seen', None)
-        if isinstance(seen, dict):
-            seen.clear()
         self.visual_x, self.visual_y = self.client.x, self.client.y
         self.world_surface = None
         self._gs1_level = lvl

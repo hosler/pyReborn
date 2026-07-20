@@ -193,33 +193,30 @@ class EffectsRenderMixin:
         self.screen.blit(explosion_surf, (screen_x - radius, screen_y - radius))
 
     def _render_bombs(self):
-        """Render active bombs and explosions."""
+        """Advance and render the unified local/remote bomb registry."""
         current_time = time.time()
-
-
         active_bombs = []
         for bomb in self.active_bombs:
+            fuse_time = max(0.05, bomb.get('fuse_time', self.bomb_fuse_time))
             elapsed = current_time - bomb['time']
 
             # Convert world position to screen position
             screen_x, screen_y = self.camera.world_to_screen(bomb['x'], bomb['y'])
 
-            if not bomb['exploded'] and elapsed < self.bomb_fuse_time:
+            if not bomb.get('exploded') and elapsed < fuse_time:
                 # Bomb is still counting down - render bomb sprite
                 # Flash faster as fuse runs out
-                flash_rate = 5 + (elapsed / self.bomb_fuse_time) * 10
+                flash_rate = 5 + (elapsed / fuse_time) * 10
                 if int(elapsed * flash_rate) % 2 == 0:
                     self._render_bomb_ticking(screen_x, screen_y, elapsed)
                 active_bombs.append(bomb)
 
-            elif elapsed < self.bomb_fuse_time + self.explosion_duration:
-                # Explosion phase
-                if not bomb['exploded']:
-                    bomb['exploded'] = True
-                    # Play explosion sound
-                    self.sound_mgr.play("explode.wav")
-
-                explosion_elapsed = elapsed - self.bomb_fuse_time
+            else:
+                if not bomb.get('exploded'):
+                    self._detonate_bomb(bomb, current_time)
+                explosion_elapsed = current_time - bomb['explosion_time']
+                if explosion_elapsed >= self.explosion_duration:
+                    continue
                 explosion_progress = explosion_elapsed / self.explosion_duration
 
                 # Expanding explosion radius
@@ -228,9 +225,76 @@ class EffectsRenderMixin:
 
                 self._render_explosion_burst(screen_x, screen_y, explosion_elapsed, radius, alpha)
                 active_bombs.append(bomb)
-            # else: bomb finished, don't add to active list
 
         self.active_bombs = active_bombs
+
+    def _add_remote_bomb(self, info: dict, now: Optional[float] = None):
+        """Insert a wire bomb into the same registry used by local bombs."""
+        now = time.time() if now is None else now
+        x, y = info.get('x', 0.0), info.get('y', 0.0)
+        for bomb in self.active_bombs:
+            if (not bomb.get('exploded') and bomb.get('source') == 'remote'
+                    and bomb['x'] == x and bomb['y'] == y):
+                bomb.update(power=info.get('power', 1),
+                            fuse_time=max(0.05, info.get('timer_ms', 3050) / 1000.0))
+                return bomb
+        bomb = {
+            'x': x, 'y': y, 'time': now,
+            'fuse_time': max(0.05, info.get('timer_ms', 3050) / 1000.0),
+            'power': info.get('power', 1), 'exploded': False,
+            'source': 'remote',
+        }
+        self.active_bombs.append(bomb)
+        return bomb
+
+    def _detonate_bomb_at(self, x: float, y: float, now: Optional[float] = None):
+        """Honor a removal packet immediately, without starting a second burst."""
+        now = time.time() if now is None else now
+        matches = [b for b in self.active_bombs
+                   if abs(b['x'] - x) < 0.01 and abs(b['y'] - y) < 0.01]
+        if matches:
+            bomb = next((b for b in matches if not b.get('exploded')), matches[0])
+        else:
+            bomb = {'x': x, 'y': y, 'time': now, 'fuse_time': 0.05,
+                    'power': 1, 'exploded': False, 'source': 'remote'}
+            self.active_bombs.append(bomb)
+        self._detonate_bomb(bomb, now)
+        return bomb
+
+    def _detonate_bomb(self, bomb: dict, now: Optional[float] = None):
+        if bomb.get('exploded'):
+            return False
+        now = time.time() if now is None else now
+        bomb['exploded'] = True
+        bomb['explosion_time'] = now
+        self.sound_mgr.play("explode.wav")
+        self._break_bushes_in_blast(bomb['x'], bomb['y'], bomb.get('power', 1))
+        return True
+
+    def _break_bushes_in_blast(self, x: float, y: float, power: int):
+        """Remove vegetation objects whose tiles overlap the circular blast."""
+        radius = 2.5 + power * 0.5
+        origins = set()
+        lo_x, hi_x = math.floor(x - radius), math.ceil(x + radius)
+        lo_y, hi_y = math.floor(y - radius), math.ceil(y + radius)
+        for ty in range(lo_y, hi_y + 1):
+            for tx in range(lo_x, hi_x + 1):
+                if math.hypot(tx + 0.5 - x, ty + 0.5 - y) > radius:
+                    continue
+                tile_id = self._get_tile_at(tx, ty)
+                if self._get_corrected_tile_type(tile_id) != TileType.BUSH:
+                    continue
+                origin = self._find_2x2_object_origin(tx, ty)
+                if origin:
+                    origins.add(origin)
+        for ox, oy in origins:
+            tile_id = self._get_tile_at(ox, oy)
+            tile_type = self._get_corrected_tile_type(tile_id)
+            self._remove_2x2_tiles(ox, oy, tile_type)
+            self._spawn_hit_break_effect(ox + 1.0, oy + 1.0)
+        if origins:
+            self.world_surface = None
+        return origins
     # Fallback triangle colors, keyed by the projectile's 'gani' name -
     # 'arrow' (the default, matching the classic brown arrow it replaces)
     # and 'firespy' (a distinct fire-orange, so a fireball doesn't look like
@@ -266,15 +330,35 @@ class EffectsRenderMixin:
         pygame.draw.polygon(self.screen, outline, points, 1)
 
     def _update_and_render_projectiles(self, dt: float):
-        """Update and render active projectiles."""
+        """Advance all arrows and stop them briefly at the first solid tile."""
         current_time = time.time()
-
-
         active_projectiles = []
         for proj in self.active_projectiles:
-            # Update position
+            if 'hit_time' in proj:
+                if current_time - proj['hit_time'] < 0.12:
+                    self._render_arrow_hit_spark(proj, current_time)
+                    active_projectiles.append(proj)
+                continue
+
+            old_x, old_y = proj['x'], proj['y']
             proj['x'] += proj['dx'] * dt
             proj['y'] += proj['dy'] * dt
+            travel = math.hypot(proj['x'] - old_x, proj['y'] - old_y)
+            samples = max(1, math.ceil(travel * 4))
+            hit = False
+            for step in range(1, samples + 1):
+                frac = step / samples
+                sx = old_x + (proj['x'] - old_x) * frac
+                sy = old_y + (proj['y'] - old_y) * frac
+                if self._is_tile_blocking(self._get_tile_at(sx, sy)):
+                    proj['x'], proj['y'] = sx, sy
+                    proj['hit_time'] = current_time
+                    hit = True
+                    break
+            if hit:
+                self._render_arrow_hit_spark(proj, current_time)
+                active_projectiles.append(proj)
+                continue
 
             # Check if projectile exceeded max distance
             dist_x = proj['x'] - proj['start_x']
@@ -293,15 +377,37 @@ class EffectsRenderMixin:
 
         self.active_projectiles = active_projectiles
 
+    def _render_arrow_hit_spark(self, proj: dict, now: float):
+        screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
+        age = now - proj['hit_time']
+        radius = max(1, int(5 * (1.0 - age / 0.12)))
+        pygame.draw.circle(self.screen, (255, 220, 120),
+                           (int(screen_x), int(screen_y)), radius, 1)
+
+    def _add_remote_arrow(self, info: dict, now: Optional[float] = None):
+        now = time.time() if now is None else now
+        direction = info.get('direction', 2)
+        vx, vy = self._ARROW_DIRECTION_VECTOR.get(direction, (0, 1))
+        x, y = info.get('x', 0.0), info.get('y', 0.0)
+        arrow = {
+            'x': x, 'y': y, 'dx': vx * 8.0, 'dy': vy * 8.0,
+            'time': now, 'direction': direction, 'gani': 'arrow',
+            'max_distance': 10.0, 'start_x': x, 'start_y': y,
+            'source': 'remote',
+        }
+        self.active_projectiles.append(arrow)
+        return arrow
+
     # Debris tints for thrown-object breaks: (bright, dark) per liftable type.
     BREAK_COLORS = {
         'bush': ((60, 145, 60), (28, 96, 28)),
         'pot':  ((198, 150, 104), (140, 96, 60)),
         'rock': ((150, 150, 150), (96, 96, 96)),
+        'sign': ((174, 132, 72), (103, 70, 36)),
     }
 
     def _update_and_render_thrown(self, dt: float):
-        """Fly thrown liftables (bush/pot/rock) along their arc and break them
+        """Fly thrown liftables along their arc and break them
         on landing or on the first blocking tile. The 2x2 tile graphic is drawn
         lifted by its arc height, so the throw actually reads as a throw."""
         survivors = []
@@ -451,52 +557,8 @@ class EffectsRenderMixin:
             active.append(eff)
         self.break_effects = active
     def _render_server_bombs(self):
-        """Render bombs placed by OTHER players (client.bombs, from PLO_BOMBADD).
-
-        The server never echoes PLI_BOMBADD back to the placer (see
-        PlayerClientPackets.cpp msgPLI_BOMBADD - sendPacketToOneLevelPart
-        excludes m_id), so this dict only ever holds other players' bombs; the
-        placer's own bomb keeps rendering via the existing local
-        active_bombs/_render_bombs path. No dedup between the two is needed.
-
-        Since parse_bomb_add's dict has no wall-clock 'time' field, first-seen
-        time is tracked locally per (x, y) key to drive the same fuse-flash /
-        explosion look as the local bomb visual.
-        """
-        now = time.time()
-        bombs = self.client.bombs
-        seen = self._server_bomb_seen
-        for key, bomb in bombs.items():
-            first_seen = seen.get(key)
-            if first_seen is None:
-                first_seen = seen[key] = now
-            fuse_total = max(0.05, bomb.get('timer_ms', 3050) / 1000.0)
-            elapsed = now - first_seen
-            x, y = bomb.get('x', 0.0), bomb.get('y', 0.0)
-            screen_x, screen_y = self.camera.world_to_screen(x, y)
-            if not self._entity_on_screen(screen_x, screen_y, margin=64):
-                continue
-            if elapsed < fuse_total:
-                flash_rate = 5 + (elapsed / fuse_total) * 10
-                if int(elapsed * flash_rate) % 2 == 0:
-                    self._render_bomb_ticking(screen_x, screen_y, elapsed)
-            else:
-                # Timer elapsed but the server hasn't sent PLO_BOMBDEL yet (the
-                # owner detonates it locally and relays the removal) - keep a
-                # faint burst going rather than snapping back to a solid bomb.
-                progress = min(1.0, (elapsed - fuse_total) / self.explosion_duration)
-                radius = int(16 + bomb.get('power', 1) * 16 * progress)
-                alpha = int(255 * (1.0 - progress))
-                if radius > 0 and alpha > 0:
-                    surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-                    pygame.draw.circle(surf, (255, 150, 50, alpha), (radius, radius), radius)
-                    self.screen.blit(surf, (screen_x - radius, screen_y - radius))
-
-        # Drop tracking for bombs the server has removed (PLO_BOMBDEL already
-        # popped them out of client.bombs).
-        for key in list(seen):
-            if key not in bombs:
-                del seen[key]
+        """Compatibility shim for callers predating the unified registry."""
+        return None
 
     def _render_server_bomb_explosions(self):
         """Render the brief flash queued by on_bomb_del (see game/setup.py)."""
@@ -528,24 +590,7 @@ class EffectsRenderMixin:
         plain data dicts, not shared with the protocol layer) and is flown
         along its direction at a fixed speed for a short lifetime, matching
         the look of the local arrow projectile path in _use_weapon."""
-        now = time.time()
-        speed = 8.0       # tiles/sec, matches the local bow-shot visual
-        lifetime = 1.25    # seconds (~10 tiles at speed 8)
-        for arrow in self.client.arrows:
-            recv_time = arrow.get('_recv_time')
-            if recv_time is None:
-                recv_time = arrow['_recv_time'] = now
-            elapsed = now - recv_time
-            if elapsed > lifetime:
-                continue
-            direction = arrow.get('direction', 2)
-            dvx, dvy = self._ARROW_DIRECTION_VECTOR.get(direction, (0, 1))
-            x = arrow.get('x', 0.0) + dvx * speed * elapsed
-            y = arrow.get('y', 0.0) + dvy * speed * elapsed
-            screen_x, screen_y = self.camera.world_to_screen(x, y)
-            if not self._entity_on_screen(screen_x, screen_y, margin=32):
-                continue
-            self._render_projectile_marker('arrow', screen_x, screen_y, direction, elapsed)
+        return None
 
     def _render_screen_tint(self):
         """Draw ambient and script-driven fullscreen tints under the HUD.

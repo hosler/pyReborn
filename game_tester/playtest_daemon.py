@@ -33,7 +33,7 @@ Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
 
 Agent-prompt caveats:
   - /map draws @ at the sprite's TOP-LEFT while collision is a 2x2-tile box
-    centred on (x+1.5, y+2.5) (spans x+0.5..x+2.5, y+1.5..y+3.5) — tell
+    centred on (x+1.5, y+2.0) (spans x+0.5..x+2.5, y+1.0..y+3.0) — tell
     agents or they report false wall-clips.
   - npc_dialogue (PLO_SAY2 text: sign reads / NPC chatter) is in BOTH /state
     and /log, not just one - without it in /state, an agent polling only
@@ -274,12 +274,14 @@ def _blocking_tile_in_footprint(board, x, y):
     if clear.
 
     Same collision-box GameBot._is_position_blocked() checks (a 2x2-tile box
-    centred on x+1.5/y+2.5, spanning x+0.5..x+2.5 by y+1.5..y+3.5, of a
+    centred on x+1.5/y+2.0, spanning x+0.5..x+2.5 by y+1.0..y+3.0, of a
     3-wide x 3-tall top-left-anchored sprite), not just the single tile under
     (x, y) - a warp landing with only its top-left corner clear but its feet
     in a wall still strands the bot.
     """
-    for ox, oy in ((0.5, 1.5), (2.5, 1.5), (0.5, 3.5), (2.5, 3.5), (1.5, 2.5)):
+    for ox, oy in ((0.5, 1.0), (1.5, 1.0), (2.5, 1.0),
+                   (0.5, 2.0), (1.5, 2.0), (2.5, 2.0),
+                   (0.5, 3.0), (1.5, 3.0), (2.5, 3.0)):
         tx, ty = math.floor(x + ox), math.floor(y + oy)
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
             continue

@@ -1,9 +1,4 @@
-"""Regression test for the 2026-07-19 follow-up: _server_bomb_seen (the
-first-seen-timestamp bookkeeping for server-relayed bombs, used to derive
-local fuse-flash/explosion timing) must be cleared on level change alongside
-the other combat-effect containers (game/setup.py's _reload_level_scripts),
-same as active_bombs/active_projectiles/thrown_objects/
-active_bomb_explosions/break_effects."""
+"""Level reloads deterministically clear the unified bomb registry."""
 
 import os
 import sys
@@ -53,10 +48,12 @@ class _ReloadHarness(SetupMixin):
         self.other_player_visual = {1: object()}
         self.active_projectiles = [{'x': 1.0}]
         self.thrown_objects = [{'x': 1.0}]
-        self.active_bombs = [{'x': 1.0}]
+        self.active_bombs = [{
+            'x': 5.0, 'y': 5.0, 'time': 123.0, 'source': 'remote',
+            'power': 1, 'exploded': False,
+        }]
         self.active_bomb_explosions = [{'x': 1.0}]
         self.break_effects = [{'x': 1.0}]
-        self._server_bomb_seen = {(5.0, 5.0): 123.0}
         self.visual_x = self.visual_y = 0.0
         self.world_surface = None
         self._gs1_level = None
@@ -76,9 +73,8 @@ class TestReloadClearsServerBombSeen:
 
         h._reload_level_scripts("level2.nw")
 
-        assert h._server_bomb_seen == {}
-        # Sanity: the other combat-effect containers this was grouped with
-        # are still cleared too.
+        # Remote and local bombs now share active_bombs.  There is no separate
+        # first-seen map that can be repopulated or cleared out of order.
         assert h.active_bombs == []
         assert h.active_projectiles == []
 

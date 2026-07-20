@@ -296,16 +296,19 @@ class HUD:
         self.ui.update(g.viewport.mouse_pos())
 
     def draw(self):
-        if getattr(self.game.client, 'input_frozen', False):
-            return
         surf = self.game.screen
-        self.ui.draw(surf)
-        self._draw_dialogue(surf)
-        self._draw_chat(surf)
-        self._draw_minimap(surf)
-        if self.game.show_help and not (self.game.typing or self.game.debug_mode
-                                        or self.game.inventory_ui.visible):
-            self._draw_help_overlay(surf)
+        input_frozen = getattr(self.game.client, 'input_frozen', False)
+        if not input_frozen:
+            self.ui.draw(surf)
+            self._draw_dialogue(surf)
+            self._draw_chat(surf)
+            self._draw_minimap(surf)
+            if self.game.show_help and not (self.game.typing or self.game.debug_mode
+                                            or self.game.inventory_ui.visible):
+                self._draw_help_overlay(surf)
+        elif self.game.typing:
+            # Chat input remains modal and accepts keys during a full stop.
+            self._draw_chat(surf, show_log=False)
         if self.game.show_player_list:
             self._draw_player_list(surf)
         if self.game.show_server_list:
@@ -367,7 +370,7 @@ class HUD:
         plate.set_alpha(150)
         return (ts, plate)
 
-    def _draw_chat(self, surf):
+    def _draw_chat(self, surf, show_log=True):
         g = self.game
         total = len(g.chat_messages)
         scroll = g.chat_scroll   # 0 = live tail; >0 = PageUp'd back that many messages
@@ -383,13 +386,14 @@ class HUD:
             self._chat_slice = slice_
 
         y = g.screen_h - 60
-        for msg in reversed(slice_):
-            ts, plate = self._chat_cache[msg]
-            surf.blit(plate, (5, y - 2))
-            surf.blit(ts, (10, y))
-            y -= 20
+        if show_log:
+            for msg in reversed(slice_):
+                ts, plate = self._chat_cache[msg]
+                surf.blit(plate, (5, y - 2))
+                surf.blit(ts, (10, y))
+                y -= 20
 
-        if scroll > 0:
+        if show_log and scroll > 0:
             # New messages that arrived while scrolled back still get
             # appended to chat_messages (and counted here) even though
             # they're off-screen until PageDown/Esc resumes the live tail.

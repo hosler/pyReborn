@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 # ClientGS2 with no pygame installed -- still work; GUI construction/builtins
 # just no-op when it's unavailable.
 try:
-    from .game.gs2_gui import GS2GuiManager
+    from .game.gs2_gui import GS2GuiManager, GuiPopUpEditCtrl
 except Exception:  # pragma: no cover - pygame not installed (headless use)
     GS2GuiManager = None
+    GuiPopUpEditCtrl = None
 
 #: GS1 command names (from the shared lexer table) -- any GS2 builtin call
 #: with a matching name is routed to GS1ClientHost.call_command so both
@@ -279,6 +280,17 @@ class GS2ClientHost(GS2Host):
                 # destroy(ctrl) global form below for the other one).
                 rt2.gui.destroy(obj)
                 return 0.0
+            if GuiPopUpEditCtrl is not None and isinstance(obj, GuiPopUpEditCtrl):
+                if name in ("addrow", "add") and len(args) >= 2:
+                    return obj.add_row(args[0], args[1])
+                if name == "clear":
+                    if rt2.gui is not None and rt2.gui._open_popup is obj:
+                        rt2.gui._close_popup()
+                    return obj.clear_rows()
+                if name in ("getselectedrow", "getselected"):
+                    return obj.get_selected_row()
+                if name in ("getrowtext", "gettextbyid") and args:
+                    return obj.get_row_text(args[0])
             # other object methods with no member function bound: no GS1
             # equivalent
             return NOT_HANDLED

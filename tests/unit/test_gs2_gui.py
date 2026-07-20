@@ -37,7 +37,8 @@ from reborn_protocol.gs2 import GS2VM
 from pyreborn.gs2_client import ClientGS2
 from pyreborn.game.gs2_gui import (
     GS2GuiManager, GuiBitmapCtrl, GuiButtonCtrl, GuiCheckBoxCtrl,
-    GuiRadioCtrl, GuiShowImgCtrl, GuiTextCtrl, GuiTextEditCtrl, GuiWindowCtrl,
+    GuiPopUpEditCtrl, GuiRadioCtrl, GuiShowImgCtrl, GuiTextCtrl,
+    GuiTextEditCtrl, GuiWindowCtrl,
 )
 
 pygame.init()
@@ -554,6 +555,103 @@ class TestRadioGroup:
         self._click(self.r1)
         assert self.outside.checked is True
         assert "outside" not in self.fired
+
+
+# =============================================================================
+# Popup selection control
+# =============================================================================
+
+class TestPopUpEdit:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.popup = GuiPopUpEditCtrl("choices")
+        self.popup.x, self.popup.y = 10, 10
+        self.popup.width, self.popup.height = 120, 20
+        self.gui.addcontrol(self.popup)
+        self.popup.add_row(10, "First")
+        self.popup.add_row(20, "Second")
+        self.selected = []
+        self.actions = []
+        self.popup.set("onselect", lambda row_id, text:
+                       self.selected.append((row_id, text)))
+        self.popup.set("onaction", lambda: self.actions.append(self.popup.text))
+
+    def _open(self):
+        self.gui.handle_event(_mousedown((15, 15)))
+        self.gui.handle_event(_mouseup((15, 15)))
+        assert self.popup.popup_open is True
+
+    def _choose(self, index):
+        row_y = int(self.popup.y + self.popup.height * (index + 1) + 5)
+        self.gui.handle_event(_mousedown((15, row_y)))
+        self.gui.handle_event(_mouseup((15, row_y)))
+
+    def test_add_select_and_callbacks_once_per_change(self):
+        assert self.popup.get_row_text(20) == "Second"
+        self._open()
+        self._choose(1)
+        assert self.popup.get_selected_row() == 20
+        assert self.popup.text == "Second"
+        assert self.selected == [(20, "Second")]
+        assert self.actions == ["Second"]
+        assert self.popup.popup_open is False
+
+    def test_reselecting_same_row_fires_nothing(self):
+        self._open()
+        self._choose(0)
+        self._open()
+        self._choose(0)
+        assert self.selected == [(10, "First")]
+        assert self.actions == ["First"]
+
+    def test_outside_click_closes_and_is_consumed(self):
+        under = GuiButtonCtrl("under")
+        under.x, under.y, under.width, under.height = 200, 10, 80, 20
+        fired = []
+        under.set("onaction", lambda: fired.append(True))
+        self.gui.addcontrol(under)
+        self._open()
+        assert self.gui.handle_event(_mousedown((205, 15))) is True
+        assert self.popup.popup_open is False
+        assert fired == []
+        assert self.popup.get_selected_row() == -1.0
+
+    def test_escape_closes_without_hiding_window_or_selecting(self):
+        self._open()
+        event = pygame.event.Event(
+            pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": "", "mod": 0})
+        assert self.gui.handle_event(event) is True
+        assert self.popup.popup_open is False
+        assert self.popup.get_selected_row() == -1.0
+
+    @pytest.mark.parametrize("operation", ["hide", "destroy"])
+    def test_close_releases_pointer_state(self, operation):
+        win = GuiWindowCtrl("container")
+        win.x, win.y, win.width, win.height = 0, 0, 160, 120
+        self.gui.roots.remove(self.popup)
+        win.add_child(self.popup)
+        self.gui.addcontrol(win)
+        self._open()
+        self.gui.handle_event(_mousemove((15, 35)))
+        assert self.gui._open_popup is self.popup
+        assert self.gui._hover is self.popup
+        getattr(self.gui, operation)(win)
+        assert self.gui._open_popup is None
+        assert self.gui._hover is None
+        assert self.gui._pressed is None
+        assert self.popup.popup_open is False
+
+    def test_script_facing_object_methods(self):
+        host = self.rt2.host
+        extra = GuiPopUpEditCtrl("extra")
+        assert host.call_builtin(None, "addrow", [7, "Seven"], obj=extra) == 0.0
+        assert host.call_builtin(None, "add", [8, "Eight"], obj=extra) == 1.0
+        assert host.call_builtin(None, "getrowtext", [8], obj=extra) == "Eight"
+        assert host.call_builtin(None, "getselectedrow", [], obj=extra) == -1.0
+        host.call_builtin(None, "clear", [], obj=extra)
+        assert extra.rows == []
+        assert extra.text == ""
 
 
 # =============================================================================

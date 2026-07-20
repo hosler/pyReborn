@@ -105,8 +105,9 @@ def _t1a_bomb(game, c1, c2):
     key = (float(int(c1.x)), float(int(c1.y)))
     c1.bombs[key] = {'owner_id': 999, 'x': key[0], 'y': key[1], 'power': 1, 'timer_ms': 3050}
     try:
-        game._render_server_bombs()  # must not raise, must flash the fuse
-        assert key in getattr(game, '_server_bomb_seen', {})
+        bomb = game._add_remote_bomb(c1.bombs[key], now=123.0)
+        assert bomb in game.active_bombs
+        assert bomb['source'] == 'remote'
     finally:
         c1.bombs.pop(key, None)
 
