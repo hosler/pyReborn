@@ -123,6 +123,8 @@ class NPCHandler:
         self.touched_npcs.discard(npc_id)
         if self.gs1 is not None:
             self.gs1.forget_npc(npc_id)
+        if self.gs2 is not None:
+            self.gs2.forget_npc(npc_id)
 
     def update_npcs(self):
         """Refresh per-NPC scripts and collision shapes.

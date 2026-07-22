@@ -148,8 +148,13 @@ class _FlagScopeObject(GS2Object):
             self._scope[self._key(key)] = value
 
     def has(self, key: str) -> bool:
-        # an unset flag reads as "" (get above), never as a missing member
-        return True
+        # Report ACTUAL membership. Direct `server.x` access reads an unset
+        # flag as "" via get() (member-access never consults has()), but the
+        # with-scope variable lookup (vm.py _lookup) DOES gate on has() --
+        # returning True unconditionally there would silently redirect every
+        # bare local inside `with(server){...}` to a networked flag.
+        k = self._key(key)
+        return k in self._scope or k.lower() in self._scope
 
 
 class _PlayerObject(GS2Object):
@@ -996,6 +1001,24 @@ class ClientGS2:
             kind, key, blob = self._pending_bytecode.pop(0)
             self.load_bytecode(kind, key, blob)
 
+    def forget_npc(self, npc_id):
+        """Drop all VM state for a despawned NPC (PLO_NPCDEL), mirroring
+        ClientGS1.forget_npc. Without this the NPC's VM lingers in self.vms
+        (so a reused npc-id inherits its this-state and skips onCreated),
+        its pending settimer keeps firing onTimeout against a vanished NPC,
+        and any parked coroutine keeps running."""
+        for key in (npc_id, str(npc_id)):
+            vm = self.vms["npc"].pop(key, None)
+            if vm is None:
+                continue
+            self._vm_keys.pop(id(vm), None)
+            self._vm_owners.pop(id(vm), None)
+            self._entered_vms.discard(id(vm))
+            tkey = ("npc", key)
+            self._timeouts.pop(tkey, None)
+            self._active_coro_keys.discard(tkey)
+            self._coros = [c for c in self._coros if c["key"] != tkey]
+
     def pump_level_events(self):
         """Fire onPlayerEnters once per VM per level visit: weapons always,
         NPC VMs once their NPC is present in the player's current level.
@@ -1058,8 +1081,36 @@ class ClientGS2:
             del self._timeouts[vm_key]      # handler may re-arm
             kind, key = vm_key
             vm = self.vms.get(kind, {}).get(key)
-            if vm is not None and vm.has_function("onTimeout"):
+            if vm is None:
+                continue
+            # Don't fire the timer of an NPC that has moved to another level
+            # (ghost effects from a stale settimer). A truly despawned NPC's
+            # VM is already gone via forget_npc (PLO_NPCDEL); an NPC not
+            # tracked in client.npcs at all is left alone (weapons and
+            # test/headless VMs have no NPC record and must still tick).
+            if kind == "npc" and self._npc_in_other_level(key):
+                continue
+            if vm.has_function("onTimeout"):
                 self._run(vm, "onTimeout")
+
+    def _npc_in_other_level(self, key) -> bool:
+        """True only if this NPC is present in client.npcs AND tagged to a
+        level other than the player's current one."""
+        client = self.client
+        if client is None:
+            return False
+        npcs = getattr(client, "npcs", {})
+        npc = npcs.get(key)
+        if npc is None and isinstance(key, str):
+            try:
+                npc = npcs.get(int(key))
+            except ValueError:
+                npc = None
+        if not isinstance(npc, dict):
+            return False
+        level = getattr(client, "_current_level_name", "") or ""
+        npc_level = npc.get("_level") or npc.get("level")
+        return bool(npc_level and level and npc_level != level)
 
     # -- GS1 host plumbing -----------------------------------------------------
 

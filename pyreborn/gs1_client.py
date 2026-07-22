@@ -945,6 +945,11 @@ class _ServerFlagScope(dict):
         if self._sent.get(k) == sv:        # dedup: don't resend unchanged flags
             return
         self._sent[k] = sv
+        # Untrusted server bytecode drives these writes; a `for(...)server.x=i`
+        # loop would flood the wire with PLI_FLAGSET. Rate-limit outbound
+        # sends (local value still updates so scripts read back what they set).
+        if not self._rt._flag_send_allowed():
+            return
         # On the wire global flags are named with the "server." prefix
         # (server.bombrm_NN); the GS1 scope keys them without it.
         try:
@@ -984,6 +989,8 @@ class _PlayerFlagScope(dict):
         if self._sent.get(k) == sv:        # dedup: don't resend unchanged flags
             return
         self._sent[k] = sv
+        if not self._rt._flag_send_allowed():
+            return
         try:
             cl.set_flag("client." + str(k), sv)
         except Exception:
@@ -1022,6 +1029,26 @@ def _num_or_str(v):
 class ClientGS1:
     """Runs GS1 NPC scripts client-side. Drop-in for the old GS1Interpreter."""
 
+    # Outbound flag rate limit: refill tokens/sec, burst cap. Legit scripts
+    # write a handful of flags per action (bomber room state); this only bites
+    # a runaway setstring loop.
+    _FLAG_SEND_RATE = 60.0
+    _FLAG_SEND_BURST = 120.0
+
+    def _flag_send_allowed(self) -> bool:
+        """Token-bucket gate for outbound PLI_FLAGSET (see _flag_tokens)."""
+        import time as _t
+        now = _t.time()
+        if self._flag_last_refill:
+            self._flag_tokens = min(
+                self._FLAG_SEND_BURST,
+                self._flag_tokens + (now - self._flag_last_refill) * self._FLAG_SEND_RATE)
+        self._flag_last_refill = now
+        if self._flag_tokens < 1.0:
+            return False
+        self._flag_tokens -= 1.0
+        return True
+
     def __init__(self, client=None):
         self.client = client
         self.scripts: dict = {}        # name -> raw code (back-compat)
@@ -1036,6 +1063,11 @@ class ClientGS1:
                         "server": _ServerFlagScope(self),
                         "level": {}, "global": {}}
         self._flags: dict = {}
+        # Outbound-flag rate limiter (token bucket): bounds PLI_FLAGSET
+        # packets so untrusted server bytecode can't flood the wire with a
+        # setstring loop. Shared by the server + client flag scopes.
+        self._flag_tokens = float(self._FLAG_SEND_BURST)
+        self._flag_last_refill = 0.0
         self._proj_params: list = []   # #p(n) during actionprojectile2/keypressed
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
         # Input / screen / game-role state the arena weapons read via builtins.
