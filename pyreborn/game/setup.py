@@ -348,7 +348,14 @@ class SetupMixin:
             params = csv.split(',') if csv else []
             shooter = str(info.get('shooter', ''))
             gani = info.get('gani', '') or ''
-            self.gs1.fire_projectile([shooter, gani] + params)
+            args = [shooter, gani] + params
+            self.gs1.fire_projectile(args)
+            # GS2 weapons take the same event; params[i] == GS1's #p(i)
+            # (verified against Bomber v6's -validation: params[2] is the
+            # Bomb.Queue tag, params[3] the room+account).
+            gs2 = getattr(self, 'gs2', None)
+            if gs2 is not None:
+                gs2.trigger_event("onActionProjectile2", *args)
 
         # A server flag arrived (PLO_FLAGSET) — route it into the right GS1
         # scope: "client."/"clientr." are the player's persisted account flags
@@ -559,9 +566,15 @@ class SetupMixin:
         # script (including its `play`/`triggeraction`/etc. side effects via the
         # gs1.on_* callbacks above). The handler only does collision detection.
         if getattr(self, "npc_handler", None) is not None:
-            self.npc_handler.on_playertouchsme = (
-                lambda npc_id, npc_data: self.gs1.trigger_npc_event(
-                    npc_id, "playertouchsme"))
+            def _route_touch(npc_id, npc_data):
+                self.gs1.trigger_npc_event(npc_id, "playertouchsme")
+                # GS2 NPCs (v6 servers stream bytecode) take the same touch.
+                # gs2 is created after this callback is wired (GameClient
+                # __init__ order), hence the getattr.
+                gs2 = getattr(self, "gs2", None)
+                if gs2 is not None:
+                    gs2.trigger_npc_event(npc_id, "onPlayerTouchsMe")
+            self.npc_handler.on_playertouchsme = _route_touch
             # The handler reads collision shapes the engine records on setshape.
             self.npc_handler.gs1 = self.gs1
             # Drop a despawned NPC's shape/script so its ghost can't keep
@@ -645,6 +658,12 @@ class SetupMixin:
                 self.gs1.fire_projectile(params)
             except Exception:
                 pass
+            gs2 = getattr(self, 'gs2', None)
+            if gs2 is not None:
+                try:
+                    gs2.trigger_event("onActionProjectile2", *params)
+                except Exception:
+                    pass
 
     def _process_pending_warp(self):
         """Perform a GS1-requested warp (setlevel2/serverwarp) recorded by the

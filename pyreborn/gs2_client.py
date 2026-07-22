@@ -71,6 +71,18 @@ _PLAYER_MEMBER_ATTR.update({
 })
 
 
+def _csv_flatten(args) -> List[str]:
+    """Trigger params as wire CSV fields: a GS2 {array} argument contributes
+    one field per element (Graal flattens arrays into the action string)."""
+    out: List[str] = []
+    for a in args:
+        if isinstance(a, (list, tuple)):
+            out.extend(to_str(x) for x in a)
+        else:
+            out.append(to_str(a))
+    return out
+
+
 def _image_size(data: bytes):
     """(width, height) from a GIF/PNG/JPEG/BMP header, or None."""
     if len(data) < 26:
@@ -97,6 +109,47 @@ def _image_size(data: bytes):
             seg_len = int.from_bytes(data[i + 2:i + 4], "big")
             i += 2 + seg_len
     return None
+
+
+class _FlagScopeObject(GS2Object):
+    """GS2 view of a GS1 flag scope: `server.x` / `serverr.x` / `client.x` /
+    `clientr.x` member reads and writes bridge to the shared GS1 scopes (see
+    gs1_client._ServerFlagScope/_PlayerFlagScope), so GS2 and GS1 scripts --
+    and the real wire flags behind them -- see one store.
+
+    Wire names: "serverr."/"clientr." names are stored UNstripped in the
+    server scope ("server." alone is stripped by its recv), so the serverr
+    view prefixes its keys. serverr is the read-only replica -- writes stay
+    local (dict.__setitem__) instead of echoing PLI_FLAGSET back.
+    """
+
+    __slots__ = ("_scope", "_prefix", "_local_writes")
+
+    def __init__(self, name: str, scope: dict, prefix: str = "",
+                 local_writes: bool = False):
+        super().__init__(name=name)
+        self._scope = scope
+        self._prefix = prefix
+        self._local_writes = local_writes
+
+    def _key(self, key: str) -> str:
+        return self._prefix + key if self._prefix else key
+
+    def get(self, key: str) -> Any:
+        k = self._key(key)
+        if k in self._scope:
+            return self._scope[k]
+        return self._scope.get(k.lower(), "")
+
+    def set(self, key: str, value: Any) -> None:
+        if self._local_writes:
+            dict.__setitem__(self._scope, self._key(key), value)
+        else:
+            self._scope[self._key(key)] = value
+
+    def has(self, key: str) -> bool:
+        # an unset flag reads as "" (get above), never as a missing member
+        return True
 
 
 class _PlayerObject(GS2Object):
@@ -240,6 +293,8 @@ class GS2ClientHost(GS2Host):
             return self.rt2.player_object
         if name == "level":
             return self.rt2.level_object
+        if name in ("server", "serverr", "client", "clientr"):
+            return self.rt2.flag_scope_object(name)
         # a named weapon's script object (findweapon-style access)
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
@@ -474,7 +529,7 @@ class GS2ClientHost(GS2Host):
         if name == "triggeraction":
             # triggeraction(x, y, action, params...) -> PLI_TRIGGERACTION
             if rt2.client is not None and len(args) >= 3:
-                action = ",".join(to_str(a) for a in args[2:])
+                action = ",".join(_csv_flatten(args[2:]))
                 rt2.client.triggeraction(action, x=to_num(args[0]), y=to_num(args[1]))
             return 0.0
 
@@ -487,7 +542,7 @@ class GS2ClientHost(GS2Host):
             if rt2.client is not None and len(args) >= 2:
                 prefix = ("servernpc" if to_str(args[0]).lower() == "npc"
                           else "serverside")
-                action = ",".join([prefix] + [to_str(a) for a in args[1:]])
+                action = ",".join([prefix] + _csv_flatten(args[1:]))
                 rt2.client.triggeraction(action, x=0.0, y=0.0)
             return 0.0
 
@@ -559,6 +614,10 @@ class ClientGS2:
         self.globals_store: Dict[str, Any] = {}
         self.player_object = _PlayerObject(self)
         self.level_object = GS2Object(name="level")
+        self._flag_scopes: Dict[str, GS2Object] = {}
+        # onPlayerEnters bookkeeping: which VMs got it for the current level
+        self._entered_level: Optional[str] = None
+        self._entered_vms: set = set()
         # GUI-controls tree (showgui/GuiControl); None when pygame isn't
         # installed (headless callers, e.g. game_tester's GameBot).
         self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
@@ -582,6 +641,8 @@ class ClientGS2:
         self._pending_bytecode: List[tuple] = []
         self._sleeping = False                    # a script sleep() is pumping update()
         self._sleep_debt: Dict[int, float] = {}   # id(vm) -> unpaid in-packet sleep() time
+        self._coros: List[dict] = []
+        self._active_coro_keys: set = set()
 
     def save_lines(self, filename: str, lines: list) -> bool:
         """Persist script lines beneath a server-scoped client cache directory."""
@@ -712,7 +773,7 @@ class ClientGS2:
             # never re-firing an equivalent hook) only fires the first time.
             vm.run_toplevel()
             if old is None and vm.has_function("onCreated"):
-                vm.call("onCreated")
+                self._run(vm, "onCreated")
         return vm
 
     # -- class joins ---------------------------------------------------------
@@ -776,6 +837,48 @@ class ClientGS2:
 
     # -- events --------------------------------------------------------------
 
+    def _run(self, vm: GS2VM, event: str, *args) -> None:
+        key = self._timeout_key(vm)
+        if key in self._active_coro_keys:
+            return
+        gen = vm.iter_call(event, *args)
+        self._drive(gen, vm, key, event)
+
+    def _drive(self, gen, vm: GS2VM, key: tuple, event: str) -> None:
+        try:
+            delay = next(gen)
+        except StopIteration:
+            self._active_coro_keys.discard(key)
+            return
+        except Exception as e:
+            self._active_coro_keys.discard(key)
+            logger.warning("GS2 %s.%s aborted: %s", vm.name, event, e)
+            return
+        self._active_coro_keys.add(key)
+        self._coros.append({"gen": gen, "vm": vm, "key": key,
+                            "event": event, "remaining": float(delay)})
+
+    def process_coroutines(self, dt: float) -> None:
+        """Resume scripts whose cooperative sleep has elapsed."""
+        if not self._coros:
+            return
+        still = []
+        for coro in self._coros:
+            coro["remaining"] -= dt
+            if coro["remaining"] > 0:
+                still.append(coro)
+                continue
+            try:
+                coro["remaining"] = float(next(coro["gen"]))
+                still.append(coro)
+            except StopIteration:
+                self._active_coro_keys.discard(coro["key"])
+            except Exception as e:
+                self._active_coro_keys.discard(coro["key"])
+                logger.warning("GS2 %s.%s aborted: %s",
+                               coro["vm"].name, coro["event"], e)
+        self._coros = still
+
     def trigger_event(self, event: str, *args) -> int:
         """Fire an event on every weapon/NPC VM that defines it. Returns the
         number of VMs that handled it."""
@@ -783,14 +886,14 @@ class ClientGS2:
         for kind in ("weapon", "npc"):
             for vm in list(self.vms[kind].values()):
                 if vm.has_function(event):
-                    vm.call(event, *args)
+                    self._run(vm, event, *args)
                     n += 1
         return n
 
     def trigger_weapon_event(self, weapon: str, event: str, *args) -> bool:
         vm = self.vms["weapon"].get(weapon.lower())
         if vm is not None and vm.has_function(event):
-            vm.call(event, *args)
+            self._run(vm, event, *args)
             return True
         return False
 
@@ -802,6 +905,53 @@ class ClientGS2:
                 return True
         return False
 
+    def trigger_npc_event(self, npc_id, event: str, *args) -> bool:
+        """Fire an event on one NPC's VM (touch/hit routing from the game
+        layer). NPC VM keys keep the id type they arrived with, so try both
+        int and str forms."""
+        vms = self.vms["npc"]
+        vm = vms.get(npc_id)
+        if vm is None:
+            vm = vms.get(str(npc_id))
+        if vm is None:
+            try:
+                vm = vms.get(int(npc_id))
+            except (TypeError, ValueError):
+                pass
+        if vm is not None and vm.has_function(event):
+            self._run(vm, event, *args)
+            return True
+        return False
+
+    def npc_has_event(self, npc_id, event: str) -> bool:
+        """True if this NPC's VM defines the event (used by the touch
+        handler's gate)."""
+        vms = self.vms["npc"]
+        vm = vms.get(npc_id) or vms.get(str(npc_id))
+        if vm is None:
+            try:
+                vm = vms.get(int(npc_id))
+            except (TypeError, ValueError):
+                pass
+        return vm is not None and vm.has_function(event)
+
+    def flag_scope_object(self, name: str) -> GS2Object:
+        """The GS2 view of a shared GS1 flag scope ('server'/'serverr'/
+        'client'/'clientr'), created lazily and cached."""
+        obj = self._flag_scopes.get(name)
+        if obj is None:
+            shared = self.gs1._shared if self.gs1 is not None else {}
+            if name in ("client", "clientr"):
+                scope = shared.setdefault("client", {})
+                obj = _FlagScopeObject(name, scope)
+            else:
+                scope = shared.setdefault("server", {})
+                prefix = "serverr." if name == "serverr" else ""
+                obj = _FlagScopeObject(name, scope, prefix=prefix,
+                                       local_writes=(name == "serverr"))
+            self._flag_scopes[name] = obj
+        return obj
+
     def handle_triggeraction(self, action_csv: str):
         """Inbound PLO_TRIGGERACTION: fire onAction<name>(params...) --
         the GS2 counterpart of the GS1 `action<name>` routing in client.py."""
@@ -809,6 +959,13 @@ class ClientGS2:
             return
         parts = action_csv.split(",")
         name = parts[0].strip()
+        if name.lower() == "clientside" and len(parts) >= 2:
+            # Server-pushed weapon trigger (triggerclient on the serverside):
+            # "clientside,<weaponname>,<params...>" fires onActionClientSide
+            # on the NAMED weapon only, params[] = the remaining args.
+            self.trigger_weapon_event(parts[1], "onActionClientSide",
+                                      *parts[2:])
+            return
         if name:
             self.trigger_event("onAction" + name, *parts[1:])
 
@@ -839,6 +996,48 @@ class ClientGS2:
             kind, key, blob = self._pending_bytecode.pop(0)
             self.load_bytecode(kind, key, blob)
 
+    def pump_level_events(self):
+        """Fire onPlayerEnters once per VM per level visit: weapons always,
+        NPC VMs once their NPC is present in the player's current level.
+        Called every frame (from process_timeouts), so late-streaming
+        bytecode gets its entry event when it arrives -- the classic-bomber
+        lesson: on slow servers most NPCs stream in AFTER level entry and
+        would otherwise never run their setup (setshape2 collision shapes,
+        showimg layers, setTimer arming)."""
+        client = self.client
+        if client is None:
+            return
+        level = getattr(client, "_current_level_name", "") or ""
+        if not level:
+            return
+        if level != self._entered_level:
+            changed_level = self._entered_level is not None
+            self._entered_level = level
+            self._entered_vms = set()
+            if changed_level:
+                self._coros = []
+                self._active_coro_keys.clear()
+        npcs = getattr(client, "npcs", {})
+        for kind in ("weapon", "npc"):
+            for key, vm in list(self.vms[kind].items()):
+                if id(vm) in self._entered_vms:
+                    continue
+                if kind == "npc":
+                    npc = npcs.get(key)
+                    if npc is None and isinstance(key, str):
+                        try:
+                            npc = npcs.get(int(key))
+                        except ValueError:
+                            npc = None
+                    if not isinstance(npc, dict):
+                        continue          # not streamed as a level NPC (yet)
+                    npc_level = npc.get("_level") or npc.get("level")
+                    if npc_level and npc_level != level:
+                        continue          # belongs to another level
+                self._entered_vms.add(id(vm))
+                if vm.has_function("onPlayerEnters"):
+                    self._run(vm, "onPlayerEnters")
+
     def process_timeouts(self, dt: float):
         """Count down each VM's pending timeout and fire onTimeout when it
         elapses (handlers typically re-arm via settimer/this.timeout).
@@ -850,6 +1049,7 @@ class ClientGS2:
         definition. onTimeout may still be defined on a joined class; call()
         finds it there via has_function()'s joined-VM fallback."""
         self.pump_pending()
+        self.pump_level_events()
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt
             if t > 0:
@@ -859,7 +1059,7 @@ class ClientGS2:
             kind, key = vm_key
             vm = self.vms.get(kind, {}).get(key)
             if vm is not None and vm.has_function("onTimeout"):
-                vm.call("onTimeout")
+                self._run(vm, "onTimeout")
 
     # -- GS1 host plumbing -----------------------------------------------------
 

@@ -103,6 +103,7 @@ class NPCHandler:
     def __init__(self, client):
         self.client = client
         self.gs1 = None  # ClientGS1; set by the game client. Source of shapes.
+        self.gs2 = None  # ClientGS2; consulted for bytecode NPCs' touch gate.
         self.npc_shapes: Dict[int, NPCShape] = {}  # npc_id -> shape
         self.npc_scripts: Dict[int, str] = {}  # npc_id -> script
         self.last_player_pos: Tuple[float, float] = (0, 0)
@@ -179,7 +180,10 @@ class NPCHandler:
         # pre-filter on direction or re-parse the script here.
         if self.on_playertouchsme:
             for npc_id in new_touches:
-                if 'playertouchsme' in self.npc_scripts.get(npc_id, ''):
+                if ('playertouchsme' in self.npc_scripts.get(npc_id, '')
+                        or (self.gs2 is not None
+                            and self.gs2.npc_has_event(npc_id,
+                                                       "onPlayerTouchsMe"))):
                     if os.environ.get("PYREBORN_DEBUG"):
                         import sys
                         print(f"[touch] NPC {npc_id} at player ({new_x:.1f},{new_y:.1f}) dir={direction}",

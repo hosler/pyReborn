@@ -306,6 +306,10 @@ class Client:
         # header (GServer Player.cpp sendFile: "Older client versions didn't
         # send the modTime"). Only the 1.x entries qualify.
         self._file_no_modtime = str(version).startswith("1.")
+        # v2.30+/v6 clients report movement with hi-res X2/Y2 pixel props;
+        # classic servers only track X/Y. Keyed off the negotiated version.
+        self._use_pixel_props = not (str(version).startswith("1.")
+                                     or str(version).startswith("2."))
 
         # Use WebSocketProtocol in browser, regular Protocol otherwise
         if IS_BROWSER:
@@ -871,7 +875,10 @@ class Client:
         # Always send LOCAL coordinates (0-63) - server tracks level separately
         local_x = new_x % 64
         local_y = new_y % 64
-        data = build_movement(local_x, local_y, direction)
+        # v2.30+/v6 clients report position via the high-precision X2/Y2
+        # props (78/79); classic servers only understand X/Y (15/16).
+        data = build_movement(local_x, local_y, direction,
+                              use_new_format=self._use_pixel_props)
         if self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data):
             # Update local state
             self.player.x = new_x
@@ -903,7 +910,8 @@ class Client:
             return False
         local_x = self.player.x % 64
         local_y = self.player.y % 64
-        data = build_movement(local_x, local_y, self.player.direction)
+        data = build_movement(local_x, local_y, self.player.direction,
+                              use_new_format=self._use_pixel_props)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
     def say(self, message: str) -> bool:

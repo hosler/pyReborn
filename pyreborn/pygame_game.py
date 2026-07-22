@@ -150,6 +150,10 @@ class GameClient(
         # engines drive the same rendering/callback paths.
         self.gs2 = ClientGS2(self.client, self.gs1).attach()
         self.gs2.game_shell = self
+        # The touch handler consults GS2 VMs for its event gate (bytecode
+        # NPCs have no GS1 script text to sniff).
+        if getattr(self, "npc_handler", None) is not None:
+            self.npc_handler.gs2 = self.gs2
 
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
@@ -438,6 +442,7 @@ class GameClient(
             # Drive NPC + weapon `timeout` events (proximity checks, room-join
             # logic, the arena's per-frame bomb gameplay loop).
             self.gs1.process_timeouts(self._frame_dt)
+            self.gs2.process_coroutines(self._frame_dt)
             # GS2 VM onTimeout scheduling (settimer / this.timeout).
             self.gs2.process_timeouts(self._frame_dt)
             # Snapshot held keys so keydown2(code, edge=true) sees just-pressed.
