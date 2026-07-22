@@ -62,7 +62,7 @@ exclude = ["tests*"]  # exclude packages matching these glob patterns (["tests*"
 
 [tool.setuptools.package-data]
 # Ship the data files the client loads at runtime (tile-type table, corrections).
-pyreborn = ["*.json", "*.dat"]
+pyreborn = ["*.json", "*.dat", "assets/*.ttf"]
 
 [tool.black]
 line-length = 88

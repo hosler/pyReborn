@@ -29,6 +29,9 @@ class _RecordingSpriteManager:
         crop.fill((220, 30, 40, 255))
         return crop
 
+    def load_sheet(self, image):
+        return None
+
 
 def _player(**overrides):
     values = dict(
@@ -49,13 +52,13 @@ def test_public_render_crops_each_equipment_sheet_before_scaling():
 
     ui.render(_player())
 
-    expected = [
+    expected_equipment = [
         ("equipped_sword.png", 32, 0, 32, 32),
         ("equipped_shield.png", 0, 0, 19, 20),
-        ("equipped_head.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['head']),
         ("equipped_body.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['body']),
+        ("equipped_head.png", *PLAYER_EQUIPMENT_PREVIEW_RECTS['head']),
     ]
-    assert manager.crops == expected
+    assert manager.crops == expected_equipment
     assert all((crop[3], crop[4]) != (128, 704) for crop in manager.crops)
 
 
@@ -84,3 +87,62 @@ def test_panel_background_and_footer_are_inside_overlay():
     # Nothing is drawn by the inventory below its now-extended panel.
     assert screen.get_at((ui.ui_x + ui.ui_width // 2,
                           ui.ui_y + ui.ui_height + 1))[3] == 0
+
+
+def test_granted_name_only_weapon_is_visible_and_system_weapon_is_hidden():
+    screen = pygame.Surface((640, 560), pygame.SRCALPHA)
+    ui = InventoryUI(screen)
+    ui.show()
+    weapons = {
+        "Beer": {"name": "Beer", "image": ""},
+        "-validation": {"name": "-validation", "image": ""},
+    }
+
+    ui.render(_player(), weapons)
+
+    assert [name for name, _ in ui._visible_weapon_entries(weapons)] == ["Beer"]
+    assert any(key[1] == "Beer" for key in ui._text_cache)
+    assert not any("validation" in key[1] for key in ui._text_cache)
+
+
+def test_grid_population_preserves_live_acquisition_order_and_hides_system_weapons():
+    ui = InventoryUI(pygame.Surface((640, 560), pygame.SRCALPHA))
+    weapons = {
+        "Bow": {"image": "wbow1.png"},
+        "-arenaSYS": {"image": ""},
+        "Bomb": {"image": "wbomb.png"},
+    }
+
+    assert [name for name, _ in ui._visible_weapon_entries(weapons)] == ["Bow", "Bomb"]
+
+
+def test_selector_moves_by_grid_and_stops_at_partial_row_bounds():
+    ui = InventoryUI(pygame.Surface((640, 560), pygame.SRCALPHA))
+    weapons = {f"Weapon {i}": {} for i in range(7)}
+
+    assert ui.move_selector(1, 0, weapons) == 1
+    assert ui.move_selector(0, 1, weapons) == 6
+    assert ui.move_selector(1, 0, weapons) == 6
+    assert ui.move_selector(0, 1, weapons) == 6
+    assert ui.move_selector(-1, 0, weapons) == 5
+    assert ui.move_selector(0, -1, weapons) == 0
+
+
+def test_enter_equips_cursor_for_the_d_key_weapon_lookup():
+    ui = InventoryUI(pygame.Surface((640, 560), pygame.SRCALPHA))
+    weapons = {"Bow": {}, "Bomb": {}}
+    ui.cursor_weapon_idx = 1
+
+    assert ui.handle_key(pygame.K_RETURN, weapons)
+    assert ui.selected_weapon_idx == 1
+    # ActionsMixin._use_weapon calls this exact lookup for D.
+    assert ui.get_selected_weapon(weapons) == "Bomb"
+
+
+def test_imageless_weapon_renders_initials_letter_tile():
+    screen = pygame.Surface((640, 560), pygame.SRCALPHA)
+    ui = InventoryUI(screen, _RecordingSpriteManager())
+    ui.show()
+    ui.render(_player(), {"Magic Wand": {"image": ""}})
+
+    assert any(key[1] == "MA" for key in ui._text_cache)

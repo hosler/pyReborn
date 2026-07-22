@@ -59,13 +59,19 @@ class Viewport:
     def handle_resize(self, w: int, h: int):
         """Call on pygame.VIDEORESIZE.
 
-        Calling set_mode() itself emits a fresh VIDEORESIZE under SDL2, so
-        re-creating the window unconditionally here spawns a new window every
-        frame. Only re-create when the size actually changed to break that loop.
+        pygame 2 (SDL2) resizes the display surface in place when the window
+        manager resizes a RESIZABLE window, BEFORE the VIDEORESIZE event is
+        delivered — so by the time we get here `self.window` usually already
+        has the new size. That must only skip the redundant set_mode() call
+        (which would itself emit a fresh VIDEORESIZE and loop window
+        re-creation every frame), NOT the layout/on_resize propagation:
+        skipping that left the game camera sized at the original 640x480
+        after the WM resized the fresh window, drawing the world off-center
+        until a zoom change happened to rebuild its transform from the live
+        window size.
         """
-        if self.window.get_size() == (w, h):
-            return
-        self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        if self.window.get_size() != (w, h):
+            self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
         if self.native:
             # Canvas IS the window; hand the new size to the game so it can
             # resize the camera/HUD to match.

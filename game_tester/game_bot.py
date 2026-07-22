@@ -25,7 +25,9 @@ from dataclasses import dataclass, field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyreborn import Client
-from pyreborn.tiletypes import TileType, get_tile_type, is_blocking, is_water
+from pyreborn.tiletypes import (
+    TileType, get_tile_type, is_blocking, is_swimming_water,
+)
 
 
 @dataclass
@@ -566,9 +568,9 @@ class GameBot:
         return False
 
     def _check_water_at_position(self, x: float, y: float) -> bool:
-        """Check if the position is in water."""
+        """Check if the standing point is in deep, swimmable water."""
         tile_id = self._get_tile_at(x, y)
-        return is_water(tile_id)
+        return is_swimming_water(tile_id)
 
     def _update_swimming_state(self):
         """Update swimming state based on current position.

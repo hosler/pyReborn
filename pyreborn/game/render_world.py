@@ -84,13 +84,11 @@ class WorldRenderMixin:
         for (level_name, grid_ox, grid_oy) in segments:
             self._blit_segment(level_name, grid_ox, grid_oy)
 
-        # Tier 4a: the water/lava shimmer only actually gets drawn on
-        # alternating halves of its period (see _render_animated_tiles) - on
-        # the other half nothing this frame will use the fold, so skip
-        # rebuilding it entirely. `_is_shimmer_draw_frame`'s result is stashed
-        # so _render_animated_tiles (called later this same frame) checks the
-        # exact same half rather than recomputing time.time() again.
-        self._shimmer_draw_this_frame = self._is_shimmer_draw_frame()
+        # Sample the four-step ramp once so this pass and the later animated
+        # draw use the same phase even if the clock crosses a cadence boundary.
+        # Phase zero uses the base tile already baked into the segment.
+        self._shimmer_step_this_frame = self._shimmer_ramp_step()
+        self._shimmer_draw_this_frame = self._shimmer_step_this_frame != 0
         if self._shimmer_draw_this_frame:
             self._refresh_animated_tiles_cache(segments, tile_range)
 
@@ -370,7 +368,7 @@ class WorldRenderMixin:
                 if get_tile_type(tile_id) in self._ANIMATED_TILE_TYPES:
                     animated_out.append((tx, ty, tile_id))
 
-    def _get_shimmer_tile(self, tile_id: int) -> pygame.Surface:
+    def _get_shimmer_tile(self, tile_id: int, step: int) -> pygame.Surface:
         """Tier 4a fallback animation: a subtle brightness-pulsed copy of a
         water/lava tile. No verified multi-frame pics1.png animation-index
         table exists in this repo (unlike chests, nothing here was hand-picked
@@ -380,26 +378,44 @@ class WorldRenderMixin:
         cache = getattr(self, '_shimmer_cache', None)
         if cache is None:
             cache = self._shimmer_cache = {}
-        if tile_id in cache:
-            return cache[tile_id]
+        # Normal zoomed rendering uses a 1:1 scratch camera and scales the
+        # finished scene, while direct/debug rendering can use a zoomed camera
+        # here. Key by the effective camera zoom and make the tile match that
+        # camera's pixel footprint so both paths remain aligned.
+        zoom = round(self.camera.zoom, 6)
+        key = (tile_id, zoom)
+        variants = cache.get(key)
+        if variants is not None:
+            return variants[step - 1]
+
         base = self.tileset_mgr.get_tile_or_color(tile_id)
-        shimmer = base.copy()
-        overlay = pygame.Surface(shimmer.get_size(), pygame.SRCALPHA)
-        # Additive blend ignores the fill alpha — the RGB values ARE the
-        # brightness bump, so keep them small (the old (190,225,255) washed
-        # every water tile to near-white and read as flashing).
-        overlay.fill((18, 26, 34))
-        shimmer.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-        cache[tile_id] = shimmer
-        return shimmer
+        footprint = max(1, round(self.camera.scale))
+        if base.get_size() != (footprint, footprint):
+            base = pygame.transform.scale(base, (footprint, footprint))
+
+        # Build every non-base ramp variant together on the first cache miss;
+        # animated tiles only perform dictionary lookups and blits per frame.
+        made = []
+        for bump in ((9, 13, 17), (18, 26, 34)):
+            shimmer = base.copy()
+            overlay = pygame.Surface(shimmer.get_size())
+            overlay.fill(bump)
+            shimmer.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            made.append(shimmer)
+        # Steps 1 and 3 are the same half-bright frame in off/half/full/half.
+        variants = (made[0], made[1], made[0])
+        cache[key] = variants
+        return variants[step - 1]
 
     _SHIMMER_PERIOD = 0.3
 
+    def _shimmer_ramp_step(self) -> int:
+        """Return the current off/half/full/half ramp step at 300ms cadence."""
+        return int(time.time() / self._SHIMMER_PERIOD) % 4
+
     def _is_shimmer_draw_frame(self) -> bool:
-        """True on the half of each `_SHIMMER_PERIOD` where the shimmer
-        variant actually gets drawn - the other half the base tile (already
-        baked into the segment surface) is correct as-is."""
-        return int(time.time() / self._SHIMMER_PERIOD) % 2 == 1
+        """Compatibility predicate: false only for the ramp's base step."""
+        return self._shimmer_ramp_step() != 0
 
     def _render_animated_tiles(self):
         """Tier 4a: redraw just the indexed water/lava tiles every ~300ms with
@@ -414,4 +430,5 @@ class WorldRenderMixin:
         # is needed here beyond the world->screen conversion for the blit.
         for (tx, ty, tile_id) in tiles:
             sx, sy = self.camera.world_to_screen(tx, ty)
-            self.screen.blit(self._get_shimmer_tile(tile_id), (int(sx), int(sy)))
+            tile = self._get_shimmer_tile(tile_id, self._shimmer_step_this_frame)
+            self.screen.blit(tile, (int(sx), int(sy)))

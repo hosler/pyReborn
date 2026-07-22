@@ -7,6 +7,44 @@ from typing import List, Tuple
 import pygame
 
 
+def aspect_fit(source_size, bounds):
+    """Largest size fitting in bounds while preserving source aspect ratio."""
+    sw, sh = source_size
+    bw, bh = bounds
+    if sw <= 0 or sh <= 0:
+        return 1, 1
+    scale = min(bw / sw, bh / sh)
+    return max(1, round(sw * scale)), max(1, round(sh * scale))
+
+
+def map_entity_positions(client):
+    """Yield local-player red and visible remote-player white map positions.
+
+    Coordinates are normalized to the whole world on a segmented map and to
+    the current 64x64 board otherwise.
+    """
+    is_world = client.gmap_width > 0 and client.gmap_height > 0
+    span_x = client.gmap_width * 64 if is_world else 64
+    span_y = client.gmap_height * 64 if is_world else 64
+    yield (client.x % span_x) / span_x, (client.y % span_y) / span_y, (255, 0, 0)
+
+    level_to_grid = {name: cell for cell, name in client.gmap_grid.items()}
+    current_grid = level_to_grid.get(client._current_level_name)
+    for pdata in client.players.values():
+        px, py = pdata.get('world_x'), pdata.get('world_y')
+        if px is None or py is None:
+            px, py = pdata.get('x'), pdata.get('y')
+            if px is None or py is None:
+                continue
+            if is_world:
+                grid = level_to_grid.get(pdata.get('level')) or current_grid
+                if grid is None:
+                    continue
+                px += grid[0] * 64
+                py += grid[1] * 64
+        yield (px % span_x) / span_x, (py % span_y) / span_y, (255, 255, 255)
+
+
 class MinimapMixin:
     """Mixin providing the above methods for GameClient."""
 
@@ -46,9 +84,8 @@ class MinimapMixin:
                     self.minimap_surface.set_at((x, y), color)
 
         # Scale to display size
-        self.minimap_surface = pygame.transform.scale(
-            self.minimap_surface, self.minimap_size
-        )
+        self._minimap_native_surface = self.minimap_surface
+        self.minimap_surface = pygame.transform.scale(self.minimap_surface, self.minimap_size)
     def _ensure_bigmap_surface(self):
         """Tier 4b: fall back to the PLO_BIGMAP world image for the M-key map
         when there's no PLO_MINIMAP grid data (classic gmap worlds that ship a
@@ -72,6 +109,7 @@ class MinimapMixin:
             return
         self._bigmap_image_name = image
         self._minimap_is_bigmap = True
+        self.bigmap_surface = sheet
         self.minimap_surface = pygame.transform.smoothscale(sheet, self.minimap_size)
 
     def _get_minimap_palette(self) -> List[Tuple[int, int, int]]:

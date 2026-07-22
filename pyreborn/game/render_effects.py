@@ -6,6 +6,7 @@ import time
 import json
 import math
 import re
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -62,6 +63,58 @@ def day_night_tint(minute_of_day):
 
 class EffectsRenderMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _combat_surface(self, name, flags=pygame.SRCALPHA):
+        """Return a screen-sized cached effect surface."""
+        key = (name, self.screen.get_size())
+        cache = getattr(self, '_combat_surface_cache', None)
+        if cache is None:
+            cache = self._combat_surface_cache = {}
+        surf = cache.get(key)
+        if surf is None:
+            surf = cache[key] = pygame.Surface(self.screen.get_size(), flags)
+        return surf
+
+    def _render_combat_presentation(self):
+        """Composite cached hurt/death effects after the HUD."""
+        now = time.monotonic()
+        state = self.combat_presentation
+        warp = bool(getattr(self.client, '_local_level_transition', ''))
+        state.sync(self.client.player.hearts <= 0, warp, now)
+
+        hit_alpha = state.hit_flash_alpha(now)
+        if hit_alpha:
+            vignette = self._combat_surface('hurt-vignette')
+            if not getattr(self, '_hurt_vignette_ready', False):
+                vignette.fill((0, 0, 0, 0))
+                w, h = vignette.get_size()
+                edge = max(24, min(w, h) // 7)
+                for i in range(edge):
+                    alpha = round(90 * (1.0 - i / edge) ** 2)
+                    pygame.draw.rect(vignette, (150, 0, 0, alpha),
+                                     (i, i, w - i * 2, h - i * 2), 1)
+                self._hurt_vignette_ready = True
+            vignette.set_alpha(hit_alpha)
+            self.screen.blit(vignette, (0, 0))
+
+        if state.death_started is not None:
+            # Keep an overlay-free completed frame for a respawn warp's
+            # framebuffer hold. Reuse the surface instead of allocating.
+            base = self._combat_surface('death-base', flags=0)
+            base.blit(self.screen, (0, 0))
+            self._death_base_frame = base
+            fade = self._combat_surface('death-fade')
+            fade.fill((24, 24, 28, state.death_fade_alpha(now)))
+            self.screen.blit(fade, (0, 0))
+            if state.show_death_overlay(now):
+                self.hud.draw_death_overlay(self.screen)
+        else:
+            self._death_base_frame = None
+            alpha = state.respawn_fade_alpha(now)
+            if alpha:
+                fade = self._combat_surface('respawn-fade')
+                fade.fill((0, 0, 0, alpha))
+                self.screen.blit(fade, (0, 0))
 
     # -- Combat-effect asset loading -----------------------------------
     # bomb/explosion/arrow/firespy used to draw as flashing/concentric
@@ -268,7 +321,20 @@ class EffectsRenderMixin:
         bomb['exploded'] = True
         bomb['explosion_time'] = now
         self.sound_mgr.play("explode.wav")
+        self._start_camera_shake(bomb['x'], bomb['y'])
         self._break_bushes_in_blast(bomb['x'], bomb['y'], bomb.get('power', 1))
+        return True
+
+    def _start_camera_shake(self, x: float, y: float,
+                            now: Optional[float] = None) -> bool:
+        """Start a short visual-only shake for a nearby explosion."""
+        player = self.client.player
+        if math.hypot(float(x) - player.x, float(y) - player.y) > 8.0:
+            return False
+        now = time.monotonic() if now is None else now
+        started = getattr(self, '_camera_shake_started', None)
+        if started is None or now - started >= 0.4:
+            self._camera_shake_started = now
         return True
 
     def _break_bushes_in_blast(self, x: float, y: float, power: int):
@@ -292,6 +358,7 @@ class EffectsRenderMixin:
             tile_type = self._get_corrected_tile_type(tile_id)
             self._remove_2x2_tiles(ox, oy, tile_type)
             self._spawn_hit_break_effect(ox + 1.0, oy + 1.0)
+            self._spawn_leaf_particles(ox + 1.0, oy + 1.0)
         if origins:
             self.world_surface = None
         return origins
@@ -532,6 +599,84 @@ class EffectsRenderMixin:
         self.sound_mgr.play("crush.wav")
 
     BREAK_DURATION = 0.45
+    LEAF_DURATION = 0.6
+    MAX_LEAF_PARTICLES = 64
+
+    def _spawn_leaf_particles(self, x: float, y: float, now=None, count=None):
+        """Add a small capped spray of procedural vegetation fragments."""
+        now = time.time() if now is None else now
+        count = random.randint(4, 6) if count is None else max(0, int(count))
+        particles = getattr(self, 'leaf_particles', None)
+        if particles is None:
+            particles = self.leaf_particles = []
+        room = max(0, self.MAX_LEAF_PARTICLES - len(particles))
+        for _ in range(min(count, room)):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(0.7, 1.7)
+            particles.append({
+                'x': x, 'y': y, 'time': now,
+                'vx': math.cos(angle) * speed,
+                'vy': math.sin(angle) * speed - random.uniform(0.2, 0.7),
+                'shade': random.randrange(2),
+                'phase': random.randrange(4),
+            })
+        return min(count, room)
+
+    def _expire_leaf_particles(self, now=None):
+        """Discard expired fragments and return the remaining registry."""
+        now = time.time() if now is None else now
+        self.leaf_particles[:] = [
+            leaf for leaf in self.leaf_particles
+            if now - leaf['time'] < self.LEAF_DURATION - 1e-9
+        ]
+        return self.leaf_particles
+
+    def _render_leaf_particles(self):
+        now = time.time()
+        self._expire_leaf_particles(now)
+        colors = ((72, 164, 62), (38, 112, 45))
+        for leaf in self.leaf_particles:
+            age = now - leaf['time']
+            t = age / self.LEAF_DURATION
+            wx = leaf['x'] + leaf['vx'] * age
+            wy = leaf['y'] + leaf['vy'] * age + 1.8 * age * age
+            px, py = self.camera.world_to_screen(wx, wy)
+            size = 2 + ((int(t * 12) + leaf['phase']) & 1)
+            color = (*colors[leaf['shade']], int(255 * (1.0 - t)))
+            pygame.draw.rect(self.screen, color, (round(px), round(py), size, 2))
+
+    def _ripple_surface(self, radius: int):
+        """Return a cached one-pixel ring for a ripple scale."""
+        cache = getattr(self, '_ripple_surface_cache', None)
+        if cache is None:
+            cache = self._ripple_surface_cache = {}
+        surface = cache.get(radius)
+        if surface is None:
+            side = radius * 2 + 2
+            surface = pygame.Surface((side, side), pygame.SRCALPHA)
+            pygame.draw.ellipse(surface, (175, 220, 225, 150),
+                                (1, radius // 2, radius * 2, radius), 1)
+            cache[radius] = surface
+        return surface
+
+    def _render_water_ripples(self):
+        now = time.time()
+        ripples = getattr(self, 'water_ripples', None)
+        if ripples is None:
+            ripples = self.water_ripples = []
+        if self.is_swimming and now - getattr(self, '_last_ripple_time', 0.0) >= 0.5:
+            feet_x, feet_y = self._player_feet()
+            ripples.append({'x': feet_x, 'y': feet_y, 'time': now})
+            self._last_ripple_time = now
+        ripples[:] = [r for r in ripples if now - r['time'] < 0.5]
+        for ripple in ripples:
+            t = (now - ripple['time']) / 0.5
+            radius = (5, 8, 11)[min(2, int(t * 3))]
+            surface = self._ripple_surface(radius)
+            surface.set_alpha(int(150 * (1.0 - t)))
+            px, py = self.camera.world_to_screen(ripple['x'], ripple['y'])
+            self.screen.blit(surface, (px - surface.get_width() / 2,
+                                       py - surface.get_height() / 2))
 
     def _render_break_effects(self):
         """Draw active debris bursts: 8 chunks scattering outward and fading."""

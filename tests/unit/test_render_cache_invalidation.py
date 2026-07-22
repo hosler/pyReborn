@@ -24,9 +24,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
 
 import pytest
-
 from pyreborn import Client
 from pyreborn.game.render_world import WorldRenderMixin
+from pyreborn.game.camera import Camera2D
 from pyreborn.game.setup import SetupMixin
 from pyreborn.sprites import SpriteManager, TilesetManager
 from pyreborn.tiletypes import get_tile_type, TileType
@@ -59,7 +59,9 @@ class _RenderHarness(SetupMixin, WorldRenderMixin):
 
     def __init__(self, client):
         self.client = client
-        self.gs1 = SimpleNamespace()
+        self.gs1 = SimpleNamespace(resolve_ani=lambda name: name)
+        self.player_anim = SimpleNamespace(name_resolver=None)
+        self.current_anim_name = ""
         self.sprite_mgr = SpriteManager([])
         self.tileset_mgr = TilesetManager(self.sprite_mgr)
         self.world_surface = None
@@ -181,6 +183,35 @@ class TestBoardModifyUpdatesAnimatedIndex:
         h._patch_world_surface_for_modify({'x': 5, 'y': 5, 'width': 1, 'height': 1, 'layer': 0})
 
         assert h._animated_tiles_key is None
+
+
+class TestShimmerRamp:
+    def test_ramp_cycles_off_half_full_half(self, monkeypatch):
+        h = _RenderHarness(_fake_connected_client())
+        times = iter((0.0, 0.3, 0.6, 0.9, 1.2))
+        monkeypatch.setattr('pyreborn.game.render_world.time.time',
+                            lambda: next(times))
+
+        assert [h._shimmer_ramp_step() for _ in range(5)] == [0, 1, 2, 3, 0]
+
+    def test_cache_is_zoom_keyed_and_precomputes_ramp_variants(self):
+        h = _RenderHarness(_fake_connected_client())
+        h.camera = Camera2D(320, 240)
+
+        half = h._get_shimmer_tile(WATER_TILE_ID, 1)
+        full = h._get_shimmer_tile(WATER_TILE_ID, 2)
+        falling_half = h._get_shimmer_tile(WATER_TILE_ID, 3)
+        assert half.get_size() == (16, 16)
+        assert falling_half is half
+        assert full is not half
+        assert len(h._shimmer_cache) == 1
+        assert len(h._shimmer_cache[(WATER_TILE_ID, 1.0)]) == 3
+
+        h.camera.zoom = 1.5
+        zoomed_half = h._get_shimmer_tile(WATER_TILE_ID, 1)
+        assert zoomed_half.get_size() == (24, 24)
+        assert zoomed_half is not half
+        assert (WATER_TILE_ID, 1.5) in h._shimmer_cache
 
 
 if __name__ == '__main__':

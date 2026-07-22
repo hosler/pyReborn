@@ -4,7 +4,7 @@ pyreborn - Inventory UI overlay.
 Provides a simple inventory/equipment management UI for the pygame client.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple, Union
 
 from .sprites import PLAYER_EQUIPMENT_PREVIEW_RECTS
 
@@ -13,6 +13,22 @@ try:
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
+
+
+def resolve_weapon_indicator(weapons, selected_index, sprite_mgr=None):
+    """Return ``(name, image_name, surface)`` for the equipped D-key weapon.
+
+    This is shared by the inventory grid and the compact HUD slot so both
+    apply the same filtering, index clamping, and image-loading rules.
+    """
+    entries = InventoryUI._visible_weapon_entries(weapons)
+    if not entries:
+        return None, "", None
+    index = max(0, min(int(selected_index), len(entries) - 1))
+    name, data = entries[index]
+    image = data.get('image', '')
+    surface = sprite_mgr.load_sheet(image) if image and sprite_mgr else None
+    return name, image, surface
 
 
 class InventoryUI:
@@ -31,6 +47,10 @@ class InventoryUI:
     PADDING = 10
     SLOT_SIZE = 48
     SLOT_SPACING = 8
+    WEAPON_COLS = 5
+    WEAPON_ROWS = 4
+    WEAPON_SLOT = 58
+    WEAPON_GAP = 8
 
     def __init__(self, screen: 'pygame.Surface', sprite_mgr: Optional['SpriteManager'] = None):
         """
@@ -46,35 +66,38 @@ class InventoryUI:
         self.screen = screen
         self.sprite_mgr = sprite_mgr
         self.visible = False
+        # selected_weapon_idx is the equipped/D-key index.  The cursor is
+        # deliberately separate: browsing the grid must not equip by accident.
         self.selected_weapon_idx = 0
+        self.cursor_weapon_idx = 0
+        self.hovered_weapon_idx: Optional[int] = None
+        self._last_click_idx: Optional[int] = None
+        self._last_click_time = 0
 
         # Fonts
         self.font_large = pygame.font.Font(None, 28)
         self.font_medium = pygame.font.Font(None, 22)
         self.font_small = pygame.font.Font(None, 18)
 
-        # Track weapon section Y position for click handling. The line height
-        # is derived from font_medium (not hardcoded) so the click math in
-        # handle_click always matches the actual advance in _render_weapons.
-        self._weapons_section_y = 0
-        self._weapon_line_height = self.font_medium.get_height() + 2
+        self._weapon_grid_rect = pygame.Rect(0, 0, 0, 0)
+        self._last_weapon_entries: List[Tuple[str, dict]] = []
 
         # UI panel size is fixed; position is derived from the screen size at
         # render time (see render()) so a window resize keeps it centered -
         # the game only ever reassigns .screen, it never recreates this UI.
-        self.ui_width = 300
-        self.ui_height = 440
+        self.ui_width = 400
+        self.ui_height = 500
         self.ui_x = 0
         self.ui_y = 0
 
         # Pre-create overlay surface (fixed size, doesn't depend on screen size).
         self.overlay = pygame.Surface((self.ui_width, self.ui_height), pygame.SRCALPHA)
 
-        # Rendered-text and scaled-sprite caches, keyed by (font id, text, color)
-        # and (id(sprite), target size) respectively, so static/rarely-changing
-        # strings and equipment icons aren't re-rendered/rescaled every frame.
+        # Cache keys include stable asset names/rects, and values pin source
+        # surfaces alongside derived surfaces. Never key a cache by bare id().
         self._text_cache = {}
         self._sprite_scale_cache = {}
+        self._stats_hearts = HeartDisplay(0, 0)
 
     def _cached_text(self, font, text: str, color) -> 'pygame.Surface':
         """Render text through a cache keyed by (font, text, color).
@@ -82,7 +105,7 @@ class InventoryUI:
         Cleared wholesale once it grows large: hearts/rupees strings change
         constantly during play, so an uncapped cache leaks one surface per
         distinct value seen over a session."""
-        key = (id(font), text, color)
+        key = (font, text, color)
         surf = self._text_cache.get(key)
         if surf is None:
             if len(self._text_cache) > 300:
@@ -93,28 +116,48 @@ class InventoryUI:
 
     def toggle(self):
         """Toggle visibility."""
-        self.visible = not self.visible
+        if self.visible:
+            self.hide()
+        else:
+            self.show()
 
     def show(self):
         """Show the inventory UI."""
         self.visible = True
+        self.cursor_weapon_idx = self.selected_weapon_idx
 
     def hide(self):
         """Hide the inventory UI."""
         self.visible = False
 
-    def render(self, player: 'Player', weapons: Optional[List[str]] = None):
+    @staticmethod
+    def _visible_weapon_entries(
+            weapons: Optional[Union[List[str], Mapping[str, dict]]]
+    ) -> List[Tuple[str, dict]]:
+        """Return player-facing weapons while retaining their display data."""
+        if isinstance(weapons, Mapping):
+            entries = [(str(name), data if isinstance(data, dict) else {})
+                       for name, data in weapons.items()]
+        else:
+            entries = [(str(name), {}) for name in (weapons or [])]
+        return [(name, data) for name, data in entries
+                if not name.startswith('-')]
+
+    def render(self, player: 'Player',
+               weapons: Optional[Union[List[str], Mapping[str, dict]]] = None):
         """
         Render the inventory UI.
 
         Args:
             player: Player object with equipment and stats
-            weapons: List of weapon names the player has
+            weapons: Live weapon mapping (or a list of weapon names)
         """
         if not self.visible:
             return
 
-        weapons = weapons or []
+        weapon_entries = self._visible_weapon_entries(weapons)
+        self._last_weapon_entries = weapon_entries
+        self._clamp_indices(len(weapon_entries))
 
         # Recompute position from the current screen size (not cached from
         # __init__) so a window resize keeps the panel centered.
@@ -140,23 +183,18 @@ class InventoryUI:
         # Separator
         pygame.draw.line(self.overlay, self.BORDER_COLOR,
                         (self.PADDING, y), (self.ui_width - self.PADDING, y))
-        y += 10
+        y += 12
 
-        # Stats section
-        y = self._render_stats(y, player)
-        y += 15
+        # Compact summary row: stats on the left, equipment on the right.
+        self._render_stats(y, player)
+        self._render_equipment(y, player)
 
-        # Equipment section
-        y = self._render_equipment(y, player)
-        y += 15
-
-        # Weapons section
-        self._render_weapons(y, weapons)
+        self._render_weapons(178, weapon_entries)
 
         # Footer stays inside the panel so it remains readable over a busy
         # world and is included in the panel border/background.
         help_text = self._cached_text(self.font_small,
-                                       "Q: Close | S+A: Cycle Weapons | D: Use",
+                                       "Arrows: Move  Enter/Space: Equip  Q/Esc: Close",
                                        self.LABEL_COLOR)
         help_x = (self.ui_width - help_text.get_width()) // 2
         help_y = self.ui_height - self.PADDING - help_text.get_height()
@@ -167,37 +205,35 @@ class InventoryUI:
 
     def _render_stats(self, y: int, player: 'Player') -> int:
         """Render player stats section."""
-        # Section header
-        header = self._cached_text(self.font_medium, "Stats", self.LABEL_COLOR)
+        header = self._cached_text(self.font_medium, "STATS", self.LABEL_COLOR)
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
 
-        # Hearts
-        hearts_text = f"Hearts: {player.hearts:.1f}/{player.max_hearts:.1f}"
-        hearts = self._cached_text(self.font_medium, hearts_text, self.STAT_HEART_COLOR)
-        self.overlay.blit(hearts, (self.PADDING + 10, y))
-        y += hearts.get_height() + 3
-
-        # Rupees
-        rupees_text = f"Rupees: {player.rupees}"
-        rupees = self._cached_text(self.font_medium, rupees_text, self.STAT_RUPEE_COLOR)
-        self.overlay.blit(rupees, (self.PADDING + 10, y))
-        y += rupees.get_height() + 3
-
-        # Arrows and bombs use aligned columns instead of running together.
-        arrows = self._cached_text(self.font_medium, f"Arrows: {player.arrows}", self.TEXT_COLOR)
-        bombs = self._cached_text(self.font_medium, f"Bombs: {player.bombs}", self.TEXT_COLOR)
-        self.overlay.blit(arrows, (self.PADDING + 10, y))
-        self.overlay.blit(bombs, (self.ui_width // 2 + 5, y))
-        y += max(arrows.get_height(), bombs.get_height()) + 3
+        # Reuse the exact vector heart renderer used by the HUD.
+        self._stats_hearts.x, self._stats_hearts.y = self.PADDING, y
+        self._stats_hearts.render(self.overlay, player.hearts, player.max_hearts)
+        heart_rows = max(1, (int(player.max_hearts) + HeartDisplay.HEARTS_PER_ROW - 1)
+                         // HeartDisplay.HEARTS_PER_ROW)
+        y += heart_rows * (HeartDisplay.HEART_SIZE + HeartDisplay.HEART_SPACING) + 5
+        rupees = self._cached_text(self.font_medium, f"Rupees  {player.rupees}",
+                                   self.STAT_RUPEE_COLOR)
+        self.overlay.blit(rupees, (self.PADDING, y))
+        y += rupees.get_height() + 4
+        for x, label, count in ((self.PADDING, "Bombs", player.bombs),
+                                (self.PADDING + 82, "Arrows", player.arrows)):
+            label_surf = self._cached_text(self.font_small, label, self.LABEL_COLOR)
+            count_surf = self._cached_text(self.font_medium, str(count), self.TEXT_COLOR)
+            self.overlay.blit(label_surf, (x, y))
+            self.overlay.blit(count_surf, (x, y + label_surf.get_height()))
+        y += self.font_small.get_height() + self.font_medium.get_height()
 
         return y
 
     def _render_equipment(self, y: int, player: 'Player') -> int:
         """Render equipment section."""
-        # Section header
-        header = self._cached_text(self.font_medium, "Equipment", self.LABEL_COLOR)
-        self.overlay.blit(header, (self.PADDING, y))
+        start_x = 166
+        header = self._cached_text(self.font_medium, "EQUIPMENT", self.LABEL_COLOR)
+        self.overlay.blit(header, (start_x, y))
         y += header.get_height() + 5
 
         # Equipment slots in a row
@@ -208,11 +244,11 @@ class InventoryUI:
             ("Shield", "shield", player.shield_image or
              (f"shield{player.shield_power}.png" if player.shield_power > 0 else ""),
              player.shield_power),
-            ("Head", "head", player.head_image, None),
-            ("Body", "body", player.body_image, None),
+            ("Glove", "glove", "", player.glove_power),
+            ("Player", "player", "", None),
         ]
 
-        slot_x = self.PADDING + 10
+        slot_x = start_x
         target_size = (self.SLOT_SIZE - 4, self.SLOT_SIZE - 4)
         for name, layer, image, power in equipment:
             # Draw slot background
@@ -221,30 +257,18 @@ class InventoryUI:
             pygame.draw.rect(self.overlay, self.BORDER_COLOR,
                            (slot_x, y, self.SLOT_SIZE, self.SLOT_SIZE), 1)
 
-            # Draw equipment image if available
-            if image and self.sprite_mgr:
-                sprite = self.sprite_mgr.get_sprite(
-                    image, *PLAYER_EQUIPMENT_PREVIEW_RECTS[layer])
-                if sprite:
-                    # Scale to fit slot (cached per equipment image name +
-                    # target size — NOT id(sprite): the sprite manager can
-                    # free/reallocate sheet surfaces, so a stale id() could
-                    # alias a freed surface onto an unrelated image).
-                    scale_key = (image, PLAYER_EQUIPMENT_PREVIEW_RECTS[layer], target_size)
-                    scaled = self._sprite_scale_cache.get(scale_key)
-                    if scaled is None:
-                        if len(self._sprite_scale_cache) > 100:
-                            self._sprite_scale_cache.clear()
-                        sprite_w, sprite_h = sprite.get_size()
-                        fit_scale = min(target_size[0] / sprite_w,
-                                        target_size[1] / sprite_h)
-                        fitted_size = (max(1, round(sprite_w * fit_scale)),
-                                       max(1, round(sprite_h * fit_scale)))
-                        scaled = pygame.transform.scale(sprite, fitted_size)
-                        self._sprite_scale_cache[scale_key] = scaled
-                    icon_x = slot_x + (self.SLOT_SIZE - scaled.get_width()) // 2
-                    icon_y = y + (self.SLOT_SIZE - scaled.get_height()) // 2
-                    self.overlay.blit(scaled, (icon_x, icon_y))
+            if layer == "player" and self.sprite_mgr:
+                # Character preview is layered from the two verified crops.
+                for preview_layer, preview_image in (("body", player.body_image),
+                                                     ("head", player.head_image)):
+                    self._blit_equipment_sprite(slot_x, y, preview_layer,
+                                                preview_image, target_size)
+            elif image and self.sprite_mgr:
+                self._blit_equipment_sprite(slot_x, y, layer, image, target_size)
+            elif layer == "glove":
+                # No verified glove crop exists: use an honest vector fallback.
+                pygame.draw.circle(self.overlay, (190, 135, 75),
+                                   (slot_x + 24, y + 25), 12, 3)
 
             # Draw label below
             label = self._cached_text(self.font_small, name, self.LABEL_COLOR)
@@ -258,51 +282,94 @@ class InventoryUI:
 
             slot_x += self.SLOT_SIZE + self.SLOT_SPACING
 
-        y += self.SLOT_SIZE + 20
+        return y + self.SLOT_SIZE + 20
 
-        # Glove power
-        glove_text = f"Glove Power: {player.glove_power}"
-        glove = self._cached_text(self.font_medium, glove_text, self.TEXT_COLOR)
-        self.overlay.blit(glove, (self.PADDING + 10, y))
-        y += glove.get_height() + 3
+    def _blit_equipment_sprite(self, slot_x, y, layer, image, target_size):
+        if not image:
+            return
+        rect = PLAYER_EQUIPMENT_PREVIEW_RECTS[layer]
+        sprite = self.sprite_mgr.get_sprite(image, *rect)
+        if not sprite:
+            return
+        key = ('equipment', image, rect, target_size)
+        entry = self._sprite_scale_cache.get(key)
+        if entry is None:
+            fit = min(target_size[0] / sprite.get_width(),
+                      target_size[1] / sprite.get_height())
+            size = (max(1, round(sprite.get_width() * fit)),
+                    max(1, round(sprite.get_height() * fit)))
+            entry = (sprite, pygame.transform.scale(sprite, size))
+            self._sprite_scale_cache[key] = entry
+        scaled = entry[1]
+        self.overlay.blit(scaled, (slot_x + (self.SLOT_SIZE - scaled.get_width()) // 2,
+                                   y + (self.SLOT_SIZE - scaled.get_height()) // 2))
 
-        return y
-
-    def _render_weapons(self, y: int, weapons: List[str]) -> int:
+    def _render_weapons(self, y: int,
+                        weapons: List[Tuple[str, dict]]) -> int:
         """Render weapons section."""
-        # Section header
-        header = self._cached_text(self.font_medium, "Weapons", self.LABEL_COLOR)
+        header = self._cached_text(self.font_medium, "WEAPONS", self.LABEL_COLOR)
         self.overlay.blit(header, (self.PADDING, y))
         y += header.get_height() + 5
-
-        # Store Y position where weapon list starts (for click handling)
-        self._weapons_section_y = y
+        grid_w = self.WEAPON_COLS * self.WEAPON_SLOT + (self.WEAPON_COLS - 1) * self.WEAPON_GAP
+        self._weapon_grid_rect = pygame.Rect((self.ui_width - grid_w) // 2, y,
+                                             grid_w, self.WEAPON_ROWS * self.WEAPON_SLOT +
+                                             (self.WEAPON_ROWS - 1) * self.WEAPON_GAP)
 
         if not weapons:
             no_weapons = self._cached_text(self.font_medium, "(no weapons)", self.LABEL_COLOR)
             self.overlay.blit(no_weapons, (self.PADDING + 10, y))
             return y + no_weapons.get_height()
 
-        # List weapons. Each row advances by self._weapon_line_height, the same
-        # value handle_click() uses to map a click Y back to a weapon index.
-        for i, weapon in enumerate(weapons):
-            # Highlight selected weapon
-            if i == self.selected_weapon_idx:
-                # Draw selection highlight
-                pygame.draw.rect(self.overlay, (60, 60, 100),
-                               (self.PADDING + 5, y, self.ui_width - self.PADDING * 2 - 10,
-                                self._weapon_line_height - 2))
-                text_color = self.SELECTED_COLOR
-                prefix = "> "
+        icon_size = 40
+        for i, (weapon, data) in enumerate(weapons[:self.WEAPON_COLS * self.WEAPON_ROWS]):
+            col, row = i % self.WEAPON_COLS, i // self.WEAPON_COLS
+            slot = pygame.Rect(self._weapon_grid_rect.x + col * (self.WEAPON_SLOT + self.WEAPON_GAP),
+                               y + row * (self.WEAPON_SLOT + self.WEAPON_GAP),
+                               self.WEAPON_SLOT, self.WEAPON_SLOT)
+            pygame.draw.rect(self.overlay, (36, 38, 58), slot, border_radius=4)
+            border = self.SELECTED_COLOR if i == self.cursor_weapon_idx else self.BORDER_COLOR
+            pygame.draw.rect(self.overlay, border, slot, 3 if i == self.cursor_weapon_idx else 1,
+                             border_radius=4)
+            icon_x = slot.x + (slot.width - icon_size) // 2
+            icon_y = slot.y + 5
+            _, image, sprite = resolve_weapon_indicator(
+                {weapon: data}, 0, self.sprite_mgr)
+            if sprite:
+                scale_key = ('weapon', image, (icon_size, icon_size))
+                entry = self._sprite_scale_cache.get(scale_key)
+                if entry is None:
+                    fit = min(icon_size / sprite.get_width(),
+                              icon_size / sprite.get_height())
+                    size = (max(1, round(sprite.get_width() * fit)),
+                            max(1, round(sprite.get_height() * fit)))
+                    entry = (sprite, pygame.transform.scale(sprite, size))
+                    self._sprite_scale_cache[scale_key] = entry
+                scaled = entry[1]
+                self.overlay.blit(scaled, (icon_x, icon_y))
             else:
-                text_color = self.TEXT_COLOR
-                prefix = "  "
+                pygame.draw.rect(self.overlay, (35, 35, 50),
+                                 (icon_x, icon_y, icon_size, icon_size))
+                initials = self._cached_text(self.font_small,
+                                             weapon[:2].upper(), self.TEXT_COLOR)
+                self.overlay.blit(initials,
+                                  (icon_x + (icon_size - initials.get_width()) // 2,
+                                   icon_y + (icon_size - initials.get_height()) // 2))
 
-            weapon_text = self._cached_text(self.font_medium, f"{prefix}{weapon}", text_color)
-            self.overlay.blit(weapon_text, (self.PADDING + 10, y))
-            y += self._weapon_line_height
+            if i == self.selected_weapon_idx:
+                marker = self._cached_text(self.font_small, "D", (30, 20, 0))
+                pygame.draw.circle(self.overlay, self.SELECTED_COLOR,
+                                   (slot.right - 8, slot.top + 8), 7)
+                self.overlay.blit(marker, (slot.right - 8 - marker.get_width() // 2,
+                                           slot.top + 8 - marker.get_height() // 2))
 
-        return y
+        focus = self.hovered_weapon_idx
+        if focus is None:
+            focus = self.cursor_weapon_idx
+        name = weapons[focus][0] if 0 <= focus < len(weapons) else ""
+        label = self._cached_text(self.font_medium, name, self.TEXT_COLOR)
+        self.overlay.blit(label, ((self.ui_width - label.get_width()) // 2,
+                                  self.ui_height - 52))
+        return self._weapon_grid_rect.bottom
 
     def cycle_weapon(self, weapons: List[str], direction: int = 1):
         """
@@ -315,13 +382,77 @@ class InventoryUI:
         if not weapons:
             return
 
-        self.selected_weapon_idx = (self.selected_weapon_idx + direction) % len(weapons)
+        entries = self._visible_weapon_entries(weapons)
+        if not entries:
+            return
+        self.selected_weapon_idx = (self.selected_weapon_idx + direction) % len(entries)
+        self.cursor_weapon_idx = self.selected_weapon_idx
 
     def get_selected_weapon(self, weapons: List[str]) -> Optional[str]:
         """Get the currently selected weapon name."""
-        if not weapons or self.selected_weapon_idx >= len(weapons):
+        entries = self._visible_weapon_entries(weapons)
+        if not entries or self.selected_weapon_idx >= len(entries):
             return None
-        return weapons[self.selected_weapon_idx]
+        return entries[self.selected_weapon_idx][0]
+
+    def _clamp_indices(self, count: int):
+        maximum = min(count, self.WEAPON_COLS * self.WEAPON_ROWS) - 1
+        self.selected_weapon_idx = max(0, min(self.selected_weapon_idx, max(0, maximum)))
+        self.cursor_weapon_idx = max(0, min(self.cursor_weapon_idx, max(0, maximum)))
+
+    def move_selector(self, dx: int, dy: int, weapons) -> int:
+        entries = self._visible_weapon_entries(weapons)
+        count = min(len(entries), self.WEAPON_COLS * self.WEAPON_ROWS)
+        if not count:
+            return self.cursor_weapon_idx
+        self._clamp_indices(count)
+        row, col = divmod(self.cursor_weapon_idx, self.WEAPON_COLS)
+        col = max(0, min(self.WEAPON_COLS - 1, col + dx))
+        row = max(0, min(self.WEAPON_ROWS - 1, row + dy))
+        self.cursor_weapon_idx = min(row * self.WEAPON_COLS + col, count - 1)
+        return self.cursor_weapon_idx
+
+    def equip_cursor(self, weapons) -> Optional[str]:
+        entries = self._visible_weapon_entries(weapons)
+        if not entries:
+            return None
+        self._clamp_indices(len(entries))
+        self.selected_weapon_idx = self.cursor_weapon_idx
+        return entries[self.selected_weapon_idx][0]
+
+    def handle_key(self, key: int, weapons) -> bool:
+        if key in (pygame.K_ESCAPE, pygame.K_q):
+            self.hide()
+        elif key == pygame.K_LEFT:
+            self.move_selector(-1, 0, weapons)
+        elif key == pygame.K_RIGHT:
+            self.move_selector(1, 0, weapons)
+        elif key == pygame.K_UP:
+            self.move_selector(0, -1, weapons)
+        elif key == pygame.K_DOWN:
+            self.move_selector(0, 1, weapons)
+        elif key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.equip_cursor(weapons)
+        else:
+            return False
+        return True
+
+    def _weapon_index_at(self, pos: Tuple[int, int]) -> Optional[int]:
+        rel = (pos[0] - self.ui_x, pos[1] - self.ui_y)
+        for i in range(min(len(self._last_weapon_entries),
+                           self.WEAPON_COLS * self.WEAPON_ROWS)):
+            col, row = i % self.WEAPON_COLS, i // self.WEAPON_COLS
+            rect = pygame.Rect(self._weapon_grid_rect.x + col * (self.WEAPON_SLOT + self.WEAPON_GAP),
+                               self._weapon_grid_rect.y + row * (self.WEAPON_SLOT + self.WEAPON_GAP),
+                               self.WEAPON_SLOT, self.WEAPON_SLOT)
+            if rect.collidepoint(rel):
+                return i
+        return None
+
+    def handle_mouse_motion(self, pos: Tuple[int, int]):
+        self.hovered_weapon_idx = self._weapon_index_at(pos) if self.visible else None
+        if self.hovered_weapon_idx is not None:
+            self.cursor_weapon_idx = self.hovered_weapon_idx
 
     def handle_click(self, pos: Tuple[int, int], weapons: List[str]) -> Optional[str]:
         """
@@ -337,30 +468,18 @@ class InventoryUI:
         if not self.visible:
             return None
 
-        # Convert to UI-relative coordinates
-        rel_x = pos[0] - self.ui_x
-        rel_y = pos[1] - self.ui_y
-
-        # Check if click is within UI bounds
-        if not (0 <= rel_x < self.ui_width and 0 <= rel_y < self.ui_height):
+        idx = self._weapon_index_at(pos)
+        if idx is None:
             return None
-
-        # Check if click is in weapons section
-        if not weapons or self._weapons_section_y == 0:
-            return None
-
-        # Check if Y is in weapons list area
-        weapons_start_y = self._weapons_section_y
-        weapons_end_y = weapons_start_y + len(weapons) * self._weapon_line_height
-
-        if weapons_start_y <= rel_y < weapons_end_y:
-            # Calculate which weapon was clicked
-            weapon_idx = int((rel_y - weapons_start_y) / self._weapon_line_height)
-            if 0 <= weapon_idx < len(weapons):
-                self.selected_weapon_idx = weapon_idx
-                return weapons[weapon_idx]
-
-        return None
+        self.cursor_weapon_idx = idx
+        now = pygame.time.get_ticks()
+        if idx == self._last_click_idx and now - self._last_click_time <= 400:
+            result = self.equip_cursor(weapons)
+        else:
+            entries = self._visible_weapon_entries(weapons)
+            result = entries[idx][0] if idx < len(entries) else None
+        self._last_click_idx, self._last_click_time = idx, now
+        return result
 
 
 class HeartDisplay:
@@ -371,6 +490,7 @@ class HeartDisplay:
     HEART_COLOR = (255, 50, 50)
     HEART_EMPTY_COLOR = (80, 30, 30)
     HEART_HALF_COLOR = (200, 50, 50)
+    HEARTS_PER_ROW = 10
 
     def __init__(self, x: int, y: int):
         """Initialize heart display at position."""
@@ -399,17 +519,21 @@ class HeartDisplay:
             has_half = (current - full_hearts) >= 0.5
             total_hearts = int(maximum)
 
-            w = max(1, total_hearts * (self.HEART_SIZE + self.HEART_SPACING))
-            row = pygame.Surface((w, self.HEART_SIZE), pygame.SRCALPHA)
+            columns = min(self.HEARTS_PER_ROW, max(1, total_hearts))
+            rows = max(1, (total_hearts + self.HEARTS_PER_ROW - 1) // self.HEARTS_PER_ROW)
+            w = max(1, columns * (self.HEART_SIZE + self.HEART_SPACING))
+            h = rows * (self.HEART_SIZE + self.HEART_SPACING)
+            row = pygame.Surface((w, h), pygame.SRCALPHA)
             for i in range(total_hearts):
-                x = i * (self.HEART_SIZE + self.HEART_SPACING)
+                x = (i % self.HEARTS_PER_ROW) * (self.HEART_SIZE + self.HEART_SPACING)
+                y = (i // self.HEARTS_PER_ROW) * (self.HEART_SIZE + self.HEART_SPACING)
                 if i < full_hearts:
                     fill = 'full'
                 elif i == full_hearts and has_half:
                     fill = 'half'
                 else:
                     fill = 'empty'
-                self._draw_heart(row, x, 0, fill)
+                self._draw_heart(row, x, y, fill)
             self._cache = row
             self._cache_key = key
 

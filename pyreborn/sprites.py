@@ -118,6 +118,12 @@ class SpriteManager:
         # stale ones evicted from the front once the matching _MAX_CACHED_*
         # bound is exceeded (see _evict_lru).
         self.sheet_cache: "OrderedDict[str, pygame.Surface]" = OrderedDict()
+        # Names whose DOWNLOADED bytes failed to decode. A cached None in
+        # sheet_cache only means "not on local disk (yet)" — it must NOT stop
+        # load_bytes from decoding the file once it arrives from the server, or
+        # any custom asset first rendered before it downloads stays invisible
+        # forever. Only a real bytes-decode failure belongs here.
+        self._undecodable_bytes: set = set()
         self.sprite_cache: "OrderedDict[Tuple[str, int, int, int, int], pygame.Surface]" = OrderedDict()
         # Tier 2a: palette-swapped body sheets/sprites, cached per (image,
         # colors-tuple) so a re-render doesn't re-run the pixel remap.
@@ -212,8 +218,11 @@ class SpriteManager:
         the server) and cache it under `name`, so load_sheet(name) finds it."""
         # Already known to be undecodable (some bomber assets, e.g.
         # eye_bomb_blackhole*.png, arrive as non-image data) — don't re-decode
-        # or re-log every time the server re-sends them.
-        if name in self.sheet_cache and self.sheet_cache[name] is None:
+        # or re-log every time the server re-sends them. A plain cached-None in
+        # sheet_cache is only a disk miss (the NPC rendered before this file
+        # downloaded) and must fall through so the freshly downloaded bytes get
+        # decoded and cached.
+        if name in self._undecodable_bytes:
             return None
         import io
         try:
@@ -228,6 +237,7 @@ class SpriteManager:
         except Exception as e:
             print(f"Error loading downloaded sheet {name}: {e}")
             self.sheet_cache[name] = None   # remember the miss; stop retrying
+            self._undecodable_bytes.add(name)
             self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return None
 

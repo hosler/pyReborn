@@ -30,6 +30,7 @@ from .game.camera import Camera2D
 from .game.viewport import Viewport
 from .game.assets import FontManager
 from .game.hud import HUD
+from .game.combat_presentation import CombatPresentation
 from .game.setup import SetupMixin
 from .game.minimap import MinimapMixin
 from .game.tile_editor import TileEditorMixin
@@ -57,6 +58,12 @@ class GameClient(
     LevelObjectsRenderMixin,
 ):
     """Enhanced pygame game client with animations and sounds."""
+
+    @property
+    def weapons(self) -> List[str]:
+        """Visible weapon names from the server-owned live weapon state."""
+        return [name for name in self.client.weapons
+                if not str(name).startswith('-')]
 
     def __init__(self, client: Client):
         self.client = client
@@ -142,6 +149,7 @@ class GameClient(
         # builtins route through the same GS1 client host surface, so both
         # engines drive the same rendering/callback paths.
         self.gs2 = ClientGS2(self.client, self.gs1).attach()
+        self.gs2.game_shell = self
 
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
@@ -180,18 +188,16 @@ class GameClient(
         # _render_animated_tiles for the shimmer this drives.
         self._animated_tiles: List[Tuple[int, int, int]] = []
         # Memoization key for the above (visible segment set + tile data +
-        # camera view) and whether this frame is a shimmer-draw half, both
+        # camera view) and the current shimmer ramp step, both
         # set each frame by WorldRenderMixin._render_world - see render_world.py.
         self._animated_tiles_key = None
+        self._shimmer_step_this_frame = 0
         self._shimmer_draw_this_frame = False
 
         # Placeholders
         self.placeholder_sprite = create_placeholder_sprite(32, 32, (200, 50, 200))
         self.shadow_sprite = create_shadow_sprite()
         self.npc_placeholder = create_placeholder_sprite(32, 32, (50, 200, 50))
-
-        # Weapon list (will be populated from server)
-        self.weapons: List[str] = []
 
         # Current animation name (for tracking changes)
         self.current_anim_name = "idle"
@@ -235,6 +241,7 @@ class GameClient(
         # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
         self.damage_numbers: List[dict] = []
         self.hurt_flash_time = 0.0  # Time when player was last hurt (for flash effect)
+        self.combat_presentation = CombatPresentation()
 
         # Unified local/remote bomb registry.
         self.active_bombs: List[dict] = []
@@ -251,6 +258,10 @@ class GameClient(
         # Break bursts when a thrown object lands/hits — each: {'x', 'y',
         # 'time', 'color'} with a handful of scattering particles.
         self.break_effects: List[dict] = []
+        self.leaf_particles: List[dict] = []
+        self.water_ripples: List[dict] = []
+        self._last_ripple_time = 0.0
+        self._ripple_surface_cache: Dict[int, pygame.Surface] = {}
 
         self.active_bomb_explosions: List[dict] = []
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
@@ -260,8 +271,10 @@ class GameClient(
 
         # Dialogue box state (for say2/signs)
         self.dialogue_text: Optional[str] = None
+        self.dialogue_classic_font: bool = False
         self.dialogue_time: float = 0.0
-        self.dialogue_duration: float = 5.0  # Auto-dismiss after 5 seconds
+        from .game.dialogue import DialoguePager
+        self.dialogue_pager = DialoguePager()
 
         # Speech bubble state (for say/chat - shows above entity heads)
         self.local_chat_text: str = ""  # Local player's chat bubble
@@ -282,7 +295,10 @@ class GameClient(
         # Minimap state
         self.minimap_data: Optional[bytes] = None
         self.minimap_surface: Optional[pygame.Surface] = None
+        self._minimap_native_surface: Optional[pygame.Surface] = None
+        self.bigmap_surface: Optional[pygame.Surface] = None
         self.minimap_visible = True  # Toggle with M key
+        self.big_map_visible = False
         self.minimap_size = (100, 100)  # Display size in pixels
         # Tier 4b: set when minimap_surface was built from a PLO_BIGMAP world
         # image rather than PLO_MINIMAP per-tile data (see game/minimap.py
@@ -319,6 +335,11 @@ class GameClient(
 
         # Setup callbacks
         self._setup_callbacks()
+
+        # Apply saved live settings during construction. Leaving this until
+        # the first event pass allowed other callers to consume the camera's
+        # initial transform before the preferred zoom invalidated it.
+        self._ensure_settings_ui()
 
     # Live canvas dimensions. With native rendering the window is the canvas, so
     # all layout/centering reads these instead of the fixed SCREEN_WIDTH/HEIGHT.
@@ -363,6 +384,7 @@ class GameClient(
         # Remember which level the GS1 engine is loaded for so the loop's
         # level-change detector only re-runs on an actual warp.
         self._gs1_level = self.client._current_level_name
+        self._gs1_visual_level_epoch = self.client._plain_level_change_epoch
 
         # Let the login roster dump settle before announcing further joins.
         self.roster_ready_time = time.time() + 2.0
@@ -399,6 +421,7 @@ class GameClient(
             # default 10ms select() wait on top of it - that just adds input
             # latency without changing the frame rate.
             self.client.update(timeout=0)
+            self._update_low_hearts_warning()
 
             # Load + run NPCs that streamed in after startup (slow server).
             self._load_new_npcs()
@@ -452,6 +475,8 @@ class GameClient(
         # Cleanup
         print(f"Game loop exited after {frame_count} frames. running={self.running}, connected={self.client.connected}")
         self.client.disconnect()
+        self.sound_mgr.stop_all()
+        self.sound_mgr.stop_music()
         pygame.quit()
 
         # If the player picked another server from the F8 list, hand it back to

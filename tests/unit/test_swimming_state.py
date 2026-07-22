@@ -31,6 +31,7 @@ from pyreborn.game.setup import SetupMixin
 from pyreborn.tiletypes import TileType
 
 WATER_LEVEL = [1] * 4096  # tile id 1 forced to WATER via tile_corrections
+SHALLOW_LEVEL = [2] * 4096  # tile id 2 forced to NEAR_WATER
 DRY_LEVEL = [0] * 4096
 
 
@@ -81,7 +82,7 @@ class _SwimHarness(CollisionMixin, ActionsMixin):
         self.current_anim_name = "idle"
         self.is_moving = False
         self.noclip = False
-        self.tile_corrections = {1: TileType.WATER}
+        self.tile_corrections = {1: TileType.WATER, 2: TileType.NEAR_WATER}
         self.sound_mgr = _NoopSound()
         self.player_anim = _NoopAnim()
         self.npc_handler = _NoopNpcHandler()
@@ -105,18 +106,54 @@ class _SwimHarnessWithSetup(SetupMixin, CollisionMixin, ActionsMixin):
         self.current_anim_name = "idle"
         self.is_moving = False
         self.noclip = False
-        self.tile_corrections = {1: TileType.WATER}
+        self.tile_corrections = {1: TileType.WATER, 2: TileType.NEAR_WATER}
         self.sound_mgr = _NoopSound()
         self.player_anim = _NoopAnim()
 
 
 class TestSwimmingStateRecompute:
+    def test_shallow_water_does_not_trigger_swimming(self):
+        c = _fake_connected_client()
+        _seed_levels(c)
+        c.levels["chicken5.nw"] = list(SHALLOW_LEVEL)
+        c.tiles = c.levels["chicken5.nw"]
+        h = _SwimHarness(c)
+
+        h._update_swimming_state()
+
+        assert h.is_swimming is False
+
     def test_baseline_recompute_detects_water(self):
         c = _fake_connected_client()
         _seed_levels(c)
         h = _SwimHarness(c)
         h._update_swimming_state()
         assert h.is_swimming is True
+
+    def test_standing_point_transitions_at_deep_shallow_boundary(self):
+        c = _fake_connected_client()
+        _seed_levels(c)
+        tiles = list(SHALLOW_LEVEL)
+        for y in range(64):
+            for x in range(32, 64):
+                tiles[y * 64 + x] = 1
+        c.levels["chicken5.nw"] = tiles
+        c.tiles = tiles
+        h = _SwimHarness(c)
+
+        # The standing point is player x + 1.5, so these positions straddle
+        # the boundary between shallow column 31 and deep column 32.
+        c.player.x = 30.49
+        h._update_swimming_state()
+        assert h.is_swimming is False
+
+        c.player.x = 30.5
+        h._update_swimming_state()
+        assert h.is_swimming is True
+
+        c.player.x = 30.49
+        h._update_swimming_state()
+        assert h.is_swimming is False
 
     def test_door_link_warp_clears_swimming_into_dry_level(self):
         c = _fake_connected_client()

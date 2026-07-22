@@ -510,8 +510,9 @@ def _t4a(game, c1, c2):
     game._render_animated_tiles()  # must not raise with or without water tiles
     # Force a synthetic entry through the real cache path and confirm the
     # shimmer surface builds without error.
-    surf = game._get_shimmer_tile(0)
-    assert surf is not None
+    for step in range(4):
+        surf = game._get_shimmer_tile(0, step)
+        assert surf is not None
 
 
 @check("tier4b_bigmap_fallback_is_a_noop_without_data")

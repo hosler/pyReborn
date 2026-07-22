@@ -208,6 +208,7 @@ class ServerEntry:
     player_count: int
     ip: str
     port: int
+    auto_address_substituted: bool = False
 
     @property
     def display_name(self) -> str:
@@ -265,7 +266,7 @@ class PacketReader:
         """Read N bytes as string."""
         if self.pos + length > len(self.data):
             length = len(self.data) - self.pos
-        result = self.data[self.pos:self.pos + length].decode('latin-1', errors='replace')
+        result = self.data[self.pos:self.pos + length].decode('cp1252', errors='replace')
         self.pos += length
         return result
 
@@ -524,7 +525,7 @@ class ListServerClient:
             # Extract type prefix (e.g., "H ", "P ", "3 ", "U ")
             type_prefix = ""
             name = full_name
-            if len(full_name) >= 2 and full_name[1] == ' ':
+            if len(full_name) >= 2 and full_name[1] == ' ' and full_name[0] in "PHU3":
                 type_prefix = full_name[:2]
                 name = full_name[2:]
 
@@ -534,6 +535,9 @@ class ListServerClient:
             version = reader.read_string()
             player_count_str = reader.read_string()
             ip = reader.read_string()
+            auto_address_substituted = ip in {"AUTO", "$AUTO"}
+            if auto_address_substituted:
+                ip = self.host
             port_str = reader.read_string()
 
             # Parse numeric values
@@ -556,7 +560,8 @@ class ListServerClient:
                 version=version,
                 player_count=player_count,
                 ip=ip,
-                port=port
+                port=port,
+                auto_address_substituted=auto_address_substituted,
             )
             servers.append(server)
 
@@ -864,7 +869,7 @@ if IS_BROWSER:
                 # Extract type prefix
                 type_prefix = ""
                 name = full_name
-                if len(full_name) >= 2 and full_name[1] == ' ':
+                if len(full_name) >= 2 and full_name[1] == ' ' and full_name[0] in "PHU3":
                     type_prefix = full_name[:2]
                     name = full_name[2:]
 
@@ -874,6 +879,9 @@ if IS_BROWSER:
                 version = reader.read_string()
                 player_count_str = reader.read_string()
                 ip = reader.read_string()
+                auto_address_substituted = ip in {"AUTO", "$AUTO"}
+                if auto_address_substituted:
+                    ip = self.host
                 port_str = reader.read_string()
 
                 try:
@@ -895,7 +903,8 @@ if IS_BROWSER:
                     version=version,
                     player_count=player_count,
                     ip=ip,
-                    port=port
+                    port=port,
+                    auto_address_substituted=auto_address_substituted,
                 )
                 servers.append(server)
 

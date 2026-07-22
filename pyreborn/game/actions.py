@@ -37,6 +37,25 @@ class ActionsMixin:
     def _facing_delta(self, direction: int) -> Tuple[int, int]:
         """(dx, dy) tile delta for a facing direction (0=up,1=left,2=down,3=right)."""
         return {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction, (0, 0))
+
+    def _pickup_ground_item(self, x: Optional[float] = None,
+                            y: Optional[float] = None) -> bool:
+        """Request a local pickup and play its sound when an item is present."""
+        target_x = self.client.player.x if x is None else x
+        target_y = self.client.player.y if y is None else y
+        nearby = min(
+            ((math.hypot(ix - target_x, iy - target_y), item_type)
+             for (ix, iy), item_type in self.client.items.items()),
+            default=None,
+        )
+        sent = self.client.pickup_item(x, y)
+        if sent and nearby is not None and nearby[0] <= 2.0:
+            item_type = nearby[1].lower()
+            sound = "item2.wav" if any(
+                part in item_type for part in ('heart', 'key')) else "item.wav"
+            self.sound_mgr.play(sound)
+        return sent
+
     def _move(self, dx: int, dy: int):
         """Move the player, checking for blocking tiles.
 
@@ -273,8 +292,16 @@ class ActionsMixin:
         """Swing sword attack."""
         player = self.client.player
         self.client.sword_attack(player.direction)
-        self.player_anim.set_animation("sword", player.direction, force=True)
-        self.current_anim_name = "sword"
+        # sword_attack already carries the sword gani in its wire update.
+        self._play_action_animation("sword", broadcast=False)
+
+    def _play_action_animation(self, name: str, broadcast: bool = True):
+        """Start a one-shot local gani and expose it to nearby players."""
+        direction = self.client.player.direction
+        self.player_anim.set_animation(name, direction, force=True)
+        self.current_anim_name = name
+        if broadcast:
+            self.client.set_animation(name)
     def _try_grab(self):
         """Try to grab/interact with something.
 
@@ -312,7 +339,7 @@ class ActionsMixin:
         sign_text = self._check_sign_nearby()
         if sign_text:
             # Display sign text in dialogue box
-            self._show_dialogue(sign_text)
+            self._show_dialogue(sign_text, classic_font=True)
             return
 
         # Check for door link
@@ -322,7 +349,7 @@ class ActionsMixin:
             return
 
         # Try to pickup item at current position
-        self.client.pickup_item()
+        self._pickup_ground_item()
     def _check_sign_nearby(self) -> Optional[str]:
         """Check for a sign at the player's touch points and return its text.
 
@@ -352,13 +379,25 @@ class ActionsMixin:
                     return text
 
         return None
-    def _show_dialogue(self, text: str):
+    def _show_dialogue(self, text: str, classic_font: bool = False):
         """Show dialogue text in the dialogue box."""
         self.dialogue_text = text
+        self.dialogue_classic_font = classic_font
         self.dialogue_time = time.time()
+        font = self.fonts.classic() if classic_font else self.font_small
+        box_width = min(self.screen_w - 40, 400) - 20
+        self.dialogue_pager.replace(text, lambda value: font.size(value)[0],
+                                    box_width)
+
     def _dismiss_dialogue(self):
         """Dismiss the current dialogue."""
         self.dialogue_text = None
+        self.dialogue_classic_font = False
+
+    def _advance_dialogue(self):
+        """Advance the dialogue, closing it after its final page."""
+        if not self.dialogue_pager.advance():
+            self._dismiss_dialogue()
     def _try_pickup(self, dx: int, dy: int):
         """A + arrow: lift a 2x2 object in that direction, or
         throw the carried one."""
@@ -379,7 +418,7 @@ class ActionsMixin:
             # primary touch point. No lift animation: flailing the lift gani
             # at empty ground on every failed grab read as pure jank.
             px, py = self._touch_points(direction)[0]
-            self.client.pickup_item(px, py)
+            self._pickup_ground_item(px, py)
 
     def _lift_in_front(self, direction: int) -> bool:
         """Lift the 2x2 liftable at the touch points for the
@@ -597,6 +636,7 @@ class ActionsMixin:
             # Use weapon-specific action
             if "bow" in weapon.lower():
                 self.client.shoot(self.client.player.direction)
+                self._play_action_animation("shoot")
                 # Spawn visual projectile
                 import math
                 direction = self.client.player.direction
@@ -618,6 +658,7 @@ class ActionsMixin:
                 })
             elif "bomb" in weapon.lower():
                 self.client.drop_bomb(self.client.player.bomb_power)
+                self._play_action_animation("jlaybomb")
                 # Spawn visual bomb at player position
                 self.active_bombs.append({
                     'x': self.client.player.x,

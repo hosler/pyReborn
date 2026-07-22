@@ -117,6 +117,7 @@ class GuiProfile:
 
 
 _DEFAULT_PROFILE_NAME = "guidefaultprofile"
+_MAX_PARENT_DEPTH = 4096
 
 _PROFILES: Dict[str, GuiProfile] = {
     _DEFAULT_PROFILE_NAME: GuiProfile(
@@ -226,11 +227,23 @@ class GuiControl(GS2Object):
 
     # -- tree -----------------------------------------------------------
 
-    def add_child(self, child: "GuiControl") -> None:
+    def add_child(self, child: "GuiControl") -> bool:
+        node: Optional["GuiControl"] = self
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                break
+            if node is child or id(node) in visited:
+                return False
+            visited.add(id(node))
+            node = node.parent
+        else:
+            return False
         if child.parent is not None:
             child.parent.remove_child(child)
         child.parent = self
         self.children.append(child)
+        return True
 
     def remove_child(self, child: "GuiControl") -> None:
         if child in self.children:
@@ -243,7 +256,11 @@ class GuiControl(GS2Object):
         GuiScrollCtrl) -- composes across nested scroll regions."""
         ox = oy = 0.0
         p = self.parent
-        while p is not None:
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if p is None or id(p) in visited:
+                break
+            visited.add(id(p))
             if isinstance(p, GuiScrollCtrl):
                 ox -= p.scroll_x
                 oy -= p.scroll_y
@@ -772,7 +789,11 @@ class GS2GuiManager:
 
     @staticmethod
     def _is_or_descends(node: GuiControl, ancestor: GuiControl) -> bool:
-        while node is not None:
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None or id(node) in visited:
+                return False
+            visited.add(id(node))
             if node is ancestor:
                 return True
             node = node.parent
@@ -810,6 +831,38 @@ class GS2GuiManager:
         if ctrl in siblings:
             siblings.remove(ctrl)
             siblings.append(ctrl)          # z-order = list order, last = topmost
+
+    def add_to(self, parent: Any, child: Any) -> None:
+        parent_ctrl, child_ctrl = self._resolve(parent), self._resolve(child)
+        if parent_ctrl is not None and child_ctrl is not None:
+            if parent_ctrl.add_child(child_ctrl) and child_ctrl in self.roots:
+                self.roots.remove(child_ctrl)
+
+    def get_child(self, parent: Any, child: Any) -> Any:
+        parent_ctrl = self._resolve(parent)
+        if parent_ctrl is None:
+            return 0.0
+        if isinstance(child, str):
+            wanted = child.casefold()
+            for item in parent_ctrl.children:
+                if item.ctrl_name.casefold() == wanted:
+                    return item
+        else:
+            index = int(to_num(child))
+            if 0 <= index < len(parent_ctrl.children):
+                return parent_ctrl.children[index]
+        return 0.0
+
+    def hide_children(self, parent: Any) -> None:
+        ctrl = self._resolve(parent)
+        if ctrl is not None:
+            for child in ctrl.children:
+                child.visible = False
+                self._release_pointers_under(child)
+
+    def focus(self, target: Any) -> None:
+        ctrl = self._resolve(target)
+        self._set_focus(ctrl if isinstance(ctrl, GuiTextEditCtrl) else None)
 
     # -- render ---------------------------------------------------------
 
@@ -855,7 +908,11 @@ class GS2GuiManager:
 
     def _ancestor_window(self, ctrl: GuiControl) -> Optional[GuiWindowCtrl]:
         p = ctrl.parent
-        while p is not None:
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if p is None or id(p) in visited:
+                return None
+            visited.add(id(p))
             if isinstance(p, GuiWindowCtrl):
                 return p
             p = p.parent
@@ -914,11 +971,21 @@ class GS2GuiManager:
         if popup is None:
             return
         node: Optional[GuiControl] = popup
-        while node is not None:
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                break
+            if id(node) in visited:
+                self._close_popup()
+                return
+            visited.add(id(node))
             if not node.visible:
                 self._close_popup()
                 return
             node = node.parent
+        else:
+            self._close_popup()
+            return
         if popup.parent is None and popup not in self.roots:
             self._close_popup()
 
@@ -1042,8 +1109,17 @@ class GS2GuiManager:
     def _on_wheel(self, event) -> bool:
         pos = getattr(event, "pos", None) or pygame.mouse.get_pos()
         node = self.hit_test(pos)
-        while node is not None and not isinstance(node, GuiScrollCtrl):
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None or isinstance(node, GuiScrollCtrl):
+                break
+            if id(node) in visited:
+                node = None
+                break
+            visited.add(id(node))
             node = node.parent
+        else:
+            node = None
         if node is None:
             return False
         node.scroll_y = max(0.0, node.scroll_y - event.y * 20.0)

@@ -200,7 +200,8 @@ def _prop_payload_len(prop_id: int, data: bytes, pos: int, colors_len: int = 5) 
     return 1
 
 
-def _parse_with_colors_retry(run_once, colors_len: int):
+def _parse_with_colors_retry(run_once, colors_len: int,
+                             diagnostics: Optional[Dict[str, int]] = None):
     """Try `colors_len`, then fall back to the other known PLPROP_COLORS
     width, keeping whichever cleanly parses the whole props stream.
 
@@ -226,12 +227,19 @@ def _parse_with_colors_retry(run_once, colors_len: int):
     """
     candidates = [colors_len] + [c for c in (5, 8) if c != colors_len]
     fallback = None
+    failed_attempts = 0
     for cl in candidates:
         props, clean = run_once(cl)
         if clean:
+            if diagnostics is not None and failed_attempts:
+                diagnostics['warnings'] = diagnostics.get('warnings', 0) + 1
+                diagnostics['width_fallbacks'] = diagnostics.get('width_fallbacks', 0) + 1
             return props
+        failed_attempts += 1
         if fallback is None:
             fallback = props
+    if diagnostics is not None:
+        diagnostics['errors'] = diagnostics.get('errors', 0) + 1
     return fallback if fallback is not None else {}
 
 
@@ -819,7 +827,8 @@ def parse_rawdata(data: bytes) -> int:
     return reader.read_gint3()
 
 
-def parse_other_player(data: bytes, colors_len: int = 5) -> dict:
+def parse_other_player(data: bytes, colors_len: int = 5,
+                       diagnostics: Optional[Dict[str, int]] = None) -> dict:
     """
     Parse PLO_OTHERPLPROPS (8).
     Format: gshort(player_id) + props...
@@ -848,6 +857,8 @@ def parse_other_player(data: bytes, colors_len: int = 5) -> dict:
             if prop_id < 0 or prop_id > 83:
                 clean = False
                 break
+            if pos + _prop_payload_len(prop_id, data, pos, colors_len) > len(data):
+                clean = False
             # Every PlayerProp stream GServer-v2 emits (getPropsPacketFromList/
             # getModifiedPropsPacket, server/src/player/PlayerProps.cpp) writes
             # prop ids in strictly ascending order, except that OTHERPLPROPS
@@ -968,7 +979,7 @@ def parse_other_player(data: bytes, colors_len: int = 5) -> dict:
 
         return props, clean
 
-    return _parse_with_colors_retry(_run, colors_len)
+    return _parse_with_colors_retry(_run, colors_len, diagnostics)
 
 
 # LevelItemType id -> name (from GServer-v2 LevelItem.h enum order).
@@ -1093,7 +1104,11 @@ def parse_weapon_add(data: bytes) -> dict:
       - Structured (classic 2.22 + GServer-v2): ``(gchar)namelen, name,
         (gchar)propid, value...`` where prop 0 = image (gchar len + str) and
         prop 1 = SCRIPT (gshort len + raw). This is what real Reborn servers send.
-      - Legacy text: ``+name image!<script`` (pygserver still emits this).
+      - Legacy text: ``+name image!<script``.
+
+    A short-lived server bug omitted the image/script property ids, producing
+    ``gstring(name), gstring(image), gshort-string(script)``.  That shape is
+    also accepted so an otherwise valid grant is not silently lost.
 
     They're ambiguous for an 11-char name (namelen 11 -> '+'), so we try the
     structured parse first and accept it only if it cleanly consumes the packet
@@ -1123,6 +1138,7 @@ def _parse_weapon_add_structured(data: bytes):
         pos = 1 + namelen
         image = ''
         script = None
+        classes = None
         while pos < n:
             prop = data[pos] - 32
             pos += 1
@@ -1135,6 +1151,15 @@ def _parse_weapon_add_structured(data: bytes):
                     return None
                 script = data[pos:pos + slen].decode('latin-1', errors='replace')
                 pos += slen
+            elif prop == 74:  # CLASS: gshort len + comma-separated names
+                if pos + 1 >= n:
+                    return None
+                clen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
+                pos += 2
+                if clen < 0 or pos + clen > n:
+                    return None
+                classes = data[pos:pos + clen].decode('latin-1', errors='replace')
+                pos += clen
             elif prop in (0, 2, 3):  # image / other gchar-len string props
                 if pos >= n:
                     return None
@@ -1148,9 +1173,12 @@ def _parse_weapon_add_structured(data: bytes):
                     image = val
             else:
                 return None
-        if script is None:
+        if script is None and classes is None:
             return None
-        return {'name': name, 'image': image, 'script': script}
+        result = {'name': name, 'image': image, 'script': script or ''}
+        if classes is not None:
+            result['classes'] = classes
+        return result
     except Exception:
         return None
 
@@ -1195,8 +1223,24 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
 
 
 def _parse_weapon_add_text(data: bytes) -> dict:
-    """Legacy text weapon format: ``+name image!<script`` (pygserver)."""
+    """Parse legacy text and the former unlabeled structured server shape."""
     try:
+        if data and data[0] != ord('+'):
+            namelen = data[0] - 32
+            name_end = 1 + namelen
+            if namelen > 0 and name_end < len(data):
+                image_len = data[name_end] - 32
+                image_start = name_end + 1
+                image_end = image_start + image_len
+                if image_len >= 0 and image_end + 2 <= len(data):
+                    script_len = ((data[image_end] - 32) << 7) + (data[image_end + 1] - 32)
+                    script_start = image_end + 2
+                    if script_len >= 0 and script_start + script_len == len(data):
+                        return {
+                            'name': data[1:name_end].decode('latin-1', errors='replace'),
+                            'image': data[image_start:image_end].decode('latin-1', errors='replace'),
+                            'script': data[script_start:].decode('latin-1', errors='replace'),
+                        }
         text = data.decode('latin-1', errors='replace')
         if not text.startswith('+'):
             return {}
@@ -1223,7 +1267,8 @@ def _parse_weapon_add_text(data: bytes) -> dict:
         return {}
 
 
-def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
+def parse_player_props(data: bytes, colors_len: int = 5,
+                       diagnostics: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """
     Parse PLO_PLAYERPROPS (packet 9) - returns dict of properties.
     Simplified parser that extracts essential properties only.
@@ -1245,6 +1290,8 @@ def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
             if prop_id < 0 or prop_id > 83:
                 clean = False
                 break
+            if pos + _prop_payload_len(prop_id, data, pos, colors_len) > len(data):
+                clean = False
             # See the matching comment in parse_other_player: GServer-v2 always
             # emits prop ids in ascending order, so this catches the desync a
             # wrong colors_len guess causes and lets _parse_with_colors_retry
@@ -1318,6 +1365,8 @@ def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
                 if val is not None:
                     props['chat'] = val
             elif prop_id == 13:       # COLORS (colors_len gchar color indices)
+                if pos + colors_len > len(data):
+                    clean = False
                 end = min(pos + colors_len, len(data))
                 props['colors'] = [max(0, data[i] - 32) for i in range(pos, end)]
                 pos = end
@@ -1392,9 +1441,11 @@ def parse_player_props(data: bytes, colors_len: int = 5) -> Dict[str, Any]:
                 # consume the correct number of bytes to keep the stream aligned.
                 pos += _prop_payload_len(prop_id, data, pos, colors_len)
 
+        if pos > len(data):
+            clean = False
         return props, clean
 
-    return _parse_with_colors_retry(_run, colors_len)
+    return _parse_with_colors_retry(_run, colors_len, diagnostics)
 
 
 # =============================================================================

@@ -236,13 +236,19 @@ class TestWarpFailedRestore:
         assert c._current_level_name == "qa_tier3.nw"
         assert c._awaiting_warp_confirm == "qa_tier3.nw"
 
-    def test_pygserver_rejection_levelname_reanchor_clears_pending(self):
-        # pygserver rejects a bad warp with PLAYERWARP + a re-send of the
-        # OLD level (name+board). The LEVELNAME re-announcement must clear
-        # the pending-warp state even though it doesn't match the target.
+    def test_pygserver_rejection_waits_for_authoritative_playerwarp(self):
+        # The server re-sends OLD level name+board before PLAYERWARP.  A queued
+        # stale board has the same prefix, so LEVELNAME alone cannot reject a
+        # transition; the final PLAYERWARP is authoritative.
         c = self._client_in_level()
         c.warp_to_level("bogus_nonexistent.nw", 5.0, 5.0)
         c._handle_packet(PacketID.PLO_LEVELNAME, b"qa_testlevel.nw")
+        assert c._current_level_name == "bogus_nonexistent.nw"
+        assert c._awaiting_warp_confirm == "bogus_nonexistent.nw"
+
+        c._handle_packet(
+            PacketID.PLO_PLAYERWARP,
+            bytes((92, 92)) + b"qa_testlevel.nw")
         assert c._current_level_name == "qa_testlevel.nw"
         assert c._awaiting_warp_confirm == ""
         assert c._warp_fallback is None

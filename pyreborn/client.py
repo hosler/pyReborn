@@ -11,6 +11,8 @@ import math
 import re
 import sys
 import time
+import traceback
+from collections import OrderedDict
 from typing import Optional, Callable, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,41 @@ logger = logging.getLogger(__name__)
 # must stay in [0, 255]. That bounds the warp target to [-16, 111.5] tiles.
 WARP_COORD_MIN = -16.0
 WARP_COORD_MAX = 111.5
+MAX_CACHED_LEVELS = 512
+MAX_CACHED_FILES = 512
+MAX_LARGE_FILE_SIZE = 256 * 1024 * 1024
+LARGE_FILE_SIZE_SLACK = 64 * 1024
+
+
+class BoundedLRU(OrderedDict):
+    """Dictionary-compatible LRU cache with a fixed entry limit."""
+
+    def __init__(self, max_entries: int):
+        super().__init__()
+        self.max_entries = max_entries
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key):
+        present = super().__contains__(key)
+        if present:
+            self.move_to_end(key)
+        return present
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_entries:
+            self.popitem(last=False)
 
 from reborn_protocol import BDPROP, BDMODE
 
@@ -171,6 +208,7 @@ def _build_handled_plo_ids() -> set:
         "PLO_DEFAULTWEAPON", "PLO_STAFFGUILDS", "PLO_SERVERTEXT",
         "PLO_SETACTIVELEVEL", "PLO_UNKNOWN168", "PLO_GHOSTICON", "PLO_RPGWINDOW",
         "PLO_STATUSLIST", "PLO_UNKNOWN190", "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
+        "PLO_LISTPROCESSES",
         "PLO_BIGMAP", "PLO_ADDPLAYER", "PLO_DELPLAYER",
         "PLO_SHOOT", "PLO_SHOOT2",
         # Tier 1: board modify / large files / board heights.
@@ -290,7 +328,7 @@ class Client:
         self._raw_buffer = b""
 
         # GMAP support: multiple levels keyed by level name
-        self.levels: Dict[str, List[int]] = {}
+        self.levels: Dict[str, List[int]] = BoundedLRU(MAX_CACHED_LEVELS)
         self._current_level_name = ""  # The player's actual level (set once at login)
         self._pending_level_name = ""  # Track which level data is being received
         # Destination of a client-initiated warp awaiting the server's
@@ -305,6 +343,20 @@ class Client:
         # pygame renderer consumes this to snap even when the coordinate jump
         # is small enough that ordinary movement would interpolate it.
         self._local_level_transition_epoch = 0
+        self._plain_level_change_epoch = 0
+        # monotonic() stamp of when the current hold started - the renderer
+        # fails open (releases) if confirmation never arrives.
+        self._local_level_transition_started = 0.0
+        # One-shot renderer hint for a standalone boundary-link transition.
+        # It survives the board-ready release just long enough for the pygame
+        # renderer to replace the cut with a static two-frame slide.
+        self._local_level_transition_direction: Optional[int] = None
+        # Every level name that has EVER been a segment of a loaded .gmap
+        # this session. Unlike gmap_grid this survives _exit_gmap, so a warp
+        # back out of an interior can tell "this destination will become a
+        # gmap segment again" and keep the transition held until the world
+        # frame is re-established (see _maybe_release_local_transition).
+        self._known_gmap_segments: set = set()
         # Pre-warp (level, x, y) snapshot to restore if the server rejects
         # the warp with PLO_WARPFAILED (warp_to_level flips state
         # optimistically, so a rejected warp would otherwise strand us at a
@@ -540,7 +592,7 @@ class Client:
 
         # File download tracking
         self._pending_files: set = set()  # Files we're waiting for
-        self._received_files: Dict[str, bytes] = {}  # Received files
+        self._received_files: Dict[str, bytes] = BoundedLRU(MAX_CACHED_FILES)
         self._failed_files: set = set()  # Files that failed to download
         self._uptodate_files: set = set()  # Files confirmed unchanged by the server
 
@@ -633,6 +685,12 @@ class Client:
         # PLO ids this instance has a dispatch branch for. Subclasses (e.g.
         # RCClient) extend this so coverage counts their handlers too.
         self._handled_plo_ids = set(HANDLED_PLO_IDS)
+        # Player-property decoder anomalies are probe-visible. A warning means
+        # the alternate known COLORS width recovered a clean parse; an error
+        # means neither known width consumed the property stream cleanly.
+        self.prop_parse_diagnostics = {
+            'warnings': 0, 'errors': 0, 'width_fallbacks': 0,
+        }
 
     # =========================================================================
     # Connection
@@ -1148,10 +1206,20 @@ class Client:
             return False
 
         self.player.animation = gani_name
+        # GS1 `replaceani` substitution (wired by the pygame client): the wire
+        # prop must carry the replaced name so other clients play the level's
+        # ani (and their NPC scripts see it via #m), like a real client.
+        resolver = getattr(self, "ani_resolver", None)
+        wire_name = gani_name
+        if resolver is not None:
+            try:
+                wire_name = resolver(gani_name) or gani_name
+            except Exception:
+                pass
         # Always send local coords (0-63)
         local_x = self.player.x % 64
         local_y = self.player.y % 64
-        data = build_animation(gani_name, local_x, local_y, self.player.direction)
+        data = build_animation(wire_name, local_x, local_y, self.player.direction)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
     def send_hearts(self, hearts: Optional[float] = None) -> bool:
@@ -1308,6 +1376,12 @@ class Client:
         data = build_triggeraction(x, y, action, npc_id)
         return self._protocol.send_packet(PacketID.PLI_TRIGGERACTION, data)
 
+    def send_server_text(self, request: bool, text: str) -> bool:
+        """Send a gtokenized server-list text request or command."""
+        from .packets import _gtokenize
+        packet_id = PacketID.PLI_REQUESTTEXT if request else PacketID.PLI_SENDTEXT
+        return self._protocol.send_packet(packet_id, _gtokenize(text).encode("latin-1"))
+
     def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
         """
         Send NPC properties update (char props like #P1, #P2).
@@ -1359,6 +1433,24 @@ class Client:
         data = build_flag_del(flag_name)
         return self._protocol.send_packet(PacketID.PLI_FLAGDEL, data)
 
+    def delete_weapon(self, name: str) -> bool:
+        """Remove a weapon from this account, locally and server-side
+        (PLI_NPCWEAPONDEL — GServer erases it from account.weapons unless
+        protected). This is what a weapon script's `destroy` does on the real
+        client; without it, self-destroying weapons (the Bomber arena's
+        -arenaSYS/-validation) pile up on the account and their playerenters
+        re-fire on every later level/login."""
+        if not name:
+            return False
+        self.weapons.pop(name, None)
+        if not self.connected or not self._authenticated:
+            return False
+        try:
+            data = name.encode("latin-1", "replace")
+        except Exception:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_NPCWEAPONDEL, data)
+
     def set_gattrib(self, index: int, value: str) -> bool:
         """Set gani attribute `index` (1..30, i.e. GS1 #P<index>) and send it to
         the server, which relays it to other players (PLO_OTHERPLPROPS). Used by
@@ -1373,7 +1465,9 @@ class Client:
             return False
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
-    def warp_to_level(self, level_name: str, x: float = 30.0, y: float = 30.0) -> bool:
+    def warp_to_level(self, level_name: str, x: float = 30.0,
+                      y: float = 30.0,
+                      transition_direction: Optional[int] = None) -> bool:
         """
         Warp to a different level.
 
@@ -1407,6 +1501,7 @@ class Client:
         # Snapshot the authoritative pre-warp state BEFORE the optimistic
         # flip below, so a PLO_WARPFAILED rejection can restore it.
         pre_warp_state = (self._current_level_name, self.player.x, self.player.y)
+        self._local_level_transition_direction = None
 
         # Update local state
         if level_name != self._current_level_name:
@@ -1435,6 +1530,15 @@ class Client:
 
         self._current_level_name = level_name
         self._pending_level_name = level_name
+        # Keep player.level (the source of client.level and GS1 #L) in step
+        # with the optimistic flip: it is otherwise only assigned on
+        # PLO_PLAYERWARP, which a client-initiated warp may not receive before
+        # level scripts re-run — weapon playerenters then read the OLD level
+        # via #L (the Bomber arena weapon re-armed its "Joining..." curtain in
+        # the lobby that way). Gmap convention keeps player.level = .gmap name,
+        # so segment hops don't touch it.
+        if level_name not in self.gmap_grid.values():
+            self.player.level = level_name
 
         # If we've visited this level before, repopulate its board from cache
         # immediately so the renderer doesn't draw the OLD level's tiles under
@@ -1462,10 +1566,52 @@ class Client:
             self._warp_fallback = pre_warp_state
             if level_name != pre_warp_state[0]:
                 self._local_level_transition = level_name
+                self._local_level_transition_started = time.monotonic()
+                if self.player.hearts > 0 and transition_direction in range(4):
+                    self._local_level_transition_direction = transition_direction
 
         # The LEVELWARP packet carries LOCAL coords within the target segment.
         data = build_level_warp(x, y, level_name)
-        return self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
+        sent = self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
+        if not sent:
+            self._restore_failed_warp("send_failed")
+            return False
+        return True
+
+    def _release_local_transition(self) -> None:
+        """Unconditionally end a held local level transition (rollback,
+        renderer fail-open timeout). Bumps the epoch so the renderer snaps."""
+        if self._local_level_transition:
+            self._local_level_transition = ""
+            self._local_level_transition_epoch += 1
+        self._local_level_transition_direction = None
+
+    def _maybe_release_local_transition(self) -> None:
+        """End the held transition once the destination is genuinely
+        presentable. Called from every packet handler that advances a warp
+        (LEVELNAME confirm, BOARDPACKET, PLAYERWARP2, load_gmap).
+
+        Two conditions, both learned from live traces (funtimes, house/gmap
+        links):
+        - The destination's board must be the ACTIVE render board.
+        - If the destination is a segment of a gmap seen this session, the
+          gmap frame must be re-established (grid reloaded and the segment
+          current). Releasing on the bare board - the old behavior - landed
+          the camera in the standalone LOCAL interim frame of a gmap
+          re-entry (edge-clamped, wrong bounds), then the .gmap reload
+          flipped coordinates to the world frame and the camera visibly
+          jumped a second time."""
+        lvl = self._local_level_transition
+        if not lvl:
+            return
+        if self._current_level_name != lvl:
+            return
+        if self._tiles_level_name != lvl:
+            return
+        if lvl in self._known_gmap_segments and not self.in_gmap_segment:
+            return
+        self._local_level_transition = ""
+        self._local_level_transition_epoch += 1
 
     def _restore_failed_warp(self, reason: str) -> None:
         """Roll back the optimistic state flip from warp_to_level after the
@@ -1477,9 +1623,7 @@ class Client:
         target = self._awaiting_warp_confirm
         self._awaiting_warp_confirm = ""
         self._warp_fallback = None
-        if self._local_level_transition:
-            self._local_level_transition = ""
-            self._local_level_transition_epoch += 1
+        self._release_local_transition()
         if not fallback:
             return
         prev_level, prev_x, prev_y = fallback
@@ -1487,6 +1631,10 @@ class Client:
                     target, reason, prev_level)
         self._current_level_name = prev_level
         self._pending_level_name = prev_level
+        # Mirror warp_to_level's optimistic player.level flip on rollback
+        # (same gmap-name convention: only plain levels are stored there).
+        if prev_level and prev_level not in self.gmap_grid.values():
+            self.player.level = prev_level
         self.player.x = prev_x
         self.player.y = prev_y
         # Re-point the render board and restore cached NPCs; the server-side
@@ -1496,7 +1644,8 @@ class Client:
             self._tiles_level_name = prev_level
         cached_npcs = self._npc_cache.get(prev_level)
         if cached_npcs:
-            self.npcs.update(cached_npcs)
+            self.npcs.update({nid: npc.copy()
+                              for nid, npc in cached_npcs.items()})
 
     def _reset_level_state(self, cache_npcs: bool = True):
         """Clear per-level state on a full level change so ground items,
@@ -1537,7 +1686,7 @@ class Client:
             for nid, npc in self.npcs.items():
                 lvl = npc.get('_level')
                 if lvl:
-                    self._npc_cache.setdefault(lvl, {})[nid] = npc
+                    self._npc_cache.setdefault(lvl, {})[nid] = npc.copy()
         self.npcs.clear()
 
     def _mark_npc_pos_snap(self, npc: dict) -> None:
@@ -1568,9 +1717,10 @@ class Client:
                 # renderer must snap to it, not lerp from wherever a
                 # same-numbered NPC happened to be visually parked before
                 # (see _mark_npc_pos_snap).
-                for npc in cached.values():
+                restored = {nid: npc.copy() for nid, npc in cached.items()}
+                for npc in restored.values():
                     self._mark_npc_pos_snap(npc)
-                self.npcs.update(cached)
+                self.npcs.update(restored)
 
     def send_pm(self, player_id: int, message: str) -> bool:
         """
@@ -1960,6 +2110,11 @@ class Client:
         """Check if a file download failed."""
         return filename in self._failed_files
 
+    @property
+    def failed_files(self) -> set:
+        """Filenames the server has refused to send."""
+        return self._failed_files
+
     def _exit_gmap(self, level_name: str):
         """Leave gmap mode and become a standalone level.
 
@@ -2017,6 +2172,8 @@ class Client:
             x = i % self.gmap_width
             y = i // self.gmap_width
             self.gmap_grid[(x, y)] = name
+        # Remember segment membership across _exit_gmap (see __init__).
+        self._known_gmap_segments.update(level_names)
 
 
         # With GMAP-relative coordinates, there's no offset needed
@@ -2054,6 +2211,11 @@ class Client:
 
         # Update existing NPC coords to world coords now that we have the GMAP grid
         self._update_npc_world_coords()
+
+        # A transition held across a gmap re-entry (interior -> segment) was
+        # waiting for exactly this: the grid is rebuilt and coordinates are
+        # world again, so the destination view is finally presentable.
+        self._maybe_release_local_transition()
 
     def _update_npc_world_coords(self):
         """Update NPC world coordinates based on their level's grid position.
@@ -2352,6 +2514,7 @@ class Client:
                 except Exception as e:
                     stats['errors'] += 1
                     stats['last_error'] = f"{type(e).__name__}: {e}"
+                    stats['last_traceback'] = traceback.format_exc()
                     if packet_id not in self._warned_packet_errors:
                         self._warned_packet_errors.add(packet_id)
                         logger.warning(
@@ -2405,8 +2568,19 @@ class Client:
                     # _current_level_name from gmap_x/gmap_y, so leave it alone
                     # here rather than trust this packet directly.
                     pass
+                elif (self._awaiting_warp_confirm
+                      and level_name != self._awaiting_warp_confirm):
+                    # A level stream already in flight is not authoritative
+                    # evidence that a client-requested warp failed.  In
+                    # particular, link-touch can race an old/adjacent board
+                    # response queued before PLI_LEVELWARP.  Route its board
+                    # through _pending_level_name below, but keep the requested
+                    # destination active and the camera held.  A PLAYERWARP
+                    # naming another level is the authoritative rejection.
+                    pass
                 elif level_name != self._current_level_name:
                     self._current_level_name = level_name
+                    self._plain_level_change_epoch += 1
                     # Real warp: drop the old level's items/baddies/NPCs so
                     # stale entries (e.g. a link back through a door that
                     # doesn't exist here) don't leak into the new level,
@@ -2431,23 +2605,14 @@ class Client:
                     # BEFORE the warp, so no transit-window leak comes back.)
                     self._reset_level_state(cache_npcs=False)
                     self._restore_cached_npcs(level_name)
-                if self._awaiting_warp_confirm:
-                    # Any authoritative level announcement supersedes the
-                    # pending client warp: either it's the confirmation
-                    # itself, or the server anchored us somewhere else
-                    # entirely (pygserver rejects a bad warp by re-sending
-                    # the OLD level's name+board). Clear the pending state
-                    # either way so later packets aren't misread as a warp
-                    # rejection by the PLO_PLAYERPROPS fallback below.
+                    self._plain_level_change_epoch += 1
+                if (self._awaiting_warp_confirm
+                        and level_name == self._awaiting_warp_confirm):
+                    # The requested destination announcement confirms the
+                    # client warp. Other level streams can be stale/preloads;
+                    # an authoritative PLAYERWARP handles a real rejection.
                     self._awaiting_warp_confirm = ""
                     self._warp_fallback = None
-                if (self._local_level_transition
-                        and level_name != self._local_level_transition):
-                    # The server anchored us somewhere other than the
-                    # optimistic destination.  Release the held view; the
-                    # rollback/player-warp packets provide the real position.
-                    self._local_level_transition = ""
-                    self._local_level_transition_epoch += 1
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
@@ -2465,6 +2630,11 @@ class Client:
             elif (level_name.endswith('.nw') and self.gmap_width > 0 and
                   level_name not in self.gmap_grid.values()):
                 self._exit_gmap(level_name)
+            # A cached-board destination already has its tiles active (set
+            # synchronously in warp_to_level), so this announcement is the
+            # release point - the server may not re-stream the board at all
+            # (per-session level cache).
+            self._maybe_release_local_transition()
 
         # PLO_WARPFAILED (15) - the server rejected a warp (GServer-v2
         # PlayerClient.cpp:1180/1275 sends it with the failed level name when
@@ -2486,7 +2656,8 @@ class Client:
 
         # Player properties (our player data)
         elif packet_id == PacketID.PLO_PLAYERPROPS:
-            props = parse_player_props(data, self._colors_len)
+            props = parse_player_props(
+                data, self._colors_len, self.prop_parse_diagnostics)
 
             # Silent warp rejection (gs2emu): msgPLI_LEVELWARP with an
             # unloadable level sends NO PLO_WARPFAILED - it "resolves" by
@@ -2562,6 +2733,8 @@ class Client:
         elif packet_id == PacketID.PLO_NPCWEAPONADD:
             weapon = parse_weapon_add(data)
             if weapon and weapon.get('name'):
+                weapon.setdefault('image', '')
+                weapon.setdefault('script', '')
                 self.weapons[weapon['name']] = weapon
                 # Callback for weapon added
                 if self.on_weapon_add:
@@ -2713,9 +2886,7 @@ class Client:
             if level_for_tiles == self._current_level_name:
                 self.tiles = tiles
                 self._tiles_level_name = level_for_tiles
-                if level_for_tiles == self._local_level_transition:
-                    self._local_level_transition = ""
-                    self._local_level_transition_epoch += 1
+                self._maybe_release_local_transition()
             if self.on_level:
                 self.on_level(tiles)
 
@@ -2736,7 +2907,21 @@ class Client:
                 # server/src/player/Player.cpp Player::sendFile). Append
                 # rather than overwrite while a large transfer is in flight.
                 if self._large_file_pending == filename:
-                    self._large_file_buffer.extend(file_data)
+                    new_size = len(self._large_file_buffer) + len(file_data)
+                    announced_limit = (
+                        self._large_file_expected_size + LARGE_FILE_SIZE_SLACK)
+                    if (new_size > MAX_LARGE_FILE_SIZE
+                            or (self._large_file_expected_size > 0
+                                and new_size > announced_limit)):
+                        logger.warning(
+                            "Aborting oversized file transfer for %r", filename)
+                        self._large_file_pending = None
+                        self._large_file_buffer = bytearray()
+                        self._large_file_expected_size = 0
+                        self._failed_files.add(filename)
+                        self._pending_files.discard(filename)
+                    else:
+                        self._large_file_buffer.extend(file_data)
                 else:
                     self._received_files[filename] = file_data
                     self._pending_files.discard(filename)
@@ -2782,6 +2967,7 @@ class Client:
                 file_data = bytes(self._large_file_buffer)
                 self._large_file_pending = None
                 self._large_file_buffer = bytearray()
+                self._large_file_expected_size = 0
                 self._received_files[filename] = file_data
                 self._pending_files.discard(filename)
                 if filename.endswith('.gmap'):
@@ -2813,10 +2999,14 @@ class Client:
         elif packet_id == PacketID.PLO_PLAYERWARP:
             warp = parse_playerwarp(data)
             if warp:
+                level = warp.get('level', '')
+                if (self._awaiting_warp_confirm and level
+                        and level != self._awaiting_warp_confirm):
+                    self._restore_failed_warp(
+                        "server player warp named another level")
                 # x, y are local coords (0-63 range for non-GMAP levels)
                 self.player.x = warp.get('x', 0)
                 self.player.y = warp.get('y', 0)
-                level = warp.get('level', '')
                 if level:
                     self.player.level = level
 
@@ -2824,6 +3014,11 @@ class Client:
         elif packet_id == PacketID.PLO_PLAYERWARP2:
             warp = parse_playerwarp2(data)
             if warp:
+                level = warp.get('level', '')
+                if (self._awaiting_warp_confirm and level
+                        and level != self._awaiting_warp_confirm):
+                    self._restore_failed_warp(
+                        "server player warp named another level")
                 # x, y are local coords within the level/grid cell
                 local_x = warp.get('x', 0)
                 local_y = warp.get('y', 0)
@@ -2858,6 +3053,9 @@ class Client:
                 # Update level name from gmap grid if available
                 if self.gmap_grid and (gmap_x, gmap_y) in self.gmap_grid:
                     self._current_level_name = self.gmap_grid[(gmap_x, gmap_y)]
+                # Segment warp with the grid already loaded: the world frame
+                # is established right here, so a held transition can end.
+                self._maybe_release_local_transition()
 
         # Level links
         elif packet_id == PacketID.PLO_LEVELLINK:
@@ -2971,8 +3169,12 @@ class Client:
                 from .packets import PacketReader
                 reader = PacketReader(data)
                 npc_id = reader.read_gint3()
-                if npc_id in self.npcs:
-                    del self.npcs[npc_id]
+                npc = self.npcs.pop(npc_id, None)
+                if npc is not None:
+                    level = npc.get('_level')
+                    cached = self._npc_cache.get(level) if level else None
+                    if cached is not None:
+                        cached.pop(npc_id, None)
                     if self.on_npc_del:
                         self.on_npc_del(npc_id)
 
@@ -2995,7 +3197,8 @@ class Client:
 
         # Other player properties
         elif packet_id == PacketID.PLO_OTHERPLPROPS:
-            props = parse_other_player(data, self._colors_len)
+            props = parse_other_player(
+                data, self._colors_len, self.prop_parse_diagnostics)
             if props and 'id' in props:
                 player_id = props['id']
                 # JOINLEAVELVL=0 is the server's "this player left your
@@ -3096,6 +3299,12 @@ class Client:
             if self.on_disconnect:
                 self.on_disconnect(reason)
             self.disconnect()
+
+        # Process-list request (packet 182).  The server's PLI_PROCESSLIST
+        # handler guntokenizes this payload into newline-separated identities;
+        # one simple token is therefore a complete, truthful one-entry list.
+        elif packet_id == PacketID.PLO_LISTPROCESSES:
+            self._protocol.send_packet(PacketID.PLI_PROCESSLIST, b"pyReborn")
 
         # Level sign (packet 5)
         elif packet_id == PacketID.PLO_LEVELSIGN:
@@ -3674,7 +3883,7 @@ class Client:
         px, py = self.player.x, self.player.y
         probe_offsets = ((1.5, 1.0), (0.0, 2.0),
                          (1.5, 3.5), (3.0, 2.0))
-        dx, dy = probe_offsets[self.player.direction & 3]
+        dx, dy = probe_offsets[int(self.player.direction) & 3]
         tile_x = math.floor(px + dx) % 64
         tile_y = math.floor(py + dy) % 64
 
@@ -3737,7 +3946,39 @@ class Client:
         # segment gets world coords, a standalone interior level (house/cave
         # reached via a door) keeps local coords. Without the server warp the
         # server keeps streaming our old GMAP position and yanks us around.
-        return self.warp_to_level(dest_level, new_x, new_y)
+        transition_direction = self._edge_transition_direction(
+            link, new_x, new_y)
+        return self.warp_to_level(
+            dest_level, new_x, new_y,
+            transition_direction=transition_direction)
+
+    def _edge_transition_direction(self, link: dict, dest_x: float,
+                                   dest_y: float) -> Optional[int]:
+        """Return the walk direction for an unambiguous boundary crossing.
+
+        Direction values are the protocol/player convention: up, left, down,
+        right. A qualifying link must touch the boundary being walked through
+        and land on the opposite boundary of a standalone destination.
+        """
+        if (self.in_gmap_segment
+                or link.get('dest_level', '') in self._known_gmap_segments):
+            return None
+        try:
+            x = float(link.get('x', 0))
+            y = float(link.get('y', 0))
+            width = float(link.get('width', 1))
+            height = float(link.get('height', 1))
+            direction = int(self.player.direction) & 3
+        except (TypeError, ValueError):
+            return None
+
+        source_edges = (y <= 1, x <= 1, y + height >= 63,
+                        x + width >= 63)
+        destination_edges = (dest_y >= 60, dest_x >= 60,
+                             dest_y <= 1, dest_x <= 1)
+        if source_edges[direction] and destination_edges[direction]:
+            return direction
+        return None
 
     # =========================================================================
     # Convenience Properties

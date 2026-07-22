@@ -55,14 +55,11 @@ class InputMixin:
     chat_seq: int = 0
 
     def _ensure_settings_ui(self):
-        """Lazily creates the F9 settings overlay (game/settings_ui.py) and
-        applies prefs.json's saved values into live state the first time
-        it's touched. Mirrors InventoryUI's self-owned-state pattern rather
-        than a `self.show_x` flag -- GameClient.__init__ (pygame_game.py)
-        isn't a file this module wires into, so there's no earlier
-        "at construction" hook available here; this runs on the very first
-        `_handle_events()` call of the game loop instead, before the first
-        frame is drawn."""
+        """Create the F9 settings overlay and apply its saved live settings.
+
+        GameClient calls this during construction; the guard also keeps the
+        helper safe for lightweight harnesses and older call sites.
+        """
         su = getattr(self, 'settings_ui', None)
         if su is None:
             from .settings_ui import SettingsOverlay
@@ -109,6 +106,10 @@ class InputMixin:
             if event.type == QUIT:
                 self.running = False
 
+            elif (getattr(self.client, '_local_level_transition', '')
+                  or getattr(self, '_level_transition_input_frozen', False)):
+                pass
+
             # GS2 GUI controls are topmost: a consumed event (click inside a
             # control, keystroke into a focused text edit, Esc on a window)
             # never reaches the overlays or gameplay below.
@@ -119,8 +120,8 @@ class InputMixin:
                 self.key_just_pressed[event.key] = True
 
                 # Modal overlays consume input while open, in priority order:
-                # composing a PM > player list > server list > settings > chat
-                # > gameplay.
+                # composing a PM > player list > server list > settings > map
+                # > chat > dialogue > inventory > gameplay.
                 if self.pm_target_id is not None:
                     self._handle_pm_input(event)
                 elif self.show_player_list:
@@ -129,8 +130,27 @@ class InputMixin:
                     self._handle_server_list_key(event)
                 elif self.settings_ui.visible:
                     self.settings_ui.handle_key(event)
+                elif getattr(self, 'big_map_visible', False):
+                    if event.key in (K_m, K_ESCAPE):
+                        self.big_map_visible = False
                 elif self.typing:
                     self._handle_chat_input(event)
+                elif self.dialogue_text is not None:
+                    if event.key in (K_a, K_s, K_SPACE):
+                        self._advance_dialogue()
+                    elif event.key in (K_UP, K_DOWN, K_PAGEUP, K_PAGEDOWN):
+                        amount = {
+                            K_UP: -1, K_DOWN: 1,
+                            K_PAGEUP: -self.dialogue_pager.page_size,
+                            K_PAGEDOWN: self.dialogue_pager.page_size,
+                        }[event.key]
+                        self.dialogue_pager.scroll(amount)
+                    elif event.key in (K_F1, K_F2, K_F7, K_F8, K_F9):
+                        self._handle_key_press(event)
+                elif self.inventory_ui.visible:
+                    # The inventory owns its opener while visible, plus grid
+                    # navigation/equip keys. Nothing reaches gameplay/GS1.
+                    self.inventory_ui.handle_key(event.key, self.client.weapons)
                 elif getattr(self.client, 'input_frozen', False):
                     # PLO_FULLSTOP/FULLSTOP2: client ignores normal input until
                     # reconnect (no resume packet exists). Modal overlays above
@@ -150,6 +170,18 @@ class InputMixin:
                 # Resizable window: the viewport rescales the fixed virtual canvas.
                 self.viewport.handle_resize(event.w, event.h)
 
+            elif getattr(self, 'big_map_visible', False):
+                # The large map is modal; mouse actions must not reach the
+                # inventory, editor, camera zoom, or world underneath it.
+                pass
+
+            elif event.type == pygame.MOUSEMOTION and self.inventory_ui.visible:
+                self.inventory_ui.handle_mouse_motion(event.pos)
+
+            elif event.type == MOUSEBUTTONDOWN and self.inventory_ui.visible:
+                if event.button == 1:
+                    self.inventory_ui.handle_click(event.pos, self.client.weapons)
+
             elif event.type == MOUSEBUTTONDOWN and self.debug_mode:
                 self._handle_tile_click(event)
 
@@ -160,12 +192,21 @@ class InputMixin:
         """Handle chat input mode."""
         if event.key == K_RETURN:
             if self.chat_input:
-                self.client.say(self.chat_input)
-                # Set local player's chat bubble
-                self.local_chat_text = self.chat_input
-                self.local_chat_time = time.time()
-                # Also add to chat log
-                self._append_chat(f"[You] {self.chat_input}")
+                message = self.chat_input
+                if message.startswith("toall "):
+                    # Classic explicit server-wide chat; keep Client.say() as
+                    # the PLI_TOALL library API used by bots and other callers.
+                    message = message[len("toall "):]
+                    if message:
+                        self.client.say(message)
+                        self._append_chat(f"[You] {message}")
+                else:
+                    # Normal typed chat is CURCHAT: it appears over the player
+                    # and is the path that level NPC playerchats handlers see.
+                    self.client.send_level_chat(message)
+                    self.local_chat_text = message
+                    self.local_chat_time = time.time()
+                    self._append_chat(f"[You] {message}")
             self.chat_input = ""
             self.typing = False
         elif event.key == K_ESCAPE:
@@ -277,8 +318,6 @@ class InputMixin:
             # Toggle debug/tile editing mode
             self.debug_mode = not self.debug_mode
             if self.debug_mode:
-                # The tile editor picks by screen pixel, so it needs 1:1.
-                self.camera.zoom = 1.0
                 print("Debug mode ON - Use 1-7 to select type, click to apply:")
                 print("  1=Walkable, 2=Blocking, 3=Water, 4=Chair, 5=Bush, 6=Pot, 7=Rock")
             else:
@@ -346,8 +385,7 @@ class InputMixin:
             self.show_help = not self.show_help
 
         elif event.key == K_m:
-            # Toggle minimap visibility
-            self.minimap_visible = not self.minimap_visible
+            self.big_map_visible = True
 
         elif event.key == K_n:
             # Toggle noclip — walk through walls to escape a bad server spawn.
@@ -419,10 +457,14 @@ class InputMixin:
 
     def _handle_input(self, current_time: float):
         """Handle held key input."""
-        if (self.typing or self.inventory_ui.visible or self.show_player_list
+        if (self.typing or self.dialogue_text is not None
+                or self.inventory_ui.visible or self.show_player_list
                 or self.show_server_list or self.pm_target_id is not None
+                or getattr(self, 'big_map_visible', False)
                 or self._ensure_settings_ui().visible
                 or getattr(self.client, 'input_frozen', False)
+                or getattr(self.client, '_local_level_transition', '')
+                or getattr(self, '_level_transition_input_frozen', False)
                 or self._gs2_gui_captures_keys()):
             self._clear_gs1_input()
             return

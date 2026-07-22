@@ -34,6 +34,9 @@ class _Harness(EffectsRenderMixin):
         self.explosion_duration = 0.5
         self.world_surface = object()
         self.board = {}
+        self.client = type('Client', (), {
+            'player': type('Player', (), {'x': 4.0, 'y': 5.0})(),
+        })()
 
     def _get_tile_at(self, x, y):
         return self.board.get((int(x), int(y)), 0)
@@ -75,6 +78,20 @@ def test_removal_detonates_now_and_dedupes():
     assert bomb['explosion_time'] == 10.2
     assert h.sound_mgr.played == ['explode.wav']
     assert len(h.active_bombs) == 1
+    assert h._camera_shake_started > 0
+
+
+def test_distant_explosion_does_not_shake():
+    h = _Harness()
+    assert h._start_camera_shake(20.0, 20.0, now=3.0) is False
+    assert not hasattr(h, '_camera_shake_started')
+
+
+def test_active_camera_shake_is_not_restarted():
+    h = _Harness()
+    assert h._start_camera_shake(4.0, 5.0, now=3.0) is True
+    assert h._start_camera_shake(4.0, 5.0, now=3.2) is True
+    assert h._camera_shake_started == 3.0
 
 
 def test_arrow_stops_at_wall_then_spark_expires(monkeypatch):

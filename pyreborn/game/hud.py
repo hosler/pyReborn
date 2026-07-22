@@ -24,7 +24,10 @@ from typing import Optional, Tuple
 
 import pygame
 
+from .assets import render_outlined_text
 from .ui import UIManager, Panel, Label, Widget, TOPLEFT, TOPRIGHT, MIDTOP
+from .minimap import aspect_fit, map_entity_positions
+from ..inventory_ui import resolve_weapon_indicator
 
 
 def chat_window(total: int, scroll: int, window: int = 5) -> Tuple[int, int]:
@@ -125,7 +128,9 @@ class StatsPanel(Widget):
             pygame.draw.line(surf, (210, 200, 180), (x, y + 14), (x + 12, y + 2), 2)
             pygame.draw.polygon(surf, (210, 200, 180),
                                 [(x + 12, y + 2), (x + 7, y + 3), (x + 11, y + 7)])
-        txt = self.game.font_small.render(str(count), True, (245, 245, 245))
+        # Outlined so the count stays legible over bright level tiles showing
+        # through the panel's semi-transparent plate, not just the dark case.
+        txt = render_outlined_text(self.game.font_small, str(count), (245, 245, 245))
         surf.blit(txt, (x + 16, y + 1))
         return x + 16 + txt.get_width()
 
@@ -138,14 +143,15 @@ class StatsPanel(Widget):
             if fill_w > 0:
                 pygame.draw.rect(surf, color, (x, y, fill_w, h), border_radius=2)
         pygame.draw.rect(surf, (10, 10, 12), (x, y, w, h), 1, border_radius=2)
-        txt = self.game.font_small.render(label, True, (220, 220, 220))
+        txt = render_outlined_text(self.game.font_small, label, (220, 220, 220))
         surf.blit(txt, (x, y - 12))
 
     def _draw(self, surf):
         player = self.game.client.player
         hd = self.game.heart_display
-        hearts_w = int(player.max_hearts) * (hd.HEART_SIZE + hd.HEART_SPACING)
-        panel_w = max(168, hearts_w + 16)
+        hearts_w = min(hd.HEARTS_PER_ROW, int(player.max_hearts)) * (hd.HEART_SIZE + hd.HEART_SPACING)
+        panel_w = max(218, hearts_w + 16)
+        heart_rows = max(1, (int(player.max_hearts) + hd.HEARTS_PER_ROW - 1) // hd.HEARTS_PER_ROW)
 
         # Tier 3a: MP (magic) / AP (alignment) bars, from PLPROP_MAGICPOINTS(26)
         # / PLPROP_ALIGNMENT(32) via packets.py's parse_player_props ->
@@ -156,7 +162,7 @@ class StatsPanel(Widget):
         mp = getattr(player, 'mp', None)
         ap = getattr(player, 'ap', None)
         show_mp_ap = mp is not None or ap is not None
-        panel_h = 52 + (20 if show_mp_ap else 0)
+        panel_h = 52 + (heart_rows - 1) * (hd.HEART_SIZE + hd.HEART_SPACING) + (20 if show_mp_ap else 0)
 
         plate_key = (panel_w, panel_h)
         if plate_key != self._plate_key:
@@ -177,7 +183,7 @@ class StatsPanel(Widget):
             # `self._plate` above) so it can be cached and blitted as one
             # unit rather than redrawn from scratch every frame.
             icons = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-            icon_y = 32
+            icon_y = 32 + (heart_rows - 1) * (hd.HEART_SIZE + hd.HEART_SPACING)
             x = self._stat_icon(icons, 6, icon_y - 6, 'rupee', player.rupees)
             x = self._stat_icon(icons, x + 12, icon_y - 6, 'bomb', player.bombs)
             self._stat_icon(icons, x + 12, icon_y - 6, 'arrow', player.arrows)
@@ -195,6 +201,25 @@ class StatsPanel(Widget):
             self._icons_key = icons_key
         surf.blit(self._icons_surf, (6, 6))
 
+        name, image, weapon = resolve_weapon_indicator(
+            self.game.client.weapons,
+            self.game.inventory_ui.selected_weapon_idx,
+            self.game.sprite_mgr)
+        slot = pygame.Rect(6 + panel_w - 43, 12, 36, 36)
+        pygame.draw.rect(surf, (35, 35, 50), slot, border_radius=4)
+        pygame.draw.rect(surf, (150, 130, 70), slot, 1, border_radius=4)
+        if weapon is not None:
+            fit = min(30 / weapon.get_width(), 30 / weapon.get_height())
+            size = (max(1, round(weapon.get_width() * fit)),
+                    max(1, round(weapon.get_height() * fit)))
+            icon = pygame.transform.smoothscale(weapon, size)
+            surf.blit(icon, (slot.centerx - icon.get_width() // 2,
+                             slot.centery - icon.get_height() // 2))
+        elif name:
+            label = self.game.font_small.render(name[:4], True, (245, 245, 245))
+            surf.blit(label, (slot.centerx - label.get_width() // 2,
+                              slot.centery - label.get_height() // 2))
+
 
 class HUD:
     """Owns the play HUD: a declarative widget tree plus a few imperative draws."""
@@ -206,7 +231,7 @@ class HUD:
         ("D", "Use weapon"),
         ("Q", "Inventory"),
         ("Wheel / 0", "Zoom / reset"),
-        ("M", "Toggle minimap"),
+        ("M", "Open map"),
         ("N", "Noclip (walk through walls)"),
         ("Enter", "Chat"),
         ("F1", "Debug / tile editor"),
@@ -284,6 +309,9 @@ class HUD:
 
         self.ghost.visible = g.ghost_mode
 
+        heart_rows = max(1, (int(player.max_hearts) + 9) // 10)
+        self.status.offset = (5, 64 + (heart_rows - 1) * 18)
+
         # The tile-editor draws its own readouts at the same left column, so hide
         # the play status stack while editing.
         self.status.visible = not g.debug_mode
@@ -297,6 +325,9 @@ class HUD:
 
     def draw(self):
         surf = self.game.screen
+        presentation = getattr(self.game, 'combat_presentation', None)
+        if presentation is not None and presentation.death_started is not None:
+            return
         input_frozen = getattr(self.game.client, 'input_frozen', False)
         if not input_frozen:
             self.ui.draw(surf)
@@ -309,6 +340,8 @@ class HUD:
         elif self.game.typing:
             # Chat input remains modal and accepts keys during a full stop.
             self._draw_chat(surf, show_log=False)
+        if getattr(self.game, 'big_map_visible', False):
+            self._draw_big_map(surf)
         if self.game.show_player_list:
             self._draw_player_list(surf)
         if self.game.show_server_list:
@@ -322,16 +355,14 @@ class HUD:
         g = self.game
         if not g.dialogue_text:
             return
-        elapsed = time.time() - g.dialogue_time
-        if elapsed >= g.dialogue_duration:
-            g.dialogue_text = None
-            return
-        # Fade out over the last half-second.
-        alpha = 255 if elapsed < g.dialogue_duration - 0.5 \
-            else int(255 * (g.dialogue_duration - elapsed) / 0.5)
+        alpha = 255
 
         box_w = min(g.screen_w - 40, 400)
-        box_h = 60
+        font = g.fonts.classic() if getattr(g, 'dialogue_classic_font', False) \
+            else g.font_small
+        lines = g.dialogue_pager.visible_lines
+        line_height = font.get_linesize()
+        box_h = max(60, len(lines) * line_height + 20)
         box_x = (g.screen_w - box_w) // 2
         box_y = g.screen_h - 150
         box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
@@ -340,28 +371,39 @@ class HUD:
                          (0, 0, box_w, box_h), 2)
         surf.blit(box, (box_x, box_y))
 
-        font = g.font_small
         text_y = box_y + 10
-        for line in self._wrap(g.dialogue_text, font, box_w - 20)[:3]:
+        for line in lines:
             ts = font.render(line, True, (255, 255, 255))
             ts.set_alpha(alpha)
             surf.blit(ts, (box_x + 10, text_y))
-            text_y += 18
+            text_y += line_height
+
+        if g.dialogue_pager.has_more:
+            chevron = font.render(">", True, (255, 255, 255))
+            chevron.set_alpha(alpha)
+            surf.blit(chevron, (box_x + box_w - chevron.get_width() - 10,
+                                box_y + box_h - chevron.get_height() - 6))
+
+    def draw_death_overlay(self, surf):
+        """Draw the centered modal death message in the dialogue style."""
+        g = self.game
+        w, h = min(400, g.screen_w - 40), 118
+        x, y = (g.screen_w - w) // 2, (g.screen_h - h) // 2
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (0, 0, 20, 220), panel.get_rect(), border_radius=8)
+        pygame.draw.rect(panel, (125, 125, 160, 255), panel.get_rect(), 2,
+                         border_radius=8)
+        surf.blit(panel, (x, y))
+        font = g.fonts.classic()
+        title = font.render("You died", True, (235, 225, 225))
+        hint = g.font_small.render("Waiting for respawn...", True, (185, 185, 205))
+        surf.blit(title, (x + (w - title.get_width()) // 2, y + 24))
+        surf.blit(hint, (x + (w - hint.get_width()) // 2, y + 76))
 
     @staticmethod
     def _wrap(text, font, max_w):
-        lines, cur = [], ""
-        for word in text.split():
-            test = cur + (" " if cur else "") + word
-            if font.size(test)[0] < max_w:
-                cur = test
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = word
-        if cur:
-            lines.append(cur)
-        return lines
+        from .dialogue import wrap_dialogue
+        return wrap_dialogue(text, lambda value: font.size(value)[0], max_w)
 
     def _build_chat_line(self, g, msg):
         ts = g.font.render(msg[:60], True, (255, 255, 255))
@@ -430,21 +472,37 @@ class HUD:
         pygame.draw.rect(surf, (50, 50, 50), border, 2)
         surf.blit(g.minimap_surface, (mx, my))
         if g.client._current_level_name:
-            if getattr(g, '_minimap_is_bigmap', False) and g.client.gmap_width > 0:
-                # A bigmap image covers the whole gmap, so the dot is the
-                # player's fractional position across the full grid, not one
-                # 64x64 segment.
-                span_x = g.client.gmap_width * 64
-                span_y = g.client.gmap_height * 64
-                frac_x = (g.client.x % span_x) / span_x if span_x else 0.0
-                frac_y = (g.client.y % span_y) / span_y if span_y else 0.0
-            else:
-                frac_x = (g.client.x % 64) / 64
-                frac_y = (g.client.y % 64) / 64
-            dot_x = int(mx + frac_x * mw)
-            dot_y = int(my + frac_y * mh)
-            pygame.draw.circle(surf, (255, 0, 0), (dot_x, dot_y), 3)
-            pygame.draw.circle(surf, (255, 255, 255), (dot_x, dot_y), 3, 1)
+            for frac_x, frac_y, color in map_entity_positions(g.client):
+                dot_x = int(mx + frac_x * mw)
+                dot_y = int(my + frac_y * mh)
+                pygame.draw.circle(surf, color, (dot_x, dot_y), 3)
+                pygame.draw.circle(surf, (30, 30, 30), (dot_x, dot_y), 3, 1)
+
+    def _draw_big_map(self, surf):
+        g = self.game
+        if not g.minimap_surface:
+            g._ensure_bigmap_surface()
+        source = g.bigmap_surface
+        if source is None:
+            source = g._minimap_native_surface
+        if source is None:
+            source = g.minimap_surface
+        if source is None:
+            return
+        size = aspect_fit(source.get_size(), (g.screen_w - 80, g.screen_h - 80))
+        view = pygame.transform.smoothscale(source, size)
+        mx, my = (g.screen_w - size[0]) // 2, (g.screen_h - size[1]) // 2
+        shade = pygame.Surface((g.screen_w, g.screen_h), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 190))
+        surf.blit(shade, (0, 0))
+        pygame.draw.rect(surf, (120, 120, 150),
+                         (mx - 3, my - 3, size[0] + 6, size[1] + 6), 3)
+        surf.blit(view, (mx, my))
+        for frac_x, frac_y, color in map_entity_positions(g.client):
+            dot_x = int(mx + frac_x * size[0])
+            dot_y = int(my + frac_y * size[1])
+            pygame.draw.circle(surf, color, (dot_x, dot_y), 5)
+            pygame.draw.circle(surf, (30, 30, 30), (dot_x, dot_y), 5, 1)
 
     def _draw_help_overlay(self, surf):
         g = self.game

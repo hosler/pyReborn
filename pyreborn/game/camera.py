@@ -38,6 +38,7 @@ class Camera2D:
         self._cx = 0.0
         self._cy = 0.0
         self._zoom = 1.0
+        self._render_offset = (0.0, 0.0)
 
         # Cached derived transform (pixels-per-tile and screen-space origin of
         # tile (0,0)). Recomputed lazily when _dirty is set.
@@ -54,6 +55,10 @@ class Camera2D:
     @property
     def center(self) -> Tuple[float, float]:
         return (self._cx, self._cy)
+
+    @property
+    def render_offset(self) -> Tuple[float, float]:
+        return self._render_offset
 
     @property
     def zoom(self) -> float:
@@ -81,6 +86,13 @@ class Camera2D:
         if self._bounds is not None:
             self._clamp_center()
 
+    def set_render_offset(self, x: float = 0.0, y: float = 0.0):
+        """Offset the final view in pixels without changing its world center."""
+        offset = (float(x), float(y))
+        if offset != self._render_offset:
+            self._render_offset = offset
+            self._dirty = True
+
     def resize(self, screen_w: int, screen_h: int):
         """Update the viewport size (e.g. when the virtual canvas changes)."""
         if screen_w != self.screen_w or screen_h != self.screen_h:
@@ -105,8 +117,8 @@ class Camera2D:
 
     def _recompute(self):
         self._scale = self.tile_size * self._zoom
-        self._ox = self.screen_w * 0.5 - self._cx * self._scale
-        self._oy = self.screen_h * 0.5 - self._cy * self._scale
+        self._ox = self.screen_w * 0.5 - self._cx * self._scale + self._render_offset[0]
+        self._oy = self.screen_h * 0.5 - self._cy * self._scale + self._render_offset[1]
         self._dirty = False
 
     def world_to_screen(self, wx: float, wy: float) -> Tuple[float, float]:

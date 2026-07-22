@@ -295,6 +295,28 @@ class GaniParser:
         frame_counts = [len(direction_frames[i]) for i in range(4)]
         gani.single_dir = all(c == 0 for c in frame_counts[1:]) and frame_counts[0] > 0
 
+        # An embedded SCRIPT usually means the ANI section is a near-blank
+        # placeholder and the script paints the real visual via showimg (we
+        # don't run gani scripts, so _render_showani_rec substitutes a
+        # synthesized effect for has_script ganis). But some stock ganis
+        # carry REAL art in their frames and use the script only for
+        # decoration — the classic pet ganis (pet-minichoc*/pet-eye-*) draw
+        # the pet body in ANI frames and script only the floating nickname
+        # text. Keep has_script (=> fallback) only when the frames place
+        # nothing visually meaningful: the largest placed sprite below 8x8 px
+        # (eye_bomber_expl's whole ANI is one 2x2 credits pixel) reads as
+        # blank; anything bigger is real art that must win over the fallback.
+        if gani.has_script:
+            biggest = 0
+            for frames in gani.directions:
+                for fr in frames:
+                    for sid, _ox, _oy in fr.sprites:
+                        spr = gani.sprites.get(sid) if isinstance(sid, int) else None
+                        if spr is not None:
+                            biggest = max(biggest, spr.width * spr.height)
+            if biggest >= 64:
+                gani.has_script = False
+
         return gani
 
     def _parse_sprite_line(self, line: str) -> Optional[GaniSprite]:
@@ -375,9 +397,18 @@ class AnimationState:
         # on the AnimationState instance itself (never shared across entities)
         # to avoid the shared-playback-state bug the C# client has.
         self._continuous_state: Dict[str, Tuple[int, float]] = {}
+        # Optional name mapper applied to every set_animation() call — the
+        # local player's state wires this to GS1 `replaceani` (walk ->
+        # eye_bomber_walk0 etc.); NPC/other-player states leave it None.
+        self.name_resolver = None
 
     def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):
         """Set the current animation by name."""
+        if self.name_resolver is not None:
+            try:
+                name = self.name_resolver(name) or name
+            except Exception:
+                pass
         # GS1 scripts set `dir` as a float (e.g. `dir = 2` -> 2.0); the frame
         # tables are indexed by int, so coerce here for every caller.
         if direction is not None:

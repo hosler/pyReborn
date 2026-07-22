@@ -61,6 +61,22 @@ class SetupMixin:
             self.chat_messages.pop(0)
         self.chat_seq += 1
 
+    def _update_low_hearts_warning(self, now: Optional[float] = None) -> bool:
+        """Play the low-health reminder at most once per second."""
+        now = time.monotonic() if now is None else now
+        player = self.client.player
+        active = (getattr(self, '_low_hearts_warning_enabled', True)
+                  and self.client.connected and 0 < player.hearts <= 1.0
+                  and player.max_hearts > 1)
+        if not active:
+            self._low_hearts_next_beep = 0.0
+            return False
+        if now < getattr(self, '_low_hearts_next_beep', 0.0):
+            return False
+        self._low_hearts_next_beep = now + 1.0
+        self.sound_mgr.play("beep.wav", volume=0.35)
+        return True
+
     def _setup_asset_paths(self) -> List[Path]:
         """Setup asset search paths."""
         base_path = PACKAGE_DIR  # pyreborn/ — independent of this module's location
@@ -111,6 +127,7 @@ class SetupMixin:
             self._append_chat(f"<- {_roster_name(info)} left")
 
         def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
+            now = time.monotonic()
             # Spawn floating damage number at player position
             self.damage_numbers.append({
                 'x': self.visual_x,
@@ -121,6 +138,8 @@ class SetupMixin:
             })
             # Trigger hurt flash
             self.hurt_flash_time = time.time()
+            self.combat_presentation.hurt(
+                now, dead=self.client.player.hearts <= 0)
 
             # Check for death (hearts already reduced by client.respond_to_hurt)
             if self.client.player.hearts <= 0:
@@ -128,6 +147,14 @@ class SetupMixin:
                 self.sound_mgr.play("dead.wav")
                 # Set death animation
                 self.player_anim.set_animation("dead", self.client.player.direction)
+            else:
+                self.sound_mgr.play("hurt.wav")
+
+        def on_item(x, y, item_type, removed):
+            pass
+
+        def on_explosion(x, y, radius, power):
+            self._start_camera_shake(x, y)
 
         def on_minimap(data: bytes):
             """Handle minimap data from server."""
@@ -149,9 +176,7 @@ class SetupMixin:
             """Put up to five non-empty initial-message lines in chat."""
             self.chat_seq += append_start_message(self.chat_messages, text)
 
-        # Tier 3b: PLO_RPGWINDOW - a scrollable RPG-style text window. Reuses
-        # the existing dialogue-box path (hud.py's _draw_dialogue) rather than
-        # a dedicated widget; lines are joined so the box wraps them together.
+        # Keep each decoded field as an explicit line in the shared dialogue.
         def on_rpg_window(lines):
             if lines:
                 self._show_dialogue("\n".join(lines))
@@ -219,6 +244,7 @@ class SetupMixin:
         # (see render_effects._spawn_hit_break_effect).
         def on_hit_objects(x, y, power, player_id):
             self._spawn_hit_break_effect(x, y)
+            self._spawn_leaf_particles(x, y)
 
         # PLO_THROWCARRIED - another player threw whatever they were
         # carrying. The packet only names the owner (see
@@ -271,11 +297,17 @@ class SetupMixin:
             vx, vy = self._pushaway_velocity
             self._pushaway_velocity = (vx + dx, vy + dy)
 
+        def on_say2(text):
+            self._show_dialogue(text, classic_font=True)
+
         self.client.on_chat = on_chat
+        self.client.on_say2 = on_say2
         self.client.on_pm = on_pm
         self.client.on_add_player = on_add_player
         self.client.on_del_player = on_del_player
         self.client.on_hurt = on_hurt
+        self.client.on_item = on_item
+        self.client.on_explosion = on_explosion
         self.client.on_minimap = on_minimap
         self.client.on_ghost_mode = on_ghost_mode
         if hasattr(self.client, 'on_bomb_del'):
@@ -318,12 +350,14 @@ class SetupMixin:
             gani = info.get('gani', '') or ''
             self.gs1.fire_projectile([shooter, gani] + params)
 
-        # A server flag arrived (PLO_FLAGSET) — feed it into the GS1 server
-        # scope so scripts read it (bomber's room roster server.bombrm_NN).
+        # A server flag arrived (PLO_FLAGSET) — route it into the right GS1
+        # scope: "client."/"clientr." are the player's persisted account flags
+        # (PetSys's client.pet chocobo/squirrel selection), the rest are
+        # globals (bomber's room roster server.bombrm_NN).
         def on_flag(name, value):
             gs1 = getattr(self, 'gs1', None)
             if gs1 is not None:
-                gs1._shared['server'].recv(name, value)
+                gs1.recv_flag(name, value)
 
         self.client.on_file = on_file
         self.client.on_weapon_add = on_weapon_add
@@ -332,7 +366,7 @@ class SetupMixin:
         # flags received before the GS1 engine existed
         if getattr(self, 'gs1', None) is not None:
             for _fn, _fv in (self.client.global_flags or {}).items():
-                self.gs1._shared['server'].recv(_fn, _fv)
+                self.gs1.recv_flag(_fn, _fv)
     def _play_audio(self, name: str):
         """Play a `play <file>` from an NPC script: stream MIDI/OGG music via
         mixer.music, or fire a one-shot sample. Music is downloaded from the
@@ -400,14 +434,15 @@ class SetupMixin:
                 self.client.weapons[name] = {'name': name, 'image': '', 'script': ''}
 
         # setminimap img,txt,... — remember the minimap source + fetch the file.
+        # Via _request_asset (not raw request_file) so it's requested once per
+        # session: setminimap re-runs on every level (re-)entry playerenters,
+        # and re-requested the same files (no-shield.png/bombarena_map.txt on
+        # bomber) on each re-entry.
         def on_setminimap(args):
             self._gs1_minimap = args
             for a in args:
                 if isinstance(a, str) and '.' in a:
-                    try:
-                        self.client.request_file(a)
-                    except Exception:
-                        pass
+                    self._request_asset(a)
 
         # setlevel2 / serverwarp — authoritative in Reborn. Record it; the game
         # loop performs the warp between events (see _process_pending_warp).
@@ -506,6 +541,15 @@ class SetupMixin:
         self.gs1.on_setplayerprop = on_setplayerprop
         self.gs1.on_tiledef = on_tiledef
 
+        # #m / replaceani wiring: scripts read the player's CURRENT ani via #m
+        # (Bomber's stairs NPC gates its slowdown on it), so the engine needs
+        # our live logical anim name; and our anim state + outgoing gani prop
+        # substitute any `replaceani` mapping (walk -> eye_bomber_walk0 etc.)
+        # like the real client does.
+        self.gs1.player_ani_source = lambda: getattr(self, "current_anim_name", "")
+        self.player_anim.name_resolver = self.gs1.resolve_ani
+        self.client.ani_resolver = self.gs1.resolve_ani
+
         # A sword swing connected with a level NPC (client.py _sword_hit_npcs):
         # fire `washit` on it, same as the real client (scripting-gs1-events.md).
         self.client.on_sword_hit_npc = (
@@ -562,7 +606,16 @@ class SetupMixin:
     def _load_new_npcs(self):
         """NPCs stream in over several seconds on a slow server; the startup
         _trigger_playerenters only ran the ones present then. Load + fire
-        playerenters on any NPC that arrived since, so it actually runs."""
+        playerenters on any NPC that arrived since, so it actually runs.
+
+        Held off during a level transition (engine not yet reloaded for the
+        new level): _reload_level_scripts fires playerenters weapons-first,
+        matching real-client event order. Pre-firing a streamed NPC here let
+        the arena's control NPC run before the player's -validation weapon
+        had set #P2, so it read the room as empty and kicked the host
+        (":No Players:") before the match could form."""
+        if self.client._current_level_name != getattr(self, '_gs1_level', None):
+            return
         new = []
         for npc_id, npc in list(self.client.npcs.items()):
             key = "npc_%s" % npc_id
@@ -619,6 +672,28 @@ class SetupMixin:
         warp, door, or server-initiated), once that level's NPCs have streamed
         in. warp_to_level clears NPCs, so reloading too early would run nothing."""
         lvl = self.client._current_level_name
+        epoch = self.client._plain_level_change_epoch
+        if epoch != getattr(self, '_gs1_visual_level_epoch', epoch):
+            self.gs1._weapon_imgs.clear()
+            # A scripted seteffect curtain is owned by whatever script drew
+            # it, and a level change abandons that script (its coroutine dies
+            # in gs1.clear()); an uncleared tint would stick forever — e.g.
+            # leaving the arena mid-join with the black fade curtain up. The
+            # new level's scripts re-apply their own seteffect on
+            # playerenters right after the reload.
+            self.screen_tint = None
+            # A confirmed plain level change ALWAYS needs the full engine
+            # reload below. actions.py's _use_door_link pre-stamps _gs1_level
+            # after its own (partial) load — it never calls gs1.clear(), so
+            # trusting that stamp left the OLD level's NPC scripts loaded and
+            # running with their NPC dicts gone (this_obj=None): their
+            # showimgs landed in the orphan _weapon_imgs store and kept
+            # rendering — the bomber lobby's player-centered subtract smoke
+            # followed you down the stairs and blacked out the spar pit.
+            # Clearing the stamp forces _reload_level_scripts (idempotent;
+            # weapon/NPC playerenters are re-runnable by design).
+            self._gs1_level = None
+        self._gs1_visual_level_epoch = epoch
         if not lvl or lvl == getattr(self, '_gs1_level', None):
             return
         now = time.time()
@@ -633,6 +708,10 @@ class SetupMixin:
     def _reload_level_scripts(self, lvl: str):
         """Swap the GS1 engine + per-NPC render state over to the current level."""
         self.gs1.clear()
+        # Stale scripted screen tint dies with the old level's scripts (see
+        # the epoch-clear in _check_level_change; this also covers reloads
+        # that don't come through a plain-level epoch bump).
+        self.screen_tint = None
         # Tileset remaps (addtiledef2) are per-level; the new level's NPCs
         # re-add them on playerenters (the arena's NPC162 does removetiledefs +
         # addtiledef2). Drop them so the arena's chocolate tiles don't leak.
@@ -650,7 +729,8 @@ class SetupMixin:
         # old level keep ticking (and eventually exploding) on top of the
         # new one.
         for attr in ('active_projectiles', 'thrown_objects', 'active_bombs',
-                     'active_bomb_explosions', 'break_effects'):
+                     'active_bomb_explosions', 'break_effects',
+                     'leaf_particles', 'water_ripples'):
             effects = getattr(self, attr, None)
             if isinstance(effects, list):
                 effects.clear()

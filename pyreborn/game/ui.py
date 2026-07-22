@@ -30,6 +30,8 @@ from typing import Callable, List, Optional, Tuple
 
 import pygame
 
+from .assets import render_outlined_text
+
 
 # Anchor names double as pygame.Rect virtual attribute names.
 TOPLEFT = "topleft"; MIDTOP = "midtop"; TOPRIGHT = "topright"
@@ -192,10 +194,16 @@ class Label(Widget):
         self._text = value
 
     def _ensure_surface(self):
-        key = (self._text, self.role, self.color)
+        key = (self._text, self.role, self.color, self.shadow)
         if key != self._cache_key and self._fonts is not None:
-            self._surf = self._fonts.get(self.role).render(
-                self._text, True, self.color)
+            font = self._fonts.get(self.role)
+            if self.shadow:
+                # Outlined rather than a single-offset drop shadow -- a 1px
+                # shadow reads fine on the login/menu screens' solid panels
+                # but disappears over the live game's busy/dark level art.
+                self._surf = render_outlined_text(font, self._text, self.color)
+            else:
+                self._surf = font.render(self._text, True, self.color)
             self.w, self.h = self._surf.get_size()
             self._cache_key = key
 
@@ -206,9 +214,6 @@ class Label(Widget):
     def _draw(self, surf):
         if self._surf is None:
             return
-        if self.shadow:
-            sh = self._fonts.get(self.role).render(self._text, True, (0, 0, 0))
-            surf.blit(sh, (self.rect.x + 1, self.rect.y + 1))
         surf.blit(self._surf, self.rect.topleft)
 
 

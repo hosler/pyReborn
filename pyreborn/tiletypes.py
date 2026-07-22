@@ -23,7 +23,7 @@ class TileType(IntEnum):
     BED_LOWER = 5          # Lower part of bed (blocking)
     SWAMP = 6              # Slows movement
     LAVA_SWAMP = 7         # Damage + slow movement
-    NEAR_WATER = 8         # Shallow water (can walk, shows swimming)
+    NEAR_WATER = 8         # Shallow water (normal walking)
     WATER = 11             # Deep water (swimming)
     LAVA = 12              # Lava (damage)
     THROW_THROUGH = 20     # Can throw items through but blocks walking
@@ -104,9 +104,14 @@ def is_blocking(tile_id: int) -> bool:
 
 
 def is_water(tile_id: int) -> bool:
-    """Check if a tile is water (swimming)."""
+    """Check if a tile is deep or shallow water."""
     tile_type = get_tile_type(tile_id)
     return tile_type in (TileType.WATER, TileType.NEAR_WATER)
+
+
+def is_swimming_water(tile_id: int) -> bool:
+    """Check if a tile is deep enough to trigger swimming."""
+    return get_tile_type(tile_id) == TileType.WATER
 
 
 def is_swamp(tile_id: int) -> bool:

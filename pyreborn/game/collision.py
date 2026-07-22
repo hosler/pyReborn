@@ -51,9 +51,12 @@ class CollisionMixin:
         rule lives in one place instead of being duplicated as a type set."""
         return type_is_blocking(self._get_corrected_tile_type(tile_id))
     def _is_tile_water(self, tile_id: int) -> bool:
-        """Check if tile is water, using corrections."""
+        """Check if tile is deep or shallow water, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
         return tile_type in (TileType.WATER, TileType.NEAR_WATER)
+    def _is_tile_swimming_water(self, tile_id: int) -> bool:
+        """Check if tile is deep enough for swimming, using corrections."""
+        return self._get_corrected_tile_type(tile_id) == TileType.WATER
     def _is_tile_chair(self, tile_id: int) -> bool:
         """Check if tile is a chair, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
@@ -293,9 +296,9 @@ class CollisionMixin:
                 return True
         return False
     def _check_water_at_position(self, x: float, y: float) -> bool:
-        """Check if the position is in water."""
+        """Check if the standing point is in deep, swimmable water."""
         tile_id = self._get_tile_at(x, y)
-        return self._is_tile_water(tile_id)
+        return self._is_tile_swimming_water(tile_id)
 
     def _corner_assist_offset(self, dx: int, dy: int) -> Optional[Tuple[int, int]]:
         """Classic-engine "corner assist": for a blocked pure-cardinal press

@@ -487,6 +487,32 @@ class TestReviewRegressions:
         assert self.gui._construction_stack == []
         assert win in self.gui.roots
 
+    def test_mutual_addcontainer_refuses_parent_cycle(self):
+        first = self.host.create_object("GuiWindowCtrl", "first")
+        second = self.host.create_object("GuiWindowCtrl", "second")
+        self.host.call_builtin(None, "addcontrol", [first])
+        self.host.call_builtin(None, "addcontrol", [second])
+        self.gui.add_to(first, second)
+        self.gui.add_to(second, first)
+        assert second.parent is first
+        assert first.parent is None
+        assert first not in second.children
+        assert first in self.gui.roots
+
+    def test_corrupt_parent_walks_stop_at_step_bound(self, monkeypatch):
+        import pyreborn.game.gs2_gui as gui_module
+
+        monkeypatch.setattr(gui_module, "_MAX_PARENT_DEPTH", 3)
+        first = self.host.create_object("GuiTextEditCtrl", "first-edit")
+        second = self.host.create_object("GuiTextEditCtrl", "second-edit")
+        unrelated = self.host.create_object("GuiWindowCtrl", "unrelated")
+        first.parent = second
+        second.parent = first
+        self.gui._focus = first
+        self.gui.destroy(unrelated)
+        self.gui.render(pygame.Surface((32, 32)), _FakeFonts())
+        assert self.gui._focus is first
+
 
 # =============================================================================
 # Radio-group mutual exclusion

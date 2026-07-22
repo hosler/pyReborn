@@ -74,10 +74,12 @@ def parse_npc_visual_effects(script: str, image_name: str = '') -> dict:
     Returns dict with:
         - drawaslight: bool - render with additive blending
         - coloreffect: tuple (r, g, b, a) - color multiplier
+        - zoom: float or None - setzoomeffect scale on the NPC image
     """
     effects = {
         'drawaslight': False,
         'coloreffect': None,
+        'zoom': None,
     }
 
     # Image-based light detection (for modern clients that don't receive scripts)
@@ -103,6 +105,22 @@ def parse_npc_visual_effects(script: str, image_name: str = '') -> dict:
             # Check for drawaslight
             if re.search(r'\bdrawaslight\s*;', block, re.IGNORECASE):
                 effects['drawaslight'] = True
+
+            # seteffectmode 2 = additive image effect (the bomber's lamp-bulb
+            # NPCs: setimgpart light2.png,... + seteffectmode 2 +
+            # setcoloreffect — the truncated glow crop must ADD, or it blits
+            # as an opaque near-black rectangle over the scene).
+            mode_match = re.search(r'\bseteffectmode\s+(\d+)', block, re.IGNORECASE)
+            if mode_match and int(mode_match.group(1)) == 2:
+                effects['drawaslight'] = True
+
+            # setzoomeffect Z — scale the NPC's image by Z when drawing.
+            zoom_match = re.search(r'\bsetzoomeffect\s+([\d.]+)', block, re.IGNORECASE)
+            if zoom_match:
+                try:
+                    effects['zoom'] = float(zoom_match.group(1))
+                except ValueError:
+                    pass
 
             # Check for setcoloreffect r,g,b,a
             color_match = re.search(

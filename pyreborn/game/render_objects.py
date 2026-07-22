@@ -195,6 +195,7 @@ class LevelObjectsRenderMixin:
                                    entry["position"] == position)]
             reveals.append({"level": level_name, "position": position,
                             "item_type": item_type, "started_ms": now_ms})
+            self.sound_mgr.play("chest.wav")
 
     @staticmethod
     def _chest_reveal_visual(reveal, now_ms: int):
@@ -327,7 +328,7 @@ class LevelObjectsRenderMixin:
             # blocking sign the feet sample sits exactly 2.0 tiles from the
             # anchor, so an anchor-based `< 2` misses at the only distance a
             # walking player can actually reach.
-            if abs(px - (sx + 0.5)) < 2 and abs(py - (sy + 0.5)) < 2:
+            if abs(px - (sx + 0.5)) <= 2 and abs(py - (sy + 0.5)) <= 2:
                 self._render_sign_popup(text)
                 break  # Only show one sign at a time
     def _render_sign_popup(self, text: str):
@@ -336,16 +337,15 @@ class LevelObjectsRenderMixin:
             return
 
         # Render sign text in a box at bottom of screen
-        font = getattr(self, '_sign_font', None)
-        if font is None:
-            try:
-                self._sign_font = pygame.font.Font(None, 24)
-            except:
-                self._sign_font = pygame.font.SysFont('monospace', 20)
-            font = self._sign_font
+        font = self.fonts.classic()
 
-        # Split text into lines
-        lines = text.split('\n')
+        # Sign text is normally pre-wrapped by the wire decoder. Re-measure it
+        # with the bundled face and only add wrapping when a decoded line would
+        # exceed the available screen width.
+        max_text_width = max(1, self.screen_w - 60)
+        lines = []
+        for source_line in text.split('\n'):
+            lines.extend(self.hud._wrap(source_line, font, max_text_width) or [''])
         line_height = font.get_linesize()
         max_width = 0
         rendered_lines = []
@@ -356,7 +356,7 @@ class LevelObjectsRenderMixin:
             max_width = max(max_width, rendered.get_width())
 
         # Create background box
-        box_width = max_width + 20
+        box_width = min(self.screen_w - 40, max_width + 20)
         box_height = len(rendered_lines) * line_height + 20
         box_x = (self.screen_w - box_width) // 2
         box_y = self.screen_h - box_height - 60  # Above the UI bar

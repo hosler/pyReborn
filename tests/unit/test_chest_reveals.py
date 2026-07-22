@@ -6,6 +6,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
+from unittest.mock import Mock
 
 from pyreborn.game.render_objects import LevelObjectsRenderMixin
 
@@ -28,6 +29,7 @@ class _Harness(LevelObjectsRenderMixin):
         self.client = _Client()
         self.screen = pygame.Surface((320, 240), pygame.SRCALPHA)
         self.positions = []
+        self.sound_mgr = Mock()
 
     def _world_to_screen(self, x, y):
         self.positions.append((x, y))
@@ -45,6 +47,7 @@ def test_reveal_spawns_only_on_closed_to_open_transition():
     assert len(harness._chest_reveals) == 1
     assert harness._chest_reveals[0]["item_type"] == "heart"
     assert harness._chest_reveals[0]["started_ms"] == 200
+    harness.sound_mgr.play.assert_called_once_with("chest.wav")
 
 
 def test_reveal_rises_fades_and_expires():

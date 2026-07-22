@@ -48,6 +48,7 @@ class _FakeGame:
         self.camera = Camera2D(640, 480)
         self.minimap_visible = True
         self._day_night_enabled = True
+        self._low_hearts_warning_enabled = True
 
 
 def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
@@ -100,15 +101,20 @@ def test_prefs_defaults_match_pre_overlay_hardcoded_values():
     p = Prefs()
     assert p.sound_volume == 1.0
     assert p.music_enabled is True
+    assert p.low_hearts_warning is True
     assert p.minimap_visible is True
     assert p.zoom == 1.0
-    assert p.day_night is True
+    # day_night deliberately defaults OFF: the real classic client has no
+    # built-in ambient cycle — servers script their own day/night — so the
+    # built-in tint must be opt-in (it wrongly darkened indoor levels).
+    assert p.day_night is False
 
 
 def test_prefs_new_fields_round_trip(prefs_home):
     p = Prefs()
     p.sound_volume = 0.4
     p.music_enabled = False
+    p.low_hearts_warning = False
     p.minimap_visible = False
     p.zoom = 2.0
     p.save()
@@ -116,6 +122,7 @@ def test_prefs_new_fields_round_trip(prefs_home):
     loaded = Prefs.load()
     assert loaded.sound_volume == 0.4
     assert loaded.music_enabled is False
+    assert loaded.low_hearts_warning is False
     assert loaded.minimap_visible is False
     assert loaded.zoom == 2.0
 
@@ -144,6 +151,13 @@ def test_music_toggle_live_and_persisted(overlay):
     row.enter()
     assert overlay.game.sound_mgr.music_enabled is True
     assert Prefs.load().music_enabled is True
+
+
+def test_low_hearts_toggle_live_and_persisted(overlay):
+    row = [s for s in overlay._settings if s.label == "Low Hearts Warning"][0]
+    row.enter()
+    assert overlay.game._low_hearts_warning_enabled is False
+    assert Prefs.load().low_hearts_warning is False
 
 
 def test_minimap_toggle_live_and_persisted(overlay):
@@ -177,6 +191,7 @@ def test_apply_saved_prefs_pushes_prefs_into_live_state(prefs_home):
     p = Prefs()
     p.sound_volume = 0.3
     p.music_enabled = False
+    p.low_hearts_warning = False
     p.minimap_visible = False
     p.zoom = 1.5
     p.day_night = False
@@ -188,6 +203,7 @@ def test_apply_saved_prefs_pushes_prefs_into_live_state(prefs_home):
 
     assert game.sound_mgr.volume == 0.3
     assert game.sound_mgr.music_enabled is False
+    assert game._low_hearts_warning_enabled is False
     assert game.minimap_visible is False
     assert game.camera.zoom == 1.5
     assert game._day_night_enabled is False

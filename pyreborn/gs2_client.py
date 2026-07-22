@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,11 @@ from reborn_protocol.gs2 import GS2VM, GS2Host, GS2Object, NOT_HANDLED, to_num, 
 from .gs1_client import PLAYER_ATTR
 
 logger = logging.getLogger(__name__)
+
+# Limits for untrusted script writes to each server-scoped cache directory.
+SAVE_LINES_MAX_LINES = 4096
+SAVE_LINES_MAX_CHARS_PER_LINE = 4096
+SAVE_LINES_CACHE_MAX_BYTES = 5 * 1024 * 1024
 
 # GS2 GUI-controls layer (showgui/GuiControl -- see gs2_gui.py's module
 # docstring for how `new GuiButtonCtrl(...) { onAction = function(){...}; }`
@@ -49,6 +55,9 @@ try:
     from reborn_protocol.gs1 import COMMANDS as _GS1_COMMANDS
 except ImportError:  # pragma: no cover
     _GS1_COMMANDS = frozenset()
+_GS1_COMMANDS = frozenset(_GS1_COMMANDS) | {
+    "play", "play2", "playlooped", "setmusic", "stopmidi", "stopsong",
+}
 
 #: GS1 function names answered by GS1ClientHost.call_function
 _GS1_FUNCTIONS = frozenset({"onwall", "onwall2", "keydown", "keydown2", "hasweapon"})
@@ -189,6 +198,37 @@ class GS2ClientHost(GS2Host):
     def __init__(self, rt2: "ClientGS2"):
         self.rt2 = rt2
 
+    # Calls deliberately accepted without effects. Each entry documents why
+    # emulating it would be less correct than exposing an explicit inert stub.
+    stubbed = frozenset({
+        "hit",            # no packet-legitimate player/NPC hit action exists
+        "modifyclientr",  # client record writes need an unsupported prop codec
+    })
+
+    @staticmethod
+    def host_surface():
+        """Return builtins handled directly or delegated to the real GS1 host."""
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(
+            GS2ClientHost.call_builtin)))
+        names = set(_GS1_COMMANDS) | set(_GS1_FUNCTIONS)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            if not isinstance(node.left, ast.Name) or node.left.id != "name":
+                continue
+            for comparator in node.comparators:
+                values = (comparator.elts
+                          if isinstance(comparator, (ast.Tuple, ast.List, ast.Set))
+                          else [comparator])
+                names.update(value.value for value in values
+                             if isinstance(value, ast.Constant)
+                             and isinstance(value.value, str))
+        return frozenset(names) | GS2ClientHost.stubbed
+
     # -- infrastructure ----------------------------------------------------
 
     def get_globals(self) -> Dict[str, Any]:
@@ -269,6 +309,43 @@ class GS2ClientHost(GS2Host):
         rt2 = self.rt2
 
         if obj is not None:
+            if name == "sort" and isinstance(obj, list):
+                obj.sort(key=lambda value: (to_str(value).casefold(), to_num(value)))
+                return obj
+            if name == "savelines" and isinstance(obj, list):
+                if args:
+                    rt2.save_lines(to_str(args[0]), obj)
+                return 0.0
+            if name in self.stubbed:
+                return 0.0
+            if rt2.gui is not None:
+                ctrl = rt2.gui._resolve(obj)
+                if name in ("addcontainer", "addguicontainer"):
+                    rt2.gui.add_to(obj, args[0] if args else None)
+                    return 0.0
+                if name == "getchild":
+                    return rt2.gui.get_child(obj, args[0] if args else 0)
+                if name == "setactive":
+                    if ctrl is not None:
+                        ctrl.visible = bool(to_num(args[0])) if args else True
+                    return 0.0
+                if name == "hidecontrols":
+                    rt2.gui.hide_children(obj)
+                    return 0.0
+                if name == "makefirstresponder":
+                    rt2.gui.focus(obj if not args or bool(to_num(args[0])) else None)
+                    return 0.0
+                if name == "trigger":
+                    if ctrl is not None:
+                        return 1.0 if ctrl.fire_action(*args) else 0.0
+                    return 0.0
+                if name == "animatecontrol":
+                    # Immediate final-state application: deterministic headless
+                    # fallback until the renderer gains a frame tween scheduler.
+                    if ctrl is not None:
+                        for key, value in zip(("x", "y", "width", "height"), args[-4:]):
+                            ctrl.set(key, value)
+                    return 0.0
             if name == "join":
                 # this.join("classname") — same semantics as the global form
                 # (the class merges into the calling script's VM).
@@ -302,6 +379,63 @@ class GS2ClientHost(GS2Host):
         if name == "addcontrol":
             if rt2.gui is not None:
                 rt2.gui.addcontrol(args[0] if args else None)
+            return 0.0
+
+        if name in ("addcontainer", "addguicontainer"):
+            if rt2.gui is not None and len(args) >= 2:
+                rt2.gui.add_to(args[0], args[1])
+            return 0.0
+
+        if name in self.stubbed:
+            return 0.0
+
+        if name in ("screenx", "screeny"):
+            game = getattr(rt2, "game_shell", None)
+            camera = getattr(game, "camera", None)
+            value = to_num(args[0]) if args else 0.0
+            x = value if name == "screenx" else 0.0
+            y = value if name == "screeny" else 0.0
+            if len(args) > 1:
+                x, y = to_num(args[0]), to_num(args[1])
+            if camera is None:
+                return value
+            point = camera.world_to_screen(x, y)
+            return float(point[0 if name == "screenx" else 1])
+
+        if name in ("getmapx", "getmapy"):
+            player = getattr(rt2.client, "player", None)
+            pos = getattr(player, "x" if name == "getmapx" else "y", 0.0)
+            return float(int(to_num(pos) // 64))
+
+        if name == "getmusicfilename":
+            game = getattr(rt2, "game_shell", None)
+            manager = getattr(game, "sound_mgr", None)
+            return to_str(getattr(manager, "_current_music", "") or "")
+
+        if name == "getnearestplayers":
+            player = getattr(rt2.client, "player", None)
+            x = to_num(args[0]) if args else to_num(getattr(player, "x", 0))
+            y = to_num(args[1]) if len(args) > 1 else to_num(getattr(player, "y", 0))
+            return rt2.nearest_players(x, y)
+
+        if name == "findimg":
+            return rt2.find_image(vm, int(to_num(args[0]))) if args else 0.0
+
+        if name == "enabledefaultcamera":
+            game = getattr(rt2, "game_shell", None)
+            if game is not None:
+                game._camera_enabled = True
+            return 0.0
+
+        if name == "setzoom":
+            game = getattr(rt2, "game_shell", None)
+            if game is not None and args and getattr(game, "camera", None) is not None:
+                game.camera.zoom = to_num(args[0])
+            return 0.0
+
+        if name in ("sendtext", "requesttext"):
+            if rt2.client is not None and args:
+                rt2.client.send_server_text(name == "requesttext", "\n".join(to_str(a) for a in args))
             return 0.0
 
         if name == "showgui":
@@ -423,6 +557,7 @@ class ClientGS2:
         # GUI-controls tree (showgui/GuiControl); None when pygame isn't
         # installed (headless callers, e.g. game_tester's GameBot).
         self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
+        self.game_shell = None
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
         self._vm_keys: Dict[int, tuple] = {}      # id(vm) -> (kind, key)
@@ -442,6 +577,67 @@ class ClientGS2:
         self._pending_bytecode: List[tuple] = []
         self._sleeping = False                    # a script sleep() is pumping update()
         self._sleep_debt: Dict[int, float] = {}   # id(vm) -> unpaid in-packet sleep() time
+
+    def save_lines(self, filename: str, lines: list) -> bool:
+        """Persist script lines beneath a server-scoped client cache directory."""
+        from .prefs import config_dir
+        import hashlib
+        server = to_str(getattr(self.client, "server_name", "") or
+                        getattr(self.client, "host", "") or "default")
+        scope = hashlib.sha256(server.encode("utf-8")).hexdigest()[:16]
+        leaf = Path(filename.replace("\\", "/")).name
+        if not leaf or leaf in (".", "..") or "\x00" in leaf:
+            return False
+        if len(lines) > SAVE_LINES_MAX_LINES:
+            return False
+        text_lines = [to_str(line) for line in lines]
+        if any(len(line) > SAVE_LINES_MAX_CHARS_PER_LINE for line in text_lines):
+            return False
+        payload = "\n".join(text_lines)
+        payload_bytes = len(payload.encode("utf-8"))
+        cache_dir = config_dir() / "client-cache" / scope
+        target = cache_dir / leaf
+        try:
+            current_size = sum(
+                path.stat().st_size for path in cache_dir.rglob("*") if path.is_file()
+            ) if cache_dir.exists() else 0
+            old_size = target.stat().st_size if target.is_file() else 0
+            if current_size - old_size + payload_bytes > SAVE_LINES_CACHE_MAX_BYTES:
+                return False
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            target.write_text(payload, encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def nearest_players(self, x: float, y: float) -> list:
+        """Return live other-player objects ordered by distance from (x, y)."""
+        client = self.client
+        if client is None:
+            return []
+        found = []
+        for player_id, player in getattr(client, "players", {}).items():
+            dx, dy = to_num(getattr(player, "x", 0)) - x, to_num(getattr(player, "y", 0)) - y
+            distance = (dx * dx + dy * dy) ** 0.5
+            item = GS2Object(name=f"player:{player_id}")
+            for key, value in (("id", player_id), ("account", getattr(player, "account", "")),
+                               ("nick", getattr(player, "nickname", "")), ("x", getattr(player, "x", 0)),
+                               ("y", getattr(player, "y", 0)), ("distance", distance)):
+                item.set(key, value)
+            found.append((distance, item))
+        return [item for _, item in sorted(found, key=lambda pair: pair[0])]
+
+    def find_image(self, vm, index: int):
+        if self.gs1 is None:
+            return 0.0
+        table = self.gs1._host._layer_store(self._gs1_ctx(vm))
+        record = table.get(index)
+        if record is None:
+            return 0.0
+        obj = GS2Object(name=f"image:{index}")
+        for key, value in record.items():
+            obj.set(key, value)
+        return obj
 
     # -- wiring --------------------------------------------------------------
 

@@ -199,8 +199,18 @@ Examples:
                             "diffing client-observable effects")
     parser.add_argument("--report", type=str, default=None,
                        help="Base filename for reports (e.g., 'report' -> report.json, report.html)")
+    catalog_group = parser.add_mutually_exclusive_group()
+    catalog_group.add_argument("--catalog-server", metavar="NAME",
+                               help="Run the catalogued test subset for one server")
+    catalog_group.add_argument("--catalog-all", action="store_true",
+                               help="Run catalogued test subsets for every server")
 
     args = parser.parse_args()
+
+    if args.catalog_server or args.catalog_all:
+        from game_tester.server_probe import run_catalog_tests
+        ok = run_catalog_tests(args.catalog_server)
+        sys.exit(0 if ok else 1)
 
     # GMAP suite runs standalone (own bot lifecycle + account-reset teardown).
     if args.gmap:

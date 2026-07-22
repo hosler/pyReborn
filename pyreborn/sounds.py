@@ -363,6 +363,8 @@ COMMON_SOUNDS = [
     'arrow.wav',
     'arrowon.wav',
     'dead.wav',
+    'hurt.wav',
+    'beep.wav',
     'extra.wav',
     'goal.wav',
     'jump.wav',

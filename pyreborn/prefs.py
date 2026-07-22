@@ -61,7 +61,7 @@ class Prefs:
     last_server: Optional[ServerPref] = field(default=None)
     window_w: int = 1024
     window_h: int = 720
-    day_night: bool = True
+    day_night: bool = False
 
     # -- in-game settings overlay (F9, game/settings_ui.py) ----------------
     # Live-tunable gameplay settings, applied to game/sound state and
@@ -70,6 +70,7 @@ class Prefs:
     # overlay existed.
     sound_volume: float = 1.0
     music_enabled: bool = True
+    low_hearts_warning: bool = True
     minimap_visible: bool = True
     zoom: float = 1.0
 

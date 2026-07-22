@@ -54,6 +54,7 @@ class RenderMixin:
             if setback:
                 self.player_anim.set_animation(setback, self.client.player.direction)
                 self.current_anim_name = setback
+                self.client.set_animation(setback)
             elif self.client.player.is_carrying():
                 # Switch to carry animation after lift finishes
                 self.player_anim.set_animation("carry", self.client.player.direction)
@@ -252,23 +253,151 @@ class RenderMixin:
 
         self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
                                gmap_visual_y + self.CAMERA_BODY_DY)
+        self.camera.set_render_offset()
+        started = getattr(self, '_camera_shake_started', None)
+        if started is not None and not getattr(self.client, '_local_level_transition', ''):
+            age = time.monotonic() - started
+            if age < 0.4:
+                strength = 3.0 * (1.0 - age / 0.4)
+                self.camera.set_render_offset(
+                    math.sin(age * 91.0) * strength,
+                    math.cos(age * 73.0) * strength)
+            else:
+                self._camera_shake_started = None
+
+    # How long a held transition may freeze the frame before failing open
+    # (confirmation lost / server hiccup). Normal confirms land within a
+    # couple of frames even over a slow link.
+    TRANSITION_HOLD_MAX_S = 1.0
+    TRANSITION_SLIDE_S = 0.45
+
+    def _draw_transition_slide(self, now: float) -> bool:
+        """Present static source/destination scenes while a slide is active."""
+        slide = getattr(self, '_level_transition_slide', None)
+        if slide is None:
+            return False
+        age = now - slide['started']
+        if age < 0 or age > self.TRANSITION_HOLD_MAX_S:
+            self._level_transition_slide = None
+            self._level_transition_input_frozen = False
+            return False
+        progress = min(1.0, age / self.TRANSITION_SLIDE_S)
+        # Smoothstep keeps both endpoints still and avoids a mechanical pan.
+        progress = progress * progress * (3.0 - 2.0 * progress)
+        width, height = self.screen.get_size()
+        dx, dy = ((0, height), (width, 0), (0, -height), (-width, 0))[
+            slide['direction']]
+        old_x, old_y = round(dx * progress), round(dy * progress)
+        new_x = old_x - dx
+        new_y = old_y - dy
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(slide['source'], (old_x, old_y))
+        self.screen.blit(slide['destination'], (new_x, new_y))
+        self._check_and_render_signs()
+        self._render_ui()
+        self._render_combat_presentation()
+        self.viewport.present()
+        if age >= self.TRANSITION_SLIDE_S:
+            self._level_transition_slide = None
+            self._level_transition_input_frozen = False
+        return True
+
+    def _capture_transition_destination(self, source, direction: int,
+                                        now: float) -> bool:
+        """Render one destination scene without exposing camera recomputation."""
+        try:
+            destination = self.screen.copy()
+            canvas = self.screen
+            self.screen = destination
+            try:
+                self._sync_camera()
+                zoom = self.camera.zoom
+                if zoom == 1.0:
+                    destination.fill((0, 0, 0))
+                    self._render_scene()
+                else:
+                    self._render_scene_zoomed(zoom)
+            finally:
+                self.screen = canvas
+            self._level_transition_slide = {
+                'source': source, 'destination': destination,
+                'direction': direction, 'started': now,
+            }
+            self._level_transition_input_frozen = True
+            return True
+        except Exception:
+            self._level_transition_slide = None
+            self._level_transition_input_frozen = False
+            return False
 
     def _render(self):
         """Render the game."""
+        now = time.monotonic()
+        if self._draw_transition_slide(now):
+            return
+        # A held local level transition keeps the LAST COMPLETED frame on
+        # screen verbatim until the destination is presentable. Freezing the
+        # framebuffer - not just visual_x/y - is what actually keeps the view
+        # still: every other camera input (bounds, gmap-vs-standalone frame,
+        # the active board, clamping) flips mid-transition, so recomputing
+        # any of them moves the camera even with the visual position frozen
+        # (live-traced: world->local bounds clamp jumped the camera to the
+        # 64x64 corner while the hold was engaged, and a cached destination
+        # board replaced the world content instantly under the held camera).
+        if getattr(self.client, '_local_level_transition', ''):
+            presentation = getattr(self, 'combat_presentation', None)
+            if presentation is not None:
+                presentation.sync(
+                    self.client.player.hearts <= 0, True, time.monotonic())
+            started = getattr(
+                self.client, '_local_level_transition_started', 0.0)
+            if time.monotonic() - started <= self.TRANSITION_HOLD_MAX_S:
+                frozen = getattr(self, '_transition_frame', None)
+                if frozen is None:
+                    # First held frame: self.screen still holds the last
+                    # completed pre-warp frame. Snapshot it.
+                    base = getattr(self, '_death_base_frame', None)
+                    self._transition_frame = (base.copy() if base is not None
+                                              else self.screen.copy())
+                else:
+                    self.screen.blit(frozen, (0, 0))
+                self.viewport.present()
+                return
+            self.client._release_local_transition()
+
+        frozen = getattr(self, '_transition_frame', None)
+        direction = getattr(
+            self.client, '_local_level_transition_direction', None)
+        if frozen is not None and direction in range(4):
+            source = getattr(self, '_transition_scene_frame', frozen).copy()
+            self.client._local_level_transition_direction = None
+            self._transition_frame = None
+            if self._capture_transition_destination(source, direction, now):
+                self._draw_transition_slide(now)
+                return
+        self.client._local_level_transition_direction = None
+        self._transition_frame = None
+
         # Position the camera before any world-space drawing.
         self._sync_camera()
 
         # World + entities, optionally through a zoom layer (see _render_scene).
         zoom = self.camera.zoom
-        if zoom == 1.0 or self.debug_mode:
+        if zoom == 1.0:
             self.screen.fill((0, 0, 0))
             self._render_scene()
         else:
             self._render_scene_zoomed(zoom)
 
+        # Preserve the world-only portion of the last completed frame. The
+        # ordinary hold still freezes the full framebuffer verbatim; this copy
+        # is used only if that hold later becomes a slide, keeping the HUD fixed.
+        self._transition_scene_frame = self.screen.copy()
+
         # Screen-space overlays (never zoomed): sign popups, then the HUD.
         self._check_and_render_signs()
         self._render_ui()
+        self._render_combat_presentation()
 
         # Scale the virtual canvas onto the (resizable) window and flip.
         self.viewport.present()
@@ -287,9 +416,13 @@ class RenderMixin:
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
         self._update_and_render_thrown(getattr(self, '_last_dt', 0.016))
         self._render_break_effects()
+        self._render_leaf_particles()
+        self._render_water_ripples()
         self._render_chest_reveals()
         self._render_server_explosions()
         self._render_screen_tint()                   # seteffect overlay, under HUD
+        self._render_deferred_lights()               # additive glows, above tint
+        self._render_gui_layers()                    # vis>=4 GUI band, above tint
 
     def _render_scene_zoomed(self, zoom: float):
         """Render the world layer at 1:1 into a smaller offscreen surface, then
@@ -311,9 +444,14 @@ class RenderMixin:
         scene.fill((0, 0, 0))
 
         # Swap in the cached 1:1 camera, re-centered where the real one is.
+        # Debug rendering must use this path too: segment surfaces are baked at
+        # one pixel footprint per base tile and cannot be positioned directly
+        # with a zoomed camera without opening gaps between adjacent segments.
         canvas, real_cam = self.screen, self.camera
         scene_cam = self._zoom_scene_cam
         scene_cam.set_center(*real_cam.center)
+        ox, oy = real_cam.render_offset
+        scene_cam.set_render_offset(ox / zoom, oy / zoom)
         self.screen, self.camera = scene, scene_cam
         try:
             self._render_scene()
@@ -414,7 +552,7 @@ class RenderMixin:
             self._render_debug_hud()
 
         # Inventory overlay (drawn on top of everything)
-        self.inventory_ui.render(self.client.player, self.weapons)
+        self.inventory_ui.render(self.client.player, self.client.weapons)
 
         # GS2 GUI controls (showgui/GuiControl) draw last: topmost of all.
         if getattr(self.gs2, "gui", None) is not None:

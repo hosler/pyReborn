@@ -9,6 +9,7 @@ import pygame
 
 from ..gani import AnimationState
 from ..player import Player
+from .assets import render_outlined_text
 from .constants import (
     TILE_SIZE, parse_npc_visual_effects,
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
@@ -20,6 +21,15 @@ from .constants import (
 def _c255(v: float) -> int:
     """Clamp a 0..1 GS1 colour/alpha multiplier to a 0..255 byte."""
     return max(0, min(255, int(float(v) * 255)))
+
+
+# Perceptual attenuation for changeimgmode-2 (subtractive) showimg layers.
+# 1.0 = arithmetically faithful subtraction, which black-clamps the scene
+# under opaque near-white smoke textures (the bomber lobby's
+# eye_bomb_blackhole* 5x5 grid subtracts ~(163,222,213) from a ~129-lum
+# scene, clamping ~half the smoke region to 0). 0.4 keeps the level dim but
+# readable; taste band is 0.3 (brighter) .. 0.5 (moodier).
+SUBTRACT_SMOKE_SCALE = 0.4
 
 
 # Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
@@ -242,6 +252,7 @@ class EntityRenderMixin:
         return sprite.get_height() / TILE_SIZE if sprite is not None else 3.0
 
     def _entity_on_screen(self, px: float, py: float, margin: int = 96,
+                           width: float = 0.0, height: float = 0.0,
                            screen_size: Optional[Tuple[int, int]] = None) -> bool:
         """True if a sprite at screen pixel (px, py) is near enough the canvas to
         be worth drawing. Levels can carry dozens of NPCs spread across 64x64;
@@ -252,7 +263,20 @@ class EntityRenderMixin:
         per entity at up to ~80 entities/frame); callers that don't pass it
         (render_effects.py) still get it looked up here, unchanged."""
         w, h = screen_size if screen_size is not None else self.screen.get_size()
-        return -margin <= px <= w + margin and -margin <= py <= h + margin
+        return (px + width >= -margin and px <= w + margin and
+                py + height >= -margin and py <= h + margin)
+
+    def _npc_draw_size(self, npc: dict) -> Tuple[float, float]:
+        part = npc.get('imagepart')
+        if part and len(part) >= 4 and part[2] > 0 and part[3] > 0:
+            return float(part[2]), float(part[3])
+        image = npc.get('image')
+        if image and not npc.get('gani', npc.get('animation')):
+            sprite = self.sprite_mgr.load_sheet(image)
+            if sprite is not None:
+                return sprite.get_size()
+        extent = self.camera.scale * 4
+        return extent, extent
 
     def _render_entities(self):
         """Render all entities (players, NPCs) sorted by Y position."""
@@ -268,6 +292,15 @@ class EntityRenderMixin:
         # out of the ambient darkness/tint overlay after every entity has
         # drawn (see _render_light_sprite).
         self._frame_light_sources = []
+        # Additive light draws DEFERRED until after the seteffect/day-night
+        # tint (render.py calls _render_deferred_lights right after
+        # _render_screen_tint). The classic client draws effect-mode-2 /
+        # drawaslight glows over the ambient tint; our old scheme (blit the
+        # glow in the entity pass, then punch a rectangular "eraser" hole in
+        # the tint) exposed the raw — often pitch-black after subtractive
+        # smoke — scene inside the hole, which read as solid black boxes at
+        # every lamp (bomber lobby, live 2026-07-22).
+        self._frame_light_draws = []
 
         # Add local player. Draw it through the camera at its true render-frame
         # top-left (set by _sync_camera) — same transform every other entity
@@ -345,6 +378,10 @@ class EntityRenderMixin:
         if epoch_seen is None:
             epoch_seen = self._npc_visual_epoch = {}
         for npc_id, npc in self.client.npcs.items():
+            npc_level = npc.get('_level')
+            if (npc_level and not self.client.in_gmap_segment and
+                    npc_level != self.client._current_level_name):
+                continue
             # Prefer world coords (converted from local + grid offset)
             nx = npc.get('world_x', npc.get('x'))
             ny = npc.get('world_y', npc.get('y'))
@@ -371,9 +408,19 @@ class EntityRenderMixin:
                     epoch_seen.clear()
 
                 npx, npy = self.camera.world_to_screen(vx, vy)
-                if self._entity_on_screen(npx, npy, screen_size=screen_size):
+                draw_w, draw_h = self._npc_draw_size(npc)
+                if self._entity_on_screen(npx, npy, width=draw_w,
+                                          height=draw_h,
+                                          screen_size=screen_size):
                     entities.append(('npc', self._depth_sort_key(
                         vy, self._npc_height_tiles(npc)), npx, npy, npc, npc_id))
+                else:
+                    imgs = npc.get('imgs')
+                    if imgs and npc.get('visible') is not False:
+                        self._render_npc_layers(imgs, over=False,
+                                                on_screen_only=True)
+                        self._render_npc_layers(imgs, over=True,
+                                                on_screen_only=True)
 
         # Add baddies (enemies). Their x/y are local to the current segment, so
         # fold in that segment's gmap offset to line them up with the world.
@@ -531,18 +578,16 @@ class EntityRenderMixin:
     # without changing behavior for any other entity type.
     _PLAYER_ANCHOR_FIX = TILE_SIZE // 2  # 8px: cancels the shared -8px/+16px assumption
 
+    # Classic v2.31 draws NPC nicknames in blue (players get white); tunable
+    # against a fresh real-client reference if the shade looks off.
+    _NPC_NICK_COLOR = (0, 0, 255)
+
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""
-        # Check if player should flash (hurt effect)
-        hurt_elapsed = time.time() - self.hurt_flash_time
-        hurt_visible = True
-        if hurt_elapsed < 0.5:  # Flash for 0.5 seconds
-            # Blink every 0.1 seconds
-            hurt_visible = int(hurt_elapsed * 10) % 2 == 0
-
         anchor_x = x + self._PLAYER_ANCHOR_FIX
-        if hurt_visible:
-            self._render_animated_entity(anchor_x, y, anim, {
+        base_alpha = 115 if self.client.ghost_mode else 255
+        alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
+        self._render_animated_entity(anchor_x, y, anim, {
                 'body_image': player.body_image or 'body.png',
                 'head_image': player.head_image or 'head0.png',
                 'sword_image': player.sword_image or 'sword1.png',
@@ -551,15 +596,13 @@ class EntityRenderMixin:
                 # by packets.py/player.py, drives the body palette-swap in
                 # get_sprite_recolored() (sprites.py).
                 'colors': player.colors,
-            }, alpha=115 if self.client.ghost_mode else 255)
+            }, alpha=alpha)
 
         # Render carried object above player's head
         if player.is_carrying():
             self._render_carried_object(x, y, player)
 
-        # Render local player's chat bubble (if active and not timed out)
-        if self.local_chat_text and time.time() - self.local_chat_time < self.chat_bubble_duration:
-            self._render_speech_bubble(anchor_x, y, self.local_chat_text)
+        self._render_player_chat(anchor_x, y)
 
         # Render nickname below local player
         nickname = player.nickname or player.account
@@ -567,14 +610,12 @@ class EntityRenderMixin:
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
+            name_surf = self._render_text_outlined_cached(self.font_small, nickname, (255, 255, 255))
             # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
             # (24px) — the sprite is 3 tiles wide, top-left anchored at x.
             name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
             name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
-            shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
-            self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
@@ -671,6 +712,20 @@ class EntityRenderMixin:
             cache[player_anim] = result
         return result
 
+    def _render_player_chat(self, anchor_x: float, y: float) -> None:
+        """Render or expire the optimistic local CURCHAT bubble."""
+        # The server clears other players with a later empty CURCHAT, but does
+        # not echo that lifecycle to the setter, so mirror the clear locally.
+        if self.local_chat_text:
+            chat_text = self.local_chat_text
+            if time.time() - self.local_chat_time < self.chat_bubble_duration:
+                self._render_speech_bubble(anchor_x, y, chat_text)
+            else:
+                self.local_chat_text = ""
+                # Do not erase a newer chat value installed by another path.
+                if self.client.player.chat == chat_text:
+                    self.client.player.chat = ""
+
     def _render_other_player(self, x: float, y: float, pdata: dict, pid: int):
         """Render another player."""
         # Get animation name - could be 'ani' or 'animation'. Tier 2d: a
@@ -728,16 +783,13 @@ class EntityRenderMixin:
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self._render_text_cached(self.font_small, nickname, (255, 255, 255))
+            name_surf = self._render_text_outlined_cached(self.font_small, nickname, (255, 255, 255))
             # Center name below player (player sprite is ~48 pixels tall).
             # True horizontal centre is x+1.5 tiles (24px), same as the local
             # player (see _render_player).
             name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
             name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
-            # Add shadow for readability
-            shadow_surf = self._render_text_cached(self.font_small, nickname, (0, 0, 0))
-            self.screen.blit(shadow_surf, (name_x + 1, name_y + 1))
             self.screen.blit(name_surf, (name_x, name_y))
     def _place_nameplate(self, name_x: float, name_y: float,
                           size: Tuple[int, int]) -> Tuple[float, float]:
@@ -759,11 +811,13 @@ class EntityRenderMixin:
 
     def _render_text_cached(self, font: pygame.font.Font, text: str,
                              color: Tuple[int, int, int]) -> pygame.Surface:
-        """Render (and cache) a text surface. Nicknames, speech bubbles and
-        showtext layers (_render_showtext_rec) all re-render the same handful
-        of strings every frame otherwise; keying on (font identity, text,
-        color) lets every caller share one cache. Cleared wholesale once it
-        grows large so a chat-heavy session doesn't leak memory."""
+        """Render (and cache) a plain (unoutlined) text surface. Speech
+        bubbles re-render the same handful of strings every frame otherwise;
+        keying on (font identity, text, color) lets every caller share one
+        cache. Cleared wholesale once it grows large so a chat-heavy session
+        doesn't leak memory. Fine as-is for bubble text, which already sits on
+        a solid white plate -- text drawn straight over the level (nameplates,
+        showtext) wants `_render_text_outlined_cached` instead, below."""
         cache = getattr(self, '_text_surf_cache', None)
         if cache is None:
             cache = self._text_surf_cache = {}
@@ -773,6 +827,26 @@ class EntityRenderMixin:
             if len(cache) > 500:
                 cache.clear()
             surf = cache[key] = font.render(text, True, color)
+        return surf
+
+    def _render_text_outlined_cached(self, font: pygame.font.Font, text: str,
+                                      color: Tuple[int, int, int],
+                                      outline_color: Tuple[int, int, int] = (0, 0, 0)
+                                      ) -> pygame.Surface:
+        """Outlined sibling of `_render_text_cached`, for text drawn straight
+        over the level (nameplates, NPC showtext) rather than inside a
+        solid-colour bubble/box -- a flat fill (even with a 1px drop shadow)
+        all but vanishes against busy/dark level art. See
+        assets.render_outlined_text for the actual stamping."""
+        cache = getattr(self, '_text_outline_cache', None)
+        if cache is None:
+            cache = self._text_outline_cache = {}
+        key = (id(font), text, color, outline_color)
+        surf = cache.get(key)
+        if surf is None:
+            if len(cache) > 500:
+                cache.clear()
+            surf = cache[key] = render_outlined_text(font, text, color, outline_color)
         return surf
 
     def _wrapped_lines(self, text: str) -> List[str]:
@@ -858,11 +932,12 @@ class EntityRenderMixin:
             self.screen.blit(text_surf, (text_x, text_y))
     def _request_asset(self, filename: str):
         """Request a missing image/file from the server exactly once."""
-        if not filename or filename in self._requested_assets:
+        if (not filename or filename in self._requested_assets or
+                filename in self.client.failed_files):
             return
-        self._requested_assets.add(filename)
         try:
-            self.client.request_file(filename)
+            if self.client.request_file(filename):
+                self._requested_assets.add(filename)
         except Exception:
             pass
     def _status_label(self, status) -> str:
@@ -940,6 +1015,8 @@ class EntityRenderMixin:
         if npc.get('visible') is False:
             return
 
+        nick_anchor = None  # set below when the NPC actually draws a body/sprite
+
         # GS1 showimg/showtext layers this NPC painted (lights, signs, text).
         # Split around the base sprite by their changeimgvis layer.
         imgs = npc.get('imgs')
@@ -969,12 +1046,18 @@ class EntityRenderMixin:
         if is_character and not gani_name:
             gani_name = 'idle'  # a showcharacter with no ani idles
 
-        # Parse and cache visual effects from NPC script and image
-        if npc_id not in self.npc_effects:
-            script = npc.get('script', '')
-            self.npc_effects[npc_id] = parse_npc_visual_effects(script, image_name or '')
-
-        effects = self.npc_effects[npc_id]
+        # Parse and cache visual effects from NPC script and image. Keyed on
+        # (image, script length), not just id: slow servers stream NPC props
+        # incrementally, so image/script often arrive AFTER the first draw and
+        # a once-only parse would lock in "no effects" (light2.png lamps drew
+        # as opaque boxes forever).
+        script = npc.get('script', '')
+        effects_key = (image_name or '', len(script))
+        effects = self.npc_effects.get(npc_id)
+        if effects is None or effects.get('_key') != effects_key:
+            effects = parse_npc_visual_effects(script, image_name or '')
+            effects['_key'] = effects_key
+            self.npc_effects[npc_id] = effects
         is_light = effects.get('drawaslight', False)
         coloreffect = effects.get('coloreffect')  # (r, g, b, a)
 
@@ -1010,6 +1093,10 @@ class EntityRenderMixin:
                     if p:
                         equip[f'attr{i}_image'] = p
                 self._render_animated_entity(x, y, anim, equip)
+                # NPCs pass raw x to _render_animated_entity (unlike players,
+                # which add _PLAYER_ANCHOR_FIX): body centre = x + TILE_SIZE,
+                # feet row = y + 48 (the 48px gani canvas).
+                nick_anchor = (x + TILE_SIZE, y + 48)
 
         elif image_name and not is_character:
             # Static sprite - position at top-left of NPC coords (no offset).
@@ -1022,11 +1109,42 @@ class EntityRenderMixin:
             else:
                 sprite = self.sprite_mgr.load_sheet(image_name)
             if sprite:
+                # setzoomeffect: scale the image draw, centred on the unzoomed
+                # footprint (the bomber's lamp bulbs crop a slice of
+                # light2.png and zoom it 2-5x into a shaft of light). Only
+                # safe now that additive lights are DEFERRED past the tint —
+                # under the old tint-eraser scheme a zoomed glow erased a huge
+                # rectangle of ambience instead.
+                zoom = effects.get('zoom')
+                if zoom and zoom > 0 and zoom != 1.0:
+                    zcache = getattr(self, '_npc_zoom_cache', None)
+                    if zcache is None:
+                        zcache = self._npc_zoom_cache = {}
+                    zkey = (image_name, part, zoom)
+                    zoomed = zcache.get(zkey)
+                    if zoomed is None:
+                        zw = max(1, int(sprite.get_width() * zoom))
+                        zh = max(1, int(sprite.get_height() * zoom))
+                        zoomed = pygame.transform.smoothscale(
+                            sprite.convert_alpha(), (zw, zh))
+                        # The bulb crops slice light2.png mid-gradient, so the
+                        # scaled glow has bright hard borders; fade its edges
+                        # out so the shaft of light dissolves into the scene
+                        # instead of ending in a visible rectangle.
+                        self._fade_surface_edges(zoomed)
+                        if len(zcache) > 100:
+                            zcache.clear()
+                        zcache[zkey] = zoomed
+                    x -= (zoomed.get_width() - sprite.get_width()) / 2.0
+                    y -= (zoomed.get_height() - sprite.get_height()) / 2.0
+                    sprite = zoomed
                 # Apply visual effects for light NPCs
                 if is_light or coloreffect:
                     self._render_light_sprite(sprite, x, y, is_light, coloreffect)
                 else:
                     self.screen.blit(sprite, (x, y))
+                # Label under the drawn extent (x/y/sprite already zoom-adjusted).
+                nick_anchor = (x + sprite.get_width() / 2, y + sprite.get_height())
             else:
                 # Not cached locally — ask the server for it (once). Stay
                 # INVISIBLE until it arrives (real Reborn does), rather than
@@ -1043,6 +1161,21 @@ class EntityRenderMixin:
         if imgs:
             self._render_npc_layers(imgs, over=True)
 
+        # NPC nickname (setcharprop #n / setnick / NPCPROP 20 -> npc['nickname']):
+        # a floating label centred under the NPC — classic draws it in blue,
+        # players in white. Reuses the outlined-text helper so it stays readable
+        # over dark/busy art, and _place_nameplate so it staggers against player
+        # nameplates on the same tile. nick_anchor is None for undrawn / invisible
+        # NPCs, so they get no label (matching the classic client).
+        nickname = npc.get('nickname')
+        if nickname and nick_anchor:
+            name_surf = self._render_text_outlined_cached(
+                self.font_small, nickname, self._NPC_NICK_COLOR)
+            name_x = nick_anchor[0] - name_surf.get_width() // 2
+            name_x, name_y = self._place_nameplate(name_x, nick_anchor[1],
+                                                   name_surf.get_size())
+            self.screen.blit(name_surf, (name_x, name_y))
+
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
             text, chat_time = self.npc_chat_texts[npc_id]
@@ -1050,14 +1183,39 @@ class EntityRenderMixin:
                 self._render_speech_bubble(x, y, text)
 
     # -- GS1 showimg / showtext layers -------------------------------------
-    def _render_npc_layers(self, imgs: dict, over: bool):
+    def _render_npc_layers(self, imgs: dict, over: bool,
+                           on_screen_only: bool = False,
+                           gui: bool = False):
         """Draw an NPC's GS1 image/text layers. ``changeimgvis`` (vis) is the
         depth: layers at vis>=2 draw in front of the NPC sprite, the rest behind.
-        Drawn in index order within each band so overlapping layers stack right."""
+        Drawn in index order within each band so overlapping layers stack right.
+        GUI-band layers (_layer_is_gui) are excluded from the world passes and
+        drawn by _render_gui_layers after the seteffect tint; pass gui=True to
+        draw exactly that band instead."""
         for idx in sorted(imgs):
             rec = imgs[idx]
-            if (rec.get('vis', 4) >= 2) != over:
+            if self._layer_is_gui(rec) != gui:
                 continue
+            if not gui and (rec.get('vis', 4) >= 2) != over:
+                continue
+            if on_screen_only and not self._layer_is_gui(rec):
+                # Cull by the layer's full drawn extent, not just its top-left
+                # point. A showimg can be far bigger than a sprite (the lobby
+                # smoke NPC tiles 400px cloud textures around the player);
+                # top-left-only culling dropped every tile whose origin sat
+                # above/left of the viewport even though it covered the
+                # screen, leaving an undarkened band that read as a hard dark
+                # rectangle whenever the owner NPC itself was off-screen
+                # (large window + camera clamped away from the NPC's corner).
+                if rec.get('poly'):
+                    if not self._poly_layer_on_screen(rec):
+                        continue
+                else:
+                    sx, sy = self._layer_pos(rec)
+                    lw, lh = self._layer_draw_size(rec)
+                    if not self._entity_on_screen(sx, sy, margin=0,
+                                                  width=lw, height=lh):
+                        continue
             try:
                 if rec.get('text_is'):
                     self._render_showtext_rec(rec)
@@ -1070,12 +1228,132 @@ class EntityRenderMixin:
             except Exception:
                 pass  # a bad layer must never break the frame
 
+    @staticmethod
+    def _fade_surface_edges(surf: pygame.Surface, frac: float = 0.35):
+        """In-place: multiply RGB toward 0 near the surface's edges, so an
+        additive glow blit fades out instead of ending in a hard rectangle.
+        The ramp is a tiny white-centre bitmap smoothscaled up (bilinear =
+        linear edge ramps), multiplied in — no numpy needed. Runs once per
+        cached (image, part, zoom) surface."""
+        w, h = surf.get_size()
+        # 5x5 with a 3x3 white core -> after smoothscale the outer ~1/4 on
+        # each side ramps 0..255; close enough to `frac` for a glow fade.
+        core = pygame.Surface((5, 5))
+        core.fill((0, 0, 0))
+        core.fill((255, 255, 255), pygame.Rect(1, 1, 3, 3))
+        mask = pygame.transform.smoothscale(core, (w, h))
+        surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+
+    def _render_deferred_lights(self):
+        """Flush this frame's additive light draws (queued by
+        _render_light_sprite / additive showimg layers) on top of the
+        seteffect/day-night tint — the classic client's effect-mode-2 glows
+        brighten the tinted scene rather than punching holes in the tint."""
+        draws = getattr(self, '_frame_light_draws', None)
+        if not draws:
+            return
+        for surf, x, y in draws:
+            self.screen.blit(surf, (int(x), int(y)),
+                             special_flags=pygame.BLEND_ADD)
+        draws.clear()
+
+    def _render_gui_layers(self):
+        """Draw every GUI-band layer (explicit vis>=4 / showimg2-family) from
+        current-level NPCs and weapon scripts. Called from the render loop
+        AFTER _render_screen_tint so scripted menus, captions and countdowns
+        stay visible over a seteffect curtain (the arena's `seteffect 0,0,0,1`
+        + "Joining..." flow), matching the classic client's GUI stratum."""
+        self._in_gui_pass = True
+        try:
+            self._render_gui_layers_inner()
+        finally:
+            self._in_gui_pass = False
+
+    def _render_gui_layers_inner(self):
+        client = getattr(self, 'client', None)
+        npcs = getattr(client, 'npcs', {}) if client else {}
+        for npc_id in sorted(npcs):
+            npc = npcs[npc_id]
+            if not isinstance(npc, dict) or npc.get('visible') is False:
+                continue
+            npc_level = npc.get('_level')
+            if (npc_level and not getattr(client, 'in_gmap_segment', False)
+                    and npc_level != getattr(client, '_current_level_name', None)):
+                continue
+            imgs = npc.get('imgs')
+            if imgs:
+                self._render_npc_layers(imgs, over=True, gui=True)
+        wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        if wimgs:
+            for store in list(wimgs.values()):
+                self._render_npc_layers(store, over=True, gui=True)
+
+    @staticmethod
+    def _layer_is_gui(rec) -> bool:
+        """True for layers in the classic GUI band: an EXPLICIT
+        changeimgvis >= 4. GUI layers use screen-pixel coordinates (the
+        bomber's shop/menus position them from screenwidth/mousescreenx math)
+        and draw above the world + seteffect tint — that's how a scripted
+        "Joining..." caption stays readable over a black curtain. Layers that
+        never called changeimgvis keep world-tile coords even though their
+        default band value is 4 (vis_set gates that).
+
+        The "2"-suffixed commands (showimg2/showani2/showtext2) do NOT mean
+        screen-space — GServer-v2's own fn_showimg2 says "Displays an image
+        ON THE LEVEL at the specified coordinates" (identical wording to
+        showimg's); per the docs, "2" only adds a z/zoom parameter, and the
+        UI layer is reachable "by using changeimgvis" — nothing to do with
+        the command name. gs1_client.py already gets this right for
+        showani2 (unconditionally screen=False) but showimg2/showtext2 were
+        flagged screen-space by mistake, which sent the bomber lobby's
+        room-editor walls/furniture (drawn via showimg2 at vis 1-3, a world
+        layer) to raw world-tile numbers read as SCREEN pixels — stuck near
+        the canvas's top-left corner instead of following the camera. Rather
+        than trust that per-record flag, gate purely on the documented
+        vis>=4 signal (this file doesn't own gs1_client.py, but this is the
+        only reader of rec['screen'] — see the grep before this fix)."""
+        return bool(rec.get('vis_set') and rec.get('vis', 4) >= 4)
+
     def _layer_pos(self, rec):
-        """Screen position of a layer: showimg2/showtext2 are already in screen
-        pixels; otherwise the coords are world tiles."""
-        if rec.get('screen'):
+        """Screen position of a layer: GUI-band layers (explicit vis>=4) are
+        already in screen pixels; otherwise the coords are world tiles."""
+        if self._layer_is_gui(rec):
             return rec.get('x', 0.0), rec.get('y', 0.0)
         return self.camera.world_to_screen(rec.get('x', 0.0), rec.get('y', 0.0))
+
+    def _layer_draw_size(self, rec) -> Tuple[float, float]:
+        """Approximate on-screen pixel extent of a GS1 layer, for the
+        culled-owner on_screen_only pass in _render_npc_layers. Image layers
+        use the (cached) sheet or imagepart size scaled the same way
+        _render_showimg_rec will draw them; anything without a resolvable
+        image (gani/text layers, not-yet-downloaded sheets) falls back to a
+        4-tile footprint — the same fallback _npc_draw_size uses."""
+        factor = (self.camera.scale / float(TILE_SIZE)) * (rec.get('zoom') or 1.0)
+        part = rec.get('part')
+        if part and len(part) >= 4 and part[2] > 0 and part[3] > 0:
+            return part[2] * factor, part[3] * factor
+        image = rec.get('image')
+        if image:
+            sheet = self.sprite_mgr.load_sheet(image)
+            if sheet is not None:
+                return sheet.get_width() * factor, sheet.get_height() * factor
+        extent = self.camera.scale * 4
+        return extent, extent
+
+    def _poly_layer_on_screen(self, rec) -> bool:
+        """Visibility test for a world-band showpoly layer: its footprint is
+        its vertex bounding box (vertices are level-tile coords — see
+        _render_showpoly_rec), not the rec's x/y, which polys never set."""
+        pts = rec.get('poly') or ()
+        stride = 3 if rec.get('poly_dim') == 3 else 2
+        if len(pts) < stride * 3:
+            return False
+        xs = [pts[i] for i in range(0, len(pts) - stride + 1, stride)]
+        ys = [pts[i + 1] for i in range(0, len(pts) - stride + 1, stride)]
+        left, top = self.camera.world_to_screen(min(xs), min(ys))
+        right, bottom = self.camera.world_to_screen(max(xs), max(ys))
+        return self._entity_on_screen(left, top, margin=0,
+                                      width=right - left, height=bottom - top)
 
     def _render_showimg_rec(self, rec: dict):
         image = rec['image']
@@ -1096,7 +1374,17 @@ class EntityRenderMixin:
         h = max(1, int(sprite.get_height() * factor))
 
         colors = rec.get('colors')
-        additive = rec.get('mode') == 1 or 'light' in image.lower()
+        # changeimgmode / wire drawMode share one numbering (GServer-v2
+        # object/ShowImg.h prop 8): 0 = additive, 1 = replace (normal alpha
+        # blend), 2 = subtractive, 3 = daynight. The bomber leans on this:
+        # mode 2 draws its dark smoke (eye_bomb_blackhole*) and white-block
+        # shadows by SUBTRACTING the image from the scene — treating it as a
+        # normal blit painted the raw 400px black/white cloud textures as an
+        # opaque player-centred blob with a hard square edge. No explicit
+        # mode keeps the legacy light2.png-style additive heuristic.
+        mode = rec.get('mode')
+        additive = mode == 0 or (mode is None and 'light' in image.lower())
+        subtractive = mode == 2
         colors_key = tuple(colors) if colors else None
 
         # Rescaling every frame (even at factor==1) and recoloring every frame
@@ -1106,27 +1394,53 @@ class EntityRenderMixin:
         cache = getattr(self, '_showimg_cache', None)
         if cache is None:
             cache = self._showimg_cache = {}
-        cache_key = (image, part, w, h, colors_key, additive)
+        cache_key = (image, part, w, h, colors_key, additive, subtractive)
         out = cache.get(cache_key)
         if out is None:
             out = sprite if (w, h) == sprite.get_size() else pygame.transform.scale(sprite, (w, h))
-            if colors:
-                r, g, b, a = colors
-                out = out.copy()
-                if additive:
-                    # fold alpha into the colour so additive blending dims it
+            if additive or subtractive:
+                # BLEND_ADD/BLEND_RGB_SUB ignore alpha entirely, so both the
+                # layer's colour-alpha AND the image's own per-pixel alpha
+                # must be folded into RGB first — otherwise a transparent
+                # pixel's hidden RGB bleeds into the blend (a fully
+                # transparent border would still add/subtract, re-creating
+                # the hard square edge these modes exist to avoid).
+                out = out.convert_alpha().premul_alpha()
+                r, g, b, a = colors if colors else (1.0, 1.0, 1.0, 1.0)
+                if subtractive:
+                    # Subtractive layers are smoke/shadow, not blackout: a
+                    # faithful subtraction of an opaque near-white cloud (the
+                    # bomber lobby's eye_bomb_blackhole grid) exceeds the
+                    # scene's whole dynamic range and clamps it to black.
+                    # Attenuate so the darkness reads as translucent smoke
+                    # over a still-legible level. See SUBTRACT_SMOKE_SCALE.
+                    a *= SUBTRACT_SMOKE_SCALE
+                if colors or subtractive:
                     mult = (_c255(r * a), _c255(g * a), _c255(b * a), 255)
                     out.fill(mult, special_flags=pygame.BLEND_RGB_MULT)
-                else:
-                    out.fill((_c255(r), _c255(g), _c255(b), 255),
-                              special_flags=pygame.BLEND_RGB_MULT)
-                    out.set_alpha(_c255(a))
+            elif colors:
+                r, g, b, a = colors
+                out = out.copy()
+                out.fill((_c255(r), _c255(g), _c255(b), 255),
+                          special_flags=pygame.BLEND_RGB_MULT)
+                out.set_alpha(_c255(a))
             if len(cache) > 300:
                 cache.clear()
             cache[cache_key] = out
 
         sx, sy = self._layer_pos(rec)
-        flags = pygame.BLEND_ADD if additive else 0
+        if additive:
+            # Additive layers are lights: defer them to after the seteffect
+            # tint (same treatment as _render_light_sprite) unless we're
+            # already in the post-tint GUI pass or outside the frame loop.
+            draws = getattr(self, '_frame_light_draws', None)
+            if draws is not None and not getattr(self, '_in_gui_pass', False):
+                draws.append((out, sx, sy))
+            else:
+                self.screen.blit(out, (int(sx), int(sy)),
+                                 special_flags=pygame.BLEND_ADD)
+            return
+        flags = pygame.BLEND_RGB_SUB if subtractive else 0
         self.screen.blit(out, (int(sx), int(sy)), special_flags=flags)
 
     def _render_showani_rec(self, rec: dict):
@@ -1144,6 +1458,24 @@ class EntityRenderMixin:
         if anim is None:
             anim = rec['_anim'] = AnimationState(self.gani_parser)
             anim.set_animation(gani, 0)
+        else:
+            # Face the layer's current direction (pets/emotes update 'dir' as
+            # they move) — but only when that direction actually has frames.
+            # Forcing a script-set dir onto a gani that only animates in
+            # direction 0 (the mini-pet ganis) lands on an empty direction and
+            # freezes the sprite, so fall back to the working direction 0.
+            want_dir = int(rec.get('dir', 0) or 0)
+            if anim.gani is not None and anim.gani.get_frame_count(want_dir) > 0:
+                anim.set_direction(want_dir)
+        if anim.gani is None and self.gani_parser.cache.get(gani.replace('.gani', '')) is not None:
+            # The gani streamed in after this layer's AnimationState was
+            # created (arena vases + lobby seat-cushion showani2 layers are
+            # drawn ONCE, before their gani downloads on this slow server; the
+            # rec and its blank AnimationState persist, and nothing else
+            # re-resolves them, so they stay invisible all match). Retry the
+            # resolve once the file is in the parser cache — cache-gated so a
+            # still-missing gani costs a dict lookup, not a per-frame parse.
+            anim.set_animation(gani, int(rec.get('dir', 0) or 0))
         if anim.gani is None:
             self._request_asset(gani + '.gani')
             return
@@ -1180,10 +1512,12 @@ class EntityRenderMixin:
     def _render_scripted_gani_fallback(self, rec: dict):
         """Synthesize an expanding/fading burst for a showani whose gani has
         an embedded SCRIPT we don't run. Bomber Arena's eye_bomber_expl.gani
-        passes its 'on' fade timer (counting down from ~2 to 0, see
-        arenaGUI.gs1's DrawExpl/CreateExpl) as the first param; use it to
-        drive the burst's lifetime instead of a fixed local clock, so it
-        stays in sync with the server-driven explosion spread."""
+        passes an intensity/trigger as its first param — but the arena only
+        issues the showani ONCE with that param frozen at layer creation and
+        never hides burnt-out non-wall cells, so the renderer can't watch a
+        live countdown. Drive the burst's lifetime from a per-rec clock
+        instead, so it expands, fades, and clears itself (a re-shown layer
+        restarts because gs1_client pops '_fx_t' on a fresh showani)."""
         params = rec.get('params') or []
         try:
             on = float(params[0]) if params else 0.0
@@ -1191,9 +1525,13 @@ class EntityRenderMixin:
             on = 0.0
         if on <= 0:
             return
-        progress = max(0.0, min(1.0, 1.0 - on / 2.0))
+        t = rec['_fx_t'] = rec.get('_fx_t', 0.0) + getattr(self, '_frame_dt', 0.05)
+        LIFE = 0.6  # matches the script's explosion burn timer
+        if t >= LIFE:
+            return
+        progress = t / LIFE
         radius = int(10 + 22 * progress)
-        alpha = int(255 * min(1.0, on))
+        alpha = int(255 * (1.0 - progress))
         if radius <= 0 or alpha <= 0:
             return
         sx, sy = self._layer_pos(rec)
@@ -1212,7 +1550,9 @@ class EntityRenderMixin:
         font = self._showtext_font(rec.get('font', '') or 'Arial', size, 'b' in style)
         colors = rec.get('colors')
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2])) if colors else (255, 255, 255)
-        surf = self._render_text_cached(font, text, col)
+        # Showtext (NPC name/sign labels) is drawn straight over the level,
+        # not on a plate, so it needs the same outline nameplates get.
+        surf = self._render_text_outlined_cached(font, text, col)
         if colors and len(colors) > 3:
             # set_alpha mutates the surface in place, so operate on our own
             # copy rather than the shared cached one.
@@ -1249,8 +1589,14 @@ class EntityRenderMixin:
         stride = 3 if rec.get('poly_dim') == 3 else 2
         if len(pts) < stride * 3:  # need at least 3 vertices
             return
-        points = [self.camera.world_to_screen(pts[i], pts[i + 1])
-                  for i in range(0, len(pts) - stride + 1, stride)]
+        if self._layer_is_gui(rec):
+            # GUI-band poly (explicit vis>=4): vertices are screen pixels
+            # (npc190's full-screen {0,0,screenwidth,0,...} fade quad).
+            points = [(int(pts[i]), int(pts[i + 1]))
+                      for i in range(0, len(pts) - stride + 1, stride)]
+        else:
+            points = [self.camera.world_to_screen(pts[i], pts[i + 1])
+                      for i in range(0, len(pts) - stride + 1, stride)]
         colors = rec.get('colors')
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2]),
                _c255(colors[3]) if len(colors) > 3 else 255) if colors else (255, 255, 255, 255)
@@ -1315,22 +1661,18 @@ class EntityRenderMixin:
                 cache[key] = light_sprite
             # Position - place light sprite with top-left at NPC position.
             # User testing confirmed this positioning is correct for light
-            # effects. Render with additive blending for light effect.
-            self.screen.blit(light_sprite, (x, y), special_flags=pygame.BLEND_ADD)
-
-            # A light source should also punch through the ambient darkness/
-            # tint overlay, not just glow additively on top of an otherwise
-            # unchanged dark scene. Queue an erase mask (see
-            # _light_tint_eraser) for render_effects.py's _render_screen_tint
-            # to subtract from this frame's overlay once every entity has
-            # drawn. Only queued when the caller actually reset the list this
-            # frame (_render_entities) - render smoke/tests that call this
-            # directly without going through the full entity loop just skip
-            # the tint-punching side effect.
-            sources = getattr(self, '_frame_light_sources', None)
-            if sources is not None:
-                strength = _c255(alpha_frac)
-                sources.append((self._light_tint_eraser(sprite, strength), x, y))
+            # effects. The additive blit is DEFERRED to after the seteffect/
+            # day-night tint (render.py's _render_deferred_lights) so the
+            # glow brightens the tinted scene the way the classic client's
+            # effect-mode-2 lights do — no tint-eraser holes (see the
+            # _frame_light_draws comment in _render_entities). Direct callers
+            # outside the frame loop (render smoke/tests) just blit now.
+            draws = getattr(self, '_frame_light_draws', None)
+            if draws is not None:
+                draws.append((light_sprite, x, y))
+            else:
+                self.screen.blit(light_sprite, (x, y),
+                                 special_flags=pygame.BLEND_ADD)
         else:
             # Non-additive path: a plain blit DOES respect set_alpha(), so
             # this one is unaffected by the BLEND_ADD alpha quirk above.
@@ -1554,6 +1896,14 @@ class EntityRenderMixin:
                 screen_x = x + base_offset_x + ox
                 screen_y = y + base_offset_y + oy
                 self.screen.blit(sprite, (screen_x, screen_y))
+            elif isinstance(img, str) and '.' in img:
+                # The gani parsed fine but its referenced sprite SHEET (e.g.
+                # sen_piano.png, sign1.gif) isn't downloaded yet, so get_sprite
+                # returned nothing and the NPC drew blank. Ask the server for
+                # it — _request_asset dedups, so this is a one-shot per file.
+                # (BODY/HEAD/etc. resolve to real filenames upstream; a bare
+                # layer name with no extension is skipped by the '.' guard.)
+                self._request_asset(img)
 
     def _sprite_with_alpha(self, sprite: pygame.Surface,
                            alpha: int) -> pygame.Surface:

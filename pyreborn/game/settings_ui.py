@@ -9,11 +9,9 @@ exist: sound volume, background music on/off, the day/night ambient tint
 Follows the same modal-overlay shape as the F7 player list / F8 server list
 (see game/input.py's KEYDOWN dispatch chain and game/hud.py's
 `_draw_list_overlay`) but owns its own `.visible`/`.selected` state instead
-of a `game.show_x` flag -- the same pattern InventoryUI already uses -- since
-GameClient.__init__ (pygame_game.py) isn't a file this module wires into.
-`game/input.py` lazily constructs one instance per GameClient on first touch
-(`_ensure_settings_ui`) and applies the saved prefs into live state at that
-point, since there's no earlier hook available here.
+of a `game.show_x` flag -- the same pattern InventoryUI already uses.
+`GameClient` constructs it through `game/input.py` during setup so saved prefs
+are in live state before the camera is first rendered.
 
 Each row is a value (not a pick-to-open-a-submenu entry): Up/Down selects a
 row, Left/Right/Enter adjusts or toggles it in place. Every change applies
@@ -54,7 +52,7 @@ class _Setting:
 
 class SettingsOverlay:
     """Owns the F9 overlay's state: open/closed, selected row, and the list
-    of adjustable settings. One instance per GameClient (lazily created --
+    of adjustable settings. One instance per GameClient (created during setup --
     see game/input.py's `_ensure_settings_ui`)."""
 
     def __init__(self, game):
@@ -70,15 +68,12 @@ class SettingsOverlay:
 
     # -- lifecycle ----------------------------------------------------------
     def apply_saved_prefs(self) -> None:
-        """Push prefs.json's saved values into live state. Called once, the
-        first time the overlay is touched -- there's no earlier hook in this
-        module for a true "at GameClient construction" apply, so this runs
-        on the game loop's very first `_handle_events()` call instead
-        (before the first frame is drawn)."""
+        """Push prefs.json's saved values into live state during game setup."""
         p = self._prefs
         g = self.game
         g.sound_mgr.set_volume(p.sound_volume)
         g.sound_mgr.set_music_enabled(p.music_enabled)
+        g._low_hearts_warning_enabled = p.low_hearts_warning
         g.minimap_visible = p.minimap_visible
         g.camera.zoom = p.zoom
         # Mirrors render_effects.py's own lazy `_day_night_enabled` cache
@@ -122,6 +117,16 @@ class SettingsOverlay:
             g.sound_mgr.set_music_enabled(v)
             self._save(music_enabled=v)
 
+        def low_hearts_text():
+            return "On" if getattr(g, '_low_hearts_warning_enabled', True) else "Off"
+
+        def low_hearts_toggle():
+            v = not getattr(g, '_low_hearts_warning_enabled', True)
+            g._low_hearts_warning_enabled = v
+            if not v:
+                g._low_hearts_next_beep = 0.0
+            self._save(low_hearts_warning=v)
+
         def day_night_text():
             return "On" if getattr(g, '_day_night_enabled', True) else "Off"
 
@@ -150,6 +155,8 @@ class SettingsOverlay:
             _Setting("Sound Volume", volume_text,
                      volume_by(-VOLUME_STEP), volume_by(VOLUME_STEP)),
             _Setting("Music", music_text, music_toggle, music_toggle),
+            _Setting("Low Hearts Warning", low_hearts_text,
+                     low_hearts_toggle, low_hearts_toggle),
             _Setting("Day/Night Tint", day_night_text,
                      day_night_toggle, day_night_toggle),
             _Setting("Minimap", minimap_text, minimap_toggle, minimap_toggle),

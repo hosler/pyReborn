@@ -29,6 +29,23 @@ from reborn_protocol import (
 # Detect browser environment
 IS_BROWSER = sys.platform == "emscripten"
 
+MAX_DECOMPRESSED_SIZE = 8 * 1024 * 1024
+
+
+class DecompressionLimitError(Exception):
+    """Raised when an inbound compressed frame exceeds the size limit."""
+
+
+def _decompress_bounded(data: bytes) -> bytes:
+    decompressor = zlib.decompressobj()
+    result = decompressor.decompress(data, max_length=MAX_DECOMPRESSED_SIZE)
+    if decompressor.unconsumed_tail:
+        raise DecompressionLimitError(
+            f"decompressed frame exceeds {MAX_DECOMPRESSED_SIZE} bytes")
+    if not decompressor.eof:
+        raise zlib.error("incomplete or truncated compressed frame")
+    return result
+
 # Only import socket/select for non-browser
 if not IS_BROWSER:
     import socket
@@ -126,6 +143,7 @@ class Protocol:
         self.port = port
         self.socket: Optional[socket.socket] = None
         self.connected = False
+        self.connect_timeout = 30.0
 
         # Version config
         self.version = VERSIONS.get(version, VERSIONS["2.22"])
@@ -138,6 +156,9 @@ class Protocol:
         # framing, no per-packet encryption and no encryption-key byte in the
         # login packet) - see use_gen2().
         self.gen = self.version.encryption_gen
+        # Set only when send_login() constructs this connection's handshake.
+        # Probe reporting reads this instead of the mutable codec setting.
+        self.last_handshake_gen: Optional[int] = None
         if self.gen == 3:
             self.codec = Gen3Codec(self.encryption_key)
         elif self.gen == 4:
@@ -175,7 +196,7 @@ class Protocol:
         """Connect to server"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(30.0)
+            self.socket.settimeout(self.connect_timeout)
             self.socket.connect((self.host, self.port))
             self.socket.setblocking(False)
             self.connected = True
@@ -198,10 +219,17 @@ class Protocol:
             self.recv_buffer = b""
             self.raw_data_expected = 0
             self.raw_data_buffer = b""
+            self.last_handshake_gen = None
 
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
+            if self.socket:
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+            self.socket = None
             return False
 
     def use_gen2(self):
@@ -233,6 +261,7 @@ class Protocol:
             return False
 
         try:
+            self.last_handshake_gen = self.gen
             packet = bytearray()
 
             # Client type + 32 (use override if set, for RC/NC connections)
@@ -314,6 +343,7 @@ class Protocol:
 
         except Exception as e:
             print(f"Send failed: {e}")
+            self.connected = False
             return False
 
     def recv_packets(self, timeout: float = 0.01) -> List[Tuple[int, bytes]]:
@@ -376,7 +406,10 @@ class Protocol:
                 if self.first_packet:
                     self.first_packet = False
                     try:
-                        decrypted = zlib.decompress(packet_data)
+                        decrypted = _decompress_bounded(packet_data)
+                    except DecompressionLimitError as e:
+                        print(f"Dropping oversized first packet: {e}")
+                        continue
                     except Exception:
                         decrypted = self.codec.recv_packet(packet_data)
                 else:
@@ -440,6 +473,7 @@ class Protocol:
                             b2 = packet_body[1] - 32
                             b3 = packet_body[2] - 32
                             raw_size = (b1 << 14) | (b2 << 7) | b3
+                            raw_size = max(0, raw_size)
                             self.raw_data_expected = raw_size
                             self.raw_data_buffer = b""
 
@@ -492,6 +526,7 @@ class WebSocketProtocol:
         self.encryption_key = random.randint(0, 127)
         self.codec = Gen5Codec(self.encryption_key)
         self.first_packet = True
+        self.last_handshake_gen: Optional[int] = None
 
         # Version config
         self.version = VERSIONS.get(version, VERSIONS["6.037"])
@@ -534,6 +569,7 @@ class WebSocketProtocol:
         self.raw_data_buffer = b""
         self.pending_packets = []
         self._tcp_connected = False
+        self.last_handshake_gen = None
 
         try:
             self.ws = window.WebSocket.new(self.proxy_url)
@@ -636,7 +672,10 @@ class WebSocketProtocol:
             if self.first_packet:
                 self.first_packet = False
                 try:
-                    decrypted = zlib.decompress(packet_data)
+                    decrypted = _decompress_bounded(packet_data)
+                except DecompressionLimitError as e:
+                    print(f"Dropping oversized first packet: {e}")
+                    continue
                 except Exception:
                     decrypted = self.codec.recv_packet(packet_data)
             else:
@@ -697,7 +736,9 @@ class WebSocketProtocol:
                     b1 = packet_body[0] - 32
                     b2 = packet_body[1] - 32
                     b3 = packet_body[2] - 32
-                    self.raw_data_expected = (b1 << 14) | (b2 << 7) | b3
+                    raw_size = (b1 << 14) | (b2 << 7) | b3
+                    raw_size = max(0, raw_size)
+                    self.raw_data_expected = raw_size
                     self.raw_data_buffer = b""
 
                 self.pending_packets.append((packet_id, packet_body))
@@ -719,6 +760,7 @@ class WebSocketProtocol:
             return False
 
         try:
+            self.last_handshake_gen = 5
             packet = bytearray()
 
             client_type = self.client_type_override or self.version.client_type

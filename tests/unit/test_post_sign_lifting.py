@@ -17,6 +17,7 @@ from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
 from pyreborn.game.constants import TILE_CORRECTIONS_FILE
 from pyreborn.game.render_effects import EffectsRenderMixin
+from pyreborn.game.render_objects import LevelObjectsRenderMixin
 from pyreborn.player import Player
 from pyreborn.tiletypes import TileType
 
@@ -83,6 +84,21 @@ class _Harness(ActionsMixin, CollisionMixin, EffectsRenderMixin):
         pass
 
 
+class _SignPopupHarness(LevelObjectsRenderMixin):
+    def __init__(self):
+        self.client = SimpleNamespace(
+            player=Player(x=10, y=10, direction=0),
+            _current_level_name="test.nw",
+            signs={"test.nw": {(11, 12): "read me"}},
+            gmap_width=0,
+            in_gmap_segment=False,
+        )
+        self.shown = []
+
+    def _render_sign_popup(self, text):
+        self.shown.append(text)
+
+
 def _place_post_sign(game):
     for tile_id, (x, y) in zip(POST_SIGN_TILES,
                               ((10, 10), (11, 10), (10, 11), (11, 11))):
@@ -114,7 +130,7 @@ def test_post_sign_grab_wins_over_reading_but_wall_sign_still_reads():
     game._get_non_edge_door = lambda: None
     game.client.pickup_item = lambda *args: None
     shown = []
-    game._show_dialogue = shown.append
+    game._show_dialogue = lambda text, **_options: shown.append(text)
     game._check_sign_nearby = lambda: "read me"
 
     _place_post_sign(game)
@@ -127,6 +143,12 @@ def test_post_sign_grab_wins_over_reading_but_wall_sign_still_reads():
     game._try_grab()
     assert game.client.player.is_carrying() is False
     assert shown == ["read me"]
+
+
+def test_sign_auto_popup_at_classic_flush_up_position():
+    game = _SignPopupHarness()
+    game._check_and_render_signs()
+    assert game.shown == ["read me"]
 
 
 def test_thrown_post_sign_uses_smash_path():
