@@ -479,10 +479,15 @@ class GS2ClientHost(GS2Host):
             return 0.0
 
         if name == "triggerserver":
-            # triggerserver("gui"/"weapon", weaponname, params...) -- reaches
-            # serverside script handlers via PLI_TRIGGERACTION at (0,0)
-            if rt2.client is not None and args:
-                action = ",".join(to_str(a) for a in args)
+            # triggerserver("gui"/"npc", target, params...): the first arg
+            # picks the serverside target class and is NOT sent verbatim.
+            # Wire format (GServer-v2 TriggerCommandHandlers.cpp):
+            #   triggeraction 0,0,serverside,<weaponname>,<params...>
+            #   triggeraction 0,0,servernpc,<npcname>,<params...>
+            if rt2.client is not None and len(args) >= 2:
+                prefix = ("servernpc" if to_str(args[0]).lower() == "npc"
+                          else "serverside")
+                action = ",".join([prefix] + [to_str(a) for a in args[1:]])
                 rt2.client.triggeraction(action, x=0.0, y=0.0)
             return 0.0
 
