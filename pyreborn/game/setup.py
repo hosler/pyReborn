@@ -188,10 +188,13 @@ class SetupMixin:
             ext = filename.lower().rsplit('.', 1)[-1]
             if ext in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
-                # A custom tileset image (addtiledef2) just arrived — drop the
-                # tile cache so blocks re-render with it instead of the default.
-                if filename in self.tileset_mgr.tiledefs.values():
-                    self.tileset_mgr.clear_cache()
+                # A custom tileset image (addtiledef/addtiledef2) just
+                # arrived — drop the tile cache so blocks re-render with it
+                # instead of the default.
+                tm = self.tileset_mgr
+                if (any(img == filename for img, _ in tm.tiledefs.values())
+                        or any(img == filename for img, _ in tm.full_tiledefs)):
+                    tm.clear_cache()
             elif ext == 'gani':
                 # The server streams gani scripts on demand; cache the parsed
                 # animation so NPCs/players using it stop falling back to the
@@ -524,12 +527,16 @@ class SetupMixin:
         # addtiledef2/removetiledefs — remap tile-blocks to custom tileset images
         # (Bomber Arena's chocolate tiles). Point the tileset manager at the
         # image (downloading it if needed) so the board renders with it.
-        def on_tiledef(block, image):
+        def on_tiledef(block, image, levelstart=""):
             if block is None:
                 self.tileset_mgr.clear_tiledefs()
                 self.world_surface = None
                 return
-            self.tileset_mgr.set_tiledef(block, image)
+            if block == -1:
+                # addtiledef: whole-tileset replacement sheet
+                self.tileset_mgr.set_full_tiledef(image, levelstart)
+            else:
+                self.tileset_mgr.set_tiledef(block, image, levelstart)
             # tileset_mgr's tile_cache is cleared above, but the baked
             # per-segment surfaces in render_world.py's _segments() cache
             # are keyed off tiles_id/layers_snapshot only - a tiledef swap
@@ -731,10 +738,15 @@ class SetupMixin:
         # the epoch-clear in _check_level_change; this also covers reloads
         # that don't come through a plain-level epoch bump).
         self.screen_tint = None
-        # Tileset remaps (addtiledef2) are per-level; the new level's NPCs
-        # re-add them on playerenters (the arena's NPC162 does removetiledefs +
-        # addtiledef2). Drop them so the arena's chocolate tiles don't leak.
-        self.tileset_mgr.clear_tiledefs()
+        # Tileset remaps (addtiledef/addtiledef2) PERSIST across level
+        # changes (real-client semantics: Bomber v6 sets them once in its
+        # preloader); only a script's removetiledefs drops them. What changes
+        # per level is which defs APPLY -- each def carries a levelstart
+        # prefix the manager re-evaluates here. Levels that want different
+        # tiles re-run removetiledefs + addtiledef2 themselves (classic
+        # bomber's arena NPC 162 does).
+        self.tileset_mgr.set_current_level(self.client._current_level_name)
+        self.world_surface = None
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()

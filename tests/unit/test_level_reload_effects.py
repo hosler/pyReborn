@@ -39,7 +39,8 @@ class _ReloadHarness(SetupMixin):
     def __init__(self, client):
         self.client = client
         self.gs1 = SimpleNamespace(clear=lambda: None)
-        self.tileset_mgr = SimpleNamespace(clear_tiledefs=lambda: None)
+        self.tileset_mgr = SimpleNamespace(clear_tiledefs=lambda: None,
+                                           set_current_level=lambda name: None)
         self.npc_handler = SimpleNamespace(update_npcs=lambda: None)
         self.npc_anims = {1: object()}
         self.npc_effects = {1: object()}

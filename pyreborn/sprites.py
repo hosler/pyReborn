@@ -413,21 +413,51 @@ class TilesetManager:
         # placeholder Surface on every miss every frame.
         self._placeholder_cache: Dict[int, pygame.Surface] = {}
         self.default_tileset = "dustynewpics1.png"
-        # Per-block tileset overrides set by GS1 addtiledef2 (Bomber Arena's
-        # chocolate tiles). Maps a Reborn tile-block (tile_id // 512) to its own
-        # 256x512 image; the whole level tileset is these blocks side by side.
-        self.tiledefs: Dict[int, str] = {}
+        # Tileset overrides set by GS1/GS2 addtiledef(2). Real-client
+        # semantics: defs PERSIST across level changes (Bomber v6 sets them
+        # once in its preloader) and are scoped by a levelstart prefix --
+        # "" applies everywhere, "bombarena" only to bombarena*.nw. Only a
+        # script's removetiledefs clears them.
+        # Per-block (addtiledef2): block (tile_id // 512) -> (image, prefix).
+        self.tiledefs: Dict[int, Tuple[str, str]] = {}
+        # Whole-tileset replacements (addtiledef): the image IS a full
+        # 2048x512 tileset. Later defs win; first match by prefix.
+        self.full_tiledefs: List[Tuple[str, str]] = []
+        # Player's current level, lowercased -- selects which defs apply.
+        self.current_level = ""
 
-    def set_tiledef(self, block: int, image: str):
-        """addtiledef2: use `image` for tile-block `block` (tile_id // 512)."""
-        if self.tiledefs.get(block) != image:
-            self.tiledefs[block] = image
+    def _applies(self, prefix: str) -> bool:
+        return not prefix or self.current_level.startswith(prefix)
+
+    def set_current_level(self, level_name: str):
+        """Level change: re-evaluate which tiledefs apply (defs themselves
+        persist -- see class comment)."""
+        name = (level_name or "").lower()
+        if name != self.current_level:
+            self.current_level = name
+            self.tile_cache.clear()
+
+    def set_tiledef(self, block: int, image: str, levelstart: str = ""):
+        """addtiledef2: use `image` for tile-block `block` (tile_id // 512)
+        in levels starting with `levelstart`."""
+        entry = (image, (levelstart or "").lower())
+        if self.tiledefs.get(block) != entry:
+            self.tiledefs[block] = entry
+            self.tile_cache.clear()
+
+    def set_full_tiledef(self, image: str, levelstart: str = ""):
+        """addtiledef: replace the whole default tileset with `image` in
+        levels starting with `levelstart`."""
+        entry = (image, (levelstart or "").lower())
+        if entry not in self.full_tiledefs:
+            self.full_tiledefs.append(entry)
             self.tile_cache.clear()
 
     def clear_tiledefs(self):
-        """removetiledefs / level change: revert to the default tileset."""
-        if self.tiledefs:
+        """removetiledefs: revert to the default tileset."""
+        if self.tiledefs or self.full_tiledefs:
             self.tiledefs.clear()
+            self.full_tiledefs.clear()
             self.tile_cache.clear()
 
     def get_tile(self, tile_id: int, tileset: Optional[str] = None) -> Optional[pygame.Surface]:
@@ -445,8 +475,9 @@ class TilesetManager:
         # block image is one Reborn block: 16 cols x 32 rows of 16px tiles, so
         # the tile sits at its LOCAL position within the 256x512 image.
         if tileset is None:
-            tdef = self.tiledefs.get(tile_id // 512)
-            if tdef is not None:
+            entry = self.tiledefs.get(tile_id // 512)
+            if entry is not None and self._applies(entry[1]):
+                tdef = entry[0]
                 cache_key = (tdef, tile_id)
                 if cache_key in self.tile_cache:
                     return self.tile_cache[cache_key]
@@ -457,7 +488,15 @@ class TilesetManager:
                 if tile:                       # image not downloaded yet -> None,
                     self.tile_cache[cache_key] = tile  # fall through to default
                     return tile
-            tileset = self.default_tileset
+            # Whole-tileset replacement (addtiledef): same layout as the
+            # default tileset, just a different sheet. Latest applicable wins;
+            # fall back to the default until the image has downloaded.
+            for image, prefix in reversed(self.full_tiledefs):
+                if self._applies(prefix) and self.sprite_mgr.has_sheet(image):
+                    tileset = image
+                    break
+            else:
+                tileset = self.default_tileset
 
         cache_key = (tileset, tile_id)
         if cache_key in self.tile_cache:

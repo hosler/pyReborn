@@ -358,8 +358,18 @@ class GS1ClientHost(Host):
         if name == "addtiledef2":
             if len(args) >= 3 and rt.on_tiledef:
                 image = to_str(args[0])
+                levelstart = to_str(args[1]) if len(args) >= 2 else ""
                 block = int(to_num(args[2])) // 256
-                rt.on_tiledef(block, image)
+                rt.on_tiledef(block, image, levelstart)
+            return
+        # addtiledef <image>[, <levelstart>[, <type>]] — replace the WHOLE
+        # tileset (the image is a full 2048x512 sheet; Bomber v6's
+        # bmb_pics1.png). block -1 marks it for the callback.
+        if name == "addtiledef":
+            if args and rt.on_tiledef:
+                image = to_str(args[0])
+                levelstart = to_str(args[1]) if len(args) >= 2 else ""
+                rt.on_tiledef(-1, image, levelstart)
             return
         if name == "removetiledefs":
             if rt.on_tiledef:

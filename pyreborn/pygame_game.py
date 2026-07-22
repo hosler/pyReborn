@@ -106,6 +106,10 @@ class GameClient(
         # Initialize managers
         self.sprite_mgr = SpriteManager(self.asset_paths)
         self.tileset_mgr = TilesetManager(self.sprite_mgr)
+        # Tiledef applicability is scoped by level-name prefix; seed the
+        # login level (later changes flow through _reload_level_scripts).
+        self.tileset_mgr.set_current_level(
+            getattr(self.client, "_current_level_name", "") or "")
         self.sound_mgr = SoundManager(self.asset_paths)
         self.gani_parser = GaniParser(self.asset_paths)
 
