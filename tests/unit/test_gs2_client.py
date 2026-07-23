@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 import pytest
 
 from reborn_protocol.gs2 import GS2Container, FunctionEntry, GS2VM, Op
+from pyreborn.gs1_client import ClientGS1
 from pyreborn.gs2_client import ClientGS2
 
 
@@ -238,6 +239,42 @@ class TestScriptReload:
         # onCreated is constructor semantics -- it must NOT re-fire on a
         # re-send of the same object.
         assert vm2.this.get("createdcount") == pytest.approx(1.0)
+
+
+class TestClientBuiltinsAndFrameEvents:
+    def test_isleader_uses_the_gs1_truth_value(self):
+        client = _FakeClient()
+        client.level = "room.nw"
+        client.players = {}
+        gs1 = ClientGS1(client)
+        rt2 = ClientGS2(client, gs1)
+
+        assert rt2.host.get_object("isleader") is True
+        client.players[2] = {"level": "room.nw"}
+        assert rt2.host.get_object("isleader") is False
+        gs1.is_leader = True
+        assert rt2.host.get_object("isleader") is True
+        assert rt2.host.get_object("not_a_builtin") is None
+
+    def test_onupdate_only_runs_when_declared_and_not_active(self):
+        strings = []
+        body = _this_inc(strings, "updates") + _ret()
+        prelude = _skip_to_toplevel(2 + _count_instrs(body))
+        container = GS2Container(
+            functions=[FunctionEntry("onUpdate", 2)], strings=strings,
+            code=prelude + body)
+        rt2 = ClientGS2()
+        vm = rt2.load_bytecode("npc", 1, container)
+        rt2.load_bytecode("npc", 2, GS2Container())
+
+        key = rt2._vm_keys[id(vm)]
+        rt2._active_coro_keys.add(key)
+        rt2.process_timeouts(1 / 60)
+        assert vm.this.get("updates") is None
+
+        rt2._active_coro_keys.clear()
+        rt2.process_timeouts(1 / 60)
+        assert vm.this.get("updates") == pytest.approx(1.0)
 
 
 # =============================================================================

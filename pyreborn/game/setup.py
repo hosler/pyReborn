@@ -106,6 +106,17 @@ class SetupMixin:
         self.other_thrown_objects = []   # PLO_THROWCARRIED arcs (other players)
         self._pushaway_velocity = (0.0, 0.0)   # PLO_PUSHAWAY knockback, tiles/sec
 
+        send_level_chat = self.client.send_level_chat
+        def send_level_chat_with_events(message):
+            sent = send_level_chat(message)
+            if sent:
+                if getattr(self, 'gs1', None) is not None:
+                    self.gs1.trigger_event('playerchats')
+                if getattr(self, 'gs2', None) is not None:
+                    self.gs2.trigger_event("onPlayerChats")
+            return sent
+        self.client.send_level_chat = send_level_chat_with_events
+
         def on_chat(player_id, message):
             self._append_chat(f"[{player_id}] {message}")
 

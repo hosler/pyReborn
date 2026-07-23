@@ -371,6 +371,12 @@ class GS2ClientHost(GS2Host):
             gs1 = self.rt2.gs1
             attr = "screen_w" if name == "screenwidth" else "screen_h"
             return float(getattr(gs1, attr, 0) or 0)
+        if name == "isleader":
+            gs1 = self.rt2.gs1
+            if gs1 is None:
+                return False
+            return gs1._host.get_builtin(
+                "isleader", [], self.rt2._gs1_ctx(None))
         # a named weapon's script object (findweapon-style access)
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
@@ -1235,6 +1241,10 @@ class ClientGS2:
         finds it there via has_function()'s joined-VM fallback."""
         self.pump_pending()
         self.pump_level_events()
+        for kind in ("weapon", "npc"):
+            for vm in list(self.vms[kind].values()):
+                if vm.has_function("onUpdate"):
+                    self._run(vm, "onUpdate")
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt
             if t > 0:
