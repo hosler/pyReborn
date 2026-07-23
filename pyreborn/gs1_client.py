@@ -964,6 +964,15 @@ class _ServerFlagScope(dict):
         super().__setitem__(k, v)
         self._sent[k] = v
 
+    def recv_del(self, k):
+        """Drop a flag the server deleted (PLO_FLAGDEL), same key transform
+        as recv(), no echo. Bomber's queue roster empties this way — the
+        server unsets serverr.lobbyN when its last member leaves, so a stale
+        local value here reads as a ghost queue entry."""
+        k = k[7:] if str(k).startswith("server.") else k
+        super().pop(k, None)
+        self._sent.pop(k, None)
+
 
 class _PlayerFlagScope(dict):
     """The GS1 `client.` scope backed by the player's PERSISTED account flags.
@@ -1008,6 +1017,16 @@ class _PlayerFlagScope(dict):
                 break
         super().__setitem__(k, v)
         self._sent[k] = v
+
+    def recv_del(self, k):
+        """Drop a player flag the server deleted (PLO_FLAGDEL), no echo."""
+        k = str(k)
+        for pfx in ("clientr.", "client."):
+            if k.startswith(pfx):
+                k = k[len(pfx):]
+                break
+        super().pop(k, None)
+        self._sent.pop(k, None)
 
 
 def _pcode(code):
@@ -1182,6 +1201,15 @@ class ClientGS1:
             self._shared["client"].recv(n, value)
         else:
             self._shared["server"].recv(n, value)
+
+    def recv_flag_del(self, name):
+        """Route a PLO_FLAGDEL wire deletion into the same scope recv_flag
+        would have used, so scripts stop seeing the stale value."""
+        n = str(name)
+        if n.startswith("client.") or n.startswith("clientr."):
+            self._shared["client"].recv_del(n)
+        else:
+            self._shared["server"].recv_del(n)
 
     def load_weapon(self, name, code):
         """Load a player weapon script (e.g. -validation, -arenaSYS). Weapons

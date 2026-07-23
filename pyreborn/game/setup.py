@@ -369,10 +369,18 @@ class SetupMixin:
             if gs1 is not None:
                 gs1.recv_flag(name, value)
 
+        # PLO_FLAGDEL: the server unsets flags too (bomber empties its queue
+        # roster this way) — without this, scripts keep reading stale values.
+        def on_flag_del(name):
+            gs1 = getattr(self, 'gs1', None)
+            if gs1 is not None:
+                gs1.recv_flag_del(name)
+
         self.client.on_file = on_file
         self.client.on_weapon_add = on_weapon_add
         self.client.on_projectile = on_projectile
         self.client.on_flag = on_flag
+        self.client.on_flag_del = on_flag_del
         # flags received before the GS1 engine existed
         if getattr(self, 'gs1', None) is not None:
             for _fn, _fv in (self.client.global_flags or {}).items():

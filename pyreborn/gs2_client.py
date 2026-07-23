@@ -73,7 +73,7 @@ _PLAYER_MEMBER_ATTR.update({
 
 def _csv_flatten(args) -> List[str]:
     """Trigger params as wire CSV fields: a GS2 {array} argument contributes
-    one field per element (Graal flattens arrays into the action string)."""
+    one field per element (the client flattens arrays into the action string)."""
     out: List[str] = []
     for a in args:
         if isinstance(a, (list, tuple)):
@@ -109,6 +109,42 @@ def _image_size(data: bytes):
             seg_len = int.from_bytes(data[i + 2:i + 4], "big")
             i += 2 + seg_len
     return None
+
+
+class _EngineObject(GS2Object):
+    """Stand-in for the v6 C# client's engine-object surface (the Unity-side
+    API v6 scripts poke at: ``GameObject::Find``, ``object::findanyobjectbytype``,
+    ``WorldsF``, ...).
+
+    Member READS auto-vivify a nested stand-in, so chained accesses like
+    ``GameObject::Find("Logger").transform.GetChild(0).gameObject.SetActive(true)``
+    (v6 -System_Preloader init) stay on the object-exists path all the way down
+    instead of collapsing to LValue(None, ...) at the first missing member.
+    Member WRITES (``cam.orthographic = true`` in v6 -System onCreated) just
+    land in the member dict. Both are exactly what the calling scripts expect
+    from a live engine object, and every observed call site discards or
+    re-reads only what it wrote."""
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        obj = self._members.get(k)
+        if obj is None and k not in self._members:
+            obj = self._members[k] = _EngineObject(
+                name=f"{self.name}.{k}" if self.name else k)
+        return obj
+
+
+def _engine_object(rt2: "ClientGS2", key: str) -> _EngineObject:
+    """Session-persistent stand-in registry: repeated Find()/findanyobjectbytype
+    calls for the same name/type must return the SAME object so member writes
+    persist across scripts (the -System camera setup relies on identity)."""
+    objs = getattr(rt2, "_engine_objects", None)
+    if objs is None:
+        objs = rt2._engine_objects = {}
+    obj = objs.get(key)
+    if obj is None:
+        obj = objs[key] = _EngineObject(name=key)
+    return obj
 
 
 class _FlagScopeObject(GS2Object):
@@ -191,6 +227,20 @@ class _PlayerObject(GS2Object):
                 return v if isinstance(v, str) else to_num(v)
             if key == "chat":
                 return to_str(getattr(p, "chat", ""))
+            if key == "level":
+                # `player.level == "x.nw"` drives level-scoped weapon logic
+                # (Bomber v6 -arenaSYS clears its "Joining..." seteffect
+                # curtain + destroy()s itself only on its bomblobby branch).
+                # PLAYER_ATTR has no level entry, so this fell through to
+                # empty member storage: the arena branch then ran in EVERY
+                # level - permanently re-arming the black curtain after
+                # leaving the arena and firing bogus `setlevel2,,,`
+                # serverside triggers (answered by PLO_WARPFAILED '').
+                # Scripts stringify it immediately, so return the name.
+                lvl = getattr(p, "level", "") or ""
+                if not lvl and cl is not None:
+                    lvl = getattr(cl, "_current_level_name", "") or ""
+                return to_str(lvl)
         return super().get(key)
 
     def set(self, key: str, value: Any) -> None:
@@ -300,6 +350,27 @@ class GS2ClientHost(GS2Host):
             return self.rt2.level_object
         if name in ("server", "serverr", "client", "clientr"):
             return self.rt2.flag_scope_object(name)
+        if name == "worldsf":
+            # v6 C# client world handle: scripts call WorldsF.setFrameTick(ms)
+            # (v6 preloader init + npc 10371). Method calls on an object the
+            # host can't resolve never reach call_builtin (the VM only
+            # consults the host when obj is not None), so hand back a
+            # persistent engine-object stand-in.
+            return _engine_object(self.rt2, "worldsf")
+        if name in ("screenwidth", "screenheight"):
+            # Bare screen-size reads: -arenaSYS centers its "Joining..."
+            # showtext at (screenwidth/2, screenheight/2), the preloader's
+            # DrawBar anchors likewise. The VM resolves unknown bare names
+            # through host.get_object, which returned None here -> the
+            # values read as 0 and every GS2 screen-anchored layer landed
+            # at (0,0) (a 'c'-centered caption then hangs off the top-left
+            # corner with only its tail on screen). Same source the GS1
+            # host's screenwidth/screenheight builtins use; get_object may
+            # return a plain value - the VM pushes whatever comes back
+            # (vm.py _lookup / _op_conv_to_object).
+            gs1 = self.rt2.gs1
+            attr = "screen_w" if name == "screenwidth" else "screen_h"
+            return float(getattr(gs1, attr, 0) or 0)
         # a named weapon's script object (findweapon-style access)
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
@@ -377,6 +448,23 @@ class GS2ClientHost(GS2Host):
                     rt2.save_lines(to_str(args[0]), obj)
                 return 0.0
             if name in self.stubbed:
+                return 0.0
+            if isinstance(obj, _EngineObject):
+                # v6 C# client engine-object methods. Observed call sites
+                # (v6 -System/-System_Preloader/npc 10371 disasm):
+                #  * WorldsF.setFrameTick(ms): frame pacing hint, result
+                #    discarded (OP_INDEX_DEC) -> inert.
+                #  * Find("Logger").transform.GetChild(0).gameObject
+                #      .SetActive(true): whole-chain result discarded; only
+                #    non-null traversal matters. GetChild returns a stable
+                #    auto-vivified child; SetActive records the flag.
+                if name == "getchild":
+                    return obj.get(f"child{int(to_num(args[0])) if args else 0}")
+                if name == "setactive":
+                    obj.set("active", 1.0 if not args or to_num(args[0]) else 0.0)
+                    return 0.0
+                # Any other engine-object method is part of the same C#-client
+                # surface we don't emulate: inert, result never consumed.
                 return 0.0
             if rt2.gui is not None:
                 ctrl = rt2.gui._resolve(obj)
@@ -587,6 +675,80 @@ class GS2ClientHost(GS2Host):
                 tiles = getattr(rt2.client, "tiles", None)
                 if tiles and 0 <= x < 64 and 0 <= y < 64:
                     return float(get_tile_type(tiles[y * 64 + x]))
+            return 0.0
+
+        # -- v6 C# client platform builtins ---------------------------------
+        # Call-site evidence is the v6 bytecode disasms (job a34dbef5 tmp/):
+        # -System, -System_Preloader, -Zoom, -warn, npc 10371.
+
+        if name == "strequals":
+            # npc 10371 onPlayerEnters:
+            #   if (strequals("blank", player.ani)) setani("eye_bomber_idle0")
+            # Result feeds OP_CONV_TO_FLOAT + OP_IF, so it must be 1/0.
+            # Case-insensitive, matching the engine's string == convention
+            # (VariableCollection lowercases; GS1 string compare ignores case).
+            a = to_str(args[0]) if args else ""
+            b = to_str(args[1]) if len(args) > 1 else ""
+            return 1.0 if a.lower() == b.lower() else 0.0
+
+        if name == "gettextwidth":
+            # gettextwidth(zoom, font, styles, text) -> width in client px.
+            # -warn uses it to centre eye_bomber_notice.png:
+            #   wi = int((gettextwidth(.5,"Verdana","bc",msg) + 7) / 8);
+            #   showimg(310, ..., screenwidth/2 - wi*4 - 20, 28)
+            # so a good approximation only affects centring, never control
+            # flow. Mirror the showtext render metric (render_entities.py
+            # _render_showtext_rec: 16 px per zoom unit, same font cache).
+            zoom = to_num(args[0]) if args else 1.0
+            fontname = to_str(args[1]) if len(args) > 1 else ""
+            style = to_str(args[2]) if len(args) > 2 else ""
+            text = to_str(args[3]) if len(args) > 3 else ""
+            size = max(8, int(16 * (zoom or 1.0)))
+            game = getattr(rt2, "game_shell", None)
+            if game is not None and hasattr(game, "_showtext_font"):
+                try:
+                    font = game._showtext_font(fontname or "Arial", size,
+                                               "b" in style)
+                    return float(font.size(text)[0])
+                except Exception:
+                    pass
+            # headless fallback: mean glyph advance ~0.55em
+            return float(len(text)) * size * 0.55
+
+        if name == "getscalefactor":
+            # -Zoom onCreated: this.maxscale = getScaleFactor() + 1, and the
+            # desktop default for client.mobile_smoothzoom_* -> 1 on PC
+            # (maxscale 2 matches -System's own scalefactor = 2).
+            return 1.0
+
+        if name == "getdevicemodel":
+            # -Zoom uses it only as a client-flag name suffix
+            # (client.mobile_smoothzoom_<model>): any stable, benign
+            # desktop-ish token works.
+            return "PC"
+
+        if name in ("gameobject::find", "object::findanyobjectbytype"):
+            # -System: cam = object::findanyobjectbytype(type::camera); then
+            # cam.orthographic = true; cam.orthographicsize = 120; -- needs a
+            # writable object with stable identity. -System_Preloader:
+            # GameObject::Find("Logger") heads a discarded chain -- needs
+            # non-null traversal. Never polled in a retry loop.
+            key = to_str(args[0]) if args else ""
+            return _engine_object(rt2, f"{name}:{key}".lower())
+
+        if name == "quattro::transformextensions::getcomponents":
+            # -System: cams = ...getcomponents(Type::Camera) -- assigned and
+            # never read again; return a one-element list for shape-safety.
+            key = to_str(args[0]) if args else ""
+            return [_engine_object(rt2, f"component:{key}".lower())]
+
+        if (name in ("setframetick", "adventure_setframetick",
+                     "switchopengldevicescale", "setretinadisplaynoantialias")
+                or name.startswith("quattro::debugtools::")):
+            # Frame pacing / GL-scale / retina / exception-report toggles for
+            # the C# client's renderer. Every observed call discards the
+            # result (OP_INDEX_DEC at each site in -System, -System_Preloader,
+            # -Zoom, npc 10371) -- inert by design.
             return 0.0
 
         # GS1 function surface (returns a value)

@@ -1546,7 +1546,16 @@ class EntityRenderMixin:
         if not text:
             return
         style = rec.get('style', '') or ''
-        size = max(8, int(16 * (rec.get('zoom') or 1.0) * (self.camera.scale / float(TILE_SIZE))))
+        is_gui = self._layer_is_gui(rec)
+        if is_gui:
+            # GUI-band text lives in raw screen pixels; the C# client's
+            # TextDrawing renders it at a fixed 24*zoom px font with NO
+            # camera factor. Multiplying by camera.scale here blew the
+            # arena's changeimgzoom-5 "Joining..." caption up to ~200px
+            # glyphs (5 * scale instead of 24 * 5 = 120px).
+            size = max(8, int(24 * (rec.get('zoom') or 1.0)))
+        else:
+            size = max(8, int(16 * (rec.get('zoom') or 1.0) * (self.camera.scale / float(TILE_SIZE))))
         font = self._showtext_font(rec.get('font', '') or 'Arial', size, 'b' in style)
         colors = rec.get('colors')
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2])) if colors else (255, 255, 255)
@@ -1561,6 +1570,13 @@ class EntityRenderMixin:
         sx, sy = self._layer_pos(rec)
         if 'c' in style:  # horizontally centred on the anchor
             sx -= surf.get_width() / 2.0
+            if is_gui:
+                # The C# client's centred style centres BOTH axes (its draw
+                # origin is the text centre); scripts anchor full-screen
+                # captions at screenheight/2 expecting that. World-band
+                # labels keep the historical x-only centring (nameplate
+                # positions were live-tuned against it).
+                sy -= surf.get_height() / 2.0
         self.screen.blit(surf, (int(sx), int(sy)))
 
     def _showtext_font(self, name: str, size: int, bold: bool):

@@ -676,6 +676,7 @@ class Client:
         self.on_rpg_window: Optional[Callable[[List[str]], None]] = None
         self.on_baddy_hurt: Optional[Callable[[int, int], None]] = None
         self.on_flag: Optional[Callable[[str, str], None]] = None
+        self.on_flag_del: Optional[Callable[[str], None]] = None
 
         # Packet coverage instrumentation (for the QA coverage harness).
         # Maps packet_id -> {'received': n, 'handled': n, 'errors': n, 'last_error': str}
@@ -2621,6 +2622,23 @@ class Client:
                     # an authoritative PLAYERWARP handles a real rejection.
                     self._awaiting_warp_confirm = ""
                     self._warp_fallback = None
+                # Server-initiated warp/re-entry to a level whose board we
+                # already hold this session: gs2emu's per-session level cache
+                # means it will NOT re-stream PLO_BOARDPACKET, so re-point the
+                # active render board at the cached tiles. warp_to_level()
+                # does this for client-initiated warps, but a server push
+                # (Bomber v6's preloader -> "joinlobby" -> bomblobby re-warp)
+                # went only through this handler and left _tiles_level_name
+                # stale forever: black board + a permanent "Loading level..."
+                # overlay (live-traced 2026-07-23: cur=bomblobby.nw,
+                # tiles=bomb_preloader.nw, bomblobby board sitting unused in
+                # self.levels).
+                if (not is_gmap_segment
+                        and level_name == self._current_level_name
+                        and self._tiles_level_name != level_name
+                        and level_name in self.levels):
+                    self.tiles = self.levels[level_name]
+                    self._tiles_level_name = level_name
                 # Track for tile storage
                 self._pending_level_name = level_name
             # Set player.level to GMAP name if available, else level name
@@ -2654,10 +2672,19 @@ class Client:
         # rejection is detected via the PLO_PLAYERPROPS path below.
         elif packet_id == PacketID.PLO_WARPFAILED:
             failed_level = data.decode('latin-1', errors='replace').strip()
-            if self._awaiting_warp_confirm and (
-                    not failed_level
-                    or failed_level == self._awaiting_warp_confirm):
+            if (self._awaiting_warp_confirm
+                    and failed_level == self._awaiting_warp_confirm):
                 self._restore_failed_warp("PLO_WARPFAILED")
+            elif not failed_level:
+                # An EMPTY level name never refers to one of our warps (we
+                # refuse to send a nameless PLI_LEVELWARP, and GServer-v2
+                # echoes the failed name back). Live Bomber v6 emits these as
+                # junk whenever a server-side script setlevel2's an empty
+                # string; the old wildcard match ("empty matches anything
+                # pending") could roll back a SUCCESSFUL in-flight warp if
+                # the junk raced our LEVELNAME confirm. Log-and-ignore.
+                logger.info("PLO_WARPFAILED with empty level name ignored "
+                            "(server-side script warped '' - not ours)")
             else:
                 logger.warning("PLO_WARPFAILED for %r with no matching "
                                "pending warp", failed_level)
@@ -3474,6 +3501,8 @@ class Client:
         elif packet_id == PacketID.PLO_FLAGDEL:
             name = parse_flag_del(data)
             self.global_flags.pop(name, None)
+            if self.on_flag_del:
+                self.on_flag_del(name)
 
         # Bomb placed by another player (packet 11).
         elif packet_id == PacketID.PLO_BOMBADD:
