@@ -195,9 +195,10 @@ class Protocol:
     def connect(self) -> bool:
         """Connect to server"""
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(self.connect_timeout)
-            self.socket.connect((self.host, self.port))
+            # create_connection resolves the host via getaddrinfo, so IPv6
+            # literals/hosts work as well as legacy IPv4.
+            self.socket = socket.create_connection(
+                (self.host, self.port), timeout=self.connect_timeout)
             self.socket.setblocking(False)
             self.connected = True
 

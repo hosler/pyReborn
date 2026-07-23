@@ -330,9 +330,9 @@ class ListServerClient:
     def connect(self) -> bool:
         """Connect to listserver. Returns True if successful."""
         try:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(10.0)
-            self._socket.connect((self.host, self.port))
+            # getaddrinfo-based connect so IPv6 listservers work too
+            self._socket = socket.create_connection((self.host, self.port),
+                                                    timeout=10.0)
             self._connected = True
             return True
         except Exception as e:
