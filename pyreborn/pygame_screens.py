@@ -30,6 +30,7 @@ from .listserver import ServerEntry
 from .prefs import Prefs
 from .game.viewport import Viewport
 from .game.assets import FontManager
+from .game import theme
 from .game import ui
 
 # Initial/default window size (overridden by prefs.window_w/h once saved).
@@ -37,7 +38,7 @@ DEFAULT_WINDOW_W = 1024
 DEFAULT_WINDOW_H = 720
 MIN_WINDOW_W = 640
 MIN_WINDOW_H = 480
-BG = (22, 28, 44)
+BG = theme.NIGHT
 
 
 class _Screen:
@@ -157,7 +158,7 @@ class LoginScreen(_Screen):
         self.use_listserver = self.prefs.use_listserver
 
     def build(self):
-        self.error = ui.Label("", role="small", color=(255, 110, 110),
+        self.error = ui.Label("", role="small", color=theme.ERROR,
                               anchor=ui.MIDTOP, offset=(0, 0))
 
         self.user_in = ui.TextInput(w=300, placeholder="Username", max_len=30,
@@ -168,8 +169,7 @@ class LoginScreen(_Screen):
         self.user_in.focused = True
 
         self.mode_btn = ui.Button(self._mode_text(), w=300, h=30,
-                                  on_click=self._toggle_mode,
-                                  bg=(40, 52, 78), bg_hover=(58, 74, 108))
+                                  on_click=self._toggle_mode)
 
         self.ls_in = ui.TextInput(w=300, placeholder="Listserver host", max_len=50,
                                   text=self.prefs.listserver_host, on_enter=self._submit)
@@ -179,14 +179,18 @@ class LoginScreen(_Screen):
                                     text=str(self.prefs.port), on_enter=self._submit)
 
         connect = ui.Button("Connect", w=300, h=40, on_click=self._submit,
-                            role="heading", bg=(48, 132, 92), bg_hover=(70, 176, 122))
+                            role="heading", bg=theme.PRIMARY_BG,
+                            bg_hover=theme.PRIMARY_HOVER, border=None)
 
-        panel = ui.Panel(w=380, h=420, anchor=ui.CENTER, bg=(32, 40, 62, 245),
-                         border=(70, 92, 134), radius=14, vstack=True,
+        panel = ui.Panel(w=380, h=460, anchor=ui.CENTER, bg=theme.PANEL_BG,
+                         border=theme.PANEL_BORDER, radius=14, vstack=True,
                          padding=24, spacing=10)
+        logo = theme.emblem(2)
+        if logo is not None:
+            panel.add(ui.Image(logo))
         panel.add(
-            ui.Label("pyreborn", role="title", color=(120, 190, 255)),
-            ui.Label("Reborn Client", role="small", color=(150, 156, 184)),
+            ui.Label("pyreborn", role="title", color=theme.MINT),
+            ui.Label("Reborn Client", role="small", color=theme.TEXT_DIM),
             self.user_in,
             self.pass_in,
             self.mode_btn,
@@ -199,7 +203,7 @@ class LoginScreen(_Screen):
         self.ui.root.add(panel)
         self.ui.root.add(ui.Label(
             "Tab: next field   Enter: connect   Esc: quit",
-            role="tiny", color=(110, 116, 140),
+            role="tiny", color=theme.TEXT_FAINT,
             anchor=ui.MIDBOTTOM, offset=(0, -12)))
         self._apply_mode()
 
@@ -257,11 +261,11 @@ class _ServerRow(ui.Panel):
 
     def _draw(self, surf):
         if self.selected:
-            self.bg, self.border = (48, 68, 100), (110, 160, 255)
+            self.bg, self.border = theme.BUTTON_BG, theme.MINT
         elif self.hover:
-            self.bg, self.border = (40, 52, 78), (80, 110, 160)
+            self.bg, self.border = theme.SURFACE_RAISED, theme.MOSS
         else:
-            self.bg, self.border = (26, 34, 52), None
+            self.bg, self.border = theme.SURFACE, None
         super()._draw(surf)
 
     def _handle_event(self, event) -> bool:
@@ -342,25 +346,32 @@ class ServerSelectScreen(_Screen):
         if unresolved:
             summary += f"  ·  {unresolved} unresolved"
 
+        title_row = ui.Panel(w=360, h=44, anchor=ui.MIDTOP, offset=(0, 8))
+        crest = theme.emblem(1)
+        if crest is not None:
+            title_row.add(ui.Image(crest, anchor=ui.MIDLEFT, offset=(0, 0)),
+                          ui.Image(crest, anchor=ui.MIDRIGHT, offset=(0, 0)))
+        title_row.add(ui.Label("Select Server", role="title", color=theme.MINT_PALE,
+                               anchor=ui.MIDTOP, offset=(0, 0)))
         self.ui.root.add(
-            ui.Label("Select Server", role="title", anchor=ui.MIDTOP, offset=(0, 12)),
+            title_row,
             ui.Label(f"Logged in as {self.username}", role="small",
-                     color=(150, 200, 255), anchor=ui.MIDTOP, offset=(0, 58)),
-            ui.Label(summary, role="tiny", color=(150, 160, 190),
+                     color=theme.MINT, anchor=ui.MIDTOP, offset=(0, 58)),
+            ui.Label(summary, role="tiny", color=theme.TEXT_DIM,
                      anchor=ui.MIDTOP, offset=(0, 84)),
             ui.Label("Up/Down: navigate   Wheel: scroll   Enter: connect   Esc: cancel",
-                     role="tiny", color=(110, 116, 140),
+                     role="tiny", color=theme.TEXT_FAINT,
                      anchor=ui.MIDBOTTOM, offset=(0, -12)),
         )
 
         self.header_row = ui.Panel(w=self.content_w, h=22, anchor=ui.MIDTOP,
                                    offset=(0, self.LIST_TOP_Y - 28))
         self.header_row.add(
-            ui.Label("SERVER", role="tiny", color=(120, 128, 150),
+            ui.Label("SERVER", role="tiny", color=theme.TEXT_FAINT,
                      anchor=ui.TOPLEFT, offset=(self.BADGE_W, 2)),
-            ui.Label("PLAYERS", role="tiny", color=(120, 128, 150),
+            ui.Label("PLAYERS", role="tiny", color=theme.TEXT_FAINT,
                      anchor=ui.TOPRIGHT, offset=(-self.PLAYERS_RIGHT, 2)),
-            ui.Label("VERSION", role="tiny", color=(120, 128, 150),
+            ui.Label("VERSION", role="tiny", color=theme.TEXT_FAINT,
                      anchor=ui.TOPRIGHT, offset=(-self.VERSION_RIGHT, 2)),
         )
         self.ui.root.add(self.header_row)
@@ -372,7 +383,7 @@ class ServerSelectScreen(_Screen):
                                    align=ui.CENTER)
         self.ui.root.add(self.list_panel)
 
-        self.scroll_hint = ui.Label("", role="tiny", color=(110, 150, 200),
+        self.scroll_hint = ui.Label("", role="tiny", color=theme.EMERALD_BRIGHT,
                                     anchor=ui.MIDBOTTOM, offset=(0, -32))
         self.ui.root.add(self.scroll_hint)
         self._refresh_rows()
@@ -419,7 +430,7 @@ class ServerSelectScreen(_Screen):
             row.add(ui.Label(badge_text, role="tiny", color=badge_color,
                              anchor=ui.TOPLEFT, offset=(10, 5)))
 
-        row.add(ui.Label(server.name, role="small", color=(255, 255, 255),
+        row.add(ui.Label(server.name, role="small", color=theme.TEXT,
                          anchor=ui.TOPLEFT, offset=(self.BADGE_W, 3)))
 
         unresolved = getattr(server, "ip", "") == "$AUTO"
@@ -428,16 +439,16 @@ class ServerSelectScreen(_Screen):
         if unresolved:
             desc = "[unresolved: $AUTO placeholder] " + desc
         row.add(ui.Label(self._truncate(desc, desc_w), role="tiny",
-                         color=(150, 90, 90) if unresolved else (140, 146, 166),
+                         color=theme.ERROR_DIM if unresolved else theme.TEXT_DIM,
                          anchor=ui.TOPLEFT, offset=(self.BADGE_W, 23)))
 
         row.add(ui.Label(str(server.player_count), role="tiny",
-                         color=(160, 220, 160) if server.player_count else (110, 116, 140),
+                         color=theme.MINT if server.player_count else theme.TEXT_FAINT,
                          anchor=ui.TOPRIGHT, offset=(-self.PLAYERS_RIGHT, 3)))
 
         version = server.version or ""
         row.add(ui.Label(self._truncate(version, 110), role="tiny",
-                         color=(150, 156, 184),
+                         color=theme.TEXT_DIM,
                          anchor=ui.TOPRIGHT, offset=(-self.VERSION_RIGHT, 3)))
 
         return row
@@ -482,7 +493,10 @@ def show_loading_screen(message: str, size=None):
     pygame.display.set_caption("pyreborn")
     fonts = FontManager()
     screen.fill(BG)
-    text = fonts.at(36).render(message, True, (255, 255, 255))
-    screen.blit(text, text.get_rect(center=(w // 2, h // 2)))
+    logo = theme.emblem(2)
+    if logo is not None:
+        screen.blit(logo, logo.get_rect(midbottom=(w // 2, h // 2 - 24)))
+    text = fonts.at(36).render(message, True, theme.TEXT)
+    screen.blit(text, text.get_rect(center=(w // 2, h // 2 + 24)))
     pygame.display.flip()
     pygame.event.pump()

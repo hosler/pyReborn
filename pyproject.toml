@@ -61,8 +61,9 @@ include = ["pyreborn*"]  # package names should match these glob patterns (["*"]
 exclude = ["tests*"]  # exclude packages matching these glob patterns (["tests*"] by default)
 
 [tool.setuptools.package-data]
-# Ship the data files the client loads at runtime (tile-type table, corrections).
-pyreborn = ["*.json", "*.dat", "assets/*.ttf"]
+# Ship the data files the client loads at runtime (tile-type table, corrections,
+# bundled font, and the theme's emblem/logo art).
+pyreborn = ["*.json", "*.dat", "assets/*.ttf", "assets/emblem.png"]
 
 [tool.black]
 line-length = 88

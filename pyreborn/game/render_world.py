@@ -23,6 +23,8 @@ from typing import List, Optional, Tuple
 import pygame
 
 from ..tiletypes import TileType, get_tile_type
+from . import theme
+from .assets import render_outlined_text
 from .constants import TILE_SIZE
 
 # Key used for a standalone (non-GMAP) level when neither _current_level_name
@@ -137,10 +139,19 @@ class WorldRenderMixin:
         self._animated_tiles = animated
 
     def _render_level_loading(self):
-        """Brief overlay shown while a newly-entered level's board streams in."""
-        text = self.font.render("Loading level...", True, (235, 235, 235))
-        self.screen.blit(text, (self.screen_w // 2 - text.get_width() // 2,
-                                self.screen_h // 2 - text.get_height() // 2))
+        """Brief overlay shown while a newly-entered level's board streams in.
+
+        Styled as a themed interstitial: navy field, the leaf emblem, and
+        outlined text (drawn *when* the old code drew — only the look changed).
+        """
+        self.screen.fill(theme.NIGHT)
+        cx, cy = self.screen_w // 2, self.screen_h // 2
+        logo = theme.emblem(2)
+        if logo is not None:
+            self.screen.blit(logo, logo.get_rect(midbottom=(cx, cy - 14)))
+        text = render_outlined_text(self.font, "Loading level...",
+                                    theme.MINT_PALE, theme.NIGHT_DEEP)
+        self.screen.blit(text, text.get_rect(midtop=(cx, cy + 14)))
 
     # -- per-segment cache --------------------------------------------------
 

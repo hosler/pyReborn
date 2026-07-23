@@ -80,7 +80,8 @@ def test_panel_background_and_footer_are_inside_overlay():
     ui.show()
     ui.render(_player())
 
-    assert ui.BG_COLOR[3] == 220
+    # Translucent plate (exact color/alpha now comes from pyreborn.game.theme).
+    assert 0 < ui.BG_COLOR[3] < 255
     footer_y = ui.ui_height - ui.PADDING - ui.font_small.get_height()
     footer_band = pygame.Rect(0, footer_y, ui.ui_width, ui.font_small.get_height())
     assert ui.overlay.subsurface(footer_band).get_bounding_rect().width > 0

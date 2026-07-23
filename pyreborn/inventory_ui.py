@@ -6,6 +6,7 @@ Provides a simple inventory/equipment management UI for the pygame client.
 
 from typing import List, Mapping, Optional, Tuple, Union
 
+from .game import theme
 from .sprites import PLAYER_EQUIPMENT_PREVIEW_RECTS
 
 try:
@@ -34,14 +35,14 @@ def resolve_weapon_indicator(weapons, selected_index, sprite_mgr=None):
 class InventoryUI:
     """Inventory and equipment overlay UI."""
 
-    # UI Colors
-    BG_COLOR = (20, 20, 40, 220)
-    BORDER_COLOR = (100, 100, 150)
-    SELECTED_COLOR = (255, 200, 50)
-    TEXT_COLOR = (255, 255, 255)
-    LABEL_COLOR = (180, 180, 200)
+    # UI Colors (chrome from the shared theme; hearts stay semantically red)
+    BG_COLOR = theme.PANEL_BG
+    BORDER_COLOR = theme.MOSS
+    SELECTED_COLOR = theme.MINT
+    TEXT_COLOR = theme.TEXT
+    LABEL_COLOR = theme.TEXT_DIM
     STAT_HEART_COLOR = (255, 80, 80)
-    STAT_RUPEE_COLOR = (50, 255, 50)
+    STAT_RUPEE_COLOR = theme.MINT
 
     # Layout
     PADDING = 10
@@ -252,7 +253,7 @@ class InventoryUI:
         target_size = (self.SLOT_SIZE - 4, self.SLOT_SIZE - 4)
         for name, layer, image, power in equipment:
             # Draw slot background
-            pygame.draw.rect(self.overlay, (40, 40, 60),
+            pygame.draw.rect(self.overlay, theme.SLOT_BG,
                            (slot_x, y, self.SLOT_SIZE, self.SLOT_SIZE))
             pygame.draw.rect(self.overlay, self.BORDER_COLOR,
                            (slot_x, y, self.SLOT_SIZE, self.SLOT_SIZE), 1)
@@ -326,7 +327,7 @@ class InventoryUI:
             slot = pygame.Rect(self._weapon_grid_rect.x + col * (self.WEAPON_SLOT + self.WEAPON_GAP),
                                y + row * (self.WEAPON_SLOT + self.WEAPON_GAP),
                                self.WEAPON_SLOT, self.WEAPON_SLOT)
-            pygame.draw.rect(self.overlay, (36, 38, 58), slot, border_radius=4)
+            pygame.draw.rect(self.overlay, theme.SLOT_BG, slot, border_radius=4)
             border = self.SELECTED_COLOR if i == self.cursor_weapon_idx else self.BORDER_COLOR
             pygame.draw.rect(self.overlay, border, slot, 3 if i == self.cursor_weapon_idx else 1,
                              border_radius=4)
@@ -347,7 +348,7 @@ class InventoryUI:
                 scaled = entry[1]
                 self.overlay.blit(scaled, (icon_x, icon_y))
             else:
-                pygame.draw.rect(self.overlay, (35, 35, 50),
+                pygame.draw.rect(self.overlay, theme.NIGHT_DEEP,
                                  (icon_x, icon_y, icon_size, icon_size))
                 initials = self._cached_text(self.font_small,
                                              weapon[:2].upper(), self.TEXT_COLOR)
@@ -356,7 +357,7 @@ class InventoryUI:
                                    icon_y + (icon_size - initials.get_height()) // 2))
 
             if i == self.selected_weapon_idx:
-                marker = self._cached_text(self.font_small, "D", (30, 20, 0))
+                marker = self._cached_text(self.font_small, "D", theme.TEXT_ON_ACCENT)
                 pygame.draw.circle(self.overlay, self.SELECTED_COLOR,
                                    (slot.right - 8, slot.top + 8), 7)
                 self.overlay.blit(marker, (slot.right - 8 - marker.get_width() // 2,

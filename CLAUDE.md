@@ -46,6 +46,7 @@ pyreborn/
     ├── render_objects.py # Item/object rendering
     ├── render_world.py   # Tile/level rendering
     ├── setup.py          # GameClient init/setup
+    ├── theme.py          # UI palette + emblem/panel helpers (reskin here)
     ├── tile_editor.py    # In-client tile editor
     ├── ui.py             # Menus/dialogs
     └── viewport.py       # Viewport sizing/scaling

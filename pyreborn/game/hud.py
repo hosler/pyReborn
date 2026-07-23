@@ -24,6 +24,7 @@ from typing import Optional, Tuple
 
 import pygame
 
+from . import theme
 from .assets import render_outlined_text
 from .ui import UIManager, Panel, Label, Widget, TOPLEFT, TOPRIGHT, MIDTOP
 from .minimap import aspect_fit, map_entity_positions
@@ -51,7 +52,7 @@ class Badge(Widget):
 
     PAD_X, PAD_Y = 5, 2
 
-    def __init__(self, text="", *, color=(255, 255, 255), role="hud",
+    def __init__(self, text="", *, color=theme.TEXT, role="hud",
                  bg_alpha=180, anchor=TOPLEFT, offset=(0, 0), visible=True):
         super().__init__(0, 0, anchor, offset, visible)
         self.color = color
@@ -91,7 +92,7 @@ class Badge(Widget):
         plate_key = (self.w, self.h, self.bg_alpha)
         if plate_key != self._plate_key:
             self._plate = pygame.Surface((self.w, self.h))
-            self._plate.fill((0, 0, 0))
+            self._plate.fill(theme.PLATE)
             self._plate.set_alpha(self.bg_alpha)
             self._plate_key = plate_key
         surf.blit(self._plate, self.rect.topleft)
@@ -130,20 +131,20 @@ class StatsPanel(Widget):
                                 [(x + 12, y + 2), (x + 7, y + 3), (x + 11, y + 7)])
         # Outlined so the count stays legible over bright level tiles showing
         # through the panel's semi-transparent plate, not just the dark case.
-        txt = render_outlined_text(self.game.font_small, str(count), (245, 245, 245))
+        txt = render_outlined_text(self.game.font_small, str(count), theme.TEXT)
         surf.blit(txt, (x + 16, y + 1))
         return x + 16 + txt.get_width()
 
     def _stat_bar(self, surf, x, y, w, label, value, maxvalue, color):
         """A small labeled bar for MP/AP (no icon art for these exists)."""
         h = 6
-        pygame.draw.rect(surf, (40, 40, 46), (x, y, w, h), border_radius=2)
+        pygame.draw.rect(surf, theme.BAR_TRACK, (x, y, w, h), border_radius=2)
         if maxvalue > 0:
             fill_w = max(0, min(w, int(w * value / maxvalue)))
             if fill_w > 0:
                 pygame.draw.rect(surf, color, (x, y, fill_w, h), border_radius=2)
-        pygame.draw.rect(surf, (10, 10, 12), (x, y, w, h), 1, border_radius=2)
-        txt = render_outlined_text(self.game.font_small, label, (220, 220, 220))
+        pygame.draw.rect(surf, theme.NIGHT_DEEP, (x, y, w, h), 1, border_radius=2)
+        txt = render_outlined_text(self.game.font_small, label, theme.TEXT_DIM)
         surf.blit(txt, (x, y - 12))
 
     def _draw(self, surf):
@@ -167,8 +168,10 @@ class StatsPanel(Widget):
         plate_key = (panel_w, panel_h)
         if plate_key != self._plate_key:
             self._plate = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-            pygame.draw.rect(self._plate, (0, 0, 0, 130), (0, 0, panel_w, panel_h),
-                             border_radius=6)
+            pygame.draw.rect(self._plate, theme.plate_rgba(150),
+                             (0, 0, panel_w, panel_h), border_radius=6)
+            pygame.draw.rect(self._plate, (*theme.FOREST, 200),
+                             (0, 0, panel_w, panel_h), 1, border_radius=6)
             self._plate_key = plate_key
         surf.blit(self._plate, (6, 6))
 
@@ -206,8 +209,8 @@ class StatsPanel(Widget):
             self.game.inventory_ui.selected_weapon_idx,
             self.game.sprite_mgr)
         slot = pygame.Rect(6 + panel_w - 43, 12, 36, 36)
-        pygame.draw.rect(surf, (35, 35, 50), slot, border_radius=4)
-        pygame.draw.rect(surf, (150, 130, 70), slot, 1, border_radius=4)
+        pygame.draw.rect(surf, theme.SLOT_BG, slot, border_radius=4)
+        pygame.draw.rect(surf, theme.EMERALD_DEEP, slot, 1, border_radius=4)
         if weapon is not None:
             fit = min(30 / weapon.get_width(), 30 / weapon.get_height())
             size = (max(1, round(weapon.get_width() * fit)),
@@ -216,7 +219,7 @@ class StatsPanel(Widget):
             surf.blit(icon, (slot.centerx - icon.get_width() // 2,
                              slot.centery - icon.get_height() // 2))
         elif name:
-            label = self.game.font_small.render(name[:4], True, (245, 245, 245))
+            label = self.game.font_small.render(name[:4], True, theme.TEXT)
             surf.blit(label, (slot.centerx - label.get_width() // 2,
                               slot.centery - label.get_height() // 2))
 
@@ -255,19 +258,19 @@ class HUD:
         # its text and visibility and the container reflows.
         self.status = Panel(w=420, anchor=TOPLEFT, offset=(5, 64),
                             vstack=True, align=TOPLEFT, spacing=2)
-        self.badge_swim = Badge(color=(100, 200, 255), visible=False)
-        self.badge_door = Badge(color=(255, 255, 100), visible=False)
-        self.badge_carry = Badge(color=(100, 255, 100), visible=False)
-        self.badge_sit = Badge(color=(255, 200, 100), visible=False)
-        self.badge_noclip = Badge(color=(255, 120, 120), visible=False)
+        self.badge_swim = Badge(color=theme.INFO, visible=False)
+        self.badge_door = Badge(color=theme.WARN, visible=False)
+        self.badge_carry = Badge(color=theme.MINT, visible=False)
+        self.badge_sit = Badge(color=theme.WARN, visible=False)
+        self.badge_noclip = Badge(color=theme.ERROR, visible=False)
         self.status.add(self.badge_swim, self.badge_door,
                         self.badge_carry, self.badge_sit, self.badge_noclip)
         self.ui.root.add(self.status)
 
         # Top-right "H: Help" hint and centered ghost-mode banner.
-        self.hint = Label("H: Help", role="small", color=(210, 210, 210),
+        self.hint = Label("H: Help", role="small", color=theme.TEXT_DIM,
                           anchor=TOPRIGHT, offset=(-10, 10), shadow=True)
-        self.ghost = Badge("GHOST MODE", color=(200, 200, 255),
+        self.ghost = Badge("GHOST MODE", color=theme.MINT_PALE,
                            anchor=MIDTOP, offset=(0, 50), visible=False)
         self.ui.root.add(self.hint, self.ghost)
 
@@ -366,20 +369,21 @@ class HUD:
         box_x = (g.screen_w - box_w) // 2
         box_y = g.screen_h - 150
         box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
-        pygame.draw.rect(box, (0, 0, 50, min(200, alpha)), (0, 0, box_w, box_h))
-        pygame.draw.rect(box, (100, 100, 200, min(255, alpha)),
+        bg = theme.OVERLAY_BG
+        pygame.draw.rect(box, (*bg[:3], min(bg[3], alpha)), (0, 0, box_w, box_h))
+        pygame.draw.rect(box, (*theme.OVERLAY_BORDER, min(255, alpha)),
                          (0, 0, box_w, box_h), 2)
         surf.blit(box, (box_x, box_y))
 
         text_y = box_y + 10
         for line in lines:
-            ts = font.render(line, True, (255, 255, 255))
+            ts = font.render(line, True, theme.TEXT)
             ts.set_alpha(alpha)
             surf.blit(ts, (box_x + 10, text_y))
             text_y += line_height
 
         if g.dialogue_pager.has_more:
-            chevron = font.render(">", True, (255, 255, 255))
+            chevron = font.render(">", True, theme.MINT)
             chevron.set_alpha(alpha)
             surf.blit(chevron, (box_x + box_w - chevron.get_width() - 10,
                                 box_y + box_h - chevron.get_height() - 6))
@@ -390,13 +394,13 @@ class HUD:
         w, h = min(400, g.screen_w - 40), 118
         x, y = (g.screen_w - w) // 2, (g.screen_h - h) // 2
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(panel, (0, 0, 20, 220), panel.get_rect(), border_radius=8)
-        pygame.draw.rect(panel, (125, 125, 160, 255), panel.get_rect(), 2,
+        pygame.draw.rect(panel, theme.OVERLAY_BG, panel.get_rect(), border_radius=8)
+        pygame.draw.rect(panel, (*theme.ERROR_DIM, 255), panel.get_rect(), 2,
                          border_radius=8)
         surf.blit(panel, (x, y))
         font = g.fonts.classic()
-        title = font.render("You died", True, (235, 225, 225))
-        hint = g.font_small.render("Waiting for respawn...", True, (185, 185, 205))
+        title = font.render("You died", True, theme.TEXT)
+        hint = g.font_small.render("Waiting for respawn...", True, theme.TEXT_DIM)
         surf.blit(title, (x + (w - title.get_width()) // 2, y + 24))
         surf.blit(hint, (x + (w - hint.get_width()) // 2, y + 76))
 
@@ -406,9 +410,9 @@ class HUD:
         return wrap_dialogue(text, lambda value: font.size(value)[0], max_w)
 
     def _build_chat_line(self, g, msg):
-        ts = g.font.render(msg[:60], True, (255, 255, 255))
+        ts = g.font.render(msg[:60], True, theme.TEXT)
         plate = pygame.Surface((ts.get_width() + 10, ts.get_height() + 4))
-        plate.fill((0, 0, 0))
+        plate.fill(theme.PLATE)
         plate.set_alpha(150)
         return (ts, plate)
 
@@ -447,13 +451,14 @@ class HUD:
             if label != self._scroll_indicator_text:
                 self._scroll_indicator_text = label
                 self._scroll_indicator_surf = g.font_small.render(
-                    label, True, (255, 220, 120))
+                    label, True, theme.WARN)
             surf.blit(self._scroll_indicator_surf, (10, y))
 
         if g.typing:
-            pygame.draw.rect(surf, (0, 0, 0),
-                             (5, g.screen_h - 30, g.screen_w - 10, 25))
-            ts = g.font.render(f"> {g.chat_input}_", True, (255, 255, 0))
+            entry = pygame.Rect(5, g.screen_h - 30, g.screen_w - 10, 25)
+            pygame.draw.rect(surf, theme.NIGHT_DEEP, entry)
+            pygame.draw.rect(surf, theme.EMERALD_DEEP, entry, 1)
+            ts = g.font.render(f"> {g.chat_input}_", True, theme.MINT)
             surf.blit(ts, (10, g.screen_h - 25))
 
     def _draw_minimap(self, surf):
@@ -468,8 +473,8 @@ class HUD:
         mx = g.screen_w - mw - 10
         my = 10
         border = pygame.Rect(mx - 2, my - 2, mw + 4, mh + 4)
-        pygame.draw.rect(surf, (100, 100, 100), border)
-        pygame.draw.rect(surf, (50, 50, 50), border, 2)
+        pygame.draw.rect(surf, theme.SURFACE_RAISED, border)
+        pygame.draw.rect(surf, theme.MOSS, border, 2)
         surf.blit(g.minimap_surface, (mx, my))
         if g.client._current_level_name:
             for frac_x, frac_y, color in map_entity_positions(g.client):
@@ -493,9 +498,9 @@ class HUD:
         view = pygame.transform.smoothscale(source, size)
         mx, my = (g.screen_w - size[0]) // 2, (g.screen_h - size[1]) // 2
         shade = pygame.Surface((g.screen_w, g.screen_h), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 190))
+        shade.fill(theme.SHADE)
         surf.blit(shade, (0, 0))
-        pygame.draw.rect(surf, (120, 120, 150),
+        pygame.draw.rect(surf, theme.EMERALD_DEEP,
                          (mx - 3, my - 3, size[0] + 6, size[1] + 6), 3)
         surf.blit(view, (mx, my))
         for frac_x, frac_y, color in map_entity_positions(g.client):
@@ -511,19 +516,15 @@ class HUD:
         x = (g.screen_w - w) // 2
         y = (g.screen_h - h) // 2
 
-        panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(panel, (0, 0, 0, 200), (0, 0, w, h), border_radius=8)
-        pygame.draw.rect(panel, (120, 120, 160, 255), (0, 0, w, h),
-                         width=2, border_radius=8)
-        surf.blit(panel, (x, y))
+        theme.draw_panel(surf, pygame.Rect(x, y, w, h))
 
-        surf.blit(g.font.render("Controls", True, (255, 255, 255)),
+        surf.blit(g.font.render("Controls", True, theme.MINT_PALE),
                   (x + pad, y + pad))
         ty = y + pad + 30
         for key, desc in self.HELP_LINES:
-            surf.blit(g.font_small.render(key, True, (255, 220, 120)),
+            surf.blit(g.font_small.render(key, True, theme.MINT),
                       (x + pad, ty))
-            surf.blit(g.font_small.render(desc, True, (225, 225, 225)),
+            surf.blit(g.font_small.render(desc, True, theme.TEXT),
                       (x + pad + 110, ty))
             ty += line_h
 
@@ -538,23 +539,19 @@ class HUD:
         x = (g.screen_w - w) // 2
         y = (g.screen_h - h) // 2
 
-        panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(panel, (0, 0, 0, 210), (0, 0, w, h), border_radius=8)
-        pygame.draw.rect(panel, (120, 120, 160, 255), (0, 0, w, h),
-                         width=2, border_radius=8)
-        surf.blit(panel, (x, y))
+        theme.draw_panel(surf, pygame.Rect(x, y, w, h))
 
-        surf.blit(g.font.render(title, True, (255, 255, 255)), (x + pad, y + pad))
+        surf.blit(g.font.render(title, True, theme.MINT_PALE), (x + pad, y + pad))
         ty = y + pad + 30
         for i, row in enumerate(body):
             if rows and i == sel:
                 hl = pygame.Surface((w - pad * 2, line_h), pygame.SRCALPHA)
-                hl.fill((90, 90, 150, 180))
+                hl.fill(theme.SELECTION)
                 surf.blit(hl, (x + pad, ty - 2))
-            color = (255, 255, 255) if rows else (160, 160, 160)
+            color = theme.TEXT if rows else theme.TEXT_FAINT
             surf.blit(g.font_small.render(row[:48], True, color), (x + pad + 4, ty))
             ty += line_h
-        surf.blit(g.font_small.render(footer, True, (180, 180, 200)),
+        surf.blit(g.font_small.render(footer, True, theme.TEXT_DIM),
                   (x + pad, ty + 4))
 
     def _draw_player_list(self, surf):

@@ -30,6 +30,7 @@ from typing import Callable, List, Optional, Tuple
 
 import pygame
 
+from . import theme
 from .assets import render_outlined_text
 
 
@@ -172,7 +173,7 @@ class Panel(Widget):
 class Label(Widget):
     """A line (or block) of text rendered via FontManager."""
 
-    def __init__(self, text="", *, role="hud", color=(255, 255, 255),
+    def __init__(self, text="", *, role="hud", color=theme.TEXT,
                  anchor=TOPLEFT, offset=(0, 0), align=TOPLEFT, shadow=False,
                  visible=True):
         super().__init__(0, 0, anchor, offset, visible)
@@ -241,8 +242,10 @@ class Button(Widget):
 
     def __init__(self, text="", *, on_click: Optional[Callable] = None,
                  w=140, h=32, role="hud", anchor=TOPLEFT, offset=(0, 0),
-                 bg=(50, 56, 78), bg_hover=(72, 82, 120), bg_disabled=(40, 42, 50),
-                 fg=(235, 238, 245), radius=6, enabled=True, visible=True):
+                 bg=theme.BUTTON_BG, bg_hover=theme.BUTTON_BG_HOVER,
+                 bg_disabled=theme.BUTTON_BG_DISABLED,
+                 fg=theme.BUTTON_FG, border=theme.BUTTON_BORDER,
+                 radius=6, enabled=True, visible=True):
         super().__init__(w, h, anchor, offset, visible)
         self.text = text
         self.on_click = on_click
@@ -251,6 +254,7 @@ class Button(Widget):
         self.bg_hover = bg_hover
         self.bg_disabled = bg_disabled
         self.fg = fg
+        self.border = border
         self.radius = radius
         self.enabled = enabled
         self._pressed = False
@@ -266,9 +270,12 @@ class Button(Widget):
         else:
             color = self.bg
         pygame.draw.rect(surf, color, self.rect, border_radius=self.radius)
+        if self.border is not None:
+            pygame.draw.rect(surf, theme.MOSS if self.hover else self.border,
+                             self.rect, 1, border_radius=self.radius)
         if self._fonts is not None and self.text:
             label = self._fonts.get(self.role).render(
-                self.text, True, self.fg if self.enabled else (130, 130, 138))
+                self.text, True, self.fg if self.enabled else theme.TEXT_FAINT)
             surf.blit(label, label.get_rect(center=self.rect.center))
 
     def _handle_event(self, event) -> bool:
@@ -294,9 +301,9 @@ class TextInput(Widget):
     def __init__(self, *, w=240, h=32, role="hud", anchor=TOPLEFT, offset=(0, 0),
                  text="", placeholder="", password=False, max_len=64,
                  on_enter: Optional[Callable] = None,
-                 bg=(28, 30, 42), bg_focus=(40, 44, 62),
-                 fg=(235, 238, 245), border=(90, 96, 120),
-                 border_focus=(120, 170, 255), radius=5, visible=True):
+                 bg=theme.INPUT_BG, bg_focus=theme.INPUT_BG_FOCUS,
+                 fg=theme.TEXT, border=theme.INPUT_BORDER,
+                 border_focus=theme.INPUT_BORDER_FOCUS, radius=5, visible=True):
         super().__init__(w, h, anchor, offset, visible)
         self.role = role
         self.text = text
@@ -319,6 +326,8 @@ class TextInput(Widget):
         return "*" * len(self.text) if self.password else self.text
 
     def _draw(self, surf):
+        if self.focused:
+            theme.focus_glow(surf, self.rect, radius=self.radius)
         pygame.draw.rect(surf, self.bg_focus if self.focused else self.bg,
                          self.rect, border_radius=self.radius)
         pygame.draw.rect(surf, self.border_focus if self.focused else self.border,
@@ -330,7 +339,7 @@ class TextInput(Widget):
         if self.text:
             label = font.render(self.display_text, True, self.fg)
         else:
-            label = font.render(self.placeholder, True, (120, 124, 140))
+            label = font.render(self.placeholder, True, theme.TEXT_FAINT)
         surf.blit(label, (self.rect.x + 8,
                           self.rect.centery - label.get_height() // 2))
         # blinking caret
