@@ -31,6 +31,36 @@ from .minimap import aspect_fit, map_entity_positions
 from ..inventory_ui import resolve_weapon_indicator
 
 
+# showstats bits (GServer-v2 docs, "showstats"): which default-HUD elements
+# the client draws. A scripted HUD hides the built-in one with
+# `showstats(allstats - <bits>)`; gs1_client.py stores the mask on
+# ClientGS1.stats_mask (None = showstats never called = show everything) and
+# this module gates each element on its bit. Generic: any server's script
+# controls this, nothing here is server-specific.
+STAT_ASD = 1          # A/S/D item slots (our weapon-slot indicator)
+STAT_ICONS = 2        # gralat/bomb/arrow icons
+STAT_RUPEES = 4       # gralat (rupee) count
+STAT_BOMBS = 8        # bomb count
+STAT_ARROWS = 16      # arrow count
+STAT_HEARTS = 32      # hearts row
+STAT_AP = 64          # alignment bar
+STAT_MP = 128         # magic bar
+STAT_MINIMAP = 256    # minimap
+STAT_INVENTORY = 512  # inventory npcs (not drawn by this HUD)
+STAT_PLAYERS = 1024   # players (not gated here; render_entities draws them)
+ALLSTATS = 2047
+_STATS_PANEL_BITS = (STAT_ASD | STAT_ICONS | STAT_RUPEES | STAT_BOMBS
+                     | STAT_ARROWS | STAT_HEARTS | STAT_AP | STAT_MP)
+
+
+def stats_mask(game) -> int:
+    """The active showstats bitmask (ALLSTATS when no script ever called
+    showstats). Reads ClientGS1.stats_mask — the single store both GS1 and
+    GS2 scripts write through."""
+    mask = getattr(getattr(game, "gs1", None), "stats_mask", None)
+    return ALLSTATS if mask is None else int(mask)
+
+
 def chat_window(total: int, scroll: int, window: int = 5) -> Tuple[int, int]:
     """[start, end) indices into chat_messages for the visible chat-log slice.
 
@@ -148,6 +178,11 @@ class StatsPanel(Widget):
         surf.blit(txt, (x, y - 12))
 
     def _draw(self, surf):
+        mask = stats_mask(self.game)
+        if not (mask & _STATS_PANEL_BITS):
+            # a scripted HUD hid every element this panel draws (showstats):
+            # no plate, no slot — nothing.
+            return
         player = self.game.client.player
         hd = self.game.heart_display
         hearts_w = min(hd.HEARTS_PER_ROW, int(player.max_hearts)) * (hd.HEART_SIZE + hd.HEART_SPACING)
@@ -175,35 +210,46 @@ class StatsPanel(Widget):
             self._plate_key = plate_key
         surf.blit(self._plate, (6, 6))
 
-        hd.render(surf, player.hearts, player.max_hearts)
+        if mask & STAT_HEARTS:
+            hd.render(surf, player.hearts, player.max_hearts)
 
         max_mp = getattr(player, 'max_mp', 100) or 100
         max_ap = getattr(player, 'max_ap', 100) or 100
         icons_key = (panel_w, panel_h, player.rupees, player.bombs,
-                    player.arrows, mp, ap, max_mp, max_ap)
+                    player.arrows, mp, ap, max_mp, max_ap, mask)
         if icons_key != self._icons_key:
             # Drawn into a panel-local surface (same (6, 6) origin as
             # `self._plate` above) so it can be cached and blitted as one
             # unit rather than redrawn from scratch every frame.
             icons = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
             icon_y = 32 + (heart_rows - 1) * (hd.HEART_SIZE + hd.HEART_SPACING)
-            x = self._stat_icon(icons, 6, icon_y - 6, 'rupee', player.rupees)
-            x = self._stat_icon(icons, x + 12, icon_y - 6, 'bomb', player.bombs)
-            self._stat_icon(icons, x + 12, icon_y - 6, 'arrow', player.arrows)
+            # Each counter is icon+count as one unit, gated on its count
+            # bit (a hidden counter also frees its slot in the row).
+            x = 6
+            if mask & STAT_RUPEES:
+                x = self._stat_icon(icons, x, icon_y - 6, 'rupee',
+                                    player.rupees) + 12
+            if mask & STAT_BOMBS:
+                x = self._stat_icon(icons, x, icon_y - 6, 'bomb',
+                                    player.bombs) + 12
+            if mask & STAT_ARROWS:
+                self._stat_icon(icons, x, icon_y - 6, 'arrow', player.arrows)
 
             if show_mp_ap:
                 bar_y = icon_y + 30 - 6
                 bar_w = (panel_w - 24 - 12) // 2
-                if mp is not None:
+                if mp is not None and mask & STAT_MP:
                     self._stat_bar(icons, 6, bar_y, bar_w, "MP", mp, max_mp,
                                    (90, 140, 255))
-                if ap is not None:
+                if ap is not None and mask & STAT_AP:
                     self._stat_bar(icons, 6 + bar_w + 12, bar_y, bar_w, "AP", ap,
                                    max_ap, (230, 200, 80))
             self._icons_surf = icons
             self._icons_key = icons_key
         surf.blit(self._icons_surf, (6, 6))
 
+        if not (mask & STAT_ASD):
+            return
         name, image, weapon = resolve_weapon_indicator(
             self.game.client.weapons,
             self.game.inventory_ui.selected_weapon_idx,
@@ -250,8 +296,10 @@ class HUD:
         self.game = game
         self.ui = UIManager(game.fonts, game.screen_w, game.screen_h)
 
-        # Always-on stat panel.
-        self.ui.root.add(StatsPanel(game))
+        # Stat panel (a scripted HUD can hide it via showstats — see
+        # stats_mask / update()).
+        self.stats_panel = StatsPanel(game)
+        self.ui.root.add(self.stats_panel)
 
         # Status-line stack: a vstack does the vertical layout the old `ui_y`
         # cursor did by hand. Each line is preallocated; per frame we just set
@@ -311,6 +359,10 @@ class HUD:
         self.badge_noclip.visible = getattr(g, "noclip", False)
 
         self.ghost.visible = g.ghost_mode
+
+        # showstats: a scripted HUD hiding every panel element hides the
+        # panel widget entirely (StatsPanel._draw also gates per element).
+        self.stats_panel.visible = bool(stats_mask(g) & _STATS_PANEL_BITS)
 
         heart_rows = max(1, (int(player.max_hearts) + 9) // 10)
         self.status.offset = (5, 64 + (heart_rows - 1) * 18)
@@ -463,6 +515,8 @@ class HUD:
 
     def _draw_minimap(self, surf):
         g = self.game
+        if not (stats_mask(g) & STAT_MINIMAP):
+            return          # hidden by a script's showstats call
         if g.minimap_visible and not g.minimap_surface and not g.minimap_data:
             # Tier 4b: no live PLO_MINIMAP data - try the PLO_BIGMAP world
             # image instead (classic gmap worlds ship one, not the other).

@@ -719,7 +719,12 @@ class SetupMixin:
         lvl = self.client._current_level_name
         epoch = self.client._plain_level_change_epoch
         if epoch != getattr(self, '_gs1_visual_level_epoch', epoch):
-            self.gs1._weapon_imgs.clear()
+            # NOT a blanket clear: GS2 weapon HUD stores persist across
+            # levels (real-client parity — see ClientGS1.drop_level_weapon_
+            # layers; the v6 bomber's scripted HUD only repaints on state
+            # deltas, so a clear here blanked it forever after the
+            # preloader->lobby warp).
+            self.gs1.drop_level_weapon_layers()
             # A scripted seteffect curtain is owned by whatever script drew
             # it, and a level change abandons that script (its coroutine dies
             # in gs1.clear()); an uncleared tint would stick forever — e.g.

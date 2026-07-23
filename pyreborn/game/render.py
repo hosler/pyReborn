@@ -101,8 +101,14 @@ class RenderMixin:
             self.player_anim.set_animation("idle", self.client.player.direction)
             self.current_anim_name = "idle"
 
-        # If not moving, switch to appropriate idle animation
-        if not self.is_moving and self.current_anim_name in ("walk", "swim"):
+        # If not moving, switch to appropriate idle animation. Skip while a
+        # weapon script drives movement (disabledefmovement): is_moving is
+        # only set by the built-in input path, so this stomped the script's
+        # setani("walk") back to idle every frame — the script sets idle
+        # itself when the keys are released (ReturnIdle).
+        if (getattr(getattr(self, "gs1", None), "default_movement", True)
+                and not self.is_moving
+                and self.current_anim_name in ("walk", "swim")):
             if self.is_swimming:
                 # Use swim idle animation (or swim if no swim_idle exists)
                 self.player_anim.set_animation("swim", self.client.player.direction)
@@ -317,6 +323,7 @@ class RenderMixin:
                     self._render_scene()
                 else:
                     self._render_scene_zoomed(zoom)
+                self._render_gui_band()
             finally:
                 self.screen = canvas
             self._level_transition_slide = {
@@ -388,6 +395,9 @@ class RenderMixin:
             self._render_scene()
         else:
             self._render_scene_zoomed(zoom)
+        # Screen-space scripted GUI band, after any zoom scale (see
+        # _render_gui_band).
+        self._render_gui_band()
 
         # Preserve the world-only portion of the last completed frame. The
         # ordinary hold still freezes the full framebuffer verbatim; this copy
@@ -422,7 +432,36 @@ class RenderMixin:
         self._render_server_explosions()
         self._render_screen_tint()                   # seteffect overlay, under HUD
         self._render_deferred_lights()               # additive glows, above tint
-        self._render_gui_layers()                    # vis>=4 GUI band, above tint
+
+    def _render_gui_band(self):
+        """Draw the vis>=4 GUI band (scripted HUDs, captions) in TRUE screen
+        pixels, above the tint. This must run on the real canvas AFTER the
+        zoom scale — when it lived at the end of _render_scene, a script's
+        setZoom(2) rendered it into the 1:1 zoom scratch surface and the
+        upscale doubled every GUI layer's position/size (the v6 bomber's
+        scripted HUD landed half off-screen). While zoomed, also neutralize
+        the camera factor render_entities.py's showimg renderer applies
+        (camera.scale/TILE_SIZE — a world-space term) with a plain unit
+        camera; GUI layers never use world_to_screen, so only that factor
+        (and world-band text sizing, which this pass never draws) sees it."""
+        gui_layers = getattr(self, '_render_gui_layers', None)
+        if gui_layers is None:
+            # partial hosts (unit-test harnesses) mix in RenderMixin without
+            # EntityRenderMixin, which owns the actual layer walk
+            return
+        cam = self.camera
+        if getattr(cam, 'zoom', 1.0) == 1.0:
+            gui_layers()
+            return
+        key = (self.screen_w, self.screen_h, cam.tile_size)
+        if key != getattr(self, '_gui_cam_key', None):
+            self._gui_cam_key = key
+            self._gui_cam = Camera2D(self.screen_w, self.screen_h, cam.tile_size)
+        self.camera = self._gui_cam
+        try:
+            gui_layers()
+        finally:
+            self.camera = cam
 
     def _render_scene_zoomed(self, zoom: float):
         """Render the world layer at 1:1 into a smaller offscreen surface, then
@@ -588,12 +627,16 @@ class RenderMixin:
         selected_name = type_names.get(self.debug_selected_type, "?")
         debug_text = (f"TILE EDIT - Selected: {selected_name} - "
                       f"Corrections: {len(self.tile_corrections)}")
-        self._draw_text_with_bg(debug_text, SCREEN_WIDTH // 2 - 150, 30, (255, 255, 0))
+        # Anchor to the live window width, not the SCREEN_WIDTH constant -
+        # this drew centred/right-aligned for a 640px window regardless of the
+        # window's real (WM-imposed) size, so on anything wider the text sat
+        # off to the left instead of centred/right-anchored.
+        self._draw_text_with_bg(debug_text, self.screen_w // 2 - 150, 30, (255, 255, 0))
 
         if not self.typing and not self.inventory_ui.visible:
             help_text = "1-7: Type | Click: Apply | RClick: Reset | F1: Exit"
             text = self.font_small.render(help_text, True, (255, 255, 0))
-            self.screen.blit(text, (SCREEN_WIDTH - text.get_width() - 10, 10))
+            self.screen.blit(text, (self.screen_w - text.get_width() - 10, 10))
 
         # Tile info under the cursor (mapped to virtual-canvas space)
         mouse_x, mouse_y = self.viewport.mouse_pos()

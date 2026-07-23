@@ -9,6 +9,7 @@ import pygame
 
 from ..gani import AnimationState
 from ..player import Player
+from ..sprites import REBORN_PALETTE
 from .assets import render_outlined_text
 from .constants import (
     TILE_SIZE, parse_npc_visual_effects,
@@ -964,19 +965,32 @@ class EntityRenderMixin:
         recolor_body() expects. Unlike the player-colors path, this one is
         live today (no protocol-layer dependency) - it just had no reader
         until this render wiring."""
-        if npc.get('colors'):
-            return npc['colors']
+        raw = npc.get('colors')
+        if raw:
+            return [self._palette_slot(v) for v in list(raw)[:5]]
         have_any = False
         vals = []
         for i in range(5):
             v = npc.get(f'color{i}')
             if v is not None:
                 have_any = True
-            try:
-                vals.append(int(v))
-            except (TypeError, ValueError):
-                vals.append(0)
+            vals.append(self._palette_slot(v))
         return vals if have_any else None
+
+    @staticmethod
+    def _palette_slot(v) -> int:
+        """A single COLORS slot as a palette index. Wire props carry ints,
+        but script writes (GS2 `colors[0] = "orange";`, GS1 setcharprop with
+        a name) carry palette NAMES — resolve those through REBORN_PALETTE
+        so recolor_body gets the index it expects."""
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+        try:
+            return REBORN_PALETTE.index(str(v).strip().lower())
+        except ValueError:
+            return 0
 
     @staticmethod
     def _npc_image(npc: dict, new_key: str, wire_key: str, default: str) -> str:

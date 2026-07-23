@@ -26,7 +26,9 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from reborn_protocol.gs1.runtime import UNSET
-from reborn_protocol.gs2 import GS2VM, GS2Host, GS2Object, NOT_HANDLED, to_num, to_str
+from reborn_protocol.gs2 import (
+    GS2VM, GS2Host, GS2Object, NOT_HANDLED, to_bool, to_num, to_str,
+)
 from .gs1_client import PLAYER_ATTR
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,14 @@ _PLAYER_MEMBER_ATTR = {k[len("player"):]: v for k, v in PLAYER_ATTR.items()}
 _PLAYER_MEMBER_ATTR.update({
     "nick": "nickname",
     "ani": "gani",
+    # v6 HUD scripts read these members directly (the bomber's scripted HUD
+    # draws counters from player.mp/ap/darts and player.swordimg); none has
+    # a GS1 "player<name>" builtin, so the derived map missed them and every
+    # read came back 0/"" (MP/AP meters empty, dart count zero, no sword
+    # icon). "darts" is the classic name for arrows on the wire.
+    "mp": "mp", "magicpoints": "mp", "ap": "ap", "darts": "arrows",
+    "swordimg": "sword_image", "shieldimg": "shield_image",
+    "headimg": "head_image", "bodyimg": "body_image",
 })
 
 
@@ -241,6 +251,24 @@ class _PlayerObject(GS2Object):
                 if not lvl and cl is not None:
                     lvl = getattr(cl, "_current_level_name", "") or ""
                 return to_str(lvl)
+            if key == "weapon":
+                # The player's currently selected weapon as an object
+                # (scripted HUDs read player.weapon.image for the D-slot
+                # icon). Selection follows the inventory UI, defaulting to
+                # the first granted weapon.
+                weapons = getattr(cl, "weapons", {}) or {}
+                game = getattr(self._rt2, "game_shell", None)
+                sel = getattr(getattr(game, "inventory_ui", None),
+                              "selected_weapon_idx", 0) or 0
+                names = list(weapons)
+                obj = GS2Object(name="weapon")
+                if names:
+                    wname = names[sel] if 0 <= sel < len(names) else names[0]
+                    rec = weapons.get(wname)
+                    obj.set("name", to_str(wname))
+                    obj.set("image", to_str(rec.get("image", ""))
+                            if isinstance(rec, dict) else "")
+                return obj
         return super().get(key)
 
     def set(self, key: str, value: Any) -> None:
@@ -257,6 +285,13 @@ class _PlayerObject(GS2Object):
             self._rt2._gs1_command("setplayerprop", ["#c", to_str(value)], None)
             return
         if p is not None and key in _PLAYER_MEMBER_ATTR:
+            # dir/sprite land in renderer + wire paths that index/int these;
+            # GS2 numbers are floats (player.dir = 3.0 broke direction
+            # lookups) so coerce here, at the bridge.
+            if key == "dir":
+                value = int(to_num(value)) % 4
+            elif key == "sprite":
+                value = int(to_num(value))
             setattr(p, _PLAYER_MEMBER_ATTR[key], value)
             return
         super().set(key, value)
@@ -275,7 +310,12 @@ class _ThisObject(GS2Object):
 
     def set(self, key: str, value: Any) -> None:
         if key.lower() == "timeout":
-            self._rt2._timeouts[self._vm_key] = max(0.0, to_num(value))
+            # same 0.05s floor as the settimer() builtin (real-client timer
+            # resolution) so this.timeout = 0.01 loops tick at 20Hz too
+            v = to_num(value)
+            if 0.0 < v < 0.05:
+                v = 0.05
+            self._rt2._timeouts[self._vm_key] = max(0.0, v)
             return
         super().set(key, value)
 
@@ -297,6 +337,192 @@ class _ThisObject(GS2Object):
                 fname = key.lower()
                 return lambda *args: vm.call(fname, *args)
         return v
+
+
+#: GS2 NPC-script attribute name -> client npc-dict key. Same store the GS1
+#: host writes (gs1_client.py NPC_ATTR/_CHARPROP_NPC) and render_entities.py
+#: reads. v6 bytecode addresses these as BARE names (`y = 12.5;`,
+#: `headimg = "...";`, `showimg(300, img, x, y)`) — the compiler scopes NPC
+#: props implicitly, so the VM's this-object must claim them (has() below)
+#: for both _lookup and _assign_name to bridge here instead of the shared
+#: globals dict (which cross-contaminated every NPC in a level).
+_NPC_THIS_ATTR = {
+    "x": "x", "y": "y", "dir": "direction", "image": "image",
+    "ani": "gani", "nick": "nickname", "chat": "message",
+    "message": "message", "glovepower": "glove_power",
+    "headimg": "head_image", "bodyimg": "body_image",
+    "shieldimg": "shield_image", "swordimg": "sword_image",
+    "horseimg": "horse_image",
+}
+
+
+class _NpcColorsObject(GS2Object):
+    """`colors[i]` / `color[i]` in an NPC script: indexed reads/writes bridge
+    to the npc dict's color0..color4 slots (what _render_npc's character
+    compositor reads). The VM's OP_ARRAY_ASSIGN/OP_ARRAY_INDEX call
+    set/get with the stringified index when the target is a GS2Object."""
+
+    __slots__ = ("_owner",)
+
+    def __init__(self, owner: "_NpcThisObject"):
+        super().__init__(name="npc.colors")
+        self._owner = owner
+
+    @staticmethod
+    def _slot(key: str) -> Optional[str]:
+        try:
+            i = int(to_num(key))
+        except (TypeError, ValueError):
+            return None
+        return f"color{i}" if 0 <= i <= 4 else None
+
+    def get(self, key: str) -> Any:
+        npc, slot = self._owner._npc(), self._slot(key)
+        if npc is not None and slot:
+            return npc.get(slot, "")
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        npc, slot = self._owner._npc(), self._slot(key)
+        if npc is not None and slot:
+            npc[slot] = to_str(value)
+            return
+        super().set(key, value)
+
+    def has(self, key: str) -> bool:
+        return self._slot(key) is not None or super().has(key)
+
+
+class _NpcThisObject(_ThisObject):
+    """An NPC script's `this`: NPC display/position attributes bridge to the
+    live client npc dict (lazily resolved — bytecode can arrive before the
+    NPC's props stream), everything else is plain member storage like
+    _ThisObject. Bare names route here too via _lookup/_assign_name because
+    has() claims the attribute names."""
+
+    __slots__ = ("_colors",)
+
+    def __init__(self, rt2: "ClientGS2", vm_key: tuple, name: str = "this"):
+        super().__init__(rt2, vm_key, name=name)
+        self._colors = None
+
+    def _npc(self) -> Optional[dict]:
+        cl = self._rt2.client
+        if cl is None:
+            return None
+        npcs = getattr(cl, "npcs", {})
+        key = self._vm_key[1]
+        npc = npcs.get(key)
+        if npc is None and isinstance(key, str):
+            try:
+                npc = npcs.get(int(key))
+            except (TypeError, ValueError):
+                npc = None
+        return npc if isinstance(npc, dict) else None
+
+    def has(self, key: str) -> bool:
+        k = key.lower()
+        if k in _NPC_THIS_ATTR or k in ("colors", "color"):
+            return True
+        return super().has(key)
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k in ("colors", "color"):
+            if self._colors is None:
+                self._colors = _NpcColorsObject(self)
+            return self._colors
+        attr = _NPC_THIS_ATTR.get(k)
+        if attr is not None:
+            npc = self._npc()
+            if npc is not None and attr in npc:
+                v = npc.get(attr)
+                return v if isinstance(v, str) else to_num(v)
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k in ("colors", "color") and isinstance(value, (list, tuple)):
+            npc = self._npc()
+            if npc is not None:
+                for i, v in enumerate(value[:5]):
+                    npc[f"color{i}"] = to_str(v)
+                return
+        attr = _NPC_THIS_ATTR.get(k)
+        if attr is not None:
+            npc = self._npc()
+            if npc is not None:
+                if attr in ("x", "y"):
+                    # Keep the renderer's preferred world_x/world_y in step
+                    # (client.py stamps them on every PLO_NPCPROPS, world ==
+                    # local + segment offset), and snap the visual position —
+                    # a script placement is not movement to lerp across.
+                    new = to_num(value)
+                    wkey = "world_" + attr
+                    if wkey in npc and npc.get(wkey) is not None:
+                        old = to_num(npc.get(attr, 0) or 0)
+                        npc[wkey] = to_num(npc.get(wkey, 0) or 0) + (new - old)
+                    npc[attr] = new
+                    mark = getattr(self._rt2.client, "_mark_npc_pos_snap", None)
+                    if mark is not None:
+                        mark(npc)
+                else:
+                    npc[attr] = value if isinstance(value, str) else to_num(value)
+                return
+        super().set(key, value)
+
+
+class _LayerImage(GS2Object):
+    """findimg(index) result: a LIVE view onto a showimg/showtext layer
+    record in the GS1 layer store (the same dict the renderer draws).
+
+    Property writes go straight through to the record — the reference
+    client's findimg returns the engine's own image object, so scripts
+    animate layers by assigning `findimg(i).rotation`, update captions via
+    `.text`, toggle `.visible`, move layers with `.x/.y`, etc. A detached
+    copy (the previous implementation) silently dropped all of those.
+
+    `rotation` and `visible` are stored on the record for the renderer;
+    `layer` maps to the classic vis band (changeimgvis)."""
+
+    __slots__ = ("_rec",)
+
+    _NUM_KEYS = frozenset(("x", "y", "zoom", "rotation", "mode"))
+    _STR_KEYS = frozenset(("image", "font", "style"))
+
+    def __init__(self, index: int, rec: dict):
+        super().__init__(name=f"image:{index}")
+        self._rec = rec
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "visible":
+            return 1.0 if self._rec.get("visible", True) else 0.0
+        if k == "layer":
+            return float(self._rec.get("vis", 4))
+        v = self._rec.get(k)
+        return super().get(k) if v is None else v
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "visible":
+            self._rec["visible"] = to_bool(value)
+        elif k == "layer":
+            self._rec["vis"] = int(to_num(value))
+            self._rec["vis_set"] = True
+        elif k in self._NUM_KEYS:
+            self._rec[k] = to_num(value)
+        elif k in self._STR_KEYS:
+            self._rec[k] = to_str(value)
+        elif k == "text":
+            self._rec["text"] = to_str(value)
+            self._rec["text_is"] = True
+        elif k == "textshadow":
+            self._rec["textshadow"] = to_bool(value)
+        else:
+            # unknown property: keep it on the record so a renderer that
+            # learns the key later just works (and reads round-trip)
+            self._rec[k] = value
 
 
 class GS2ClientHost(GS2Host):
@@ -377,6 +603,23 @@ class GS2ClientHost(GS2Host):
                 return False
             return gs1._host.get_builtin(
                 "isleader", [], self.rt2._gs1_ctx(None))
+        if name == "allstats":
+            # Sum of every showstats bit (GServer-v2 docs, "showstats"):
+            # 1 ASD + 2 icons + 4 gralats + 8 bombs + 16 arrows + 32 hearts
+            # + 64 AP + 128 MP + 256 minimap + 512 inventory + 1024 players.
+            # The v6 bomber's HUD weapon computes `showstats(allstats - 1 -
+            # 2 - ... - 128)` to swap the client's default HUD for its own
+            # scripted one; unresolved this read 0 and the mask went
+            # negative.
+            return 2047.0
+        if name in ("timevar", "timevar2"):
+            # bare-name clock reads (v6 -Test_Movement stamps player.notpush
+            # = timevar2 for its push-mode timing); same source the GS1
+            # engine's builtin uses so both engines share one clock.
+            gs1 = self.rt2.gs1
+            if gs1 is None:
+                return 0.0
+            return gs1._host.get_builtin(name, [], self.rt2._gs1_ctx(None))
         # a named weapon's script object (findweapon-style access)
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
@@ -608,8 +851,14 @@ class GS2ClientHost(GS2Host):
             return 0.0
 
         if name == "settimer":
-            rt2._timeouts[rt2._timeout_key(vm)] = (
-                max(0.0, to_num(args[0])) if args else 0.0)
+            # Real-client timer resolution is 0.05s: -Test_Movement's
+            # self-rearming setTimer(0.01) movement loop must tick at 20Hz
+            # (0.3 tiles/tick = the classic 6 tiles/s walk). Firing it every
+            # rendered frame instead tripled the walk speed at 60fps.
+            v = to_num(args[0]) if args else 0.0
+            if 0.0 < v < 0.05:
+                v = 0.05
+            rt2._timeouts[rt2._timeout_key(vm)] = max(0.0, v)
             return 0.0
 
         if name == "join":
@@ -653,12 +902,45 @@ class GS2ClientHost(GS2Host):
             return wvm.this if wvm is not None else 0.0
 
         if name in ("setani", "setcharani"):
+            # setcharani from an NPC script sets the NPC'S OWN animation —
+            # piano/sign/furniture NPCs become visible exactly this way
+            # (bomber v6 lobby: setcharani("sen_piano"), ("itsasign2")).
+            # Route it through the GS1 host, which writes npc['gani'] for the
+            # renderer; extra args are gani PARAM tokens, kept comma-joined
+            # (render_entities._split_npc_gani splits them back off).
+            # setani (v6 player builtin) and weapon-script setcharani keep
+            # driving the local player below.
+            if name == "setcharani" and vm is not None and rt2.gs1 is not None:
+                kind, _key = rt2._timeout_key(vm)
+                if kind == "npc":
+                    joined = ",".join(to_str(a) for a in args).rstrip(",")
+                    if joined:
+                        rt2._gs1_command("setcharani", [joined], vm)
+                    return 0.0
             # player animation (weapon scripts drive the local player)
             if rt2.client is not None and args:
+                ani = to_str(args[0])
                 try:
-                    rt2.client.set_animation(to_str(args[0]))
+                    rt2.client.set_animation(ani)
                 except Exception:
                     pass
+                # Script-driven movement mode (disabledefmovement): the
+                # renderer draws the local player from game.player_anim /
+                # current_anim_name, which only the built-in input path
+                # updates -- mirror the script's setani there or the player
+                # slides around in the idle gani.
+                game = getattr(rt2, "game_shell", None)
+                if (game is not None and rt2.gs1 is not None
+                        and not rt2.gs1.default_movement):
+                    base = ani.split(",")[0].strip()
+                    try:
+                        game.player_anim.set_animation(
+                            base,
+                            int(to_num(getattr(rt2.client.player,
+                                               "direction", 0))))
+                        game.current_anim_name = base
+                    except Exception:
+                        pass
             return 0.0
 
         if name == "timevar2":
@@ -816,6 +1098,9 @@ class ClientGS2:
         self._sleep_debt: Dict[int, float] = {}   # id(vm) -> unpaid in-packet sleep() time
         self._coros: List[dict] = []
         self._active_coro_keys: set = set()
+        # script-driven movement wire sync (see _sync_script_position)
+        self._pos_sync_last: Optional[tuple] = None
+        self._pos_sync_next: float = 0.0
 
     def save_lines(self, filename: str, lines: list) -> bool:
         """Persist script lines beneath a server-scoped client cache directory."""
@@ -867,15 +1152,21 @@ class ClientGS2:
         return [item for _, item in sorted(found, key=lambda pair: pair[0])]
 
     def find_image(self, vm, index: int):
+        """findimg(index) -> a LIVE view of the layer record (see
+        _LayerImage). The prior detached-copy object silently dropped every
+        `findimg(i).rotation += ...` / `.text = ...` write (the v6 bomber's
+        CadavreTest cogs and debug readouts animate exclusively this way)."""
         if self.gs1 is None:
             return 0.0
         table = self.gs1._host._layer_store(self._gs1_ctx(vm))
-        record = table.get(index)
+        record = table.get(index) if table is not None else None
         if record is None:
             return 0.0
-        obj = GS2Object(name=f"image:{index}")
-        for key, value in record.items():
-            obj.set(key, value)
+        obj = record.get("_findimg")
+        # identity check: showtext REPLACES the rec dict for an index, so a
+        # cached wrapper can point at a dead dict
+        if not isinstance(obj, _LayerImage) or obj._rec is not record:
+            obj = record["_findimg"] = _LayerImage(index, record)
         return obj
 
     # -- wiring --------------------------------------------------------------
@@ -924,7 +1215,10 @@ class ClientGS2:
             vm.this = old.this
             vm.thiso = old.this
         else:
-            vm.this = _ThisObject(self, vm_key, name=f"{kind}:{key}")
+            # NPC scripts get the npc-dict-bridging this (bare x/y/nick/
+            # headimg/... reads and writes reach the renderer's NPC store).
+            this_cls = _NpcThisObject if kind == "npc" else _ThisObject
+            vm.this = this_cls(self, vm_key, name=f"{kind}:{key}")
             vm.thiso = vm.this
         self.vms[kind][norm_key] = vm
         self._vm_keys[id(vm)] = vm_key
@@ -1264,6 +1558,35 @@ class ClientGS2:
                 continue
             if vm.has_function("onTimeout"):
                 self._run(vm, "onTimeout")
+        self._sync_script_position()
+
+    def _sync_script_position(self):
+        """While a script drives movement (disabledefmovement), its player.x/
+        player.y/player.dir writes only touch local state -- nothing walks
+        the built-in Client.move() path that puts movement on the wire, so
+        other players saw us frozen at the spawn point. Broadcast position/
+        direction changes ourselves, at most every 0.05s (one script tick)."""
+        client, gs1 = self.client, self.gs1
+        if (client is None or gs1 is None or gs1.default_movement
+                or not getattr(client, "connected", False)):
+            return
+        p = getattr(client, "player", None)
+        if p is None:
+            return
+        snap = (round(float(getattr(p, "x", 0.0)), 3),
+                round(float(getattr(p, "y", 0.0)), 3),
+                int(to_num(getattr(p, "direction", 0))))
+        if snap == self._pos_sync_last:
+            return
+        now = time.time()
+        if now < self._pos_sync_next:
+            return
+        self._pos_sync_next = now + 0.05
+        self._pos_sync_last = snap
+        try:
+            client.send_position()
+        except Exception:
+            pass
 
     def _npc_in_other_level(self, key) -> bool:
         """True only if this NPC is present in client.npcs AND tagged to a
@@ -1289,8 +1612,15 @@ class ClientGS2:
     def _gs1_ctx(self, vm: Optional[GS2VM]):
         """A minimal ctx shim for GS1ClientHost (it only reads a handful of
         attributes). Weapon VMs get a per-script prog-key so their showimg
-        layers land in the shared _weapon_imgs store the renderer draws."""
-        vm_key = self._vm_keys.get(id(vm)) if vm is not None else None
+        layers land in the shared _weapon_imgs store the renderer draws.
+
+        Joined-class instances resolve to their JOINER's identity (same rule
+        as _timeout_key): class code running for an NPC must act on that
+        NPC's dict (setcharani/showimg/setshape from a join()ed class), not
+        as an anonymous shared "class" weapon."""
+        vm_key = None
+        if vm is not None:
+            vm_key = self._vm_owners.get(id(vm)) or self._vm_keys.get(id(vm))
         kind, key = vm_key if vm_key else ("weapon", "?")
         npc = None
         if kind == "npc" and self.client is not None:

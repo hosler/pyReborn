@@ -21,6 +21,7 @@ from .npc_handler import NPCHandler
 from .gs1_client import ClientGS1
 from .gs2_client import ClientGS2
 from .player import Player
+from .prefs import Prefs
 from .tiletypes import TileType, get_tile_type
 from .game.constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -78,8 +79,20 @@ class GameClient(
         # camera, with black around the level edges) rather than a scaled 640x480
         # square. self.screen is the window surface; on resize _on_window_resize
         # re-points it and resizes the camera/HUD. SCREEN_WIDTH/HEIGHT are just
-        # the initial size now — live layout uses self.screen_w/self.screen_h.
+        # the virtual-canvas fallback now — live layout uses self.screen_w/
+        # self.screen_h.
+        #
+        # The window opens at the LAST REMEMBERED size (prefs.window_w/h, saved
+        # by pygame_screens.py's login/server-select screens), not a bare
+        # 640x480: on a tiling WM the login screen already opened at whatever
+        # size the WM handed it (and the player likely resized further), so
+        # reopening at 640x480 here produced a visible shrink-then-WM-resize
+        # jump into the game on every launch.
+        prefs = Prefs.load()
+        window_w = max(SCREEN_WIDTH, prefs.window_w or SCREEN_WIDTH)
+        window_h = max(SCREEN_HEIGHT, prefs.window_h or SCREEN_HEIGHT)
         self.viewport = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT,
+                                 window_w=window_w, window_h=window_h,
                                  caption=f"pyreborn - {client.player.account}",
                                  native=True, on_resize=self._on_window_resize)
         self.screen = self.viewport.canvas
@@ -483,6 +496,14 @@ class GameClient(
 
         # Cleanup
         print(f"Game loop exited after {frame_count} frames. running={self.running}, connected={self.client.connected}")
+        # Remember whatever size the WM/player left the window at, mirroring
+        # pygame_screens.py's _Screen._finish, so the next launch (login
+        # screen, then this game) opens at it instead of snapping back to
+        # whatever prefs.json had before this session.
+        try:
+            Prefs.load().remember_window_size(self.screen_w, self.screen_h)
+        except Exception:
+            pass
         self.client.disconnect()
         self.sound_mgr.stop_all()
         self.sound_mgr.stop_music()

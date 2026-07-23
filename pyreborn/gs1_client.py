@@ -84,7 +84,7 @@ _CHARPROP_NPC = {
 _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "noplayerkilling",
-    "showstats", "setcursor", "sleep", "seteffectmode",
+    "setcursor", "sleep", "seteffectmode",
     "setcoloreffect", "setzoomeffect", "callweapon", "callnpc",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
@@ -218,6 +218,10 @@ class GS1ClientHost(Host):
             import time as _t
             return float(_t.monotonic() * 1000.0)
         # arena GUI/screen + game-role builtins (read-only)
+        if name == "allstats":
+            # sum of every showstats bit (see the showstats handler in
+            # _dispatch): 1+2+4+...+1024
+            return 2047.0
         if name == "screenwidth":
             return float(self.rt.screen_w)
         if name == "screenheight":
@@ -333,6 +337,17 @@ class GS1ClientHost(Host):
         npc_id = getattr(ctx, "_npc_id", 0)
 
         if name in _NOOP:
+            return
+        # showstats bitflag — select which default-HUD elements the client
+        # draws (1 ASD, 2 icons, 4 gralats, 8 bombs, 16 arrows, 32 hearts,
+        # 64 AP, 128 MP, 256 minimap, 512 inventory, 1024 players; allstats
+        # = 2047). Scripted HUDs call showstats(allstats - <bits>) to hide
+        # the built-in HUD before drawing their own. game/hud.py reads
+        # rt.stats_mask each frame; None = never called = show everything.
+        # State persists across level changes like the real client (levels
+        # that care re-issue it on playerenters).
+        if name == "showstats":
+            rt.stats_mask = int(to_num(args[0])) if args else None
             return
         # disable/enable the engine's built-in WASD/arrow movement. The arena
         # weapons (arenaSYS) disable it and move the player themselves via
@@ -744,8 +759,15 @@ class GS1ClientHost(Host):
             return
         if name == "setshape" and len(args) >= 3:
             # setshape type,width,height — type 1 is a fully-solid box.
+            # width/height are in PIXELS (16 per tile, upstream setShape):
+            # the Bomber-v6 lobby signs' setshape(1,32,32) is a 2x2-TILE box.
+            # Treating pixels as tiles gave each sign a 32x32-tile block that
+            # blanketed the whole level in shape blocks — every onwall2()
+            # probe hit one, so the GS2 movement script saw walls everywhere
+            # and the player couldn't move at all.
             stype = int(to_num(args[0]))
-            w, h = int(to_num(args[1])), int(to_num(args[2]))
+            w = max(1, (int(to_num(args[1])) + 15) // 16)
+            h = max(1, (int(to_num(args[2])) + 15) // 16)
             flags = [22] * (w * h) if stype == 1 else []
             rt.shapes[npc_id] = (w, h, flags)
             rt._update_shape_blocks(npc_id, npc, w, h, flags)
@@ -770,10 +792,28 @@ class GS1ClientHost(Host):
             y = int(to_num(args[1])) if len(args) > 1 else 0
             return bool(self.rt.is_wall(x, y))
         if name == "onwall2":
-            # onwall2(x,y,layer) — we only model the base board layer
-            x = int(to_num(args[0])) if args else 0
-            y = int(to_num(args[1])) if len(args) > 1 else 0
-            return bool(self.rt.is_wall(x, y))
+            # onwall2(x, y[, width, height]) — the GS2/v6 4-arg rect form
+            # (used by -Test_Movement's CheckWall probes) tests every tile
+            # the [x,x+w) x [y,y+h) rect covers. The 2/3-arg legacy form
+            # keeps the single-tile check (3rd arg = layer, unmodelled).
+            # w/h clamp: >=0 (scripts pass slightly-negative degenerate
+            # widths, which the rect walk must treat as "just this tile"),
+            # <=8 so a bogus huge rect can't stall the frame.
+            xf = to_num(args[0]) if args else 0.0
+            yf = to_num(args[1]) if len(args) > 1 else 0.0
+            if len(args) >= 4:
+                import math as _m
+                w = min(max(to_num(args[2]), 0.0), 8.0)
+                h = min(max(to_num(args[3]), 0.0), 8.0)
+                x0, y0 = int(_m.floor(xf)), int(_m.floor(yf))
+                x1 = max(x0, int(_m.ceil(xf + w)) - 1)
+                y1 = max(y0, int(_m.ceil(yf + h)) - 1)
+                for ty in range(y0, y1 + 1):
+                    for tx in range(x0, x1 + 1):
+                        if self.rt.is_wall(tx, ty):
+                            return True
+                return False
+            return bool(self.rt.is_wall(int(xf), int(yf)))
         if name in ("onwater", "onwater2"):
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
@@ -1106,6 +1146,11 @@ class ClientGS1:
         self.is_leader = None
         self.default_movement = True   # disabledefmovement: arena weapons drive movement
         self.weapons_enabled = True    # enableweapons/disableweapons -> `weaponsenabled`
+        # showstats bitmask (None = never called = draw the full default
+        # HUD). Written by the showstats command (GS1 and GS2 scripts share
+        # that dispatch path), read by game/hud.py. Persists across level
+        # changes like the real client.
+        self.stats_mask = None
         # `replaceani orig,new` — client-session map of default player ani
         # names to level-supplied ones (Bomber's NPC 43: walk->eye_bomber_walk0
         # etc.). Read by resolve_ani(); #m reports the RESOLVED name, which is
@@ -1239,13 +1284,27 @@ class ClientGS1:
         self.shapes.clear()
         self._shape_blocks.clear()
         self._shape_block_owners.clear()
-        self._weapon_imgs.clear()       # weapon layers are per-level (bombs, HUD)
+        self.drop_level_weapon_layers()  # GS1 weapon layers are re-drawn per level
         self._coros.clear()             # abandon suspended scripts from old level
         self._active_coro_keys.clear()
         # Normal movement is the per-level default; the arena weapon disables it
         # again on its playerenters. Prevents getting stuck if we leave the arena
         # without the weapon's enabledefmovement running.
         self.default_movement = True
+
+    def drop_level_weapon_layers(self):
+        """Clear weapon showimg layer stores on a level change — EXCEPT the
+        GS2 weapon/class stores ("gs2_*" prog-keys). Real-client parity:
+        weapon layers persist across warps and scripts hide their own; the
+        per-level clear is a workaround for OUR GS1 reload model (GS1
+        weapon playerenters re-runs and redraws, and stale world-band bombs
+        must not survive a warp). GS2 weapon VMs are NOT reloaded per level
+        and idiomatic v6 HUD scripts (the bomber's) only repaint layers
+        whose backing state changed — clearing their stores erased the
+        scripted HUD at the first warp and it never came back."""
+        for key in [k for k in self._weapon_imgs
+                    if not str(k).startswith("gs2_")]:
+            self._weapon_imgs.pop(key, None)
 
     def forget_npc(self, npc_id):
         """Drop a despawned NPC's prog, shape, blocked cells and any suspended

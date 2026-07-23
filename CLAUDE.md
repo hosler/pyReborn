@@ -361,7 +361,7 @@ PLO_TOALL = 13           # Chat messages
 PLO_BOARDPACKET = 101    # Tile data
 
 # Client -> Server
-PLI_PLAYERPROPS = 6      # Send movement/props
+PLI_PLAYERPROPS = 2      # Send movement/props (constants.py PacketID.PLAYERPROPS)
 PLI_TOALL = 24           # Send chat
 PLI_LEVELWARP = 29       # Warp request
 ```
