@@ -70,6 +70,20 @@ def test_savelines_enforces_server_cache_byte_ceiling(tmp_path, monkeypatch):
     assert not list(tmp_path.rglob("second.txt"))
 
 
+def test_named_gui_controls_resolve_as_globals_and_isobject():
+    # Live Login server, -Rescripted/IRC/Login3: `GuiRC.visible = true;` and
+    # `if (isObject("Serverlist_Panel")) ...` address controls by their ctor
+    # name as bare globals -- get_object must consult the GUI name registry.
+    rt = ClientGS2()
+    panel = rt.gui.create_control("GuiWindowCtrl", "Serverlist_Panel")
+    rt.gui.addcontrol(panel)
+    assert rt.host.get_object("Serverlist_Panel") is panel
+    assert rt.host.get_object("serverlist_panel") is panel
+    assert call(rt, "isobject", ["Serverlist_Panel"]) == 1.0
+    assert call(rt, "isobject", ["GuiRC"]) == 0.0
+    assert rt.host.get_object("guirc") is None
+
+
 def test_gui_object_methods_ignore_non_controls():
     rt = ClientGS2()
     target = GS2Object(name="not-a-control")
@@ -111,10 +125,13 @@ def test_headless_coordinate_fallback_and_text_channels():
                              send_server_text=lambda request, text: sent.append((request, text)))
     rt = ClientGS2(client)
     assert call(rt, "screenx", [12]) == 12 and call(rt, "screeny", [13]) == 13
-    call(rt, "requesttext", ["weapon", "lister", "simplelist"])
-    call(rt, "sendtext", ["weapon", "irc", "login"])
-    assert sent == [(True, "weapon\nlister\nsimplelist"),
-                    (False, "weapon\nirc\nlogin")]
+    # vm=None -> engine-originated send: the wire prepends "GraalEngine"
+    # (the reference client's convention; a weapon vm would prepend its own
+    # name -- see wire_weapon_name)
+    call(rt, "requesttext", ["lister", "simplelist"])
+    call(rt, "sendtext", ["irc", "login"])
+    assert sent == [(True, "GraalEngine\nlister\nsimplelist"),
+                    (False, "GraalEngine\nirc\nlogin")]
 
 
 def test_server_text_wire_ids_and_gtokenized_payload():
@@ -140,7 +157,18 @@ def test_findimg_returns_script_object():
 
 
 def test_documented_stubs_are_classified_separately():
-    assert GS2ClientHost.stubbed == frozenset({"hit", "modifyclientr"})
+    assert GS2ClientHost.stubbed == frozenset({
+        "hit", "modifyclientr", "adventure_getsystemid", "des_encrypt",
+        "reconnect", "savegraaloptions", "setaccountname", "setnickname",
+        "setpassword",
+        # Adventure-engine prefixed bindings of the same surface (live
+        # Login Mobile corpus calls these forms)
+        "adventure_setaccountname", "adventure_setnickname",
+        "adventure_setpassword", "adventure_savegraaloptions",
+        "adventure_reconnect",
+        # native-canvas rebuild toggle (Login serverlist init); no native
+        # canvas exists here
+        "adventure_setgraalcontrolrecreate"})
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, set(), set(GS2ClientHost.stubbed)) == "implemented_stub"
         assert call(ClientGS2(), name) == 0.0
@@ -151,7 +179,7 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         "addcontainer", "addguicontainer", "getchild", "setactive",
         "hidecontrols", "makefirstresponder", "trigger", "animatecontrol",
         "sort", "savelines", "screenx", "screeny", "getmapx", "getmapy",
-        "getmusicfilename", "getnearestplayers", "findimg",
+        "getmusicfilename", "getnearestplayers", "findplayerbyid", "findimg",
         "enabledefaultcamera", "setzoom", "sendtext", "requesttext",
     }
     surface = set(GS2ClientHost.host_surface())
@@ -159,7 +187,7 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented"
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented_stub"
-    assert len(real | set(GS2ClientHost.stubbed)) == 23
+    assert len(real | set(GS2ClientHost.stubbed)) == 37
 
 
 def test_addcontrol_still_adds_to_gui_root():

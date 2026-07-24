@@ -301,7 +301,8 @@ class TestTextEdit:
 
     def test_enter_fires_onaction(self):
         fired = []
-        self.edit.set("onaction", lambda: fired.append(True))
+        # text-field onAction receives (text) per the reference convention
+        self.edit.set("onaction", lambda *_text: fired.append(True))
         down, _up = _click_events((15, 15))
         self.gui.handle_event(down)
         evt = pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": "\r", "mod": 0})
@@ -599,7 +600,9 @@ class TestPopUpEdit:
         self.popup.add_row(20, "Second")
         self.selected = []
         self.actions = []
-        self.popup.set("onselect", lambda row_id, text:
+        # reference convention passes (entryid, entrytext, entryindex);
+        # GS2 closures that declare fewer params just ignore the extras
+        self.popup.set("onselect", lambda row_id, text, *_index:
                        self.selected.append((row_id, text)))
         self.popup.set("onaction", lambda: self.actions.append(self.popup.text))
 
@@ -775,3 +778,413 @@ class TestHoverPressedState:
         self.gui.handle_event(_mousedown((20, 15)))
         surf = pygame.Surface((320, 240))
         self.gui.render(surf, _FakeFonts(), sprite_mgr=None)
+
+
+# =============================================================================
+# Profile resolution (styled rendering) -- regression for the 07-24 "flat
+# serverlist" round: script-defined profiles must actually style controls.
+# =============================================================================
+
+class TestProfileResolution:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.host = self.rt2.host
+        self.gui = self.rt2.gui
+
+    def _new(self, classname, name, fields=None):
+        obj = self.host.create_object(classname, name)
+        for k, v in (fields or {}).items():
+            obj.set(k, v)
+        self.host.call_builtin(None, "addcontrol", [name])
+        return obj
+
+    def test_derived_profile_classname_routes_to_profile_not_gs2object(self):
+        # `new IRC_WindowProfile("IRC_WindowLeftProfile")`: classname does
+        # NOT start with "gui" -- previously fell to a plain GS2Object
+        # (unregistered; its auto-addcontrol then warned "non-control value")
+        from pyreborn.game.gs2_gui import GuiControlProfile
+        base = self._new("GuiBlueTransWindowProfile", "IRC_WindowProfile",
+                         {"fontsize": 24, "align": "right"})
+        derived = self._new("IRC_WindowProfile", "IRC_WindowLeftProfile",
+                            {"align": "left"})
+        assert isinstance(base, GuiControlProfile)
+        assert isinstance(derived, GuiControlProfile)
+        assert self.gui._named["irc_windowleftprofile"] is derived
+        assert derived.parent_profile_name == "irc_windowprofile"
+        assert self.gui.roots == []          # profiles never render
+
+    def test_construction_fields_land_on_profile(self):
+        # the VM's with-scope assignment is existence-gated on has(); a
+        # profile must claim every field name or its members stay empty
+        prof = self._new("GuiBlueTransWindowProfile", "IRC_WindowProfile")
+        assert prof.has("fillcolor") and prof.has("anyfieldatall")
+        prof.set("fillcolor", [224, 0, 0, 192])
+        assert prof.get("fillcolor") == [224, 0, 0, 192]
+
+    def test_chain_merges_child_over_parent_down_to_builtin(self):
+        self._new("GuiBlueTransWindowProfile", "IRC_WindowProfile",
+                  {"fontsize": 24, "align": "right"})
+        self._new("IRC_WindowProfile", "IRC_WindowRedProfile",
+                  {"fillcolor": [224, 0, 0, 192]})
+        win = GuiWindowCtrl("W")
+        win._manager = self.gui
+        win.set("profile", "IRC_WindowRedProfile")
+        prof = win.resolve_profile()
+        assert prof.bg == (224, 0, 0, 192)          # own field
+        assert prof.font_size == 24                 # inherited from parent
+        assert prof.align == "right"
+        # builtin root (GuiBlueTransWindowProfile) supplies the text color
+        assert prof.fg == (255, 255, 255)
+
+    def test_profile_object_assignment_resolves(self):
+        # `profile = IRC_ScrollProfile;` assigns the OBJECT; stringifying it
+        # took the repr and every such control fell back to the default
+        prof_obj = self._new("GuiBlueTransScrollProfile", "IRC_ScrollProfile",
+                             {"fillcolor": [1, 2, 3, 200], "border": 0})
+        ctrl = GuiTextCtrl("T")
+        ctrl._manager = self.gui
+        ctrl.set("profile", prof_obj)
+        assert ctrl.profile_obj is prof_obj
+        resolved = ctrl.resolve_profile()
+        assert resolved.bg == (1, 2, 3, 200)
+        assert resolved.border_width == 0           # border = 0 -> borderless
+
+    def test_builtin_profile_vivifies_on_bare_reference(self):
+        # `profile = GuiDefaultProfile;` -- engine builtin, never
+        # script-defined; get_object must resolve it to a profile object
+        obj = self.host.get_object("guidefaultprofile")
+        from pyreborn.game.gs2_gui import GuiControlProfile
+        assert isinstance(obj, GuiControlProfile)
+        assert self.host.get_object("guidefaultprofile") is obj   # cached
+        # late restyle via `with (GuiDefaultProfile) { fillcolor = ...; }`
+        obj.set("fillcolor", [9, 9, 9, 255])
+        ctrl = GuiTextCtrl("T2")
+        ctrl._manager = self.gui
+        ctrl.set("profile", obj)
+        assert ctrl.resolve_profile().bg == (9, 9, 9, 255)
+
+    def test_unknown_profile_name_falls_back_to_default(self):
+        from pyreborn.game.gs2_gui import _DEFAULT_GUIPROFILE
+        ctrl = GuiTextCtrl("T3")
+        ctrl._manager = self.gui
+        ctrl.set("profile", "NoSuchProfile")
+        assert ctrl.resolve_profile() is _DEFAULT_GUIPROFILE
+        ctrl.set("profile", "")
+        assert ctrl.resolve_profile() is _DEFAULT_GUIPROFILE
+
+    def test_styled_render_smoke_with_alpha(self):
+        self._new("GuiBlueTransWindowProfile", "IRC_WindowProfile",
+                  {"fillcolor": [96, 144, 208, 240]})
+        win = self.host.create_object("GuiWindowCtrl", "Win")
+        win.set("profile", "IRC_WindowProfile")
+        win.set("text", "Styled")
+        self.host.call_builtin(None, "addcontrol", ["Win"])
+        surf = pygame.Surface((320, 240))
+        self.gui.render(surf, _FakeFonts(), sprite_mgr=None)
+
+
+class TestNewControlMethods:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+
+    def test_clearcontrols_removes_all_children(self):
+        panel = self.gui.create_control("GuiControl", "Panel")
+        child = self.gui.create_control("GuiButtonCtrl", "Child")
+        self.gui.addcontrol(child)          # innermost-first (nested new)
+        self.gui.addcontrol(panel)
+        assert child in panel.children
+        panel._m_clearcontrols()
+        assert panel.children == [] and child.parent is None
+
+    def test_isactuallyvisible_walks_ancestors(self):
+        panel = self.gui.create_control("GuiControl", "P2")
+        child = self.gui.create_control("GuiBitmapCtrl", "C2")
+        self.gui.addcontrol(child)          # innermost-first (nested new)
+        self.gui.addcontrol(panel)
+        assert child._m_isactuallyvisible() == 1.0
+        panel.visible = False
+        assert child._m_isactuallyvisible() == 0.0
+        assert child.visible                      # own flag untouched
+
+    def test_setselectedbyid_on_tab_and_list(self):
+        from pyreborn.game.gs2_gui import GuiTabCtrl, GuiTextListCtrl
+        tab = GuiTabCtrl("Tabs")
+        tab._m_addrow(5, "Map")
+        tab._m_addrow(7, "News")
+        tab._m_setselectedbyid(7)
+        assert tab.selected_index == 1
+        lst = GuiTextListCtrl("List")
+        lst._m_addrow(11, "Global Chat")
+        lst._m_addrow(12, "Trade")
+        lst._m_setselectedbyid(11)
+        assert lst.selected_index == 0
+
+    def test_setselectedbyid_on_treeview(self):
+        from pyreborn.game.gs2_gui import GuiTreeViewCtrl
+        tree = GuiTreeViewCtrl("Tree")
+        node = tree._m_addnodebypath("Classic/Zelda", "/")
+        node.set("id", 3)
+        tree._m_setselectedbyid(3)
+        assert tree.selected_node is node
+
+
+# =============================================================================
+# 2026-07-24 visual-fidelity round (live Login server): canvas sizing,
+# skin bitmap arrays, serverlist tree columns, tab re-selection, mini-HTML.
+# =============================================================================
+
+class TestLoginVisualFidelity:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+
+    # -- serverlist tree ---------------------------------------------------
+
+    def test_tree_column_offsets_from_columns_field(self):
+        from pyreborn.game.gs2_gui import GuiTreeViewCtrl
+        tree = GuiTreeViewCtrl("SL")
+        tree.set("columns", [0, 230])           # Login's construction field
+        assert tree.column_offsets() == [0.0, 230.0]
+        tree._m_setcolumnoffset(200, 1)         # setColumnOffset overrides
+        assert tree.column_offsets() == [0.0, 200.0]
+
+    def test_tree_count_column_parsed_from_tab_separated_text(self):
+        from pyreborn.game.gs2_gui import GuiTreeViewCtrl
+        tree = GuiTreeViewCtrl("SL")
+        node = tree._m_addnodebypath("Classics/Zelda: A Link to the Past\t63", "/")
+        assert node.columns() == ["Zelda: A Link to the Past", "63"]
+
+    def test_tree_hides_empty_label_category_rows(self):
+        from pyreborn.game.gs2_gui import GuiTreeViewCtrl
+        tree = GuiTreeViewCtrl("SL")
+        tree.set("height", 200)
+        # the live Login lister has no name for its hidden category: rows
+        # arrive as "/Name\t0" and used to render a blank folder row
+        tree._m_addnodebypath("Classics/Zelda\t0", "/")
+        tree._m_addnodebypath("/Login\t0", "/")
+        flat = tree.flat_nodes()
+        shown = tree.display_nodes()
+        assert len(flat) == 4                    # both folders script-visible
+        assert len(shown) == 3                   # blank folder not displayed
+        assert all(n.columns()[0] or not n.is_folder for n in shown)
+        # node_at indexes DISPLAY rows, not flat rows
+        r = tree.rect()
+        rh = tree.row_height()
+        assert tree.node_at((r.x + 5, r.y + 2 * rh + 2)) is shown[2]
+
+    # -- tab strips --------------------------------------------------------
+
+    def test_clearrows_resets_selection_so_reselect_fires(self):
+        from pyreborn.game.gs2_gui import GuiTabCtrl
+        tab = GuiTabCtrl("TablesTab")
+        fired = []
+        tab.set("onselect", lambda *a: fired.append(a))
+        tab._m_addrow(0, "Map")
+        tab._m_setselectedbyid(0)
+        assert len(fired) == 1
+        # Login rebuilds the strip on every server click with the SAME id;
+        # the pane-show handler must fire again
+        tab._m_clearrows()
+        assert tab.selected_index == -1
+        tab._m_addrow(0, "Map")
+        tab._m_setselectedbyid(0)
+        assert len(fired) == 2
+
+    # -- canvas sizing (Torque horizSizing/vertSizing) ---------------------
+
+    def test_canvas_resize_propagates_torque_sizing(self):
+        panel = self.gui.create_control("GuiControl", "Panel")
+        panel.x, panel.y, panel.width, panel.height = 0, 0, 800, 600
+        panel.set("horizsizing", "width")
+        panel.set("vertsizing", "height")
+        child = self.gui.create_control("GuiControl", "Child")
+        child.x, child.y, child.width, child.height = 0, 0, 800, 30
+        child.set("horizsizing", "width")
+        child.set("vertsizing", "top")
+        self.gui.addcontrol(child)
+        self.gui.addcontrol(panel)
+        bar = self.gui.create_control("GuiControl", "Bar")
+        bar.x, bar.y, bar.width, bar.height = 0, 570, 800, 30
+        bar.set("horizsizing", "width")
+        bar.set("vertsizing", "top")
+        self.gui.addcontrol(bar)
+        self.gui.on_canvas_resize(800, 600)          # baseline
+        self.gui.on_canvas_resize(1280, 778)
+        assert (panel.width, panel.height) == (1280, 778)
+        assert (child.width, child.y) == (1280, 178)  # width follows, top-anchored to bottom
+        assert (bar.width, bar.y) == (1280, 748)      # taskbar re-docks to the bottom
+        # anchored default ("right"/"bottom") controls do not move
+        static = self.gui.create_control("GuiControl", "S")
+        static.x, static.y, static.width, static.height = 10, 10, 50, 20
+        self.gui.addcontrol(static)
+        self.gui.on_canvas_resize(1400, 800)
+        assert (static.x, static.y, static.width, static.height) == (10, 10, 50, 20)
+
+    def test_render_tracks_surface_size(self):
+        panel = self.gui.create_control("GuiControl", "P")
+        panel.x, panel.y, panel.width, panel.height = 0, 0, 800, 600
+        panel.set("horizsizing", "width")
+        panel.set("vertsizing", "height")
+        self.gui.addcontrol(panel)
+        self.gui.render(pygame.Surface((800, 600)))
+        assert self.gui.canvas_size == (800, 600)
+        self.gui.render(pygame.Surface((1000, 700)))
+        assert (panel.width, panel.height) == (1000, 700)
+
+    def test_root_parent_reads_resolve_to_canvas(self):
+        # updateChatBarSize: ChatBar.parent.clientwidth on a ROOT control
+        # (its Torque parent is the canvas) -- None here sized the chat bar
+        # to zero width
+        ctrl = self.gui.create_control("GuiTextEditCtrl", "ChatBar")
+        self.gui.addcontrol(ctrl)
+        self.gui.render(pygame.Surface((1280, 778)))
+        parent = ctrl.get("parent")
+        assert parent is not None
+        assert parent.get("clientwidth") == 1280.0
+        assert parent.get("clientheight") == 778.0
+
+    # -- plain containers (opaque gate) ------------------------------------
+
+    def test_plain_container_fills_only_when_opaque(self):
+        surf = pygame.Surface((60, 40))
+        surf.fill((0, 0, 0))
+        panel = self.gui.create_control("GuiControl", "Plain")
+        panel.x, panel.y, panel.width, panel.height = 0, 0, 60, 40
+        panel.set("profile", "GuiDefaultProfile")
+        self.gui.addcontrol(panel)
+        self.gui.render(surf)
+        assert surf.get_at((30, 20))[:3] == (0, 0, 0)   # untouched
+        panel.set("opaque", True)                        # profile-object path
+        prof = self.gui.profile_by_name("GuiDefaultProfile")
+        prof.set("opaque", 1)
+        self.gui.render(surf)
+        assert surf.get_at((30, 20))[:3] != (0, 0, 0)
+
+    def test_window_title_height_matches_login_panel_math(self):
+        from pyreborn.game.gs2_gui import GuiWindowCtrl
+        win = self.gui.create_control("GuiWindowCtrl", "W")
+        win.x, win.y = 100, 50
+        win.set("clientrelative", 1)
+        panel = self.gui.create_control("GuiControl", "WPanel")
+        panel.x, panel.y = 0, -22                       # Login's overlay math
+        self.gui.addcontrol(panel)
+        self.gui.addcontrol(win)
+        assert GuiWindowCtrl.TITLE_H == 22
+        assert panel.rect().y == win.rect().y           # lands on the window top
+
+    # -- skin art ----------------------------------------------------------
+
+    def test_bitmap_array_split_matches_torque_layout(self):
+        from pyreborn.game.gs2_gui import _split_bitmap_array
+        sep = (255, 0, 0)
+        sheet = pygame.Surface((10, 9))
+        sheet.fill(sep)
+        fill = (16, 49, 123)
+        for rect in [(0, 1, 3, 2), (4, 1, 2, 2), (7, 1, 3, 2),
+                     (0, 4, 3, 2), (4, 4, 2, 2), (7, 4, 3, 2),
+                     (0, 7, 3, 2), (4, 7, 2, 2), (7, 7, 3, 2)]:
+            sheet.fill(fill, rect)
+        rows = _split_bitmap_array(sheet)
+        assert [len(r) for r in rows] == [3, 3, 3]
+        assert rows[0][0] == pygame.Rect(0, 1, 3, 2)
+        assert rows[2][2] == pygame.Rect(7, 7, 3, 2)
+
+    def test_skin_fetches_missing_art_once_via_file_request(self):
+        from types import SimpleNamespace
+        requested = []
+        rt2 = ClientGS2(SimpleNamespace(
+            player=SimpleNamespace(x=0, y=0), players={},
+            request_file=lambda name: requested.append(name)))
+        mgr = rt2.gui
+        sprite_mgr = _FakeSpriteMgr({})
+        assert mgr.skin("guiblue_button.png", sprite_mgr) is None
+        assert mgr.skin("guiblue_button.png", sprite_mgr) is None
+        assert requested == ["guiblue_button.png"]
+
+    def test_skin_reslices_when_sprite_cache_replaces_surface(self):
+        mgr = self.gui
+        sheet1 = pygame.Surface((10, 9))
+        sheet1.fill((255, 0, 0))
+        sheet1.fill((1, 2, 3), (0, 1, 3, 2))
+        sprites = _FakeSpriteMgr({"art.png": sheet1})
+        skin1 = mgr.skin("art.png", sprites)
+        assert skin1 is not None and mgr.skin("art.png", sprites) is skin1
+        sheet2 = pygame.Surface((10, 9))
+        sheet2.fill((255, 0, 0))
+        sheet2.fill((1, 2, 3), (0, 1, 3, 2))
+        sprites.sheets["art.png"] = sheet2              # download landed
+        skin2 = mgr.skin("art.png", sprites)
+        assert skin2 is not skin1 and skin2.source is sheet2
+
+    # -- mini-HTML (GuiMLTextCtrl) -----------------------------------------
+
+    def test_parse_mltext_strips_tags_and_honors_breaks(self):
+        from pyreborn.game.gs2_gui import parse_mltext
+        paras = parse_mltext(
+            "<font size=4><b><i>Account:</i></b></font> hosler<br>"
+            "<h1><center>OpenGraal</center></h1>"
+            "<center>All your base are belong to us!</center><br>")
+        texts = ["".join(seg.text for seg in segs) for _a, segs in paras]
+        assert texts[0] == "Account: hosler"
+        assert any("OpenGraal" in t for t in texts)
+        # markup never leaks into rendered text
+        assert not any("<" in t for t in texts)
+        # heading is bold + enlarged + centered
+        for align, segs in paras:
+            for seg in segs:
+                if seg.text == "OpenGraal":
+                    assert seg.bold and seg.size and align == "center"
+        # first line's Account: run is bold-italic at font size 4 -> 15px
+        first = paras[0][1][0]
+        assert first.bold and first.italic and first.size == 15
+
+    def test_parse_mltext_links_and_entities(self):
+        from pyreborn.game.gs2_gui import parse_mltext
+        paras = parse_mltext('A &amp; B <a href=x>Choose one</a>&nbsp;!')
+        segs = paras[0][1]
+        joined = "".join(s.text for s in segs)
+        assert "A & B" in joined and "Choose one" in joined and "!" in joined
+        assert any(s.link for s in segs)
+
+    def test_parse_mltext_ignorelinebreaks(self):
+        from pyreborn.game.gs2_gui import parse_mltext
+        paras = parse_mltext("<ignorelinebreaks>line one\nline two<br>next")
+        texts = ["".join(seg.text for seg in segs) for _a, segs in paras]
+        assert texts[0].startswith("line one") and "line two" in texts[0]
+        assert len(texts) == 2                            # only the <br> broke
+
+    def test_mltext_autogrows_height_for_scroll_clipping(self):
+        from pyreborn.game.gs2_gui import GuiMLTextCtrl
+        ml = GuiMLTextCtrl("News")
+        ml.width, ml.height = 200.0, 14.0                 # Login's seed height
+        ml.set("text", "word " * 60)
+        surf = pygame.Surface((400, 400))
+        ml.draw(surf, _FakeFonts(), None)
+        assert ml.height > 14.0
+
+    # -- taskbar start button ----------------------------------------------
+
+    def test_start_button_labels_from_start_menu(self):
+        btn = self.gui.create_control("GuiButtonCtrl", "StartBtn")
+        btn.set("stylesection", "Taskbar.StartButton")
+        self.gui.addcontrol(btn)
+        menu = self.gui.create_control("GuiStartMenuCtrl", "Menu")
+        menu.set("text", "Graal")
+        self.gui.addcontrol(menu)
+        assert btn._label_text() == "Graal"
+
+    def test_scroll_content_height_and_wheel_clamp(self):
+        from pyreborn.game.gs2_gui import GuiScrollCtrl
+        scroll = self.gui.create_control("GuiScrollCtrl", "Scr")
+        scroll.x, scroll.y, scroll.width, scroll.height = 0, 0, 100, 100
+        inner = self.gui.create_control("GuiControl", "Inner")
+        inner.x, inner.y, inner.width, inner.height = 0, 0, 80, 400
+        self.gui.addcontrol(inner)
+        self.gui.addcontrol(scroll)
+        assert scroll.content_height() == 400
+        assert scroll.max_scroll_y() == 300
+        wheel = pygame.event.Event(pygame.MOUSEWHEEL,
+                                   {"y": -100, "pos": (50, 50)})
+        assert self.gui.handle_event(wheel)
+        assert scroll.scroll_y == 300.0                  # clamped to content

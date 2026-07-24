@@ -103,47 +103,285 @@ def _log_once(key: Tuple, msg: str, *fmt: Any) -> None:
 
 # =============================================================================
 # Profiles
+#
+# Torque/Reborn model (verified against the Login server's own addProfiles):
+# a profile is DATA, not a control. Scripts derive them by classname --
+#   new GuiBlueTransWindowProfile("IRC_WindowProfile") { fontsize = 24; ... }
+# where the CLASSNAME names the PARENT profile (an engine builtin like
+# GuiBlueTransWindowProfile, or a previously script-defined profile) and the
+# ctor arg is the NEW profile's name. Controls reference profiles either by
+# name string (`profile = "IRC_ButtonProfile";`) or by bare object reference
+# (`profile = IRC_ScrollProfile;` -- resolves to the registered
+# GuiControlProfile OBJECT). Effective style = the inheritance chain's field
+# dicts overlaid child-over-parent, rooted at builtin field data (the
+# engine-builtin Gui*Profiles are never script-defined). Bitmap skin art is
+# not emulated; solid fills + alpha approximating the classic blue-trans v6
+# look are the bar.
 # =============================================================================
 
 class GuiProfile:
-    __slots__ = ("bg", "border", "fg", "title_bg", "title_fg")
+    """A RESOLVED style (plain colors/fonts + optional skin-bitmap name),
+    built from profile field dicts by _profile_from_fields. bg may be None
+    (no fill -- text profiles) or RGBA (translucent windows)."""
 
-    def __init__(self, bg, border, fg, title_bg, title_fg):
+    __slots__ = ("bg", "border", "border_width", "fg", "title_bg",
+                 "title_fg", "font_size", "font_bold", "align",
+                 "bitmap", "transparency", "opaque", "text_shadow")
+
+    def __init__(self, bg, border, fg, title_bg, title_fg,
+                 border_width=1, font_size=18, font_bold=False, align="left",
+                 bitmap="", transparency=1.0, opaque=None, text_shadow=False):
         self.bg = bg
         self.border = border
+        self.border_width = border_width
         self.fg = fg
         self.title_bg = title_bg
         self.title_fg = title_fg
+        self.font_size = font_size
+        self.font_bold = font_bold
+        self.align = align
+        #: profile skin-art sheet filename ("guiblue_window_noback.png", ...)
+        #: -- the Torque bitmap-array model; empty = solid-color fallback
+        self.bitmap = bitmap
+        self.transparency = transparency
+        #: Torque `opaque` field: plain containers/text draw a background
+        #: fill ONLY when this is set (GuiControl semantics); None = unset
+        self.opaque = opaque
+        self.text_shadow = text_shadow
 
 
 _DEFAULT_PROFILE_NAME = "guidefaultprofile"
 _MAX_PARENT_DEPTH = 4096
+_MAX_PROFILE_CHAIN = 16
 
-_PROFILES: Dict[str, GuiProfile] = {
-    _DEFAULT_PROFILE_NAME: GuiProfile(
-        bg=(40, 44, 62), border=(120, 124, 140), fg=(235, 238, 245),
-        title_bg=(60, 64, 88), title_fg=(235, 238, 245)),
-    "guibluewindowprofile": GuiProfile(
-        bg=(24, 32, 64), border=(90, 130, 210), fg=(230, 235, 250),
-        title_bg=(40, 70, 140), title_fg=(255, 255, 255)),
+# Engine-builtin profile field data (never script-defined; the Login scripts
+# derive from these). Same field vocabulary construction blocks use:
+# fillcolor {r,g,b[,a]}, fontcolor, bordercolor, fillcolorhl, fontsize,
+# fontstyle, align, border (width; 0 = borderless). Palette is the classic
+# v6 look: dark translucent blue windows, steel-blue fills, white/pale text.
+_BLUE_FILL = (41, 82, 156)
+_BLUE_HL = (96, 144, 208)
+_PALE_TEXT = (192, 224, 255)
+
+_BUILTIN_PROFILE_FIELDS: Dict[str, Dict[str, Any]] = {
+    "guicontrolprofile": {},
+    "guidefaultprofile": {
+        "fillcolor": (24, 40, 88, 216), "bordercolor": _BLUE_HL,
+        "fontcolor": (235, 240, 250), "fillcolorhl": _BLUE_FILL,
+    },
+    "guicontentprofile": {
+        "fillcolor": (16, 28, 64, 216), "bordercolor": _BLUE_HL,
+        "fontcolor": (235, 240, 250), "fillcolorhl": _BLUE_FILL,
+    },
+    "guibluewindowprofile": {
+        "fillcolor": (16, 40, 104, 255), "bordercolor": _BLUE_HL,
+        "fontcolor": (255, 255, 255), "fillcolorhl": _BLUE_FILL,
+        "fontsize": 20, "fontstyle": "b",
+        "bitmap": "guiblue_window.png",
+    },
+    "guibluetranswindowprofile": {
+        "fillcolor": (16, 40, 104, 176), "bordercolor": _BLUE_HL,
+        "fontcolor": (255, 255, 255), "fillcolorhl": (41, 82, 156, 224),
+        "fontsize": 20, "fontstyle": "b",
+        "bitmap": "guiblue_window_noback.png",
+    },
+    "guibluebuttonprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
+        "fillcolorhl": _BLUE_HL, "fontsize": 16, "fontstyle": "b",
+        "bitmap": "guiblue_button.png",
+    },
+    "guistartscreenbuttonprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
+        "fillcolorhl": _BLUE_HL, "fontsize": 16, "fontstyle": "b",
+    },
+    "guiscrollprofile": {
+        "fillcolor": (16, 32, 80, 216), "bordercolor": _BLUE_HL,
+        "bitmap": "guiblue_scroll.png",
+    },
+    "guibluetransscrollprofile": {
+        "fillcolor": (16, 32, 80, 144), "bordercolor": _BLUE_HL,
+        "bitmap": "guiblue_scroll.png",
+    },
+    "guitextprofile": {"fontcolor": (255, 255, 255), "fontsize": 18},
+    "guistartscreentextprofile": {"fontcolor": (255, 255, 255), "fontsize": 16},
+    "guibluetextprofile": {"fontcolor": _PALE_TEXT, "fontsize": 18},
+    "guimltextprofile": {"fontcolor": (255, 255, 255), "fontsize": 16},
+    "guibluemltextprofile": {"fontcolor": _PALE_TEXT, "fontsize": 16},
+    "guimiddlebluemltextprofile": {"fontcolor": _PALE_TEXT, "fontsize": 16,
+                                   "align": "center"},
+    "guitextlistprofile": {
+        "fontcolor": (255, 255, 255), "fillcolorhl": _BLUE_HL, "fontsize": 16,
+    },
+    "guitabprofile": {
+        "fillcolor": (24, 48, 112, 224), "bordercolor": _BLUE_HL,
+        "fontcolor": _PALE_TEXT, "fillcolorhl": _BLUE_HL,
+        "fontsize": 14, "fontstyle": "b", "align": "center",
+        "bitmap": "guiblue_tab.png",
+    },
+    "guitreeviewprofile": {
+        "fontcolor": (255, 255, 255), "fillcolorhl": (255, 255, 255, 144),
+        "fontsize": 16,
+    },
+    "guibluetreeviewprofile": {
+        "fontcolor": _PALE_TEXT, "fillcolorhl": (255, 255, 255, 144),
+        "fontsize": 16, "fontstyle": "b",
+    },
+    "guipopupmenuprofile": {
+        "fillcolor": (16, 32, 96, 240), "bordercolor": _BLUE_HL,
+        "fontcolor": (255, 255, 255), "fillcolorhl": _BLUE_HL,
+    },
+    "guitexteditprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
+        "fillcolorhl": _BLUE_HL, "fontsize": 16,
+        "bitmap": "guiblue_textedit.png",
+    },
+    "guibluetexteditsliderprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
+        "fillcolorhl": _BLUE_HL, "fontsize": 16, "fontstyle": "b",
+    },
 }
 
+_DEFAULT_GUIPROFILE = GuiProfile(
+    bg=(24, 40, 88, 216), border=_BLUE_HL, fg=(235, 240, 250),
+    title_bg=_BLUE_FILL, title_fg=(235, 240, 250))
 
-def _resolve_profile(name: str) -> GuiProfile:
-    prof = _PROFILES.get((name or "").lower())
-    if prof is None:
-        _log_once(("profile", (name or "").lower()),
-                  "GS2 GUI: unknown profile %r, using default", name)
-        prof = _PROFILES[_DEFAULT_PROFILE_NAME]
-    return prof
+#: profile fields that carry style meaning (everything else a script sets on
+#: a profile -- bitmap art names, textoffset, shadow params -- is retained on
+#: the object but not consulted by the solid-color renderer)
+_STYLE_FIELDS = frozenset({
+    "fillcolor", "fontcolor", "bordercolor", "fillcolorhl", "fillcolorna",
+    "fontsize", "fontstyle", "align", "border", "opaque",
+    "bitmap", "transparency", "textshadow",
+})
 
 
-def _shade(color: Tuple[int, int, int], factor: float) -> Tuple[int, int, int]:
-    """Multiply an RGB tuple's channels by `factor`, clamped to 0-255 --
-    used for the interactive-control hover (lighter)/pressed (darker) visual
-    states (GS2GuiManager tracks hover/press by mouse position; see its
-    `_set_hover`/`_set_pressed`)."""
-    return tuple(max(0, min(255, int(c * factor))) for c in color)
+def _color(value, default=None):
+    """A Torque color field ({r,g,b} / {r,g,b,a} array, or 'r g b' string)
+    as a clamped int tuple, else `default`."""
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        parts = value[:4]
+    else:
+        parts = to_str(value).replace(",", " ").split()
+        if len(parts) < 3:
+            return default
+        parts = parts[:4]
+    try:
+        return tuple(max(0, min(255, int(to_num(p)))) for p in parts)
+    except (TypeError, ValueError):
+        return default
+
+
+def _profile_fields(ref: Any, mgr, visited: set) -> Dict[str, Any]:
+    """Merged style-field dict for a profile reference (object or name),
+    walking the classname-parent chain child-over-parent down to builtin
+    field data. Cycles/depth guarded via `visited`."""
+    if len(visited) > _MAX_PROFILE_CHAIN:
+        return {}
+    if isinstance(ref, GuiControlProfile):
+        if id(ref) in visited:
+            return {}
+        visited.add(id(ref))
+        base = _profile_fields(ref.parent_profile_name, mgr, visited) \
+            if ref.parent_profile_name else {}
+        own = {k: v for k, v in ref._members.items() if k in _STYLE_FIELDS}
+        base.update(own)
+        return base
+    name = to_str(ref).lower() if ref is not None else ""
+    if not name or name in visited:
+        return {}
+    visited.add(name)
+    obj = mgr._named.get(name) if mgr is not None else None
+    if isinstance(obj, GuiControlProfile):
+        return _profile_fields(obj, mgr, visited)
+    builtin = _BUILTIN_PROFILE_FIELDS.get(name)
+    if builtin is not None:
+        return dict(builtin)
+    _log_once(("profile", name),
+              "GS2 GUI: unknown profile %r, using default", to_str(ref))
+    return {}
+
+
+def _profile_from_fields(fields: Dict[str, Any]) -> GuiProfile:
+    if not fields:
+        return _DEFAULT_GUIPROFILE
+    bg = _color(fields.get("fillcolor"))
+    fg = _color(fields.get("fontcolor"), (235, 240, 250))
+    border = _color(fields.get("bordercolor"),
+                    _shade(bg, 1.5) if bg else _BLUE_HL)
+    title_bg = _color(fields.get("fillcolorhl"),
+                      _shade(bg, 1.4) if bg else _BLUE_FILL)
+    bw = 1
+    if "border" in fields:
+        bw = max(0, min(3, int(to_num(fields.get("border")))))
+    size = int(to_num(fields.get("fontsize"))) or 18
+    size = max(9, min(28, size))
+    transparency = 1.0
+    if "transparency" in fields:
+        transparency = max(0.0, min(1.0, to_num(fields.get("transparency"))))
+    opaque = to_bool(fields["opaque"]) if "opaque" in fields else None
+    return GuiProfile(
+        bg=bg, border=border, fg=fg, title_bg=title_bg, title_fg=fg,
+        border_width=bw, font_size=size,
+        font_bold="b" in to_str(fields.get("fontstyle", "")).lower(),
+        align=to_str(fields.get("align", "left")).lower() or "left",
+        bitmap=to_str(fields.get("bitmap", "")),
+        transparency=transparency, opaque=opaque,
+        text_shadow=to_bool(fields.get("textshadow", 0)))
+
+
+def _readable_on(fill, base_bg, default_fg):
+    """Text color that stays readable over a highlight `fill` (alpha-
+    composited against base_bg): the white/144 tree-and-list selection bar
+    washes out pale text, so light effective fills flip to dark text --
+    matching the official selected-row look."""
+    if fill is None:
+        return default_fg
+    a = (fill[3] / 255.0) if len(fill) > 3 else 1.0
+    bg = base_bg[:3] if base_bg else (20, 35, 80)
+    eff = tuple(a * c + (1.0 - a) * b for c, b in zip(fill[:3], bg))
+    lum = 0.299 * eff[0] + 0.587 * eff[1] + 0.114 * eff[2]
+    return (10, 26, 64) if lum > 140 else default_fg
+
+
+def _shade(color, factor: float):
+    """Multiply an RGB(A) tuple's color channels by `factor`, clamped to
+    0-255 (alpha preserved) -- used for the interactive-control hover
+    (lighter)/pressed (darker) visual states (GS2GuiManager tracks
+    hover/press by mouse position; see `_set_hover`/`_set_pressed`)."""
+    rgb = tuple(max(0, min(255, int(c * factor))) for c in color[:3])
+    return rgb + tuple(color[3:4])
+
+
+def _fill_rect(surf, color, rect, width=0, border_radius=0) -> None:
+    """pygame.draw.rect that honors an RGBA color's alpha (per-blit
+    translucency via a scratch SRCALPHA surface -- the blue-trans windows).
+    color=None or an empty rect is a no-op."""
+    if color is None or rect.width <= 0 or rect.height <= 0:
+        return
+    if len(color) >= 4 and color[3] < 255:
+        scratch = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(scratch, color, scratch.get_rect(), width, border_radius)
+        surf.blit(scratch, rect.topleft)
+    else:
+        pygame.draw.rect(surf, color[:3], rect, width, border_radius)
+
+
+def _font(fonts, prof: GuiProfile):
+    """The profile's font via the game FontManager (fonts.at(size, bold));
+    falls back to the 'small' role for older/simpler fonts objects."""
+    if fonts is None:
+        return None
+    at = getattr(fonts, "at", None)
+    if at is not None:
+        try:
+            return at(prof.font_size, prof.font_bold)
+        except Exception:
+            pass
+    return fonts.get("small")
 
 
 def _wrap_text(font: pygame.font.Font, text: str, max_width: int) -> List[str]:
@@ -163,9 +401,422 @@ def _wrap_text(font: pygame.font.Font, text: str, max_width: int) -> List[str]:
     return lines
 
 
+def _draw_label(surf, font, text, color, pos, shadow=False):
+    """Render one text run, with the profile's optional 1px black drop
+    shadow (textshadow=true on most IRC_* profiles -- the classic look)."""
+    if shadow:
+        surf.blit(font.render(text, True, (0, 0, 0)), (pos[0] + 1, pos[1] + 1))
+    label = font.render(text, True, color)
+    surf.blit(label, pos)
+    return label
+
+
+# =============================================================================
+# Skin art (Torque bitmap arrays)
+#
+# A profile's `bitmap` field names a skin sheet (guiblue_window_noback.png,
+# guiblue_button.png, ...) divided into cells by separator lines in the
+# sheet's top-left pixel color (verified against the C# client's
+# TBitmapArrayHolder + the live art served by loginserver.graal.in).
+# Layouts, from the shipped guiblue_* sheets:
+#   * button/tab sheets: each visual STATE is a 3-row group of 3 cells
+#     (corners + stretchable edges/center -- a 9-patch);
+#     button states in order: normal, hilight, pressed, inactive.
+#   * textedit: one 9-patch (3 rows x 3 cells).
+#   * window sheet (64px wide): title-bar buttons (4 rows), active +
+#     inactive title bar [left corner, right corner, middle], frame strip
+#     row -- drawn with the exact source rects the C# client's
+#     GuiWindowCtrl.DrawStyle uses.
+#   * scroll sheet: row0 = up/down arrows x3 states, rows1-4 = vertical
+#     thumb top/mid/bottom + track (x3 states), row5+ = horizontal pieces.
+# =============================================================================
+
+def _split_bitmap_array(sheet: pygame.Surface) -> List[List[pygame.Rect]]:
+    """Torque bitmap-array split: separator color = pixel(0,0); rows are
+    runs of non-separator pixels down column 0, cells are runs of
+    non-separator pixels across each row's top line."""
+    w, h = sheet.get_size()
+    if w <= 0 or h <= 0:
+        return []
+    sep = sheet.get_at((0, 0))[:3]
+    rows: List[List[pygame.Rect]] = []
+    y = 0
+    while y < h:
+        if sheet.get_at((0, y))[:3] == sep:
+            y += 1
+            continue
+        rh = 0
+        while y + rh < h and sheet.get_at((0, y + rh))[:3] != sep:
+            rh += 1
+        cells: List[pygame.Rect] = []
+        x = 0
+        while x < w:
+            if sheet.get_at((x, y))[:3] == sep:
+                x += 1
+                continue
+            cw = 0
+            while x + cw < w and sheet.get_at((x + cw, y))[:3] != sep:
+                cw += 1
+            cells.append(pygame.Rect(x, y, cw, rh))
+            x += cw
+        rows.append(cells)
+        y += rh
+    return rows
+
+
+class _Skin:
+    """One sliced skin sheet + scratch helpers. Never cache by bare id():
+    the entry pins the source surface and the manager identity-checks it on
+    every hit (sprite downloads replace surfaces in place)."""
+
+    def __init__(self, name: str, sheet: pygame.Surface):
+        self.name = name
+        try:
+            self.sheet = sheet.convert_alpha()
+        except pygame.error:            # no display surface (headless tests)
+            self.sheet = sheet
+        self.source = sheet             # identity guard for cache validity
+        self.rows = _split_bitmap_array(sheet)
+
+    def cell(self, row: int, col: int) -> Optional[pygame.Rect]:
+        if 0 <= row < len(self.rows) and 0 <= col < len(self.rows[row]):
+            return self.rows[row][col]
+        return None
+
+    def blit_scaled(self, surf, src: pygame.Rect, dest: pygame.Rect,
+                    alpha: int = 255) -> None:
+        if src is None or dest.width <= 0 or dest.height <= 0:
+            return
+        piece = self.sheet.subsurface(src)
+        if piece.get_size() != dest.size:
+            piece = pygame.transform.smoothscale(piece, dest.size)
+        if alpha < 255:
+            piece = piece.copy()
+            piece.set_alpha(alpha)
+        surf.blit(piece, dest.topleft)
+
+    def draw_nine(self, surf, dest: pygame.Rect, row0: int,
+                  alpha: int = 255) -> bool:
+        """Draw the 3-row 9-patch group starting at `rows[row0]` stretched
+        over dest (corner cells fixed, edges/center stretched)."""
+        if row0 + 2 >= len(self.rows):
+            return False
+        top, mid, bot = self.rows[row0], self.rows[row0 + 1], self.rows[row0 + 2]
+        if len(top) < 3 or len(mid) < 3 or len(bot) < 3:
+            return False
+        lw = min(top[0].width, max(1, dest.width // 3))
+        rw = min(top[2].width, max(1, dest.width // 3))
+        th = min(top[0].height, max(1, dest.height // 3))
+        bh = min(bot[0].height, max(1, dest.height // 3))
+        cw = max(0, dest.width - lw - rw)
+        ch = max(0, dest.height - th - bh)
+        x0, y0 = dest.x, dest.y
+        grid = [
+            (top[0], pygame.Rect(x0, y0, lw, th)),
+            (top[1], pygame.Rect(x0 + lw, y0, cw, th)),
+            (top[2], pygame.Rect(x0 + lw + cw, y0, rw, th)),
+            (mid[0], pygame.Rect(x0, y0 + th, lw, ch)),
+            (mid[1], pygame.Rect(x0 + lw, y0 + th, cw, ch)),
+            (mid[2], pygame.Rect(x0 + lw + cw, y0 + th, rw, ch)),
+            (bot[0], pygame.Rect(x0, y0 + th + ch, lw, bh)),
+            (bot[1], pygame.Rect(x0 + lw, y0 + th + ch, cw, bh)),
+            (bot[2], pygame.Rect(x0 + lw + cw, y0 + th + ch, rw, bh)),
+        ]
+        for src, dst in grid:
+            self.blit_scaled(surf, src, dst, alpha)
+        return True
+
+    # -- window sheet (rects verified against the C# client's DrawStyle) --
+
+    WINDOW_TITLE_H = 24
+
+    def looks_like_window_sheet(self) -> bool:
+        return (self.sheet.get_width() >= 64
+                and self.sheet.get_height() >= 118)
+
+    def has_window_background(self) -> bool:
+        """guiblue_window.png carries a 16x16 background cell at (0,136);
+        the *_noback variant (135px tall) ends right before it -- that is
+        the whole difference between the opaque and translucent windows."""
+        return (self.looks_like_window_sheet()
+                and self.sheet.get_height() >= 152)
+
+    def draw_window_background(self, surf, dest: pygame.Rect,
+                               alpha: int = 255) -> bool:
+        if not self.has_window_background():
+            return False
+        tile = self.sheet.subsurface(pygame.Rect(0, 136, 16, 16))
+        if alpha < 255:
+            tile = tile.copy()
+            tile.set_alpha(alpha)
+        prev = surf.get_clip()
+        surf.set_clip(dest if prev is None else dest.clip(prev))
+        for ty in range(dest.y, dest.bottom, 16):
+            for tx in range(dest.x, dest.right, 16):
+                surf.blit(tile, (tx, ty))
+        surf.set_clip(prev)
+        return True
+
+    def draw_window_frame(self, surf, dest: pygame.Rect,
+                          alpha: int = 255) -> bool:
+        """Title bar + side/bottom frame (no background -- the caller fills
+        the client area with the profile's fillcolor, which is exactly what
+        the *_noback sheets are for)."""
+        if not self.looks_like_window_sheet():
+            return False
+        R = pygame.Rect
+        w, h = dest.width, dest.height
+        x0, y0 = dest.x, dest.y
+        cw = min(23, max(1, w // 2))
+        # title bar: left corner, stretched middle, right corner
+        self.blit_scaled(surf, R(0, 61, 23, 24), R(x0, y0, cw, 24), alpha)
+        self.blit_scaled(surf, R(48, 61, 16, 24),
+                         R(x0 + cw, y0, max(0, w - 2 * cw), 24), alpha)
+        self.blit_scaled(surf, R(24, 61, 23, 24),
+                         R(x0 + w - cw, y0, cw, 24), alpha)
+        if h <= 24:
+            return True
+        eh = max(0, h - 24 - 6)
+        # left/right edges + bottom strip + bottom corners
+        self.blit_scaled(surf, R(0, 111, 6, 24), R(x0, y0 + 24, 6, eh), alpha)
+        self.blit_scaled(surf, R(7, 111, 6, 24),
+                         R(x0 + w - 6, y0 + 24, 6, eh), alpha)
+        self.blit_scaled(surf, R(27, 111, 6, 6),
+                         R(x0 + 6, y0 + h - 6, max(0, w - 12), 6), alpha)
+        self.blit_scaled(surf, R(20, 111, 6, 6), R(x0, y0 + h - 6, 6, 6), alpha)
+        self.blit_scaled(surf, R(52, 111, 6, 6),
+                         R(x0 + w - 6, y0 + h - 6, 6, 6), alpha)
+        return True
+
+
+# =============================================================================
+# GuiMLTextCtrl mini-HTML
+#
+# The wire text is Torque ML ("<font size=4><b><i>Account:</i></b></font>
+# hosler<br>", headings, <center>, <a href=...>). Full HTML is out of
+# scope; this handles exactly the vocabulary the live Login server sends
+# so the panes read cleanly instead of showing raw markup.
+# =============================================================================
+
+_ML_TOKEN_RE = None                     # compiled lazily (re import below)
+
+#: Torque <font size=N> steps mapped to pixel sizes around the profile base
+_ML_FONT_SIZES = {1: 9, 2: 11, 3: 13, 4: 15, 5: 17, 6: 20, 7: 24}
+_ML_HEADING_SIZES = {1: 24, 2: 21, 3: 19, 4: 17, 5: 15, 6: 13}
+_ML_LINK_COLOR = (224, 224, 255)
+
+_ML_ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
+                "&quot;": '"', "&#39;": "'"}
+
+
+class _MLSegment:
+    __slots__ = ("text", "bold", "italic", "size", "color", "link")
+
+    def __init__(self, text, bold, italic, size, color, link):
+        self.text = text
+        self.bold = bold
+        self.italic = italic
+        self.size = size            # None = profile base size
+        self.color = color          # None = profile font color
+        self.link = link
+
+
+def _ml_parse_color(value: str):
+    value = (value or "").strip().strip('"').strip("'")
+    if value.startswith("#"):
+        value = value[1:]
+        try:
+            if len(value) >= 6:
+                return (int(value[0:2], 16), int(value[2:4], 16),
+                        int(value[4:6], 16))
+        except ValueError:
+            return None
+    named = {"white": (255, 255, 255), "black": (0, 0, 0),
+             "red": (224, 64, 64), "yellow": (240, 224, 96),
+             "green": (96, 224, 96), "blue": (120, 160, 255)}
+    return named.get(value.lower())
+
+
+def parse_mltext(text: str):
+    """Parse Torque ML text into paragraphs: (align, [segments]) lists.
+    Unknown tags are stripped; <br>/<p>/<h*> produce line breaks."""
+    import re
+    global _ML_TOKEN_RE
+    if _ML_TOKEN_RE is None:
+        _ML_TOKEN_RE = re.compile(r"<[^<>]*>")
+    for ent, ch in _ML_ENTITIES.items():
+        text = text.replace(ent, ch)
+
+    paragraphs: List[Tuple[str, List[_MLSegment]]] = []
+    cur: List[_MLSegment] = []
+    bold = 0
+    italic = 0
+    align_stack: List[str] = []
+    size_stack: List[Optional[int]] = []
+    color_stack: List[Optional[Tuple[int, int, int]]] = []
+    link_depth = 0
+    ignore_linebreaks = False
+
+    def cur_align() -> str:
+        return align_stack[-1] if align_stack else "left"
+
+    def flush(force: bool = False):
+        # Block-tag boundaries (h*, p, center) only break a line when there
+        # is pending text; <br> forces a break so "<br><br>" keeps the
+        # intentional blank line.
+        nonlocal cur
+        if cur or force:
+            paragraphs.append((cur_align(), cur))
+            cur = []
+
+    def emit(run: str):
+        if not run:
+            return
+        cur.append(_MLSegment(
+            run, bold > 0, italic > 0,
+            size_stack[-1] if size_stack else None,
+            (_ML_LINK_COLOR if link_depth > 0
+             else (color_stack[-1] if color_stack else None)),
+            link_depth > 0))
+
+    pos = 0
+    for m in _ML_TOKEN_RE.finditer(text):
+        raw = text[pos:m.start()]
+        if raw:
+            if not ignore_linebreaks and "\n" in raw:
+                parts = raw.split("\n")
+                for i, part in enumerate(parts):
+                    emit(part)
+                    if i < len(parts) - 1:
+                        flush(force=True)
+            else:
+                emit(raw.replace("\n", " "))
+        pos = m.end()
+        tag = m.group(0)[1:-1].strip()
+        name, _, attrs = tag.partition(" ")
+        name = name.lower()
+        closing = name.startswith("/")
+        if closing:
+            name = name[1:]
+        if name in ("br", "br/"):
+            flush(force=True)
+        elif name == "p":
+            flush()
+            if closing:
+                if align_stack:
+                    align_stack.pop()
+            else:
+                am = None
+                for chunk in attrs.split():
+                    k, _, v = chunk.partition("=")
+                    if k.lower() == "align":
+                        am = v.strip('"').strip("'").lower()
+                align_stack.append(am or cur_align())
+        elif name == "center":
+            flush()
+            if closing:
+                if align_stack:
+                    align_stack.pop()
+            else:
+                align_stack.append("center")
+        elif name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            flush()
+            if closing:
+                bold = max(0, bold - 1)
+                if size_stack:
+                    size_stack.pop()
+            else:
+                bold += 1
+                size_stack.append(_ML_HEADING_SIZES.get(int(name[1]), 17))
+        elif name in ("b", "strong"):
+            bold = max(0, bold - 1) if closing else bold + 1
+        elif name in ("i", "em"):
+            italic = max(0, italic - 1) if closing else italic + 1
+        elif name == "font":
+            if closing:
+                if size_stack:
+                    size_stack.pop()
+                if color_stack:
+                    color_stack.pop()
+            else:
+                fsize = size_stack[-1] if size_stack else None
+                fcolor = color_stack[-1] if color_stack else None
+                for chunk in attrs.split():
+                    k, _, v = chunk.partition("=")
+                    k = k.lower()
+                    if k == "size":
+                        try:
+                            fsize = _ML_FONT_SIZES.get(
+                                int(v.strip('"').strip("'")), fsize)
+                        except ValueError:
+                            pass
+                    elif k == "color":
+                        fcolor = _ml_parse_color(v) or fcolor
+                size_stack.append(fsize)
+                color_stack.append(fcolor)
+        elif name == "a":
+            link_depth = max(0, link_depth - 1) if closing else link_depth + 1
+        elif name == "ignorelinebreaks":
+            ignore_linebreaks = True
+        # anything else (img, table, spans...) is stripped silently
+    tail = text[pos:]
+    if tail:
+        if not ignore_linebreaks and "\n" in tail:
+            parts = tail.split("\n")
+            for i, part in enumerate(parts):
+                emit(part)
+                if i < len(parts) - 1:
+                    flush(force=True)
+        else:
+            emit(tail.replace("\n", " "))
+    flush()
+    # collapse trailing empty paragraphs (every closing tag flushed one)
+    while len(paragraphs) > 1 and not paragraphs[-1][1]:
+        paragraphs.pop()
+    return paragraphs
+
+
 # =============================================================================
 # Control tree
 # =============================================================================
+
+class _InertDrawable(GS2Object):
+    """Stand-in for an engine drawing surface (`ctrl.icon` / `row.icon`):
+    scripts call clearAll()/drawImage()/drawImageRectangle() on it
+    (-Serverlist_Chat smilie buttons and channel-menu rows); those are
+    engine-canvas calls with no headless equivalent, so every unknown
+    member resolves to a no-op callable -- keeping the whole chain on the
+    object-exists path instead of logging unknown-method."""
+
+    def get(self, key: str) -> Any:
+        v = super().get(key)
+        return v if v is not None else (lambda *a: 0.0)
+
+    def has(self, key: str) -> bool:
+        return True
+
+
+class GuiListRow(GS2Object):
+    """One addRow() result: text/id members plus an inert `icon` drawing
+    surface (scripts do `with (row) { icon.clearAll(); ... }`)."""
+
+    def __init__(self, text: str, row_id: Any):
+        super().__init__(name="row")
+        self.set("text", text)
+        self.set("id", row_id)
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        v = super().get(k)
+        if v is None and k not in self._members:
+            v = self._members[k] = _InertDrawable(name=f"row.{k}")
+        return v
+
+    def has(self, key: str) -> bool:
+        # claim everything: `icon` (and friends) must resolve through the
+        # with-scope lookup inside `with (row) {...}` blocks
+        return True
+
 
 class GuiControl(GS2Object):
     """Base GS2 GUI control: a script-visible GS2Object (property get/set
@@ -175,13 +826,51 @@ class GuiControl(GS2Object):
     attributes (fast, and readable from Python without going through
     GS2Object's dict); any other property a script sets (including
     `onaction`, which ends up holding a Python callable -- see module
-    docstring point 2) falls through to the generic member dict."""
+    docstring point 2) falls through to the generic member dict.
+
+    Control METHODS (showTop/addRow/...) are exposed as bound callables via
+    get(): the VM calls `obj.m(...)` through LValue.get, and -- crucially --
+    bare calls inside `with (ctrl) { setIconSize(16,16); }` resolve through
+    the VM's with-scope lookup, which only consults `wobj.get(name)`; the
+    host's call_builtin never sees the with target, so method names MUST be
+    answered here (Login's -Serverlist_Chat builds its whole chat window in
+    that style)."""
 
     CTRL_CLASS = "GuiControl"
+    #: profile-definition objects (GuiControlProfile) set this True and are
+    #: kept out of the render/hit-test tree by the manager
+    is_profile = False
 
     _NUM_ATTRS = ("x", "y", "width", "height")
-    _STR_ATTRS = {"text": "text", "profile": "profile_name", "name": "ctrl_name"}
+    _STR_ATTRS = {"text": "text", "name": "ctrl_name"}
     _EVENT_MEMBERS = {"onaction", "onselect"}
+    # Registered Torque property surface. The official runtime's with-scope
+    # assignment is EXISTENCE-GATED (verified against the reversed
+    # interpreter): a construction-block field like `canmove = true;` only
+    # lands on the control because the control CLAIMS the name -- so has()
+    # must claim every registered property, or those writes fall through to
+    # temps/this. Core GuiControl fields plus every field the live Login
+    # server's -Serverlist_Chat construction blocks assign.
+    _TORQUE_PROPS = frozenset({
+        "position", "extent", "minextent", "clientrelative", "clientextent",
+        "horizsizing", "vertsizing", "docking", "style", "active", "modal",
+        "helptag", "tooltip", "canmove", "canresize", "destroyonhide",
+        "isexternal", "bordercolor", "columncount", "sortorder", "sortmode",
+        "groupsortorder", "textprofile", "hscrollbar", "vscrollbar",
+        "willfirstrespond", "historysize", "tabcomplete",
+        # Login -Rescripted/Serverlist construction fields (taskbar buttons,
+        # tree view, tabs) -- existence-gating means unclaimed names fall
+        # through to temps, so each must be listed to land on the control.
+        "clientwidth", "clientheight", "stylesection", "boxwidth",
+        "statuswidth", "fitparentwidth", "columns", "clipcolumntext",
+        "wrapcolumntext", "firstlinevisible", "tabwidth", "leveling",
+        "canminimize", "canmaximize", "canclose", "tile", "hint",
+    })
+    _METHOD_NAMES = frozenset({
+        "showtop", "show", "hide", "makefirstresponder",
+        "seticonsize", "clearrows", "addrow", "sort", "setcolumnoffset",
+        "pushtoback", "clearcontrols", "isactuallyvisible",
+    })
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(name=self.CTRL_CLASS)
@@ -193,6 +882,11 @@ class GuiControl(GS2Object):
         self.text = ""
         self.visible = True
         self.profile_name = _DEFAULT_PROFILE_NAME
+        #: `profile = IRC_ScrollProfile;` assigns the registered profile
+        #: OBJECT (Torque semantics); kept alongside the name so late field
+        #: writes (`with (IRC_ScrollProfile) {...}` after control creation)
+        #: are seen at draw time
+        self.profile_obj: Optional["GuiControlProfile"] = None
         self.parent: Optional["GuiControl"] = None
         self.children: List["GuiControl"] = []
         # Render-only mouse state, maintained by GS2GuiManager the same way
@@ -200,6 +894,26 @@ class GuiControl(GS2Object):
         # routed through get()/set()).
         self.hovered = False
         self.pressed = False
+        # back-reference stamped by GS2GuiManager.create_control -- lets
+        # bound methods (showTop) reach z-order/focus state
+        self._manager = None
+        # The GS2VM whose script constructed this control (stamped at its
+        # addcontrol; see GS2GuiManager.addcontrol). Live Login's
+        # -Serverlist_Chat wires most control events NOT as member closures
+        # but as dotted same-script FUNCTIONS ("GlobalChat_ChatField.
+        # onAction", "GlobalChat_ChatTab.onSelect", ... -- all registered in
+        # vm.functions under the dotted name); fire_event falls back to
+        # those, which a member-only lookup left permanently dead.
+        self._owner_vm = None
+        # generic list-row model (GuiTextListCtrl/GuiContextMenuCtrl style;
+        # distinct from GuiPopUpEditCtrl's own `rows`)
+        self.list_rows: List[GuiListRow] = []
+        self.icon_w = 0.0
+        self.icon_h = 0.0
+        # last image painted onto this control's `icon` drawing surface
+        # (icon.drawimage/drawimagestretched in construction blocks --
+        # taskbar buttons); rendered by GuiButtonCtrl
+        self.icon_image = ""
 
     # -- GS2Object property bridge ------------------------------------------
 
@@ -209,9 +923,169 @@ class GuiControl(GS2Object):
             return float(getattr(self, k))
         if k == "visible":
             return 1.0 if self.visible else 0.0
+        if k == "profile":
+            return self.profile_obj if self.profile_obj is not None \
+                else self.profile_name
         if k in self._STR_ATTRS:
             return getattr(self, self._STR_ATTRS[k])
-        return super().get(k)
+        # Torque client-area geometry READS: Login's -Rescripted/Serverlist
+        # sizes nearly every child off its parent (`width =
+        # Serverlist_Window.clientwidth`, `extent = Serverlist_Panel.extent`,
+        # right-aligned taskbar buttons at `clientwidth - width - 25`).
+        # These reads previously fell through to the empty member dict ->
+        # None -> 0, collapsing the whole layout to zero/negative sizes.
+        if k == "clientwidth" and k not in self._members:
+            return float(self.client_width())
+        if k == "clientheight" and k not in self._members:
+            return float(self.client_height())
+        if k == "clientextent" and k not in self._members:
+            return [float(self.client_width()), float(self.client_height())]
+        if k == "extent" and k not in self._members:
+            return [float(self.width), float(self.height)]
+        if k == "parent" and k not in self._members:
+            if self.parent is not None:
+                return self.parent
+            # a root control's Torque parent is the canvas itself --
+            # updateChatBarSize does `ChatBar.parent.clientwidth` on a
+            # control added straight to GraalControl; None here read as 0
+            # and sized the chat bar to nothing
+            return (self._manager.canvas_object()
+                    if self._manager is not None else None)
+        if k in self._METHOD_NAMES and not super().has(k):
+            return getattr(self, "_m_" + k)
+        if k == "icon" and k not in self._members:
+            # engine drawing surface (`with (button) { icon.drawimage(...) }`)
+            # -- records the painted image name into self.icon_image so the
+            # renderer can show it (same recorder tree nodes use)
+            v = self._members[k] = _TreeNodeIcon(self)
+            return v
+        v = super().get(k)
+        if v is None and k not in self._members:
+            # `onAction = function(){...}` compiles to a READ of
+            # this.<generated-name>; the VM's official with-rebinding makes
+            # `this` the control under construction, so the script-function
+            # fallback _ThisObject.get provides must exist here too. VM
+            # execution is synchronous, so the runtime's last-executing VM
+            # is the one whose construction block is reading.
+            rt2 = getattr(self._manager, "rt2", None)
+            vm = getattr(rt2, "_last_vm", None)
+            if vm is not None and vm.has_function(k):
+                return lambda *args, _vm=vm, _k=k: _vm.call(_k, *args)
+        return v
+
+    # -- script-callable methods -----------------------------------------
+
+    def _m_showtop(self, *args) -> float:
+        """showTop(): make visible and raise to the top of the sibling
+        z-order (-Serverlist_Chat openChat: GlobalChat_Window.showtop())."""
+        if self._manager is not None:
+            self._manager.show(self)
+        else:
+            self.visible = True
+        return 0.0
+
+    _m_show = _m_showtop
+
+    def _m_hide(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.hide(self)
+        else:
+            self.visible = False
+        return 0.0
+
+    def _m_makefirstresponder(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.focus(self if not args or to_bool(args[0]) else None)
+        return 0.0
+
+    def _m_seticonsize(self, *args) -> float:
+        if len(args) >= 2:
+            self.icon_w, self.icon_h = to_num(args[0]), to_num(args[1])
+        return 0.0
+
+    def _m_setcolumnoffset(self, *args) -> float:
+        """setColumnOffset(offset, column): frameset/text-list column
+        geometry -- recorded for layout, no other effect headlessly."""
+        offsets = self._members.setdefault("_column_offsets", {})
+        if len(args) >= 2:
+            offsets[int(to_num(args[1]))] = to_num(args[0])
+        elif args:
+            offsets[0] = to_num(args[0])
+        return 0.0
+
+    def _m_clearrows(self, *args) -> float:
+        self.list_rows.clear()
+        return 0.0
+
+    def _m_addrow(self, *args) -> GuiListRow:
+        """addRow(id, text) -> row object (scripts then `with (row) {...}`
+        to decorate its icon). Argument order is the Torque one, same as
+        GuiPopUpEditCtrl's: every Login call site passes the id first
+        (`addRow(11, "Global Chat")`, `addRow(0, "Map")`)."""
+        row = GuiListRow(to_str(args[1]) if len(args) > 1 else "",
+                         args[0] if args else len(self.list_rows))
+        self.list_rows.append(row)
+        return row
+
+    def _m_sort(self, *args) -> float:
+        self.list_rows.sort(key=lambda row: to_str(row.get("text")).casefold())
+        return 0.0
+
+    def _m_pushtoback(self, *args) -> float:
+        """pushToBack(): send to the back of the sibling z-order (Login's
+        Serverlist_MainPanel_Back background bitmap)."""
+        siblings = (self.parent.children if self.parent is not None
+                    else (self._manager.roots if self._manager else None))
+        if siblings and self in siblings:
+            siblings.remove(self)
+            siblings.insert(0, self)
+        return 0.0
+
+    def _m_clearcontrols(self, *args) -> float:
+        """clearControls(): remove every child (Login rebuilds its
+        Serverlist_TablesPanel0 contents this way on each tab switch).
+        Children stay in the name registry -- the rebuild recreates them
+        under the same names, which overwrites the entries."""
+        for child in list(self.children):
+            if self._manager is not None:
+                self._manager._release_pointers_under(child)
+            self.remove_child(child)
+        return 0.0
+
+    def _m_isactuallyvisible(self, *args) -> float:
+        """isActuallyVisible(): visible AND every ancestor visible (the
+        Torque canvas walk; Login gates its server-map icon refresh on it)."""
+        node: Optional["GuiControl"] = self
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                return 1.0
+            if not node.visible or id(node) in visited:
+                return 0.0
+            visited.add(id(node))
+            node = node.parent
+        return 0.0
+
+    # -- client-area geometry --------------------------------------------
+
+    def client_width(self) -> float:
+        return self.width
+
+    def client_height(self) -> float:
+        return self.height
+
+    @staticmethod
+    def _num_pair(value) -> Optional[Tuple[float, float]]:
+        """A Torque two-component field value: {a, b} array or "a b" string."""
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return to_num(value[0]), to_num(value[1])
+        parts = to_str(value).replace(",", " ").split()
+        if len(parts) >= 2:
+            try:
+                return float(parts[0]), float(parts[1])
+            except ValueError:
+                return None
+        return None
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
@@ -221,16 +1095,50 @@ class GuiControl(GS2Object):
         if k == "visible":
             self.visible = to_bool(value)
             return
+        if k == "profile":
+            # accept a profile OBJECT (`profile = IRC_ScrollProfile;` -- the
+            # bare reference resolves to the registered GuiControlProfile) or
+            # a name string; stringifying the object took its repr and every
+            # such control fell back to the default flat style
+            if isinstance(value, GuiControlProfile):
+                self.profile_obj = value
+                self.profile_name = value.ctrl_name or value.name or ""
+            else:
+                self.profile_obj = None
+                self.profile_name = to_str(value)
+            return
         if k in self._STR_ATTRS:
             setattr(self, self._STR_ATTRS[k], to_str(value))
             return
+        if k in ("position", "extent", "clientextent"):
+            # geometry-bearing Torque fields feed the real rect (clientextent
+            # sizes the client area; close enough to extent headlessly)
+            pair = self._num_pair(value)
+            if pair is not None:
+                if k == "position":
+                    self.x, self.y = pair
+                else:
+                    self.width, self.height = pair
         super().set(k, value)
 
     def has(self, key: str) -> bool:
         k = key.lower()
-        return (k in self._NUM_ATTRS or k == "visible"
+        return (k in self._NUM_ATTRS or k == "visible" or k == "icon"
+                or k == "profile"
                 or k in self._STR_ATTRS or k in self._EVENT_MEMBERS
-                or super().has(k))
+                or k in self._TORQUE_PROPS or super().has(k))
+
+    def resolve_profile(self) -> GuiProfile:
+        """This control's effective style: the referenced profile's
+        inheritance chain merged over builtin field data (see the module's
+        Profiles section). Recomputed per draw -- profiles are tiny dicts
+        and scripts mutate them after creation (`with (IRC_...Profile)`)."""
+        ref = self.profile_obj if self.profile_obj is not None \
+            else self.profile_name
+        mgr = self._manager
+        if not ref:
+            return _DEFAULT_GUIPROFILE
+        return _profile_from_fields(_profile_fields(ref, mgr, set()))
 
     # -- tree -----------------------------------------------------------
 
@@ -259,8 +1167,16 @@ class GuiControl(GS2Object):
             child.parent = None
 
     def effective_offset(self) -> Tuple[float, float]:
-        """Extra (dx, dy) from ancestor GuiScrollCtrl scroll state (see
-        GuiScrollCtrl) -- composes across nested scroll regions."""
+        """Extra (dx, dy) from ancestor state: parent origins (control x/y
+        are PARENT-RELATIVE, Torque semantics -- Login's -Rescripted/
+        Serverlist places windows at x=280 whose children sit at x=0, and
+        window children at y=-22 relative to the client area to overlay the
+        title bar; treating x/y as canvas-absolute clumped every nested
+        control at the top-left corner) plus ancestor GuiScrollCtrl scroll
+        state, composed across nesting. A GuiWindowCtrl parent whose script
+        set `clientrelative = true` additionally offsets its children by its
+        title-bar height (their coordinates are relative to the client area
+        below the title bar; Login's panels use y = -22 to overlay it)."""
         ox = oy = 0.0
         p = self.parent
         visited = set()
@@ -268,6 +1184,11 @@ class GuiControl(GS2Object):
             if p is None or id(p) in visited:
                 break
             visited.add(id(p))
+            ox += p.x
+            oy += p.y
+            if (isinstance(p, GuiWindowCtrl)
+                    and to_bool(p._members.get("clientrelative", 0))):
+                oy += p.TITLE_H
             if isinstance(p, GuiScrollCtrl):
                 ox -= p.scroll_x
                 oy -= p.scroll_y
@@ -277,45 +1198,84 @@ class GuiControl(GS2Object):
     def rect(self) -> pygame.Rect:
         ox, oy = self.effective_offset()
         return pygame.Rect(int(self.x + ox), int(self.y + oy),
-                           int(self.width), int(self.height))
+                           max(0, int(self.width)), max(0, int(self.height)))
 
-    def fire_action(self, *args) -> bool:
-        """Invoke the script-assigned `onAction` handler (a bound
-        `vm.call(...)` closure -- see module docstring point 2). Returns
-        True if a handler ran."""
-        handler = self.get("onaction")
+    def fire_event(self, event: str, *args) -> bool:
+        """Dispatch a control event: a script-assigned member handler first
+        (`onAction = function(){...}` -> a bound vm.call closure, or a
+        catchevent binding), then the dotted same-script function the live
+        servers actually use ("GlobalChat_ChatField.onAction" et al, keyed
+        f"{name}.{event}" in the owning VM's function table). Returns True
+        if a handler ran. Handler argument conventions (disasm-verified on
+        Login's -Serverlist_Chat; params list reversed = call order):
+        onAction(text) for a text field, onSelect(entryid, entrytext,
+        entryindex), onDblClick(selectedid, selectedtext, selectedrow)."""
+        event = event.lower()
+        handler = self.get(event)
         if callable(handler):
             try:
                 handler(*args)
             except Exception:
-                logger.exception("GS2 GUI: onAction handler for %s raised",
-                                 self.ctrl_name or self.CTRL_CLASS)
+                logger.exception("GS2 GUI: %s handler for %s raised",
+                                 event, self.ctrl_name or self.CTRL_CLASS)
             return True
+        vm = self._owner_vm
+        if vm is not None and self.ctrl_name:
+            fname = f"{self.ctrl_name}.{event}".lower()
+            try:
+                if vm.has_function(fname):
+                    vm.call(fname, *args)
+                    return True
+            except Exception:
+                logger.exception("GS2 GUI: %s handler for %s raised",
+                                 event, self.ctrl_name)
+                return True
         return False
+
+    def fire_action(self, *args) -> bool:
+        """fire_event("onaction") -- kept as the manager/host entry point."""
+        return self.fire_event("onaction", *args)
 
     # -- render (subclasses override _draw_self) -------------------------
 
     def draw(self, surf: pygame.Surface, fonts, sprite_mgr=None) -> None:
         self._draw_self(surf, fonts, sprite_mgr)
 
+    def _skin(self, prof: GuiProfile, sprite_mgr) -> Optional["_Skin"]:
+        if self._manager is None:
+            return None
+        return self._manager.skin(prof.bitmap, sprite_mgr)
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        # Generic fallback for unknown/stub control classes: a plain filled
-        # rect + label, so an unimplemented control is at least visible
-        # instead of invisible.
-        prof = _resolve_profile(self.profile_name)
+        # Plain container semantics (Torque GuiControl): draw NOTHING unless
+        # the profile is explicitly `opaque` -- containers used to stack
+        # translucent fills over the whole canvas, which is why the login
+        # screen's background looked layered navy instead of the level.
+        prof = self.resolve_profile()
         r = self.rect()
-        pygame.draw.rect(surf, prof.bg, r)
-        pygame.draw.rect(surf, prof.border, r, 1)
+        if prof.opaque:
+            skin = self._skin(prof, sprite_mgr)
+            if skin is None or not skin.draw_nine(
+                    surf, r, 0, int(255 * prof.transparency)):
+                _fill_rect(surf, prof.bg if prof.bg is not None
+                           else prof.title_bg, r)
+                if prof.border_width:
+                    _fill_rect(surf, prof.border, r, prof.border_width)
         if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.fg)
-            surf.blit(label, (r.x + 4, r.y + 4))
+            _draw_label(surf, _font(fonts, prof), self.text, prof.fg,
+                        (r.x + 4, r.y + 4), prof.text_shadow)
 
 
 class GuiWindowCtrl(GuiControl):
-    """Frame + title bar + draggable (drag handled by GS2GuiManager)."""
+    """Frame + title bar + draggable (drag handled by GS2GuiManager).
+
+    TITLE_H is 22 per the Login scripts' own layout math: every panel is
+    placed at y = -22 relative to the client area precisely to overlay the
+    title bar (Serverlist_DescriptionPanel/TablesPanel), so a different
+    title height shifts the whole pane contents."""
 
     CTRL_CLASS = "GuiWindowCtrl"
-    TITLE_H = 20
+    TITLE_H = 22
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -325,20 +1285,53 @@ class GuiWindowCtrl(GuiControl):
         r = self.rect()
         return pygame.Rect(r.x, r.y, r.width, min(self.TITLE_H, r.height))
 
+    def client_height(self) -> float:
+        # the client area children are laid out in starts below the title bar
+        return max(0.0, self.height - self.TITLE_H)
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        pygame.draw.rect(surf, prof.bg, r)
-        pygame.draw.rect(surf, prof.border, r, 1)
         tb = self.titlebar_rect()
-        pygame.draw.rect(surf, prof.title_bg, tb)
+        skin = self._skin(prof, sprite_mgr)
+        alpha = int(255 * prof.transparency)
+        drew_frame = False
+        if skin is not None and skin.looks_like_window_sheet():
+            # client area first: the full window sheet carries a tiled
+            # background cell (guiblue_window.png -- IRC_WindowRedProfile's
+            # red fillcolor is never seen in the official look); the
+            # *_noback sheets have none, there the translucent blue
+            # fillcolor IS the background. Then the sliced title bar +
+            # frame art on top.
+            client = pygame.Rect(r.x, r.y + tb.height, r.width,
+                                 max(0, r.height - tb.height))
+            if not skin.draw_window_background(surf, client, alpha):
+                _fill_rect(surf, prof.bg, client)
+            drew_frame = skin.draw_window_frame(surf, r, alpha)
+        if not drew_frame:
+            _fill_rect(surf, prof.bg, r)
+            if prof.border_width:
+                _fill_rect(surf, prof.border, r, prof.border_width)
+            _fill_rect(surf, prof.title_bg, tb)
         if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.title_fg)
-            surf.blit(label, (tb.x + 4, tb.y + (tb.height - label.get_height()) // 2))
+            font = _font(fonts, prof)
+            label_w = font.size(self.text)[0]
+            if prof.align == "right":
+                lx = tb.right - label_w - 8
+            elif prof.align == "center":
+                lx = tb.centerx - label_w // 2
+            else:
+                lx = tb.x + 8
+            label_h = font.get_height()
+            _draw_label(surf, font, self.text, prof.title_fg,
+                        (lx, tb.y + (tb.height - label_h) // 2),
+                        prof.text_shadow or drew_frame)
 
 
 class GuiButtonCtrl(GuiControl):
-    """Rect + centered text; onAction fires on click (GS2GuiManager)."""
+    """Rect + text (aligned per profile) + optional icon; onAction fires on
+    click (GS2GuiManager). Skin sheets (guiblue_button.png) carry four
+    9-patch state groups in order normal/hilight/pressed/inactive."""
 
     CTRL_CLASS = "GuiButtonCtrl"
 
@@ -346,19 +1339,70 @@ class GuiButtonCtrl(GuiControl):
         super().__init__(ctor_arg)
         self.width, self.height = 100.0, 24.0
 
+    def _label_text(self) -> str:
+        if self.text:
+            return self.text
+        # The taskbar start button has no script-side text -- the official
+        # client paints it from the window-style skin. Use the start menu's
+        # own title as the label so it isn't an anonymous slab.
+        if (to_str(self._members.get("stylesection", "")).lower()
+                == "taskbar.startbutton" and self._manager is not None):
+            menu = next((c for c in self._manager.roots
+                         if isinstance(c, GuiStartMenuCtrl)), None)
+            if menu is not None and menu.text:
+                return menu.text
+            return "Start"
+        return ""
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        fill = prof.title_bg
-        if self.pressed:
-            fill = _shade(fill, 0.75)
-        elif self.hovered:
-            fill = _shade(fill, 1.2)
-        pygame.draw.rect(surf, fill, r, border_radius=4)
-        pygame.draw.rect(surf, prof.border, r, 1, border_radius=4)
-        if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.fg)
-            surf.blit(label, label.get_rect(center=r.center))
+        skin = self._skin(prof, sprite_mgr)
+        state_row = 6 if self.pressed else (3 if self.hovered else 0)
+        drew = False
+        if skin is not None:
+            drew = skin.draw_nine(surf, r, state_row,
+                                  int(255 * prof.transparency))
+            if not drew and state_row:
+                drew = skin.draw_nine(surf, r, 0,
+                                      int(255 * prof.transparency))
+        if not drew:
+            fill = prof.bg if prof.bg is not None else prof.title_bg
+            if self.pressed:
+                fill = _shade(fill, 0.75)
+            elif self.hovered:
+                fill = _shade(fill, 1.2)
+            _fill_rect(surf, fill, r, border_radius=4)
+            if prof.border_width:
+                _fill_rect(surf, prof.border, r, prof.border_width,
+                           border_radius=4)
+        # optional icon (icon.drawimagestretched from the construction
+        # block -- the taskbar's server buttons)
+        tx = r.x + 8
+        if self.icon_image and sprite_mgr is not None:
+            img = sprite_mgr.load_sheet(self.icon_image)
+            if img is None and self._manager is not None:
+                self._manager.request_image(self.icon_image)
+            if img is not None:
+                iw = int(self.icon_w) or 24
+                ih = int(self.icon_h) or 24
+                if img.get_size() != (iw, ih):
+                    img = pygame.transform.smoothscale(img, (iw, ih))
+                surf.blit(img, (tx, r.centery - ih // 2))
+                tx += iw + 4
+        text = self._label_text()
+        if text and fonts is not None:
+            font = _font(fonts, prof)
+            tw = font.size(text)[0]
+            if prof.align == "left":
+                lx = tx
+            elif prof.align == "right":
+                lx = r.right - tw - 8
+            else:
+                lx = max(tx, r.centerx - tw // 2)
+            _draw_label(surf, font, text, prof.fg,
+                        (lx, r.centery - font.get_height() // 2),
+                        prof.text_shadow)
 
 
 class GuiTextCtrl(GuiControl):
@@ -373,41 +1417,123 @@ class GuiTextCtrl(GuiControl):
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         if not self.text or fonts is None:
             return
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        label = fonts.get("small").render(self.text, True, prof.fg)
-        surf.blit(label, r.topleft)
+        font = _font(fonts, prof)
+        tw = font.size(self.text)[0]
+        if prof.align == "right":
+            lx = r.right - tw
+        elif prof.align == "center":
+            lx = r.centerx - tw // 2
+        else:
+            lx = r.x
+        _draw_label(surf, font, self.text, prof.fg, (lx, r.y),
+                    prof.text_shadow)
 
 
 class GuiMLTextCtrl(GuiControl):
-    """Stub-but-track: multi-line text, rendered word-wrapped."""
+    """Multi-line Torque-ML text: minimal markup handling (see
+    parse_mltext) with word-wrap and inline bold/italic/size/color runs.
+    Height auto-grows to the laid-out content (Torque MLText autosizes;
+    the script-set height of 10-14px is just a seed) so an enclosing
+    GuiScrollCtrl clips/scrolls it instead of the text vanishing."""
 
     CTRL_CLASS = "GuiMLTextCtrl"
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 160.0, 80.0
+        self._ml_cache_key = None
+        self._ml_paragraphs = None
+
+    def _paragraphs(self):
+        if self._ml_cache_key != self.text:
+            self._ml_cache_key = self.text
+            try:
+                self._ml_paragraphs = parse_mltext(self.text)
+            except Exception:
+                logger.exception("GS2 GUI: mltext parse failed")
+                self._ml_paragraphs = [("left", [_MLSegment(
+                    self.text, False, False, None, None, False)])]
+        return self._ml_paragraphs
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         if not self.text or fonts is None:
             return
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        font = fonts.get("small")
+        base_font = _font(fonts, prof)
+        max_w = max(20, r.width)
         y = r.y
-        for line in _wrap_text(font, self.text, r.width):
-            if y >= r.bottom:
-                break
-            label = font.render(line, True, prof.fg)
-            surf.blit(label, (r.x, y))
-            y += label.get_height()
+        at = getattr(fonts, "at", None)
+
+        def seg_font(seg):
+            if at is None:
+                return base_font
+            size = seg.size if seg.size else prof.font_size
+            try:
+                return at(size, seg.bold or prof.font_bold, seg.italic)
+            except TypeError:       # older fonts objects: at(size, bold)
+                return at(size, seg.bold or prof.font_bold)
+
+        for align, segments in self._paragraphs():
+            # split segments into word chunks that carry their style
+            words: List[Tuple[str, Any]] = []
+            for seg in segments:
+                for piece in seg.text.split(" "):
+                    if piece:
+                        words.append((piece, seg))
+            if not words:
+                y += base_font.get_height()
+                continue
+            # greedy wrap
+            lines: List[List[Tuple[str, Any]]] = [[]]
+            line_w = 0
+            for word, seg in words:
+                font = seg_font(seg)
+                w = font.size(word + " ")[0]
+                if lines[-1] and line_w + w > max_w:
+                    lines.append([])
+                    line_w = 0
+                lines[-1].append((word, seg))
+                line_w += w
+            for line in lines:
+                line_h = max(seg_font(seg).get_height()
+                             for _w, seg in line)
+                total_w = sum(seg_font(seg).size(word + " ")[0]
+                              for word, seg in line)
+                if align == "center":
+                    x = r.x + max(0, (r.width - total_w) // 2)
+                elif align == "right":
+                    x = r.x + max(0, r.width - total_w)
+                else:
+                    x = r.x
+                for word, seg in line:
+                    font = seg_font(seg)
+                    color = seg.color if seg.color is not None else prof.fg
+                    label = _draw_label(
+                        surf, font, word, color,
+                        (x, y + line_h - font.get_height()),
+                        prof.text_shadow)
+                    if seg.link:
+                        pygame.draw.line(
+                            surf, color, (x, y + line_h - 2),
+                            (x + label.get_width(), y + line_h - 2))
+                    x += font.size(word + " ")[0]
+                y += line_h
+        # autosize so ancestor scroll controls know the content extent
+        self.height = max(self.height, float(y - r.y))
 
 
 class GuiScrollCtrl(GuiControl):
     """Clips its children to its own rect and offsets them by
-    scroll_x/scroll_y (adjusted by mouse wheel -- GS2GuiManager)."""
+    scroll_x/scroll_y (adjusted by mouse wheel -- GS2GuiManager). Draws a
+    skinned vertical scrollbar (guiblue_scroll.png: row0 = up/down arrow
+    states, rows1-4 = thumb top/mid/bottom + track) when the content
+    overflows and the profile's vscrollbar mode allows it."""
 
     CTRL_CLASS = "GuiScrollCtrl"
+    SCROLLBAR_W = 17
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -415,11 +1541,61 @@ class GuiScrollCtrl(GuiControl):
         self.scroll_x = 0.0
         self.scroll_y = 0.0
 
+    def content_height(self) -> float:
+        bottom = 0.0
+        for c in self.children:
+            if c.visible:
+                bottom = max(bottom, c.y + c.height)
+        return bottom
+
+    def max_scroll_y(self) -> float:
+        return max(0.0, self.content_height() - self.height)
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        pygame.draw.rect(surf, prof.bg, r)
-        pygame.draw.rect(surf, prof.border, r, 1)
+        _fill_rect(surf, prof.bg, r)
+        if prof.border_width:
+            _fill_rect(surf, prof.border, r, prof.border_width)
+        # vertical scrollbar on overflow
+        vmode = to_str(self._members.get("vscrollbar", "dynamic")).lower()
+        max_scroll = self.max_scroll_y()
+        if vmode == "alwaysoff" or max_scroll <= 0 or r.height < 40:
+            return
+        self.scroll_y = max(0.0, min(self.scroll_y, max_scroll))
+        bw = self.SCROLLBAR_W
+        bar = pygame.Rect(r.right - bw, r.y, bw, r.height)
+        track = pygame.Rect(bar.x, bar.y + bw, bw, max(0, bar.height - 2 * bw))
+        frac = r.height / max(1.0, self.content_height())
+        thumb_h = max(20, int(track.height * frac))
+        thumb_y = track.y + int((track.height - thumb_h) *
+                                (self.scroll_y / max_scroll))
+        skin = self._skin(prof, sprite_mgr)
+        if skin is not None and len(skin.rows) >= 5 and len(skin.rows[0]) >= 5:
+            alpha = int(255 * prof.transparency)
+            skin.blit_scaled(surf, skin.rows[0][1],
+                             pygame.Rect(bar.x, bar.y, bw, bw), alpha)
+            skin.blit_scaled(surf, skin.rows[0][4],
+                             pygame.Rect(bar.x, bar.bottom - bw, bw, bw), alpha)
+            if len(skin.rows[4]) >= 2:
+                skin.blit_scaled(surf, skin.rows[4][1], track, alpha)
+            cap = min(6, thumb_h // 3)
+            if len(skin.rows[1]) >= 2 and len(skin.rows[2]) >= 2 \
+                    and len(skin.rows[3]) >= 2:
+                skin.blit_scaled(surf, skin.rows[1][1],
+                                 pygame.Rect(bar.x, thumb_y, bw, cap), alpha)
+                skin.blit_scaled(surf, skin.rows[2][1],
+                                 pygame.Rect(bar.x, thumb_y + cap, bw,
+                                             thumb_h - 2 * cap), alpha)
+                skin.blit_scaled(surf, skin.rows[3][1],
+                                 pygame.Rect(bar.x, thumb_y + thumb_h - cap,
+                                             bw, cap), alpha)
+            return
+        # solid fallback
+        _fill_rect(surf, (16, 32, 80, 200), bar)
+        _fill_rect(surf, _BLUE_FILL,
+                   pygame.Rect(bar.x + 2, thumb_y, bw - 4, thumb_h),
+                   border_radius=4)
 
 
 class GuiTextEditCtrl(GuiControl):
@@ -435,14 +1611,21 @@ class GuiTextEditCtrl(GuiControl):
         self.max_len = 256
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        pygame.draw.rect(surf, prof.bg, r)
-        pygame.draw.rect(surf, (150, 190, 255) if self.focused else prof.border,
-                         r, 2 if self.focused else 1)
+        skin = self._skin(prof, sprite_mgr)
+        if skin is None or not skin.draw_nine(surf, r, 0,
+                                              int(255 * prof.transparency)):
+            _fill_rect(surf, prof.bg if prof.bg is not None
+                       else prof.title_bg, r)
+            pygame.draw.rect(surf,
+                             (150, 190, 255) if self.focused else prof.border,
+                             r, 2 if self.focused else 1)
+        elif self.focused:
+            pygame.draw.rect(surf, (150, 190, 255), r, 1)
         if fonts is None:
             return
-        font = fonts.get("small")
+        font = _font(fonts, prof)
         label = font.render(self.text, True, prof.fg)
         surf.blit(label, (r.x + 4, r.centery - label.get_height() // 2))
         if self.focused and (pygame.time.get_ticks() // 500) % 2 == 0:
@@ -457,6 +1640,7 @@ class GuiCheckBoxCtrl(GuiControl):
 
     CTRL_CLASS = "GuiCheckBoxCtrl"
     _BOOL_KEYS = ("value", "checked")
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(_BOOL_KEYS)
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -478,10 +1662,11 @@ class GuiCheckBoxCtrl(GuiControl):
         self.checked = not self.checked
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
         box = pygame.Rect(r.x, r.y, min(r.width, r.height) or 16, min(r.width, r.height) or 16)
-        bg = _shade(prof.bg, 0.75) if self.pressed else prof.bg
+        base = (prof.bg if prof.bg is not None else prof.title_bg)[:3]
+        bg = _shade(base, 0.75) if self.pressed else base
         border = (150, 190, 255) if self.hovered else prof.border
         pygame.draw.rect(surf, bg, box)
         pygame.draw.rect(surf, border, box, 1)
@@ -489,7 +1674,7 @@ class GuiCheckBoxCtrl(GuiControl):
             pygame.draw.line(surf, prof.fg, box.topleft, box.bottomright, 2)
             pygame.draw.line(surf, prof.fg, box.bottomleft, box.topright, 2)
         if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.fg)
+            label = _font(fonts, prof).render(self.text, True, prof.fg)
             surf.blit(label, (box.right + 6, box.y + (box.height - label.get_height()) // 2))
 
 
@@ -503,18 +1688,19 @@ class GuiRadioCtrl(GuiCheckBoxCtrl):
     CTRL_CLASS = "GuiRadioCtrl"
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
         d = min(r.width, r.height) or 16
         center = (r.x + d // 2, r.y + d // 2)
-        bg = _shade(prof.bg, 0.75) if self.pressed else prof.bg
+        base = (prof.bg if prof.bg is not None else prof.title_bg)[:3]
+        bg = _shade(base, 0.75) if self.pressed else base
         border = (150, 190, 255) if self.hovered else prof.border
         pygame.draw.circle(surf, bg, center, d // 2)
-        pygame.draw.circle(surf, border, center, d // 2, 1)
+        pygame.draw.circle(surf, border[:3], center, d // 2, 1)
         if self.checked:
             pygame.draw.circle(surf, prof.fg, center, max(1, d // 4))
         if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.fg)
+            label = _font(fonts, prof).render(self.text, True, prof.fg)
             surf.blit(label, (r.x + d + 6, r.y + (d - label.get_height()) // 2))
 
 
@@ -523,6 +1709,7 @@ class GuiBitmapCtrl(GuiControl):
     stretched to fit the control's rect."""
 
     CTRL_CLASS = "GuiBitmapCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({"bitmap", "image"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -552,8 +1739,11 @@ class GuiBitmapCtrl(GuiControl):
                 self._scaled_cache = key
             surf.blit(self._scaled_surf, r.topleft)
             return
-        pygame.draw.rect(surf, (60, 60, 70), r)
-        pygame.draw.rect(surf, (120, 120, 130), r, 1)
+        # not cached yet: fetch via the normal file-request path and draw
+        # nothing meanwhile (the official client draws no placeholder --
+        # scripts probe getimgwidth() themselves)
+        if self.bitmap and self._manager is not None:
+            self._manager.request_image(self.bitmap)
 
 
 class GuiShowImgCtrl(GuiBitmapCtrl):
@@ -584,6 +1774,15 @@ class GuiPopUpEditCtrl(GuiControl):
         self.rows.append((row_id, to_str(text)))
         return float(len(self.rows) - 1)
 
+    # popup rows are (id, text) pairs with their own draw path -- keep the
+    # base class's generic list-row methods from shadowing them
+    def _m_addrow(self, *args):
+        return self.add_row(args[0] if args else None,
+                            args[1] if len(args) > 1 else "")
+
+    def _m_clearrows(self, *args):
+        return self.clear_rows()
+
     def clear_rows(self) -> float:
         self.rows.clear()
         self.selected_row = -1
@@ -608,13 +1807,10 @@ class GuiPopUpEditCtrl(GuiControl):
             return False
         self.selected_row = index
         row_id, self.text = self.rows[index]
-        handler = self.get("onselect")
-        if callable(handler):
-            try:
-                handler(row_id, self.text)
-            except Exception:
-                logger.exception("GS2 GUI: onSelect handler for %s raised",
-                                 self.ctrl_name or self.CTRL_CLASS)
+        # (entryid, entrytext, entryindex) per the reference convention --
+        # member closures that only declare (id, text) simply never bind the
+        # extra index argument.
+        self.fire_event("onselect", row_id, self.text, float(index))
         self.fire_action()
         return True
 
@@ -630,47 +1826,618 @@ class GuiPopUpEditCtrl(GuiControl):
                    (pos[1] - pr.y) // max(1, int(self.height)))
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         r = self.rect()
-        fill = prof.title_bg
+        fill = prof.bg if prof.bg is not None else prof.title_bg
         if self.pressed:
             fill = _shade(fill, 0.75)
         elif self.hovered:
             fill = _shade(fill, 1.2)
-        pygame.draw.rect(surf, fill, r)
-        pygame.draw.rect(surf, prof.border, r, 1)
+        _fill_rect(surf, fill, r)
+        pygame.draw.rect(surf, prof.border[:3], r, 1)
         arrow_w = min(r.height, 20)
         arrow = pygame.Rect(r.right - arrow_w, r.y, arrow_w, r.height)
-        pygame.draw.line(surf, prof.border, arrow.topleft, arrow.bottomleft, 1)
+        pygame.draw.line(surf, prof.border[:3], arrow.topleft, arrow.bottomleft, 1)
         cx, cy = arrow.center
         pygame.draw.polygon(surf, prof.fg,
                             [(cx - 4, cy - 2), (cx + 4, cy - 2), (cx, cy + 3)])
         if self.text and fonts is not None:
-            label = fonts.get("small").render(self.text, True, prof.fg)
+            label = _font(fonts, prof).render(self.text, True, prof.fg)
             surf.blit(label, (r.x + 4, r.centery - label.get_height() // 2))
 
     def draw_popup(self, surf, fonts) -> None:
         if not self.popup_open or not self.rows:
             return
-        prof = _resolve_profile(self.profile_name)
+        prof = self.resolve_profile()
         pr = self.popup_rect()
         row_h = max(1, int(self.height))
-        pygame.draw.rect(surf, prof.bg, pr)
+        _fill_rect(surf, prof.bg if prof.bg is not None else (16, 32, 96, 240), pr)
         for index, (_row_id, text) in enumerate(self.rows):
             rr = pygame.Rect(pr.x, pr.y + index * row_h, pr.width, row_h)
             if index == self.hover_row:
-                pygame.draw.rect(surf, _shade(prof.title_bg, 1.2), rr)
+                _fill_rect(surf, _shade(prof.title_bg, 1.2), rr)
             if fonts is not None:
-                label = fonts.get("small").render(text, True, prof.fg)
+                label = _font(fonts, prof).render(text, True, prof.fg)
                 surf.blit(label, (rr.x + 4, rr.centery - label.get_height() // 2))
-        pygame.draw.rect(surf, prof.border, pr, 1)
+        pygame.draw.rect(surf, prof.border[:3], pr, 1)
+
+
+class GuiTextListCtrl(GuiControl):
+    """Vertical list of addRow() rows; click selects a row and fires
+    onSelect(entryid, entrytext, entryindex) -- same convention as
+    GuiPopUpEditCtrl. Used all over the Login UI (GlobalChat_Channels,
+    start-menu rows via the GuiStartMenuCtrl subclass)."""
+
+    CTRL_CLASS = "GuiTextListCtrl"
+    ROW_H = 18
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 160.0, 24.0
+        self.selected_index = -1
+
+    def _m_clearrows(self, *args) -> float:
+        # clearRows() must also clear the SELECTION: Login rebuilds its tab
+        # strips with clearRows + addRow + setSelectedById(sameid) on every
+        # server click -- with the old index kept, re-selecting the same id
+        # was treated as a no-op and onSelect (which shows the pane) never
+        # fired, leaving every table panel hidden.
+        self.selected_index = -1
+        return super()._m_clearrows(*args)
+
+    def content_height(self) -> int:
+        return len(self.list_rows) * self.ROW_H
+
+    def row_at(self, pos) -> int:
+        r = self.rect()
+        if not r.collidepoint(pos) or not self.list_rows:
+            return -1
+        idx = int((pos[1] - r.y) // self.ROW_H)
+        return idx if 0 <= idx < len(self.list_rows) else -1
+
+    def click_at(self, pos) -> bool:
+        return self.select_index(self.row_at(pos))
+
+    def select_index(self, index: int) -> bool:
+        if not 0 <= index < len(self.list_rows):
+            return False
+        row = self.list_rows[index]
+        text = to_str(row.get("text"))
+        if text == "-":
+            return False                      # separator row
+        self.selected_index = index
+        self.fire_event("onselect", row.get("id"), text, float(index))
+        return True
+
+    def _m_setselectedrow(self, *args) -> float:
+        """setSelectedRow(index) -- Login selects its default tab this way
+        (Serverlist_DescriptionTab.setSelectedRow(0))."""
+        if args:
+            self.select_index(int(to_num(args[0])))
+        return 0.0
+
+    def _m_setselectedbyid(self, *args) -> float:
+        """setSelectedById(id) -- select the row whose `id` member matches
+        (Login: Serverlist_TablesTab.setSelectedById(0) right after
+        addRow(0, ...))."""
+        if args:
+            wanted = to_str(args[0])
+            for index, row in enumerate(self.list_rows):
+                if to_str(row.get("id")) == wanted:
+                    self.select_index(index)
+                    break
+        return 0.0
+
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"setselectedrow", "setselectedbyid"})
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        # keep our height in sync with content so ancestor GuiScrollCtrl
+        # clipping/scrolling covers every row
+        self.height = max(self.height, float(self.content_height()))
+        prof = self.resolve_profile()
+        r = self.rect()
+        _fill_rect(surf, prof.bg, r)
+        if fonts is None:
+            return
+        font = _font(fonts, prof)
+        for index, row in enumerate(self.list_rows):
+            rr = pygame.Rect(r.x, r.y + index * self.ROW_H, r.width, self.ROW_H)
+            text = to_str(row.get("text"))
+            if text == "-":
+                pygame.draw.line(surf, prof.border[:3],
+                                 (rr.x + 4, rr.centery), (rr.right - 4, rr.centery))
+                continue
+            fg = prof.fg
+            if index == self.selected_index:
+                _fill_rect(surf, prof.title_bg, rr)
+                fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
+            _draw_label(surf, font, text, fg,
+                        (rr.x + 4, rr.centery - font.get_height() // 2),
+                        prof.text_shadow and index != self.selected_index)
+
+
+class GuiTabCtrl(GuiControl):
+    """Horizontal tab strip over addRow() rows. Selecting fires
+    onDeselect(oldid, oldtext, oldindex) then onSelect(newid, newtext,
+    newindex) -- exactly the pair Login's Serverlist_DescriptionTab /
+    Serverlist_TablesTab / GlobalChat_ChatTab handlers expect (they hide
+    the old tab's panel and show the new one's)."""
+
+    CTRL_CLASS = "GuiTabCtrl"
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"setselectedrow", "setselectedbyid"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 200.0, 22.0
+        self.selected_index = -1
+
+    def _m_clearrows(self, *args) -> float:
+        # same reset-selection-on-clearRows contract as GuiTextListCtrl
+        # (Login re-selects the same row id after every rebuild)
+        self.selected_index = -1
+        return super()._m_clearrows(*args)
+
+    def tab_width(self) -> float:
+        w = to_num(self._members.get("tabwidth", 0))
+        if w > 0:
+            return w
+        return self.width / max(1, len(self.list_rows))
+
+    def tab_at(self, pos) -> int:
+        r = self.rect()
+        if not r.collidepoint(pos) or not self.list_rows:
+            return -1
+        idx = int((pos[0] - r.x) // max(1.0, self.tab_width()))
+        return idx if 0 <= idx < len(self.list_rows) else -1
+
+    def click_at(self, pos) -> bool:
+        return self.select_index(self.tab_at(pos))
+
+    def select_index(self, index: int) -> bool:
+        if not 0 <= index < len(self.list_rows) or index == self.selected_index:
+            return False
+        old = self.selected_index
+        self.selected_index = index
+        if 0 <= old < len(self.list_rows):
+            row = self.list_rows[old]
+            self.fire_event("ondeselect", row.get("id"),
+                            to_str(row.get("text")), float(old))
+        row = self.list_rows[index]
+        self.fire_event("onselect", row.get("id"),
+                        to_str(row.get("text")), float(index))
+        return True
+
+    def _m_setselectedrow(self, *args) -> float:
+        if args:
+            self.select_index(int(to_num(args[0])))
+        return 0.0
+
+    def _m_setselectedbyid(self, *args) -> float:
+        if args:
+            wanted = to_str(args[0])
+            for index, row in enumerate(self.list_rows):
+                if to_str(row.get("id")) == wanted:
+                    self.select_index(index)
+                    break
+        return 0.0
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        prof = self.resolve_profile()
+        r = self.rect()
+        tw = int(max(1.0, self.tab_width()))
+        base = prof.bg if prof.bg is not None else (24, 48, 112, 224)
+        skin = self._skin(prof, sprite_mgr)
+        # guiblue_tab.png: 9-patch group 0 = the (taller) selected tab,
+        # group 1 = the shorter unselected tab, then arrow rows.
+        for index, row in enumerate(self.list_rows):
+            selected = index == self.selected_index
+            rr = pygame.Rect(r.x + index * tw, r.y, tw, r.height)
+            if not selected:
+                rr = pygame.Rect(rr.x, rr.y + 3, rr.width, rr.height - 3)
+            drew = False
+            if skin is not None:
+                drew = skin.draw_nine(surf, rr, 0 if selected else 3,
+                                      int(255 * prof.transparency))
+                if not drew and not selected:
+                    drew = skin.draw_nine(surf, rr, 0,
+                                          int(255 * prof.transparency))
+            if not drew:
+                fill = prof.title_bg if selected else _shade(base, 1.2)
+                _fill_rect(surf, fill, rr)
+                pygame.draw.rect(surf, prof.border[:3], rr, 1)
+            if fonts is not None:
+                font = _font(fonts, prof)
+                text = to_str(row.get("text"))
+                tw_px = font.size(text)[0]
+                _draw_label(surf, font, text, prof.fg,
+                            (rr.centerx - tw_px // 2,
+                             rr.centery - font.get_height() // 2),
+                            prof.text_shadow)
+
+
+class _TreeNodeIcon(GS2Object):
+    """A tree node's `icon` drawing surface: records the image filename the
+    script paints (`node.icon.drawimage(0, 0, "graalicon_big.png")`) so the
+    tree renderer can blit it; every other member is a no-op callable (same
+    contract as _InertDrawable)."""
+
+    def __init__(self, node: "GuiTreeNode"):
+        super().__init__(name="node.icon")
+        self._node = node
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k in ("drawimage", "drawimagestretched"):
+            def _draw(*args, _node=self._node, _k=k):
+                # drawimage(x, y, image) / drawimagestretched(x,y,w,h, image, ...)
+                idx = 2 if _k == "drawimage" else 4
+                if len(args) > idx:
+                    _node.icon_image = to_str(args[idx])
+                return 0.0
+            return _draw
+        if k in ("clearall", "clear"):
+            def _clear(*args, _node=self._node):
+                _node.icon_image = ""
+                return 0.0
+            return _clear
+        v = super().get(k)
+        return v if v is not None else (lambda *a: 0.0)
+
+    def has(self, key: str) -> bool:
+        return True
+
+
+class GuiTreeNode(GS2Object):
+    """One GuiTreeViewCtrl entry (folder or leaf). Script-visible members:
+    `text` (leaf text may carry TAB-separated columns, e.g.
+    "Zelda: A Link to the Past\\t63" from Login's server list), `id`,
+    `sortgroup`, `sortvalue`, `icon`, and a `select()` method."""
+
+    def __init__(self, tree: "GuiTreeViewCtrl", text: str,
+                 parent_node: Optional["GuiTreeNode"] = None):
+        super().__init__(name="treenode")
+        self.tree = tree
+        self.text = text
+        self.parent_node = parent_node
+        self.child_nodes: List["GuiTreeNode"] = []
+        self.icon_image = ""
+
+    @property
+    def is_folder(self) -> bool:
+        return bool(self.child_nodes)
+
+    def columns(self) -> List[str]:
+        return self.text.split("\t")
+
+    def path(self) -> str:
+        parts, node = [], self
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                break
+            parts.append(node.columns()[0])
+            node = node.parent_node
+        return "/".join(reversed(parts))
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "text":
+            return self.text
+        if k == "select" and not super().has(k):
+            return lambda *a: self.tree.select_node(self)
+        if k == "icon" and k not in self._members:
+            v = self._members[k] = _TreeNodeIcon(self)
+            return v
+        return super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "text":
+            self.text = to_str(value)
+            return
+        super().set(key, value)
+
+    def has(self, key: str) -> bool:
+        return True
+
+
+class GuiTreeViewCtrl(GuiControl):
+    """Hierarchical list built with addNodeByPath("Folder/Leaf", "/") --
+    the control the Login server list actually lives in
+    (Serverlist_ServerList: category folders containing one row per
+    server, icon + name + player count, sorted by player count within
+    category). Selection fires onSelect(node, path, dot); a double-click
+    fires onDblClick(node, path, dot), which on Login connects to the
+    server (checkServerConnect -> serverwarp)."""
+
+    CTRL_CLASS = "GuiTreeViewCtrl"
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({
+        "clearnodes", "addnodebypath", "getnode", "getselectednode",
+        "setselectedbyid",
+    })
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 200.0, 120.0
+        self.root_nodes: List[GuiTreeNode] = []
+        self.selected_node: Optional[GuiTreeNode] = None
+
+    # -- script surface ---------------------------------------------------
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "nodes" and "nodes" not in self._members:
+            return self.flat_nodes()
+        return super().get(key)
+
+    def _m_clearnodes(self, *args) -> float:
+        self.root_nodes.clear()
+        self.selected_node = None
+        return 0.0
+
+    def _m_addnodebypath(self, *args) -> Optional[GuiTreeNode]:
+        if not args:
+            return None
+        path = to_str(args[0])
+        sep = to_str(args[1]) if len(args) > 1 else "/"
+        parts = path.split(sep) if sep else [path]
+        parent: Optional[GuiTreeNode] = None
+        siblings = self.root_nodes
+        node: Optional[GuiTreeNode] = None
+        for depth, part in enumerate(parts):
+            last = depth == len(parts) - 1
+            node = None if last else next(
+                (n for n in siblings if n.columns()[0] == part), None)
+            if node is None:
+                node = GuiTreeNode(self, part, parent)
+                siblings.append(node)
+            parent, siblings = node, node.child_nodes
+        return node
+
+    def _m_getnode(self, *args) -> Optional[GuiTreeNode]:
+        name = to_str(args[0]) if args else ""
+        for node in self.flat_nodes():
+            if node.columns()[0] == name:
+                return node
+        return None
+
+    def _m_getselectednode(self, *args) -> Optional[GuiTreeNode]:
+        return self.selected_node
+
+    def _m_setselectedbyid(self, *args) -> float:
+        """setSelectedById(id): select the node whose `id` member matches
+        (Login's tree keeps its serverlist row index there)."""
+        if args:
+            wanted = to_str(args[0])
+            for node in self.flat_nodes():
+                if to_str(node.get("id")) == wanted:
+                    self.select_node(node)
+                    break
+        return 0.0
+
+    def _m_sort(self, *args) -> float:
+        """Folders by their `sortgroup` ascending, leaves inside each folder
+        by `sortvalue` (player count) descending -- the tree's construction
+        fields on Login (sortmode="value", sortorder="descending",
+        groupsortorder="ascending")."""
+        self.root_nodes.sort(key=lambda n: to_num(n.get("sortgroup") or 0))
+        for folder in self.root_nodes:
+            folder.child_nodes.sort(
+                key=lambda n: to_num(n.get("sortvalue") or 0), reverse=True)
+        return 0.0
+
+    # -- model ------------------------------------------------------------
+
+    def flat_nodes(self) -> List[GuiTreeNode]:
+        out: List[GuiTreeNode] = []
+        def visit(nodes):
+            for n in nodes:
+                out.append(n)
+                visit(n.child_nodes)
+        visit(self.root_nodes)
+        return out
+
+    def select_node(self, node: Optional[GuiTreeNode], event: str = "onselect") -> None:
+        self.selected_node = node
+        if node is not None:
+            self.fire_event(event, node, node.path(), 0.0)
+
+    # -- render / hit-test ------------------------------------------------
+
+    def row_height(self) -> int:
+        return max(20, int(self.icon_h) + 4) if self.icon_h else 20
+
+    def display_nodes(self) -> List[GuiTreeNode]:
+        """flat_nodes minus category folders with an EMPTY label. The live
+        Login lister has no name for its hidden-servers category (the wire
+        rows arrive as "/Name\\t0"), which produced a blank folder row; the
+        official client shows no such row, so it is dropped from display
+        (children keep their indent) while staying script-visible in
+        flat_nodes/`nodes`."""
+        return [n for n in self.flat_nodes()
+                if n.columns()[0] or not n.is_folder]
+
+    def node_at(self, pos) -> Optional[GuiTreeNode]:
+        r = self.rect()
+        if not r.collidepoint(pos):
+            return None
+        nodes = self.display_nodes()
+        idx = int((pos[1] - r.y) // self.row_height())
+        return nodes[idx] if 0 <= idx < len(nodes) else None
+
+    def column_offsets(self) -> List[float]:
+        """Column x offsets: setColumnOffset calls override the `columns`
+        construction field ({0, 230} on Login's server list)."""
+        offsets = dict(self._members.get("_column_offsets") or {})
+        cols = self._members.get("columns")
+        if isinstance(cols, (list, tuple)):
+            for i, v in enumerate(cols):
+                offsets.setdefault(i, to_num(v))
+        out = [v for _i, v in sorted(offsets.items())]
+        return out or [0.0]
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        nodes = self.display_nodes()
+        row_h = self.row_height()
+        self.height = max(self.height, float(len(nodes) * row_h))
+        prof = self.resolve_profile()
+        r = self.rect()
+        _fill_rect(surf, prof.bg, r)
+        if fonts is None:
+            return
+        font = _font(fonts, prof)
+        icon_w = int(self.icon_w) or 16
+        icon_h = int(self.icon_h) or 16
+        col_offsets = self.column_offsets()
+        for index, node in enumerate(nodes):
+            rr = pygame.Rect(r.x, r.y + index * row_h, r.width, row_h)
+            indent = 0 if node.parent_node is None else 16
+            fg = prof.fg
+            if node is self.selected_node:
+                _fill_rect(surf, prof.title_bg, rr)
+                fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
+            cols = node.columns()
+            tx = rr.x + 4 + indent
+            if node.is_folder:
+                icon = None
+                if node.icon_image and sprite_mgr is not None:
+                    icon = sprite_mgr.load_sheet(node.icon_image)
+                    if icon is None and self._manager is not None:
+                        self._manager.request_image(node.icon_image)
+                if icon is not None:
+                    ih = min(row_h - 2, icon.get_height())
+                    iw = max(1, icon.get_width() * ih // max(1, icon.get_height()))
+                    if icon.get_size() != (iw, ih):
+                        icon = pygame.transform.smoothscale(icon, (iw, ih))
+                    surf.blit(icon, (tx, rr.centery - ih // 2))
+                    tx += iw + 4
+                else:
+                    # open-folder disclosure triangle fallback
+                    cy = rr.centery
+                    pygame.draw.polygon(
+                        surf, fg,
+                        [(tx, cy - 3), (tx + 8, cy - 3), (tx + 4, cy + 4)])
+                    tx += 14
+            elif node.icon_image and sprite_mgr is not None:
+                img = sprite_mgr.load_sheet(node.icon_image)
+                if img is None and self._manager is not None:
+                    self._manager.request_image(node.icon_image)
+                if img is not None:
+                    if img.get_size() != (icon_w, icon_h):
+                        img = pygame.transform.smoothscale(img, (icon_w, icon_h))
+                    surf.blit(img, (tx, rr.centery - icon_h // 2))
+                tx += icon_w + 4
+            _draw_label(surf, font, cols[0], fg,
+                        (tx, rr.centery - font.get_height() // 2),
+                        prof.text_shadow and node is not self.selected_node)
+            # extra columns at the profile's column offsets (player count)
+            for ci in range(1, len(cols)):
+                if not cols[ci]:
+                    continue
+                if ci < len(col_offsets) and col_offsets[ci] > 0:
+                    cx = rr.x + int(col_offsets[ci])
+                else:
+                    cx = rr.right - font.size(cols[ci])[0] - 8
+                cx = min(cx, rr.right - font.size(cols[ci])[0] - 4)
+                _draw_label(surf, font, cols[ci], fg,
+                            (cx, rr.centery - font.get_height() // 2),
+                            prof.text_shadow and node is not self.selected_node)
+
+
+class GuiTaskbar(GuiControl):
+    """The Login taskbar strip: a plain container bar; its buttons are
+    ordinary GuiButtonCtrl children (the start button opens the
+    GuiStartMenuCtrl -- engine behavior, provided by GS2GuiManager's
+    click routing)."""
+
+    CTRL_CLASS = "GuiTaskbar"
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 640.0, 30.0
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        prof = self.resolve_profile()
+        r = self.rect()
+        skin = self._skin(prof, sprite_mgr)
+        # IRC_TaskBarProfile: bitmap = guiblue_button.png (the bar is one
+        # stretched button-face 9-patch, the classic look)
+        if skin is not None and skin.draw_nine(surf, r, 0,
+                                               int(255 * prof.transparency)):
+            return
+        _fill_rect(surf, prof.bg if prof.bg is not None else prof.title_bg, r)
+        pygame.draw.rect(surf, prof.border[:3], r, 1)
+
+
+class GuiStartMenuCtrl(GuiTextListCtrl):
+    """The taskbar's start menu: hidden until the start button toggles it
+    (see GS2GuiManager), then a vertical menu of addRow() entries whose
+    selection fires onSelect(selid, seltext, selindex) and closes the menu
+    -- Login's Serverlist_Taskbar_Menu opens Global Chat, the log window,
+    the playerlist etc. from exactly that handler."""
+
+    CTRL_CLASS = "GuiStartMenuCtrl"
+    ROW_H = 22
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 190.0, 24.0
+        self.visible = False        # engine shows it on start-button click
+
+    def select_index(self, index: int) -> bool:
+        picked = super().select_index(index)
+        if picked and self._manager is not None:
+            self._manager.hide(self)
+        return picked
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        self.height = float(max(self.content_height(), self.ROW_H))
+        prof = self.resolve_profile()
+        r = self.rect()
+        _fill_rect(surf, prof.bg if prof.bg is not None else (16, 32, 96, 240), r)
+        pygame.draw.rect(surf, prof.border[:3], r, 1)
+        super()._draw_self(surf, fonts, sprite_mgr)
+
+
+class GuiControlProfile(GuiControl):
+    """A named PROFILE DEFINITION (`new <ParentProfile>("IRC_...Profile")
+    { fillcolor = {...}; }` -- see the module's Profiles section), not a
+    visual control: registered for later `profile = <name-or-object>`
+    references, never drawn, never in the control tree (see
+    create_control/addcontrol's is_profile guards).
+
+    `parent_profile_name` is the classname the `new` used -- an engine
+    builtin (GuiBlueTransWindowProfile) or another script profile
+    (IRC_WindowProfile) -- and roots this profile's inheritance chain.
+
+    has() claims EVERYTHING: a profile is a pure property bag, and both the
+    construction block and later `with (IRC_...Profile) { fillcolor = ...; }`
+    restyles write through the VM's EXISTENCE-GATED with-scope assignment --
+    unclaimed field names silently fell through to temps/globals, which is
+    exactly why every script profile resolved with an empty member list
+    ('<GS2Object GuiBlueTransWindowProfile []>' in the 07-24 stderr)."""
+
+    CTRL_CLASS = "GuiControlProfile"
+    is_profile = True
+
+    def __init__(self, ctor_arg: Any = None, parent_name: str = ""):
+        super().__init__(ctor_arg)
+        self.visible = False
+        self.parent_profile_name = parent_name.lower()
+
+    def has(self, key: str) -> bool:
+        return True
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        return
 
 
 _CONTROL_CLASSES: Dict[str, type] = {
     cls.CTRL_CLASS.lower(): cls for cls in (
-        GuiWindowCtrl, GuiButtonCtrl, GuiTextCtrl, GuiMLTextCtrl,
+        GuiControl, GuiWindowCtrl, GuiButtonCtrl, GuiTextCtrl, GuiMLTextCtrl,
         GuiScrollCtrl, GuiTextEditCtrl, GuiCheckBoxCtrl, GuiRadioCtrl,
-        GuiBitmapCtrl, GuiShowImgCtrl, GuiPopUpEditCtrl,
+        GuiBitmapCtrl, GuiShowImgCtrl, GuiPopUpEditCtrl, GuiControlProfile,
+        GuiTextListCtrl, GuiTabCtrl, GuiTreeViewCtrl, GuiTaskbar,
+        GuiStartMenuCtrl,
     )
 }
 
@@ -678,6 +2445,16 @@ _CONTROL_CLASSES: Dict[str, type] = {
 def make_control(classname: str, ctor_arg: Any) -> GuiControl:
     cls = _CONTROL_CLASSES.get(classname.lower())
     if cls is None:
+        if classname.lower().endswith("profile"):
+            # Torque profile-definition DERIVATION: the classname is the
+            # PARENT profile (engine builtin like GuiBlueTransWindowProfile,
+            # or a previously script-defined profile like IRC_WindowProfile)
+            # and roots the new profile's inheritance chain. Named style
+            # records, never visual controls -- Login's -Rescripted/
+            # Serverlist declares ~40 of these.
+            ctrl = GuiControlProfile(ctor_arg, parent_name=classname)
+            ctrl.name = classname
+            return ctrl
         _log_once(("class", classname.lower()),
                   "GS2 GUI: unknown control class %r, rendering generically", classname)
         ctrl = GuiControl(ctor_arg)
@@ -715,6 +2492,17 @@ class GS2GuiManager:
         self._hover: Optional[GuiControl] = None
         self._pressed: Optional[GuiControl] = None
         self._open_popup: Optional[GuiPopUpEditCtrl] = None
+        # (ticks, node) of the last tree-view row click, for double-click
+        # detection (onDblClick = connect on the Login server list)
+        self._last_tree_click: Tuple[int, Optional[GuiTreeNode]] = (0, None)
+        # skin-art cache (profile bitmap sheets, sliced) + one-shot file
+        # requests for art the sprite manager doesn't have yet
+        self._skins: Dict[str, _Skin] = {}
+        self._requested_images: set = set()
+        # canvas size the control tree was last laid out for; render()
+        # compares against the live surface and propagates Torque-sizing
+        # deltas on change (window resizes)
+        self.canvas_size: Optional[Tuple[int, int]] = None
 
     @property
     def keyboard_captured(self) -> bool:
@@ -726,17 +2514,34 @@ class GS2GuiManager:
 
     def create_control(self, classname: str, ctor_arg: Any) -> GuiControl:
         ctrl = make_control(classname, ctor_arg)
+        ctrl._manager = self
         if ctrl.ctrl_name:
             self._named[ctrl.ctrl_name.lower()] = ctrl
+        if ctrl.is_profile:
+            # named registration only -- never in the construction stack or
+            # the render tree (its auto-emitted addcontrol no-ops below)
+            return ctrl
         if self._construction_stack:
             self._construction_stack[-1].add_child(ctrl)
         self._construction_stack.append(ctrl)
         return ctrl
 
-    def addcontrol(self, ctrl: Any) -> None:
+    def addcontrol(self, ctrl: Any, owner_vm: Any = None) -> None:
+        if isinstance(ctrl, str):
+            # the inline-new compile shape (`Name = new ("Class") {...}`,
+            # see Login's -Serverlist_Chat addChatWindowControls) passes the
+            # control's NAME string to its auto-emitted addcontrol
+            ctrl = self._named.get(ctrl.lower(), ctrl)
         if not isinstance(ctrl, GuiControl):
             _log_once(("addcontrol", type(ctrl).__name__),
                       "GS2 GUI: addcontrol() called on a non-control value (%r)", ctrl)
+            return
+        if owner_vm is not None and ctrl._owner_vm is None:
+            # every new-statement emits addcontrol from the constructing
+            # script's VM, so this stamps the whole tree -- fire_event's
+            # dotted-handler fallback resolves against it
+            ctrl._owner_vm = owner_vm
+        if ctrl.is_profile:
             return
         # Pop by identity, not just the top: if a script aborted mid-`new`
         # (VM error/op budget), descendants above ctrl never saw their
@@ -813,6 +2618,31 @@ class GS2GuiManager:
             return self._named.get(target.lower())
         return None
 
+    def profile_by_name(self, name: str) -> Optional["GuiControlProfile"]:
+        """The registered profile object for `name`, auto-vivifying
+        engine-builtin profiles (GuiBlueTransWindowProfile,
+        GuiDefaultProfile, ...) on first reference: the official client
+        defines those natively, so both `profile = GuiBlueTransWindowProfile;`
+        (bare object reference) and `with (GuiDefaultProfile) {...}`
+        restyles must resolve to a live object even though no script ever
+        declares one. The vivified object is seeded with the builtin field
+        data, so later script writes overlay it like any derived profile."""
+        key = (name or "").lower()
+        obj = self._named.get(key)
+        if isinstance(obj, GuiControlProfile):
+            return obj
+        if obj is not None:
+            return None       # a real control owns this name; don't shadow
+        fields = _BUILTIN_PROFILE_FIELDS.get(key)
+        if fields is None:
+            return None
+        prof = GuiControlProfile(name)
+        prof.name = name
+        prof._manager = self
+        prof._members.update(fields)
+        self._named[key] = prof
+        return prof
+
     # -- visibility -----------------------------------------------------
 
     def show(self, target: Any) -> None:
@@ -841,7 +2671,8 @@ class GS2GuiManager:
 
     def add_to(self, parent: Any, child: Any) -> None:
         parent_ctrl, child_ctrl = self._resolve(parent), self._resolve(child)
-        if parent_ctrl is not None and child_ctrl is not None:
+        if (parent_ctrl is not None and child_ctrl is not None
+                and not child_ctrl.is_profile):
             if parent_ctrl.add_child(child_ctrl) and child_ctrl in self.roots:
                 self.roots.remove(child_ctrl)
 
@@ -871,11 +2702,120 @@ class GS2GuiManager:
         ctrl = self._resolve(target)
         self._set_focus(ctrl if isinstance(ctrl, GuiTextEditCtrl) else None)
 
+    # -- skin art / downloads --------------------------------------------
+
+    def request_image(self, name: str) -> None:
+        """Ask the server for a GUI image once (skin sheets, tree icons,
+        bitmap controls) via the client's normal file-request path; the
+        game's on_file callback drops it into the sprite cache."""
+        key = to_str(name).lower()
+        if not key or key in self._requested_images:
+            return
+        self._requested_images.add(key)
+        client = getattr(self.rt2, "client", None)
+        request = getattr(client, "request_file", None)
+        if request is None:
+            return
+        try:
+            request(name)
+        except Exception:
+            logger.exception("GS2 GUI: request_file(%r) failed", name)
+
+    def skin(self, name: str, sprite_mgr) -> Optional[_Skin]:
+        """The sliced skin sheet for a profile's bitmap field, fetching the
+        file on first miss. Cache entries pin their source surface and are
+        re-sliced when the sprite cache replaces it (download landing)."""
+        if not name or sprite_mgr is None:
+            return None
+        key = name.lower()
+        sheet = sprite_mgr.load_sheet(name)
+        if sheet is None:
+            self.request_image(name)
+            return None
+        entry = self._skins.get(key)
+        if entry is not None and entry.source is sheet:
+            return entry
+        try:
+            entry = _Skin(name, sheet)
+        except Exception:
+            logger.exception("GS2 GUI: skin slice failed for %r", name)
+            return None
+        self._skins[key] = entry
+        return entry
+
+    # -- canvas resize (Torque horizSizing/vertSizing) -------------------
+
+    @staticmethod
+    def _apply_sizing(ctrl: GuiControl, old_w: float, old_h: float,
+                      new_w: float, new_h: float) -> None:
+        """Torque GuiControl::parentResized: adjust one control for its
+        parent's extent change, then recurse with this control's own
+        old/new extent. Defaults ("right"/"bottom") anchor to the top-left
+        and change nothing."""
+        dx, dy = new_w - old_w, new_h - old_h
+        if not dx and not dy:
+            return
+        old_cw, old_ch = ctrl.width, ctrl.height
+        h = to_str(ctrl._members.get("horizsizing", "")).lower() or "right"
+        v = to_str(ctrl._members.get("vertsizing", "")).lower() or "bottom"
+        if h == "width":
+            ctrl.width = max(0.0, ctrl.width + dx)
+        elif h == "left":
+            ctrl.x += dx
+        elif h == "center":
+            ctrl.x = (new_w - ctrl.width) / 2.0
+        elif h == "relative" and old_w > 0:
+            scale = new_w / old_w
+            ctrl.x *= scale
+            ctrl.width *= scale
+        if v == "height":
+            ctrl.height = max(0.0, ctrl.height + dy)
+        elif v == "top":
+            ctrl.y += dy
+        elif v == "center":
+            ctrl.y = (new_h - ctrl.height) / 2.0
+        elif v == "relative" and old_h > 0:
+            scale = new_h / old_h
+            ctrl.y *= scale
+            ctrl.height *= scale
+        if (ctrl.width, ctrl.height) != (old_cw, old_ch):
+            for child in ctrl.children:
+                GS2GuiManager._apply_sizing(child, old_cw, old_ch,
+                                            ctrl.width, ctrl.height)
+
+    def canvas_object(self) -> GS2Object:
+        """Live-geometry stand-in for the canvas, handed out as root
+        controls' `parent` (Torque semantics)."""
+        obj = getattr(self, "_canvas_obj", None)
+        if obj is None:
+            obj = self._canvas_obj = GS2Object(name="canvas")
+        if self.canvas_size is not None:
+            w, h = float(self.canvas_size[0]), float(self.canvas_size[1])
+        else:
+            gs1 = getattr(self.rt2, "gs1", None)
+            w = float(getattr(gs1, "screen_w", 800) or 800)
+            h = float(getattr(gs1, "screen_h", 600) or 600)
+        obj._members.update({
+            "width": w, "height": h, "clientwidth": w, "clientheight": h,
+            "extent": [w, h], "clientextent": [w, h],
+        })
+        return obj
+
+    def on_canvas_resize(self, new_w: int, new_h: int) -> None:
+        old = self.canvas_size
+        self.canvas_size = (new_w, new_h)
+        if old is None or old == (new_w, new_h):
+            return
+        for root in self.roots:
+            self._apply_sizing(root, float(old[0]), float(old[1]),
+                               float(new_w), float(new_h))
+
     # -- render ---------------------------------------------------------
 
     def render(self, surf: pygame.Surface, fonts=None, sprite_mgr=None) -> None:
         self._reap_construction_leak()
         self._close_invalid_popup()
+        self.on_canvas_resize(*surf.get_size())
         for root in self.roots:
             self._draw_node(root, surf, fonts, sprite_mgr, None)
         if self._open_popup is not None:
@@ -1085,7 +3025,44 @@ class GS2GuiManager:
             hit.fire_action()
         elif isinstance(hit, GuiButtonCtrl):
             self._set_pressed(hit)
-            hit.fire_action()
+            if not self._toggle_start_menu(hit):
+                hit.fire_action()
+        elif isinstance(hit, GuiTreeViewCtrl):
+            node = hit.node_at(pos)
+            if node is not None:
+                now = pygame.time.get_ticks()
+                last_t, last_node = self._last_tree_click
+                self._last_tree_click = (now, node)
+                if node is last_node and now - last_t <= 400:
+                    # second click of a double-click: onDblClick (Login:
+                    # connect to the clicked server)
+                    hit.select_node(node, event="ondblclick")
+                else:
+                    hit.select_node(node)
+        elif isinstance(hit, (GuiTextListCtrl, GuiTabCtrl)):
+            hit.click_at(pos)
+        return True
+
+    def _toggle_start_menu(self, btn: GuiButtonCtrl) -> bool:
+        """Engine behavior with no script-side handler: a taskbar button
+        styled as the start button (`stylesection = "Taskbar.StartButton"`,
+        Login's Serverlist_TaskButton_Start) toggles the GuiStartMenuCtrl,
+        anchored just above it."""
+        if to_str(btn._members.get("stylesection", "")).lower() != \
+                "taskbar.startbutton":
+            return False
+        menu = next((c for c in reversed(self.roots)
+                     if isinstance(c, GuiStartMenuCtrl)), None)
+        if menu is None:
+            return False
+        if menu.visible:
+            self.hide(menu)
+            return True
+        br = btn.rect()
+        menu.height = float(max(menu.content_height(), menu.ROW_H))
+        menu.x = float(br.x)
+        menu.y = float(br.y - menu.height)
+        self.show(menu)
         return True
 
     def _on_mouse_up(self, pos) -> bool:
@@ -1108,9 +3085,10 @@ class GS2GuiManager:
         if self._drag is None:
             return False
         win, off_x, off_y = self._drag
-        dx = (pos[0] - off_x) - win.x
-        dy = (pos[1] - off_y) - win.y
-        self._shift(win, dx, dy)
+        # children's x/y are parent-relative (see effective_offset), so
+        # moving just the window moves its whole subtree
+        win.x = pos[0] - off_x
+        win.y = pos[1] - off_y
         return True
 
     def _on_wheel(self, event) -> bool:
@@ -1129,7 +3107,8 @@ class GS2GuiManager:
             node = None
         if node is None:
             return False
-        node.scroll_y = max(0.0, node.scroll_y - event.y * 20.0)
+        node.scroll_y = max(0.0, min(node.scroll_y - event.y * 20.0,
+                                     node.max_scroll_y()))
         return True
 
     def _on_keydown(self, event) -> bool:
@@ -1145,7 +3124,10 @@ class GS2GuiManager:
         if self._focus is None:
             return False
         if event.key == pygame.K_RETURN:
-            self._focus.fire_action()
+            # onAction(text) -- the reference passes the field's text (the
+            # Login chat field's dotted handler declares a `text` param and
+            # sends exactly that string)
+            self._focus.fire_action(self._focus.text)
             return True
         if event.key == pygame.K_BACKSPACE:
             self._focus.text = self._focus.text[:-1]

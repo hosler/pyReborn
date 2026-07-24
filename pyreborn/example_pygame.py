@@ -182,9 +182,22 @@ def main():
     # (e.g. "Beta 4.0.0"), not the client protocol it accepts, so our guessed
     # `version` may be wrong. When the server rejects it, it tells us what it
     # wants ("Allowed: 2.22") — parse that and retry once with the right version.
+    def server_name_for(h, p):
+        """The serverlist name for host:port (listserver entry, else the
+        remembered last server). GS2 scripts read it as the bare global
+        `servername` (the Login GUI gates its taskbar layout on it)."""
+        for s in servers:
+            if s.ip == h and s.port == p:
+                return s.name
+        last = prefs.last_server
+        if last and last.ip == h and last.port == p:
+            return last.name
+        return ""
+
     def connect_and_login(ver):
         print(f"Connecting to {host}:{port} (version {ver})...")
         cl = Client(host, port, version=ver)
+        cl.server_name = server_name_for(host, port)
         if not cl.connect():
             # Don't hard-exit: an unreachable host (e.g. a listserver entry with
             # a "$AUTO" placeholder IP) must let the caller recover, not kill the

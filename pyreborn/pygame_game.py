@@ -119,6 +119,20 @@ class GameClient(
         # Initialize managers
         self.sprite_mgr = SpriteManager(self.asset_paths)
         self.tileset_mgr = TilesetManager(self.sprite_mgr)
+        # Classic (2.x) servers assume the classic client's BUILT-IN default
+        # tileset, pics1.png — their scripts only issue addtiledef to RESET
+        # back to it after area tilesets (GTA's `addtiledef pics1.png,,0`).
+        # Our modern default (dustynewpics1.png) diverges from the classic
+        # layout in some ranges (GTA's pond/fountain water drew as bricks),
+        # so base classic sessions on the real sheet: local copy if present,
+        # and fetch the server's authoritative one either way.
+        if str(getattr(self.client, "version", "")).startswith("2."):
+            self.tileset_mgr.default_tileset = "pics1.png"
+            try:
+                if not self.sprite_mgr.load_sheet("pics1.png"):
+                    self.client.request_file("pics1.png")
+            except Exception:
+                pass
         # Tiledef applicability is scoped by level-name prefix; seed the
         # login level (later changes flow through _reload_level_scripts).
         self.tileset_mgr.set_current_level(
@@ -160,6 +174,15 @@ class GameClient(
 
         # GS1 interpreter for NPC scripts (shared engine, client-side host)
         self.gs1 = ClientGS1(self.client)
+        # Seed the script engines' screen size with the REAL window size
+        # before any server script runs. It used to stay at the 800x600
+        # default until _feed_gs1_input's per-frame sync -- which never runs
+        # while a GS2 GUI text field holds keyboard focus, exactly the state
+        # the Login server boots into, so its whole GUI laid itself out for
+        # 800x600 in the top-left of a bigger window. _on_window_resize
+        # keeps it current from then on.
+        self.gs1.screen_w = self.screen.get_width()
+        self.gs1.screen_h = self.screen.get_height()
         self._setup_gs1_callbacks()
 
         # GS2 bytecode VM (weapons/classes/ganis compiled by the server);
@@ -381,6 +404,12 @@ class GameClient(
         HUD re-anchors to the new corners."""
         self.screen = self.viewport.canvas
         self.camera.resize(w, h)
+        # keep the script engines' canvas dims live (screenwidth/
+        # GUIContainer reads; the GS2 GUI manager additionally propagates
+        # Torque horizSizing/vertSizing deltas itself at render time)
+        if getattr(self, "gs1", None) is not None:
+            self.gs1.screen_w = w
+            self.gs1.screen_h = h
         if getattr(self, "hud", None) is not None:
             self.hud.ui.resize(w, h)
         if getattr(self, "inventory_ui", None) is not None:

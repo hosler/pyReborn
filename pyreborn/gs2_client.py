@@ -578,11 +578,45 @@ class GS2ClientHost(GS2Host):
     stubbed = frozenset({
         "hit",            # no packet-legitimate player/NPC hit action exists
         "modifyclientr",  # client record writes need an unsupported prop codec
+        # Login/-LoginScreen credential + platform surface (live corpus).
+        # Inert BY POLICY: this client must never store, derive, or transmit
+        # credential material on a script's behalf (accounts come from
+        # prefs.py). des_encrypt returning 0.0 means a script's "encrypted"
+        # credential blob is a constant, never real data.
+        "des_encrypt",
+        "setaccountname",
+        "setnickname",
+        "setpassword",
+        "savegraaloptions",     # native options store; nothing to write
+        "reconnect",            # engine-driven reconnect; not script-safe here
+        "adventure_getsystemid",  # native device identity; no stable analog
+        # the live Login Mobile corpus calls the same surface through the
+        # Adventure engine's prefixed bindings
+        "adventure_setaccountname",
+        "adventure_setnickname",
+        "adventure_setpassword",
+        "adventure_savegraaloptions",
+        "adventure_reconnect",
+        # native-canvas rebuild toggle the Login serverlist calls at init;
+        # there is no native canvas here, so nothing to rebuild
+        "adventure_setgraalcontrolrecreate",
     })
+
+    #: host_surface() cache -- computed once per process. The introspection
+    #: below re-reads THIS FILE from disk (inspect.getsource -> linecache):
+    #: recomputing per call meant an on-disk edit made after import (routine
+    #: during parallel-agent dev) desynced the line numbers and blew up
+    #: ast.parse with a bogus SyntaxError -- which silently failed EVERY
+    #: run_gs2_bounded() crawl classification on 07-22 ("SyntaxError:
+    #: invalid syntax (<unknown>, line 1)" against live-server bytecode).
+    #: The surface is static per process anyway.
+    _surface_cache: Optional[frozenset] = None
 
     @staticmethod
     def host_surface():
         """Return builtins handled directly or delegated to the real GS1 host."""
+        if GS2ClientHost._surface_cache is not None:
+            return GS2ClientHost._surface_cache
         import ast
         import inspect
         import textwrap
@@ -602,7 +636,14 @@ class GS2ClientHost(GS2Host):
                 names.update(value.value for value in values
                              if isinstance(value, ast.Constant)
                              and isinstance(value.value, str))
-        return frozenset(names) | GS2ClientHost.stubbed
+        # control METHODS answered by GuiControl.get() bound callables
+        # (method-form and with-scope calls never reach call_builtin's
+        # dispatch, but they ARE part of the live host surface)
+        if GS2GuiManager is not None:
+            from .game.gs2_gui import GuiControl
+            names |= GuiControl._METHOD_NAMES
+        GS2ClientHost._surface_cache = frozenset(names) | GS2ClientHost.stubbed
+        return GS2ClientHost._surface_cache
 
     # -- infrastructure ----------------------------------------------------
 
@@ -617,6 +658,58 @@ class GS2ClientHost(GS2Host):
             return self.rt2.level_object
         if name in ("server", "serverr", "client", "clientr"):
             return self.rt2.flag_scope_object(name)
+        if name == "guicontainer":
+            # The engine's root GUI canvas. Scripts wrap whole construction
+            # runs in `with (GUIContainer) { Win = new ("GuiWindowCtrl")
+            # {...} }` (Login -Serverlist_Chat addChatWindowControls); the
+            # VM SKIPS a with-block whose target isn't an object, so leaving
+            # this unresolved silently discarded the entire window build.
+            # A persistent engine-object stand-in is sufficient: parenting
+            # comes from the compiler's auto-emitted addcontrol calls, not
+            # from the container. It must answer canvas GEOMETRY reads
+            # though: Login's -Rescripted/Serverlist sizes its taskbar and
+            # trial bar off GUIContainer.clientwidth/clientheight (the
+            # taskbar docks at clientheight - 30) -- auto-vivified members
+            # read back as objects (numeric 0) and everything landed above
+            # the canvas at y=-30.
+            obj = _engine_object(self.rt2, "guicontainer")
+            gs1 = self.rt2.gs1
+            w = float(getattr(gs1, "screen_w", 800) or 800)
+            h = float(getattr(gs1, "screen_h", 600) or 600)
+            obj._members.update({
+                "width": w, "height": h, "clientwidth": w, "clientheight": h,
+                "extent": [w, h], "clientextent": [w, h],
+            })
+            return obj
+        if name in ("graalcontrol", "graalcontrol3d"):
+            # The engine's game-viewport control. Login's
+            # initGraalControlSize resizes it (height = parent.clientheight
+            # - taskbar) and then anchors its ChatBar/toggle button off its
+            # clientwidth/clientheight, so it must answer geometry reads;
+            # the script's own `height` write (with-scope, existence-gated
+            # -- hence the setdefault) takes precedence over the live
+            # canvas height on later clientheight reads.
+            obj = _engine_object(self.rt2, name)
+            gs1 = self.rt2.gs1
+            w = float(getattr(gs1, "screen_w", 800) or 800)
+            h = float(getattr(gs1, "screen_h", 600) or 600)
+            own_h = obj._members.get("height")
+            eff_h = to_num(own_h) if own_h is not None else h
+            obj._members.setdefault("height", eff_h)
+            obj._members.setdefault("y", 0.0)
+            obj._members["parent"] = self.get_object("guicontainer")
+            obj._members.update({
+                "width": w, "clientwidth": w, "clientheight": eff_h,
+                "extent": [w, eff_h], "clientextent": [w, eff_h],
+            })
+            return obj
+        if name == "servername":
+            # Bare global: the CURRENT server's serverlist name ("Login").
+            # The Login scripts gate their whole taskbar layout on it
+            # (isLoginServer(): Serverlist_TaskButton_Server visible = the
+            # non-login case); unresolved it read "" and the empty-labeled
+            # server button covered the Servers button.
+            return to_str(getattr(self.rt2.client, "server_name", "") or "")
         if name == "worldsf":
             # v6 C# client world handle: scripts call WorldsF.setFrameTick(ms)
             # (v6 preloader init + npc 10371). Method calls on an object the
@@ -669,6 +762,26 @@ class GS2ClientHost(GS2Host):
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
             return vm.this
+        # a named GUI control: `new GuiWindowCtrl(Serverlist_Panel)` binds the
+        # ctor arg as a global name, and scripts then address the control as a
+        # bare global -- the live Login server's -Rescripted/IRC/Login3 does
+        # `GuiRC.visible = true; gr_LoginScreen.visible = false;` and gates on
+        # `isObject("Serverlist_Panel")`. GS2GuiManager already keeps the
+        # name->control registry; without this hop those bare references (and
+        # isobject() on control names, which routes through get_object) never
+        # resolved.
+        if self.rt2.gui is not None:
+            ctrl = self.rt2.gui._named.get(name)
+            if ctrl is not None:
+                return ctrl
+            if name.endswith("profile"):
+                # bare reference to an ENGINE-BUILTIN profile
+                # (`profile = GuiBlueTransWindowProfile;`,
+                # `with (GuiDefaultProfile) {...}`): never script-declared,
+                # vivified from the builtin style table on first use
+                prof = self.rt2.gui.profile_by_name(name)
+                if prof is not None:
+                    return prof
         gs1 = self.rt2.gs1
         if gs1 is not None:
             value = gs1._host.get_builtin(
@@ -683,7 +796,15 @@ class GS2ClientHost(GS2Host):
         # no vm.py change was needed to wire this up. Any Gui*Ctrl classname
         # builds a real control (tracked by GS2GuiManager); everything else
         # keeps the prior behavior (an empty, untracked GS2Object).
-        if self.rt2.gui is not None and classname.lower().startswith("gui"):
+        # A classname ENDING in "profile" is a profile DERIVATION whose
+        # classname names the PARENT profile -- Login's addProfiles derives
+        # `new IRC_WindowProfile("IRC_WindowLeftProfile")` etc., which does
+        # NOT start with "gui": the startswith gate alone dropped every such
+        # derived profile to a plain GS2Object (unregistered, fields lost,
+        # and its auto-emitted addcontrol warned "non-control value").
+        cn = classname.lower()
+        if self.rt2.gui is not None and (cn.startswith("gui")
+                                         or cn.endswith("profile")):
             return self.rt2.gui.create_control(classname, arg)
         return GS2Object(name=classname)
 
@@ -738,6 +859,39 @@ class GS2ClientHost(GS2Host):
     def call_builtin(self, vm: GS2VM, name: str, args: List[Any],
                      obj: Optional[GS2Object] = None) -> Any:
         rt2 = self.rt2
+        if vm is not None:
+            # See ClientGS2._last_vm: lets GUI controls resolve script-
+            # function member reads (`onAction = function(){...}` under the
+            # VM's with-rebound `this`).
+            rt2._last_vm = vm
+
+        if name == "catchevent":
+            # catchevent(target, eventname, handlername): route a GUI
+            # control's event to a function in the calling script.
+            # -Serverlist_Chat wires its smilie buttons this way from inside
+            # each button's construction block:
+            #   thiso.catchevent(this.name, "onAction", "onSmilieButton")
+            # `this.name` reads back empty there (the VM's `this` is the
+            # weapon, not the control under construction), so an empty or
+            # unresolvable target falls back to the control currently being
+            # constructed. The handler receives the control's name (the
+            # callbacks parse a trailing index off it).
+            if rt2.gui is not None and len(args) >= 3 and vm is not None:
+                target = args[0]
+                ctrl = (rt2.gui._named.get(target.lower())
+                        if isinstance(target, str)
+                        else rt2.gui._resolve(target))
+                if ctrl is None and rt2.gui._construction_stack:
+                    ctrl = rt2.gui._construction_stack[-1]
+                event = to_str(args[1]).lower()
+                handler = to_str(args[2]).lower()
+                if ctrl is not None and event and handler:
+                    # the handler receives the CONTROL (onSmilieButton reads
+                    # obj.smiliecode off it)
+                    ctrl.set(event,
+                             lambda *a, _c=ctrl, _vm=vm, _h=handler:
+                                 _vm.call(_h, _c))
+            return 0.0
 
         if obj is not None:
             if name == "sort" and isinstance(obj, list):
@@ -747,7 +901,28 @@ class GS2ClientHost(GS2Host):
                 if args:
                     rt2.save_lines(to_str(args[0]), obj)
                 return 0.0
+            # Other list methods (add/addarray/size/clear/index/sortbyvalue)
+            # deliberately fall through as NOT_HANDLED: the shared VM
+            # implements them natively and gives the host first refusal
+            # (obj= may be a plain Python list here, not a GS2Object).
             if name in self.stubbed:
+                return 0.0
+            if name == "addcontrol" and rt2.gui is not None:
+                # Compiler-emitted `addcontrol(<child name>)` after each
+                # nested new's WITHEND, resolved against the ENCLOSING
+                # with-target (the VM routes with-scope bare calls here with
+                # obj= that target; verified against the official
+                # interpreter). Parent the named child under obj -- this is
+                # what builds the real control hierarchy for the inline-new
+                # compile shape (-Serverlist_Chat emits 13 of these). obj may
+                # also be the GUIContainer engine-object stand-in (canvas
+                # root): _resolve() returns None then and the child stays a
+                # root, which IS the canvas.
+                child = args[0] if args else None
+                if isinstance(child, str):
+                    child = rt2.gui._named.get(child.lower(), child)
+                rt2.gui.addcontrol(child, owner_vm=vm)
+                rt2.gui.add_to(obj, child)
                 return 0.0
             if isinstance(obj, _EngineObject):
                 # v6 C# client engine-object methods. Observed call sites
@@ -782,6 +957,16 @@ class GS2ClientHost(GS2Host):
                     return 0.0
                 if name == "makefirstresponder":
                     rt2.gui.focus(obj if not args or bool(to_num(args[0])) else None)
+                    return 0.0
+                if name in ("showtop", "show") and ctrl is not None:
+                    # ctrl.showTop(): make visible and raise to the top of
+                    # the sibling z-order (Login's -Serverlist_Chat openChat
+                    # ends with GlobalChat_Window.showtop()). Same semantics
+                    # as the global showgui() form.
+                    rt2.gui.show(ctrl)
+                    return 0.0
+                if name == "hide" and ctrl is not None:
+                    rt2.gui.hide(ctrl)
                     return 0.0
                 if name == "trigger":
                     if ctrl is not None:
@@ -826,7 +1011,7 @@ class GS2ClientHost(GS2Host):
         # GS2GuiManager infers nesting from create/addcontrol call order.
         if name == "addcontrol":
             if rt2.gui is not None:
-                rt2.gui.addcontrol(args[0] if args else None)
+                rt2.gui.addcontrol(args[0] if args else None, owner_vm=vm)
             return 0.0
 
         if name in ("addcontainer", "addguicontainer"):
@@ -836,6 +1021,19 @@ class GS2ClientHost(GS2Host):
 
         if name in self.stubbed:
             return 0.0
+
+        if name in ("requesturl", "requesturlasgamefile"):
+            # Inert BY POLICY: this client never fetches script-supplied
+            # URLs (Login uses it for an events-news feed; the payload is
+            # cosmetic). Returns a dead request object so the follow-up
+            # catchevent(this.eventinforequest, "onReceiveData", ...) has a
+            # real target -- onReceiveData simply never fires.
+            if name not in rt2._policy_stub_logged:
+                rt2._policy_stub_logged.add(name)
+                logger.info("GS2 %s(): inert stub (no network fetch by "
+                            "policy); url=%r",
+                            name, to_str(args[0]) if args else "")
+            return GS2Object(name="urlrequest")
 
         if name in ("screenx", "screeny"):
             game = getattr(rt2, "game_shell", None)
@@ -866,6 +1064,9 @@ class GS2ClientHost(GS2Host):
             y = to_num(args[1]) if len(args) > 1 else to_num(getattr(player, "y", 0))
             return rt2.nearest_players(x, y)
 
+        if name == "findplayerbyid":
+            return rt2.player_by_id(int(to_num(args[0]))) if args else 0.0
+
         if name == "findimg":
             return rt2.find_image(vm, int(to_num(args[0]))) if args else 0.0
 
@@ -882,8 +1083,23 @@ class GS2ClientHost(GS2Host):
             return 0.0
 
         if name in ("sendtext", "requesttext"):
+            # Script-facing signature is (type, option, params...) -- the
+            # reference engine's binding is "ssX" (FourPlay TInitStatics
+            # sendtext) with NO weapon argument: the engine prepends the
+            # CALLING weapon's own name as the first wire field, giving
+            # "-Serverlist,lister,list,all" / "GraalEngine,irc,login,-"
+            # (GServer-v2 PlayerRequestText.cpp parses weapon\ntype\noption\n
+            # params...; the C# client's hardcoded flows send the same shape).
+            # Without that field the server read our type as the weapon and
+            # matched nothing -- the live Login lister never answered a
+            # single request. A top-level {array} param contributes one wire
+            # field per element; a NESTED array collapses to one gtokenized
+            # field (server side does params[4].guntokenize(), e.g. the
+            # IRCBot "!getserverinfo" bundle).
             if rt2.client is not None and args:
-                rt2.client.send_server_text(name == "requesttext", "\n".join(to_str(a) for a in args))
+                fields = [rt2.wire_weapon_name(vm)] + rt2.wire_text_fields(args)
+                rt2.client.send_server_text(name == "requesttext",
+                                            "\n".join(fields))
             return 0.0
 
         if name == "showgui":
@@ -952,7 +1168,11 @@ class GS2ClientHost(GS2Host):
             return 1.0 if (args and self.get_object(to_str(args[0])) is not None) else 0.0
 
         if name == "findweapon":
-            wvm = rt2.vms["weapon"].get(to_str(args[0]).lower()) if args else None
+            wname = to_str(args[0]) if args else ""
+            wvm = rt2.vms["weapon"].get(wname.lower()) if wname else None
+            if wvm is None and wname:
+                # Client-install weapons: see ClientGS2.fetch_weapon.
+                wvm = rt2.fetch_weapon(wname)
             return wvm.this if wvm is not None else 0.0
 
         if name in ("setani", "setcharani"):
@@ -1022,6 +1242,42 @@ class GS2ClientHost(GS2Host):
         # -- v6 C# client platform builtins ---------------------------------
         # Call-site evidence is the v6 bytecode disasms (job a34dbef5 tmp/):
         # -System, -System_Preloader, -Zoom, -warn, npc 10371.
+
+        if name in ("base64encode", "base64decode"):
+            import base64
+            raw = to_str(args[0]) if args else ""
+            try:
+                if name == "base64encode":
+                    return base64.b64encode(
+                        raw.encode("latin-1", "replace")).decode("ascii")
+                return base64.b64decode(
+                    raw.encode("ascii", "replace"), validate=False
+                ).decode("latin-1", "replace")
+            except Exception:
+                return ""
+
+        if name == "savevars":
+            # savevars(filename): persist the calling script's plain this.
+            # members as name=value lines, path-confined under the same
+            # server-scoped cache dir (and caps) save_lines enforces.
+            if args and vm is not None:
+                this = getattr(vm, "this", None)
+                members = getattr(this, "_members", {}) or {}
+                lines = [f"{key}={to_str(value)}"
+                         for key, value in members.items()
+                         if not str(key).startswith("_")
+                         and not callable(value)
+                         and isinstance(value, (str, int, float, bool))]
+                rt2.save_lines(to_str(args[0]), lines)
+            return 0.0
+
+        if name in ("lowercase", "uppercase"):
+            # Bare engine string builtins (Login -Serverlist_Chat keys its
+            # per-channel control names on lowercase(channel):
+            # "GlobalChat_ChatList_" @ lowercase(channel) -- unanswered,
+            # every channel control lookup missed).
+            value = to_str(args[0]) if args else ""
+            return value.lower() if name == "lowercase" else value.upper()
 
         if name == "strequals":
             # npc 10371 onPlayerEnters:
@@ -1137,9 +1393,24 @@ class ClientGS2:
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
         self._pending_joins: Dict[str, List[GS2VM]] = {}
         self._prev_bytecode_cb = None
+        self._prev_server_text_cb = None
+        # The most recently executing VM (stamped by _run/load_bytecode and
+        # every host builtin call). GuiControl.get uses it to resolve a
+        # missing member that names a script function to a call-closure:
+        # `onAction = function(){...}` compiles to a READ of
+        # this.<generated-name>, and the VM's official with-rebinding makes
+        # `this` the control under construction -- the control alone cannot
+        # reach the script's function table. VM execution is synchronous, so
+        # "last" is "current" for every construction-time read.
+        self._last_vm: Optional[GS2VM] = None
         # Bytecode that arrived inside the client's packet loop, waiting to
         # be loaded/run from the game loop (see _on_bytecode).
         self._pending_bytecode: List[tuple] = []
+        # findweapon() names the server did not answer a PLI_UPDATESCRIPT
+        # for (see fetch_weapon) -- never re-stall on them this session.
+        self._findweapon_missing: set = set()
+        # policy-inert builtins already logged once (requesturl etc.)
+        self._policy_stub_logged: set = set()
         self._sleeping = False                    # a script sleep() is pumping update()
         self._coros: List[dict] = []
         self._active_coro_keys: set = set()
@@ -1181,6 +1452,43 @@ class ClientGS2:
             return False
         return True
 
+    def wire_weapon_name(self, vm: Optional[GS2VM]) -> str:
+        """The calling script's wire identity for sendtext/requesttext: the
+        weapon's original-case name, or "GraalEngine" for engine-originated
+        sends (the reference client's convention -- see call_builtin's
+        sendtext comment). Joined-class instances resolve to their joiner."""
+        key = self._timeout_key(vm) if vm is not None else None
+        if key is not None and key[0] == "weapon":
+            wvm = self.vms["weapon"].get(key[1])
+            name = getattr(wvm, "name", "") if wvm is not None else ""
+            if ":" in name:
+                return name.split(":", 1)[1]
+            if name:
+                return name
+            return to_str(key[1])
+        return "GraalEngine"
+
+    @staticmethod
+    def wire_text_fields(args) -> List[str]:
+        """Flatten sendtext/requesttext script args to wire fields: scalars
+        one field each, a top-level array one field per element, an array
+        nested inside that one gtokenized field (round-tripping the server's
+        params[i].guntokenize())."""
+        from .packets import _gtokenize
+
+        def field(value) -> str:
+            if isinstance(value, (list, tuple)):
+                return _gtokenize("\n".join(field(item) for item in value))
+            return to_str(value)
+
+        fields: List[str] = []
+        for arg in args:
+            if isinstance(arg, (list, tuple)):
+                fields.extend(field(item) for item in arg)
+            else:
+                fields.append(to_str(arg))
+        return fields
+
     def nearest_players(self, x: float, y: float) -> list:
         """Return live other-player objects ordered by distance from (x, y)."""
         client = self.client
@@ -1204,6 +1512,30 @@ class ClientGS2:
                 item.set(key, value)
             found.append((distance, item))
         return [item for _, item in sorted(found, key=lambda pair: pair[0])]
+
+    def player_by_id(self, player_id: int):
+        """Return the player object with this id (local or remote), else 0.0."""
+        client = self.client
+        if client is None:
+            return 0.0
+        local = getattr(client, "player", None)
+        if local is not None and getattr(local, "id", None) == player_id:
+            get = lambda key, default=None: getattr(local, key, default)
+        else:
+            player = (getattr(client, "players", {}) or {}).get(player_id)
+            if player is None:
+                return 0.0
+            get = player.get if isinstance(player, dict) else (
+                lambda key, default=None: getattr(player, key, default))
+        item = GS2Object(name=f"player:{player_id}")
+        for key, value in (
+                ("id", player_id), ("account", get("account", "")),
+                ("nick", get("nickname", "")),
+                ("nickname", get("nickname", "")),
+                ("chat", get("chat", "")),
+                ("x", get("x", 0)), ("y", get("y", 0))):
+            item.set(key, value)
+        return item
 
     def player_list_objects(self) -> list:
         client = self.client
@@ -1275,7 +1607,55 @@ class ClientGS2:
         self.client.gs2_host = self
         self._prev_bytecode_cb = self.client.on_gs2_bytecode
         self.client.on_gs2_bytecode = self._on_bytecode
+        # PLO_SERVERTEXT -> onReceiveText engine event. NB the pygame shell's
+        # _setup_callbacks() later replaces client.on_server_text with its own
+        # chat-log handler, which forwards here explicitly (game/setup.py) --
+        # this direct hook covers headless embedders that never run setup.
+        self._prev_server_text_cb = getattr(self.client, "on_server_text", None)
+        if hasattr(self.client, "on_server_text"):
+            self.client.on_server_text = self._on_server_text
         return self
+
+    def _on_server_text(self, text: str):
+        if self._prev_server_text_cb is not None:
+            try:
+                self._prev_server_text_cb(text)
+            except Exception:
+                pass
+        self.handle_server_text(text)
+
+    def handle_server_text(self, text: str) -> None:
+        """Inbound PLO_SERVERTEXT -> the v6 engine's onReceiveText(texttype,
+        textoption, textlines) weapon event ("receivetext" in the reference
+        client's engine-event list; FourPlay's tclient_receivetext binding
+        takes FOUR strings). The wire payload's FIRST token is the target
+        WEAPON's name -- live Login traffic is "-Serverlist_Chat,irc,
+        addchanneluser,#graal,..." and GServer-v2's replies echo the weapon
+        field from the request (PlayerRequestText.cpp; the C# client parses
+        tokens[0]==weapon, [1]==type, [2]==option). The engine consumes the
+        weapon token for routing and hands the script (texttype, textoption,
+        textlines) -- which is why -Serverlist_Chat can gate texttype ==
+        "irc". A prior revision bound texttype = tokens[0], so every real
+        reply carried the weapon name as its texttype and no handler's gate
+        ever matched. Replies addressed to a weapon we have route to it
+        alone; anything else (e.g. "GraalEngine", or a client-install weapon
+        the server never sent us) broadcasts."""
+        from .packets import _guntokenize
+        tokens = _guntokenize(to_str(text))
+        # every live Login server sends one EMPTY PLO_SERVERTEXT in its
+        # login burst (guntokenize("") == [""]) -- not an event
+        if not tokens or not to_str(tokens[0]):
+            return
+        weapon = to_str(tokens[0])
+        texttype = tokens[1] if len(tokens) > 1 else ""
+        textoption = tokens[2] if len(tokens) > 2 else ""
+        textlines = tokens[3:]
+        vm = self.vms["weapon"].get(weapon.lower())
+        if vm is not None:
+            if vm.has_function("onReceiveText"):
+                self._run(vm, "onReceiveText", texttype, textoption, textlines)
+            return
+        self.trigger_event("onReceiveText", texttype, textoption, textlines)
 
     def _on_bytecode(self, kind: str, key, blob: bytes):
         if self._prev_bytecode_cb is not None:
@@ -1336,11 +1716,66 @@ class ClientGS2:
             # so a re-send is a continuation of the same object, not a new
             # one: onCreated (constructor semantics, like GS1's load_weapon
             # never re-firing an equivalent hook) only fires the first time.
+            self._last_vm = vm
             vm.run_toplevel()
             if (old is None and vm.has_function("onCreated")
                     and (kind == "weapon" or self.client is None)):
                 self._run(vm, "onCreated")
+            if (old is None and kind == "weapon"
+                    and vm.has_function("onServerListerConnect")
+                    and getattr(self.client, "connected", False)):
+                # "serverlisterconnect" engine event (reference client event
+                # list, FourPlay TInitStatics.cpp). The v6 client raises it
+                # when its serverlist link comes up; server weapons load over
+                # a connection whose lister link is ALREADY up, so the
+                # notification replays at load. Login's -Serverlist_Chat
+                # does its whole lister login (sendLogin -> sendtext
+                # "irc","login") from exactly this handler.
+                self._run(vm, "onServerListerConnect")
         return vm
+
+    def fetch_weapon(self, wname: str, timeout: float = 3.0) -> Optional[GS2VM]:
+        """findweapon() missed: pull the weapon from the server.
+
+        On the official client the Login serverlist weapons
+        (-Rescripted/Serverlist, -Serverlist, -ServerListScreen, ...) ship
+        with the CLIENT INSTALL -- the server never pushes them, it only
+        answers PLI_UPDATESCRIPT refresh requests, which is exactly how the
+        installed copies stay current. We have no client install, so
+        findweapon() on those names always missed and Login's bootstrap
+        (-Rescripted/IRC/Login3 onCreated) silently did nothing = black
+        screen. Requesting the script over the same PLI_UPDATESCRIPT channel
+        works: the live Login server answers with full bytecode (verified
+        2026-07-24 for all five client-install names).
+
+        When we're outside the client's packet loop, pump the connection
+        (bounded) until the script lands and load it inline, so findweapon()
+        returns a live weapon object just as if it had been installed --
+        Login3 then skips straight past its null-checks like the official
+        client. From inside the packet loop (an event fired mid-update) we
+        can't recurse into update(); the request still goes out and the
+        weapon self-initializes when it loads via the normal deferred path.
+        Names the server never answers are negative-cached for the session
+        so a genuinely absent weapon stalls at most once."""
+        client = self.client
+        norm = wname.lower()
+        if (client is None or norm in self._findweapon_missing
+                or not client.request_weapon_bytecode(wname)):
+            return None
+        if getattr(client, "_in_update", False):
+            return None      # async: load_bytecode will run it on arrival
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            client.update(timeout=0.05)
+            for i, (kind, key, blob) in enumerate(self._pending_bytecode):
+                nk = key.lower() if isinstance(key, str) else key
+                if kind == "weapon" and nk == norm:
+                    del self._pending_bytecode[i]
+                    return self.load_bytecode(kind, key, blob)
+        self._findweapon_missing.add(norm)
+        logger.info("GS2 findweapon(%r): server did not answer "
+                    "PLI_UPDATESCRIPT within %.1fs", wname, timeout)
+        return None
 
     # -- class joins ---------------------------------------------------------
 
@@ -1404,6 +1839,7 @@ class ClientGS2:
     # -- events --------------------------------------------------------------
 
     def _run(self, vm: GS2VM, event: str, *args) -> None:
+        self._last_vm = vm
         key = self._timeout_key(vm)
         if key in self._active_coro_keys:
             pending = self._pending_events.setdefault(key, [])
