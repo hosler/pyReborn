@@ -89,6 +89,14 @@ _NOOP = frozenset({
     "deletestring", "insertstring", "replacestring",
 })
 
+# onwall2 rect probes: far-edge sliver overlaps up to this many tiles are NOT
+# counted as hits (see the onwall2 comment in call_function for the full
+# derivation from -Test/Movement's flush-wall sliding bug). Must exceed the
+# worst resting wall penetration a check-then-move script can leave (one
+# movement step, 0.3 tiles on Bomber v6) minus the 1/16 the scripts already
+# shave off their probe extents: 0.3 - 1/16 = 0.2375.
+_ONWALL2_EDGE_TOL = 0.25
+
 
 class GS1ClientHost(Host):
     """Host bridging GS1 to the live pyReborn client (local player + NPC dict).
@@ -807,6 +815,25 @@ class GS1ClientHost(Host):
             # w/h clamp: >=0 (scripts pass slightly-negative degenerate
             # widths, which the rect walk must treat as "just this tile"),
             # <=8 so a bogus huge rect can't stall the frame.
+            #
+            # Far edges are EXCLUSIVE minus a quarter-tile forgiveness
+            # (_ONWALL2_EDGE_TOL). Why: the reference client (FourPlay
+            # TServerLevel::isRectOnWall) rejects w<=0 or h<=0 outright, so
+            # movement scripts whose probe extents come out degenerate
+            # (-Test/Movement passes speed/16 - 1/16 = -0.04375 with
+            # player.speed = 0.3 tiles) check NOTHING on a real client. Our
+            # origin-cell fallback is what makes them block at all — but it
+            # only trips after the check-then-move loop has stepped the
+            # leading edge INTO the wall row, so the player rests penetrated
+            # by up to one step (0.3). The perpendicular slide probes
+            # (extent 15/16) then graze that wall row/column by
+            # (penetration - 1/16) <= 0.2375, and an exact coverage walk
+            # counted the grazed cell: pressed flush against a bottom wall
+            # you couldn't move left/right, against a right wall not
+            # up/down. Forgiving far-edge slivers <= 0.25 restores sliding
+            # (and gives classic corner-assist feel); integer-aligned rects
+            # and any overlap beyond a quarter tile behave exactly as
+            # before.
             xf = to_num(args[0]) if args else 0.0
             yf = to_num(args[1]) if len(args) > 1 else 0.0
             if len(args) >= 4:
@@ -814,8 +841,8 @@ class GS1ClientHost(Host):
                 w = min(max(to_num(args[2]), 0.0), 8.0)
                 h = min(max(to_num(args[3]), 0.0), 8.0)
                 x0, y0 = int(_m.floor(xf)), int(_m.floor(yf))
-                x1 = max(x0, int(_m.ceil(xf + w)) - 1)
-                y1 = max(y0, int(_m.ceil(yf + h)) - 1)
+                x1 = max(x0, int(_m.ceil(xf + w - _ONWALL2_EDGE_TOL)) - 1)
+                y1 = max(y0, int(_m.ceil(yf + h - _ONWALL2_EDGE_TOL)) - 1)
                 for ty in range(y0, y1 + 1):
                     for tx in range(x0, x1 + 1):
                         if self.rt.is_wall(tx, ty):
