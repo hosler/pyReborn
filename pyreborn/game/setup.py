@@ -488,8 +488,20 @@ class SetupMixin:
             now = time.time()
             sent = self._triggeraction_sent
             if now - sent.get(action, 0.0) < 5.0:
+                # PYREBORN_DEBUG breadcrumb (same idiom as npc_handler's
+                # [touch] line): a suppressed re-send within the 5s window is
+                # invisible otherwise. GS1-path repeats are deliberately
+                # dropped here for five seconds; GS2 triggeraction calls use
+                # their direct host path and do not pass through this throttle.
+                if os.environ.get("PYREBORN_DEBUG"):
+                    import sys
+                    print(f"[trigger] throttled (<5s repeat): {action!r}",
+                          file=sys.stderr)
                 return
             sent[action] = now
+            if os.environ.get("PYREBORN_DEBUG"):
+                import sys
+                print(f"[trigger] -> server: {action!r}", file=sys.stderr)
             try:
                 self.client.triggeraction(action, x, y, npc_id)
             except Exception:
@@ -755,9 +767,58 @@ class SetupMixin:
             return
         self._reload_level_scripts(lvl)
 
+    def _snapshot_gs2_npc_shapes(self):
+        """Collision shapes owned by CURRENT-level GS2 NPCs, taken before
+        gs1.clear() wipes the shared shape store.
+
+        GS2 NPCs (v6 bytecode) run setshape/setshape2 exactly once per level
+        visit, in onPlayerEnters via ClientGS2.pump_level_events — which the
+        frame loop pumps BEFORE _check_level_change triggers this reload (the
+        reload additionally waits up to 0.6s for NPCs to stream). gs1.clear()
+        then destroyed those shapes + onwall2 blocking cells, and GS2 never
+        re-records: its per-level entry event is already consumed, and a
+        still-sleeping onPlayerEnters coroutine (the Bomber queue counter
+        sleeps 1s right after its setshape2) blocks any replay via the
+        active-coroutine guard. Net effect live: no NPC touch, and scripted
+        movement walked straight through the counter."""
+        gs2 = getattr(self, 'gs2', None)
+        keep = {}
+        if gs2 is None:
+            return keep
+        npc_vms = gs2.vms.get('npc', {})
+        for nid, geom in self.gs1.shapes.items():
+            if nid in npc_vms or str(nid) in npc_vms:
+                if isinstance(self._gs2_shape_npc(nid), dict):
+                    keep[nid] = geom
+        return keep
+
+    def _gs2_shape_npc(self, nid):
+        """client.npcs lookup tolerant of a str-keyed VM id (bytecode keys
+        keep the id type they arrived with; npc dicts are int-keyed)."""
+        npc = self.client.npcs.get(nid)
+        if npc is None and isinstance(nid, str):
+            try:
+                npc = self.client.npcs.get(int(nid))
+            except ValueError:
+                npc = None
+        return npc
+
+    def _restore_gs2_npc_shapes(self, keep):
+        """Re-apply a _snapshot_gs2_npc_shapes() snapshot after gs1.clear():
+        both the touch-shape store and the derived onwall2 blocking cells."""
+        for nid, geom in keep.items():
+            npc = self._gs2_shape_npc(nid)
+            if not isinstance(npc, dict):
+                continue  # despawned between snapshot and restore
+            self.gs1.shapes[nid] = geom
+            w, h, flags = geom
+            self.gs1._update_shape_blocks(nid, npc, w, h, flags)
+
     def _reload_level_scripts(self, lvl: str):
         """Swap the GS1 engine + per-NPC render state over to the current level."""
+        gs2_shapes = self._snapshot_gs2_npc_shapes()
         self.gs1.clear()
+        self._restore_gs2_npc_shapes(gs2_shapes)
         # Stale scripted screen tint dies with the old level's scripts (see
         # the epoch-clear in _check_level_change; this also covers reloads
         # that don't come through a plain-level epoch bump).

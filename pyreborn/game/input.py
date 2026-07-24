@@ -505,6 +505,10 @@ class InputMixin:
         # bomb placement itself by reading keydown()/playerx. Don't run the
         # built-in WASD movement or D-weapon handling — just feed it the keys.
         if not self.gs1.default_movement:
+            # NPC touch is still client-detected: _move() never runs here, so
+            # probe pushing-into-an-NPC-shape off the held direction keys
+            # (Bomber v6 queue counter — see _scripted_movement_touch).
+            self._scripted_movement_touch(keys)
             return
 
         # Check for combined key actions first

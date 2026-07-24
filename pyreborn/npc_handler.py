@@ -158,6 +158,20 @@ class NPCHandler:
         test_points = [(player_x + PLAYER_FEET_DX, player_y + PLAYER_FEET_DY)]
         test_points += [(player_x + ox, player_y + oy)
                          for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
+        # Boundary-contact counts as touching: the reference client's touch
+        # test extends a couple of PIXELS beyond the collision box in the
+        # facing direction. Our up-probe row is exactly the box top (y+1),
+        # and a setshape2 rect is bottom-exclusive — so a player pressed
+        # dead against a shape (Bomber v6's queue counter stops scripted
+        # movement at probe_y == shape_bottom exactly) sampled 19.0 against
+        # [18,19) and never touched. Add the probes pushed 1px (1/16 tile)
+        # deeper along the facing so flush contact registers.
+        eps = 1.0 / 16.0
+        fdx, fdy = {0: (0.0, -eps), 1: (-eps, 0.0),
+                    2: (0.0, eps), 3: (eps, 0.0)}.get(player_dir, (0.0, 0.0))
+        if fdx or fdy:
+            test_points += [(player_x + ox + fdx, player_y + oy + fdy)
+                            for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
 
         for npc_id, shape in self.npc_shapes.items():
             for tx, ty in test_points:

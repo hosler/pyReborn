@@ -177,6 +177,86 @@ class ActionsMixin:
         # Check for door/edge link at new position (auto-warp on walk-into).
         self._try_link_warp()
 
+    def _scripted_movement_touch(self, keys):
+        """NPC-touch probe for scripted movement (disabledefmovement).
+
+        With default_movement off a weapon script moves the player from the
+        VM, so _move() — the only caller of npc_handler.process_movement —
+        never runs and playertouchsme/onPlayerTouchsMe can never fire.
+        Bomber v6's queue counter (NPC 10376) is joined by pushing INTO it,
+        so that killed both touch events and queue joins.
+
+        Pushing a held arrow toward an NPC's shape is the same gesture as
+        walking into it, so run the identical touch dispatch off the pressed
+        direction at the player's current (script-driven) position, every
+        frame a direction is held. process_movement's touched-set dedupes
+        for as long as the overlap lasts, and also updates itself when the
+        player leaves a shape — so a later re-push re-fires (the counter
+        NPC's handlePlayer TOGGLES queue membership; re-fire must require
+        walking away first, which the touched-set gives us for free)."""
+        handler = getattr(self, 'npc_handler', None)
+        if handler is None:
+            return
+        dx = dy = 0
+        if keys[K_UP]:
+            dy = -1
+        elif keys[K_DOWN]:
+            dy = 1
+        if keys[K_LEFT]:
+            dx = -1
+        elif keys[K_RIGHT]:
+            dx = 1
+        if dx == 0 and dy == 0:
+            return
+        direction = direction_from_delta(dx, dy)
+        # GS2-only NPCs (v6 bytecode, no GS1 script text) record their
+        # setshape2 when pump_level_events runs their onPlayerEnters — a
+        # frame or more AFTER _reload_level_scripts took the level-entry
+        # update_npcs() snapshot, and nothing else re-snapshots for them.
+        # Refresh here (cheap dict walk) so the probe sees those shapes and
+        # any script-moved NPC positions.
+        handler.update_npcs()
+        handler.process_movement(self.client.x, self.client.y, direction)
+
+    def _check_scripted_link_warp(self) -> bool:
+        """Link-warp probe for scripted movement (disabledefmovement).
+
+        With default_movement off a weapon script writes player x/y from the
+        VM, so _move() — the only caller of _try_link_warp — never runs and
+        walking onto a door link stopped warping. (Bomber v6's -Test/Movement
+        weapon does NOT warp links itself: its bytecode only does wall checks
+        (onwall2/hitwall) and ganis, matching the reference client, which
+        warps whenever the player's position enters a link rect no matter
+        what moved them.) So re-probe from the frame loop after the script
+        engines have ticked, on any position change. _try_link_warp's
+        rising-edge latch + arrival suppression already make a per-frame
+        probe safe (no bounce across return/overlapping links), and a fired
+        warp goes through the same _use_door_link path as an input-driven
+        one (GS1/GS2 reload, playerenters, swimming recompute — never fork
+        that logic).
+
+        (Sibling gap: NPC touch under scripted movement is handled by
+        _scripted_movement_touch above — that one is key-gesture-driven,
+        while links are pure position overlap.)"""
+        gs1 = getattr(self, 'gs1', None)
+        if gs1 is None or gs1.default_movement:
+            return False
+        # Mid level-transition the position/link tables are in flux; let the
+        # in-flight warp settle before probing again.
+        if (getattr(self.client, '_local_level_transition', '')
+                or getattr(self, '_level_transition_input_frozen', False)):
+            return False
+        pos = (self.client.x, self.client.y)
+        if pos == getattr(self, '_scripted_link_pos', None):
+            return False
+        self._scripted_link_pos = pos
+        warped = self._try_link_warp()
+        if warped:
+            # Stamp the post-warp position so the next frame's probe only
+            # fires again on genuine further movement.
+            self._scripted_link_pos = (self.client.x, self.client.y)
+        return warped
+
     def _update_push_hold(self, dx: int, dy: int):
         """Track how long the currently-pressed direction has been held
         fully blocked; past PUSH_HOLD_TIME switches to the "push" gani

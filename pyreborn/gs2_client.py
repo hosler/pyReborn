@@ -38,6 +38,25 @@ SAVE_LINES_MAX_LINES = 4096
 SAVE_LINES_MAX_CHARS_PER_LINE = 4096
 SAVE_LINES_CACHE_MAX_BYTES = 5 * 1024 * 1024
 
+# Floor for settimer()/this.timeout. The v6 reference (C# client) has NO
+# 0.05s script-timer clamp — that tradition is the legacy GS1 path
+# (OpenGraal.Common ScriptObj.cs:100, `timeout -= 0.05` per tick). Its GS2
+# path fires onTimeout two racing ways, neither floored at 0.05:
+#   * GS2Engine 1.8.3 Script.cs SetTimer(): a ThreadPool sleeper at
+#     `Thread.Sleep(value * 1500)` (1.5x the requested delay, ~ms floor);
+#   * GameEngine.cs:755 polls due timers every fixed-timestep Update
+#     (TargetElapsedTime = 1/120 s — GameEngine.cs:85/171).
+# So a self-rearming setTimer(0.01) loop ticks at roughly the frame rate
+# (~60-120 Hz) — that cadence is what sizes the bomber lobby's CadavreTest
+# cog spin (0.03 rad/tick) AND -Test_Movement's walk (0.3 tiles/tick). The
+# old 0.05 floor here ran both at 1/3 speed. Floor at the reference's
+# 120 Hz update tick; effective cadence stays bounded by how often the game
+# loop pumps process_timeouts. A fixed-step accumulator catches up at 120 Hz
+# when a rendered frame spans multiple update quanta.
+TIMER_RESOLUTION = 1.0 / 120.0
+TIMER_BACKLOG_CAP = 0.25
+PENDING_EVENT_CAP = 16
+
 # GS2 GUI-controls layer (showgui/GuiControl -- see gs2_gui.py's module
 # docstring for how `new GuiButtonCtrl(...) { onAction = function(){...}; }`
 # actually compiles). Lives under game/ (pygame-only, unlike the rest of this
@@ -310,11 +329,11 @@ class _ThisObject(GS2Object):
 
     def set(self, key: str, value: Any) -> None:
         if key.lower() == "timeout":
-            # same 0.05s floor as the settimer() builtin (real-client timer
-            # resolution) so this.timeout = 0.01 loops tick at 20Hz too
+            # same floor as the settimer() builtin (see TIMER_RESOLUTION)
+            # so this.timeout = 0.01 loops tick at frame rate too
             v = to_num(value)
-            if 0.0 < v < 0.05:
-                v = 0.05
+            if 0.0 < v < TIMER_RESOLUTION:
+                v = TIMER_RESOLUTION
             self._rt2._timeouts[self._vm_key] = max(0.0, v)
             return
         super().set(key, value)
@@ -669,10 +688,10 @@ class GS2ClientHost(GS2Host):
             # way -- defer the unpaid remainder onto this VM's next sleep()
             # call (chained short in-packet sleeps then catch back up to
             # real elapsed time) rather than silently dropping it.
-            owed = min(rt2._sleep_debt.get(id(vm), 0.0) + secs, 1.0)
+            owed = min(getattr(vm, "_gs2_sleep_debt", 0.0) + secs, 1.0)
             wait = min(owed, 0.05)
             time.sleep(wait)
-            rt2._sleep_debt[id(vm)] = owed - wait
+            vm._gs2_sleep_debt = owed - wait
             return
         rt2._sleeping = True
         try:
@@ -851,13 +870,16 @@ class GS2ClientHost(GS2Host):
             return 0.0
 
         if name == "settimer":
-            # Real-client timer resolution is 0.05s: -Test_Movement's
-            # self-rearming setTimer(0.01) movement loop must tick at 20Hz
-            # (0.3 tiles/tick = the classic 6 tiles/s walk). Firing it every
-            # rendered frame instead tripled the walk speed at 60fps.
+            # Floor at the reference client's 120Hz update tick, NOT the
+            # legacy 0.05s: see TIMER_RESOLUTION. A prior wave clamped this
+            # to 0.05 assuming -Test_Movement's setTimer(0.01) loop was
+            # meant to tick at 20Hz (0.3 tiles/tick = the classic 6 tiles/s
+            # walk) — but GS2Engine 1.8.3 (the exact package the C# client
+            # pins) has no such floor, so per-frame ticking IS the reference
+            # behavior, for movement speed included.
             v = to_num(args[0]) if args else 0.0
-            if 0.0 < v < 0.05:
-                v = 0.05
+            if 0.0 < v < TIMER_RESOLUTION:
+                v = TIMER_RESOLUTION
             rt2._timeouts[rt2._timeout_key(vm)] = max(0.0, v)
             return 0.0
 
@@ -1079,25 +1101,16 @@ class ClientGS2:
         self.game_shell = None
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
-        self._vm_keys: Dict[int, tuple] = {}      # id(vm) -> (kind, key)
-        # id(joined-class instance) -> the joiner's own (kind, key). Multiple
-        # weapon/npc VMs can join the same class, each getting its own
-        # instantiated GS2VM over the shared class bytecode (_attach_class);
-        # those instances all carry _vm_keys[id(inst)] == ("class", cname)
-        # for join-detection purposes, but settimer()/timeout resolution
-        # must use the *joiner's* identity or two joiners of one class
-        # clobber each other's single ("class", cname) timeout slot. See
-        # _timeout_key().
-        self._vm_owners: Dict[int, tuple] = {}
         self._pending_joins: Dict[str, List[GS2VM]] = {}
         self._prev_bytecode_cb = None
         # Bytecode that arrived inside the client's packet loop, waiting to
         # be loaded/run from the game loop (see _on_bytecode).
         self._pending_bytecode: List[tuple] = []
         self._sleeping = False                    # a script sleep() is pumping update()
-        self._sleep_debt: Dict[int, float] = {}   # id(vm) -> unpaid in-packet sleep() time
         self._coros: List[dict] = []
         self._active_coro_keys: set = set()
+        self._pending_events: Dict[tuple, List[tuple]] = {}
+        self._timer_accumulator = 0.0
         # script-driven movement wire sync (see _sync_script_position)
         self._pos_sync_last: Optional[tuple] = None
         self._pos_sync_next: float = 0.0
@@ -1212,6 +1225,7 @@ class ClientGS2:
         # ClientGS1.load_weapon follows)
         old = self.vms[kind].get(norm_key)
         if old is not None:
+            self._cancel_vm_coroutines(old)
             vm.this = old.this
             vm.thiso = old.this
         else:
@@ -1221,7 +1235,8 @@ class ClientGS2:
             vm.this = this_cls(self, vm_key, name=f"{kind}:{key}")
             vm.thiso = vm.this
         self.vms[kind][norm_key] = vm
-        self._vm_keys[id(vm)] = vm_key
+        vm._gs2_kind, vm._gs2_key = vm_key
+        vm._gs2_owner = vm_key
 
         if kind == "class":
             waiting = self._pending_joins.pop(norm_key, [])
@@ -1252,7 +1267,7 @@ class ClientGS2:
         cname = classname.lower()
         # already joined?
         for j in vm.joined:
-            if self._vm_keys.get(id(j), ("", ""))[1] == cname:
+            if getattr(j, "_gs2_key", None) == cname:
                 return True
 
         cvm = self.vms["class"].get(cname)
@@ -1288,8 +1303,9 @@ class ClientGS2:
         # this instance must resolve back to the joiner's own identity (see
         # _timeout_key), not the shared class name, since every joiner of
         # `cname` gets its own `inst` here.
-        self._vm_keys[id(inst)] = ("class", cname)
-        self._vm_owners[id(inst)] = self._vm_keys.get(id(joiner), ("weapon", joiner.name))
+        inst._gs2_kind = "class"
+        inst._gs2_key = cname
+        inst._gs2_owner = self._timeout_key(joiner)
         joiner.joined.append(inst)
 
     def _timeout_key(self, vm: GS2VM) -> tuple:
@@ -1297,28 +1313,53 @@ class ClientGS2:
         under. A joined-class instance resolves to its joiner's own key
         (multiple joiners share one class's bytecode but never its timeout
         slot); a top-level weapon/npc/gani VM resolves to its own key."""
-        owner = self._vm_owners.get(id(vm))
-        if owner is not None:
-            return owner
-        return self._vm_keys.get(id(vm), ("weapon", vm.name))
+        return getattr(vm, "_gs2_owner",
+                       (getattr(vm, "_gs2_kind", "weapon"),
+                        getattr(vm, "_gs2_key", vm.name)))
 
     # -- events --------------------------------------------------------------
 
     def _run(self, vm: GS2VM, event: str, *args) -> None:
         key = self._timeout_key(vm)
         if key in self._active_coro_keys:
+            pending = self._pending_events.setdefault(key, [])
+            if len(pending) >= PENDING_EVENT_CAP:
+                dropped = pending.pop(0)
+                logger.debug("GS2 %s pending-event queue full; dropped %s",
+                             vm.name, dropped[0])
+            pending.append((event, args))
             return
         gen = vm.iter_call(event, *args)
         self._drive(gen, vm, key, event)
+
+    def _event_finished(self, key: tuple) -> None:
+        self._active_coro_keys.discard(key)
+        pending = self._pending_events.get(key)
+        if not pending:
+            self._pending_events.pop(key, None)
+            return
+        event, args = pending.pop(0)
+        if not pending:
+            self._pending_events.pop(key, None)
+        kind, vm_key = key
+        vm = self.vms.get(kind, {}).get(vm_key)
+        if vm is not None and vm.has_function(event):
+            self._run(vm, event, *args)
+
+    def _cancel_vm_coroutines(self, vm: GS2VM) -> None:
+        key = self._timeout_key(vm)
+        self._coros = [c for c in self._coros if c["key"] != key]
+        self._active_coro_keys.discard(key)
+        self._pending_events.pop(key, None)
 
     def _drive(self, gen, vm: GS2VM, key: tuple, event: str) -> None:
         try:
             delay = next(gen)
         except StopIteration:
-            self._active_coro_keys.discard(key)
+            self._event_finished(key)
             return
         except Exception as e:
-            self._active_coro_keys.discard(key)
+            self._event_finished(key)
             logger.warning("GS2 %s.%s aborted: %s", vm.name, event, e)
             return
         self._active_coro_keys.add(key)
@@ -1330,6 +1371,7 @@ class ClientGS2:
         if not self._coros:
             return
         still = []
+        finished = []
         for coro in self._coros:
             coro["remaining"] -= dt
             if coro["remaining"] > 0:
@@ -1339,12 +1381,14 @@ class ClientGS2:
                 coro["remaining"] = float(next(coro["gen"]))
                 still.append(coro)
             except StopIteration:
-                self._active_coro_keys.discard(coro["key"])
+                finished.append(coro["key"])
             except Exception as e:
-                self._active_coro_keys.discard(coro["key"])
+                finished.append(coro["key"])
                 logger.warning("GS2 %s.%s aborted: %s",
                                coro["vm"].name, coro["event"], e)
         self._coros = still
+        for key in finished:
+            self._event_finished(key)
 
     def trigger_event(self, event: str, *args) -> int:
         """Fire an event on every weapon/NPC VM that defines it. Returns the
@@ -1410,7 +1454,8 @@ class ClientGS2:
             shared = self.gs1._shared if self.gs1 is not None else {}
             if name in ("client", "clientr"):
                 scope = shared.setdefault("client", {})
-                obj = _FlagScopeObject(name, scope)
+                obj = _FlagScopeObject(name, scope,
+                                       local_writes=(name == "clientr"))
             else:
                 scope = shared.setdefault("server", {})
                 prefix = "serverr." if name == "serverr" else ""
@@ -1473,13 +1518,10 @@ class ClientGS2:
             vm = self.vms["npc"].pop(key, None)
             if vm is None:
                 continue
-            self._vm_keys.pop(id(vm), None)
-            self._vm_owners.pop(id(vm), None)
             self._entered_vms.discard(id(vm))
             tkey = ("npc", key)
             self._timeouts.pop(tkey, None)
-            self._active_coro_keys.discard(tkey)
-            self._coros = [c for c in self._coros if c["key"] != tkey]
+            self._cancel_vm_coroutines(vm)
 
     def pump_level_events(self):
         """Fire onPlayerEnters once per VM per level visit: weapons always,
@@ -1500,8 +1542,13 @@ class ClientGS2:
             self._entered_level = level
             self._entered_vms = set()
             if changed_level:
-                self._coros = []
-                self._active_coro_keys.clear()
+                npc_keys = {c["key"] for c in self._coros
+                            if c["key"][0] == "npc"}
+                self._coros = [c for c in self._coros
+                               if c["key"][0] != "npc"]
+                self._active_coro_keys.difference_update(npc_keys)
+                for key in npc_keys:
+                    self._pending_events.pop(key, None)
         npcs = getattr(client, "npcs", {})
         for kind in ("weapon", "npc"):
             for key, vm in list(self.vms[kind].items()):
@@ -1539,6 +1586,16 @@ class ClientGS2:
             for vm in list(self.vms[kind].values()):
                 if vm.has_function("onUpdate"):
                     self._run(vm, "onUpdate")
+        self._timer_accumulator = min(
+            self._timer_accumulator + max(0.0, dt), TIMER_BACKLOG_CAP)
+        steps = int(self._timer_accumulator / TIMER_RESOLUTION)
+        self._timer_accumulator -= steps * TIMER_RESOLUTION
+        for _ in range(steps):
+            self._process_timeout_step(TIMER_RESOLUTION)
+        self._sync_script_position()
+
+    def _process_timeout_step(self, dt: float):
+        """Advance script timers by one fixed update quantum."""
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt
             if t > 0:
@@ -1558,7 +1615,6 @@ class ClientGS2:
                 continue
             if vm.has_function("onTimeout"):
                 self._run(vm, "onTimeout")
-        self._sync_script_position()
 
     def _sync_script_position(self):
         """While a script drives movement (disabledefmovement), its player.x/
@@ -1620,7 +1676,7 @@ class ClientGS2:
         as an anonymous shared "class" weapon."""
         vm_key = None
         if vm is not None:
-            vm_key = self._vm_owners.get(id(vm)) or self._vm_keys.get(id(vm))
+            vm_key = getattr(vm, "_gs2_owner", None)
         kind, key = vm_key if vm_key else ("weapon", "?")
         npc = None
         if kind == "npc" and self.client is not None:

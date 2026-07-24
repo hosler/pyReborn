@@ -181,6 +181,7 @@ class GuiControl(GS2Object):
 
     _NUM_ATTRS = ("x", "y", "width", "height")
     _STR_ATTRS = {"text": "text", "profile": "profile_name", "name": "ctrl_name"}
+    _EVENT_MEMBERS = {"onaction", "onselect"}
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(name=self.CTRL_CLASS)
@@ -224,6 +225,12 @@ class GuiControl(GS2Object):
             setattr(self, self._STR_ATTRS[k], to_str(value))
             return
         super().set(k, value)
+
+    def has(self, key: str) -> bool:
+        k = key.lower()
+        return (k in self._NUM_ATTRS or k == "visible"
+                or k in self._STR_ATTRS or k in self._EVENT_MEMBERS
+                or super().has(k))
 
     # -- tree -----------------------------------------------------------
 

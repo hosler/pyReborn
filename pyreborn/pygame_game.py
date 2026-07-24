@@ -245,6 +245,9 @@ class GameClient(
         # stops the "warp loop" on downward crossings.
         self._was_on_link = False
         self._link_arrival = None
+        # Last position probed by _check_scripted_link_warp (scripted movement
+        # writes x/y from the VM, bypassing _move()'s link check).
+        self._scripted_link_pos = None
 
         # Smooth movement - visual position tracks the authoritative position.
         self.visual_x = 0.0
@@ -462,6 +465,11 @@ class GameClient(
             self.gs2.process_coroutines(self._frame_dt)
             # GS2 VM onTimeout scheduling (settimer / this.timeout).
             self.gs2.process_timeouts(self._frame_dt)
+            # Scripted movement (disabledefmovement) writes player x/y from
+            # the script engines above, bypassing _move()'s link check —
+            # probe door links here on any position change (see
+            # _check_scripted_link_warp).
+            self._check_scripted_link_warp()
             # Snapshot held keys so keydown2(code, edge=true) sees just-pressed.
             self.gs1.advance_input_frame()
             # Reload the GS1 engine when we land in a new level (script warp,

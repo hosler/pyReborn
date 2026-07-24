@@ -43,6 +43,21 @@ class RenderMixin:
         # Walk-on sitting: derive seated state from the tile under the feet.
         self._update_sitting_state()
 
+        # Script-driven movement (disabledefmovement): the movement weapon
+        # writes player.dir on EVERY tick a held key changes (Bomber v6
+        # -Test/Movement's Movement(): `player.dir = k` per held key) but
+        # only calls setani() on movemode TRANSITIONS (IDLE->WALK etc.), so
+        # the setani bridge alone leaves the sprite facing stale when the
+        # held arrow key changes mid-walk. The real client re-reads
+        # player.dir every frame for the local sprite; mirror that here.
+        # (int() — the engines may hand back a float dir.)
+        if not getattr(getattr(self, "gs1", None), "default_movement", True):
+            try:
+                self.player_anim.set_direction(
+                    int(self.client.player.direction) & 3)
+            except (TypeError, ValueError):
+                pass
+
         # Update local player animation
         sounds = self.player_anim.update(dt)
         for sound in sounds:

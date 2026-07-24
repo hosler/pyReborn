@@ -160,8 +160,8 @@ class TestSettimerPerInstanceIdentity:
         joiner1.call("arm")
         joiner2.call("arm")
 
-        key1 = rt2._vm_keys[id(joiner1)]
-        key2 = rt2._vm_keys[id(joiner2)]
+        key1 = rt2._timeout_key(joiner1)
+        key2 = rt2._timeout_key(joiner2)
         assert key1 != key2
         # The old bug filed both under the single shared ("class", "cls")
         # key, so the second settimer() call clobbered the first's slot and
@@ -181,7 +181,8 @@ class TestSettimerPerInstanceIdentity:
         joiner1.call("arm")
         joiner2.call("arm")
 
-        rt2.process_timeouts(5.0)  # both slots expire together
+        for _ in range(20):
+            rt2.process_timeouts(0.25)
 
         assert joiner1.this.get("hit") == pytest.approx(1.0)
         assert joiner2.this.get("hit") == pytest.approx(1.0)
@@ -267,14 +268,14 @@ class TestClientBuiltinsAndFrameEvents:
         vm = rt2.load_bytecode("npc", 1, container)
         rt2.load_bytecode("npc", 2, GS2Container())
 
-        key = rt2._vm_keys[id(vm)]
+        key = rt2._timeout_key(vm)
         rt2._active_coro_keys.add(key)
         rt2.process_timeouts(1 / 60)
         assert vm.this.get("updates") is None
 
         rt2._active_coro_keys.clear()
         rt2.process_timeouts(1 / 60)
-        assert vm.this.get("updates") == pytest.approx(1.0)
+        assert vm.this.get("updates") == pytest.approx(2.0)
 
 
 # =============================================================================
@@ -325,7 +326,7 @@ class TestSleepFallback:
         # Must NOT block the packet loop for anywhere near the full 0.4s...
         assert elapsed < 0.15
         # ...but the unpaid remainder is recorded, not silently dropped.
-        assert rt2._sleep_debt[id(vm)] == pytest.approx(0.35, abs=0.02)
+        assert vm._gs2_sleep_debt == pytest.approx(0.35, abs=0.02)
 
 
 if __name__ == '__main__':

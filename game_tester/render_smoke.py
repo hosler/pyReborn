@@ -531,6 +531,36 @@ def main() -> int:
     client1 = Client(HOST, PORT, version="6.037")
     _login_and_settle(client1, "testbot1")
 
+    # Environment guard: reset_account_position() above must actually reach
+    # THIS server's account store (GSERVER_ACCOUNTS_DIR / PYGSERVER_ACCOUNTS_DIR
+    # env overrides). When it doesn't - the classic trap is the long-running
+    # funtimes-pygserver on :14900, whose accounts live in
+    # funtimes-pygserver/accounts, a dir neither default points at - the bots
+    # start wherever that server last persisted them (the chicken .gmap world,
+    # testbot2 drained to 0 arrows, MP unpinned) and exactly three checks fail
+    # ENVIRONMENTALLY, not because the renderer drifted:
+    #   tier1a_server_arrow_renders   (server consumes ammo before relaying;
+    #                                  0 arrows -> no PLO_ARROWADD at all)
+    #   tier1b_board_modify_...       (packet-7 delta on a gmap gets routed by
+    #                                  a stale _pending_level_name, so the
+    #                                  active segment is never patched)
+    #   tier3a_mp_ap_hud_...          (the mp=7 fixture pin never landed)
+    # Detect that up front and say so, instead of letting those failures
+    # masquerade as regressions. Root-caused 2026-07-23: all 22 checks pass
+    # against the pytest fixture server (conftest.py's throwaway pygserver
+    # with PYGSERVER_ACCOUNTS_DIR pointed at it) on the same code.
+    if (client1._current_level_name != "onlinestartlocal.nw"
+            or client1.player.mp != _TESTBOT1_MP):
+        print(f"[ENV WARNING] account fixture did not take on {HOST}:{PORT} "
+              f"(level={client1._current_level_name!r}, mp={client1.player.mp!r}; "
+              f"expected 'onlinestartlocal.nw' / mp={_TESTBOT1_MP}).\n"
+              "  reset_account_position() can't reach this server's accounts "
+              "dir - expect environmental FAILs in tier1a_server_arrow_renders, "
+              "tier1b_board_modify_patches_segment_surface_in_place and "
+              "tier3a_mp_ap_hud_active_over_the_wire.\n"
+              "  Run against the pytest pygserver fixture (see conftest.py) or "
+              "a GServer-v2 whose accounts dir GSERVER_ACCOUNTS_DIR points at.")
+
     game = GameClient(client1)
     game.running = True
     game.visual_x, game.visual_y = game.client.x, game.client.y

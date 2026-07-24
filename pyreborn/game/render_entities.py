@@ -2,6 +2,7 @@
 
 Split from render.py; methods operate on the GameClient instance."""
 
+import math
 import time
 from typing import List, Optional, Tuple
 
@@ -1208,6 +1209,11 @@ class EntityRenderMixin:
         draw exactly that band instead."""
         for idx in sorted(imgs):
             rec = imgs[idx]
+            # findimg(i).visible = false (gs2_client._LayerImage writes the
+            # rec key) hides the layer without destroying it; unset means
+            # visible, so only an explicit False skips.
+            if rec.get('visible') is False:
+                continue
             if self._layer_is_gui(rec) != gui:
                 continue
             if not gui and (rec.get('vis', 4) >= 2) != over:
@@ -1227,6 +1233,11 @@ class EntityRenderMixin:
                 else:
                     sx, sy = self._layer_pos(rec)
                     lw, lh = self._layer_draw_size(rec)
+                    if rec.get('rotation'):
+                        side = max(lw, lh) * 1.415
+                        sx -= (side - lw) / 2
+                        sy -= (side - lh) / 2
+                        lw = lh = side
                     if not self._entity_on_screen(sx, sy, margin=0,
                                                   width=lw, height=lh):
                         continue
@@ -1443,6 +1454,29 @@ class EntityRenderMixin:
             cache[cache_key] = out
 
         sx, sy = self._layer_pos(rec)
+        rot = rec.get('rotation')
+        if rot:
+            # findimg(i).rotation is radians, positive = counter-clockwise,
+            # pivot = the drawn image's centre (the C# client's Drawing.cs
+            # passes origin = centre and negates the angle for MonoGame's
+            # clockwise convention; pygame's rotate() is already CCW). The
+            # v6 bomber lobby's cogs spin by nudging this every 0.01s, so
+            # memoize the rotated surface per rec keyed by (base, angle) and
+            # re-anchor the blit so the centre stays put. rotate() pads the
+            # corners transparent, so additive/subtractive blends see zero
+            # there instead of a hard square.
+            try:
+                deg = math.degrees(float(rot))
+            except (TypeError, ValueError):
+                deg = 0.0
+            rot_key = (cache_key, round(deg, 1))
+            if rec.get('_rot_key') != rot_key:
+                rec['_rot_key'] = rot_key
+                rec['_rot_surf'] = pygame.transform.rotate(out, deg)
+            rotated = rec['_rot_surf']
+            sx -= (rotated.get_width() - out.get_width()) / 2.0
+            sy -= (rotated.get_height() - out.get_height()) / 2.0
+            out = rotated
         if additive:
             # Additive layers are lights: defer them to after the seteffect
             # tint (same treatment as _render_light_sprite) unless we're

@@ -984,7 +984,6 @@ class _ServerFlagScope(dict):
         sv = v if isinstance(v, str) else to_str(v)
         if self._sent.get(k) == sv:        # dedup: don't resend unchanged flags
             return
-        self._sent[k] = sv
         # Untrusted server bytecode drives these writes; a `for(...)server.x=i`
         # loop would flood the wire with PLI_FLAGSET. Rate-limit outbound
         # sends (local value still updates so scripts read back what they set).
@@ -994,6 +993,7 @@ class _ServerFlagScope(dict):
         # (server.bombrm_NN); the GS1 scope keys them without it.
         try:
             cl.set_flag("server." + str(k), sv)
+            self._sent[k] = sv
         except Exception:
             pass
 
@@ -1037,11 +1037,11 @@ class _PlayerFlagScope(dict):
         sv = v if isinstance(v, str) else to_str(v)
         if self._sent.get(k) == sv:        # dedup: don't resend unchanged flags
             return
-        self._sent[k] = sv
         if not self._rt._flag_send_allowed():
             return
         try:
             cl.set_flag("client." + str(k), sv)
+            self._sent[k] = sv
         except Exception:
             pass
 
