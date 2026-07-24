@@ -138,6 +138,14 @@ class InputMixin:
                 elif self.dialogue_text is not None:
                     if event.key in (K_a, K_s, K_SPACE):
                         self._advance_dialogue()
+                        # This keystroke belongs to the dialog. If it just
+                        # DISMISSED it (last page), dialogue_text is now
+                        # None and _handle_input runs this same frame — a
+                        # leftover just-pressed A would re-fire _try_grab
+                        # and instantly re-open the sign under the player
+                        # (live on bomber v6: the dialog wrapped to page 0
+                        # forever instead of closing).
+                        self.key_just_pressed.pop(event.key, None)
                     elif event.key in (K_UP, K_DOWN, K_PAGEUP, K_PAGEDOWN):
                         amount = {
                             K_UP: -1, K_DOWN: 1,
@@ -509,6 +517,18 @@ class InputMixin:
             # probe pushing-into-an-NPC-shape off the held direction keys
             # (Bomber v6 queue counter — see _scripted_movement_touch).
             self._scripted_movement_touch(keys)
+            # A = grab/interact stays a BUILT-IN under scripted movement:
+            # disabledefmovement only disables the default arrow-key
+            # movement, not the grab action — returning before the A
+            # dispatch made sign reading (walk into a level sign + press A,
+            # Bomber v6 bomblobby's 3 PLO_LEVELSIGN signs) silently dead in
+            # any disabledefmovement level. One-shot on a fresh press only,
+            # arrows held or not (walk-into-and-press is the classic sign
+            # gesture), same action_delay cooldown as the default path.
+            if keys[K_a] and self.key_just_pressed.get(K_a, False) \
+                    and current_time - self.last_action_time > self.action_delay:
+                self._try_grab()
+                self.last_action_time = current_time
             return
 
         # Check for combined key actions first

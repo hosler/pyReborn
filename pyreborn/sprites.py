@@ -271,8 +271,18 @@ class SpriteManager:
         try:
             # Validate bounds
             sheet_w, sheet_h = sheet.get_size()
-            if x < 0 or y < 0 or x + width > sheet_w or y + height > sheet_h:
-                # Clamp to valid region
+            if x < 0 or y < 0:
+                # Negative source coords are a deliberate script idiom for "no
+                # sprite for this state" (the v6 bomber's -GraalUI heart rows
+                # walk part-x to -80, -160, ... for empty heart slots): the
+                # real client samples off-sheet and draws nothing. Clamping to
+                # x/y 0 instead painted whatever art happens to live at the
+                # sheet's corner. Cache the miss like an off-sheet part below.
+                self.sprite_cache[cache_key] = None
+                self._evict_lru(self.sprite_cache, _MAX_CACHED_SPRITES)
+                return None
+            if x + width > sheet_w or y + height > sheet_h:
+                # Clamp positive overshoot to the valid region
                 x = max(0, min(x, sheet_w - 1))
                 y = max(0, min(y, sheet_h - 1))
                 width = min(width, sheet_w - x)

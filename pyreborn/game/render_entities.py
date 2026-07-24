@@ -1204,11 +1204,19 @@ class EntityRenderMixin:
                            gui: bool = False):
         """Draw an NPC's GS1 image/text layers. ``changeimgvis`` (vis) is the
         depth: layers at vis>=2 draw in front of the NPC sprite, the rest behind.
-        Drawn in index order within each band so overlapping layers stack right.
         GUI-band layers (_layer_is_gui) are excluded from the world passes and
         drawn by _render_gui_layers after the seteffect tint; pass gui=True to
-        draw exactly that band instead."""
-        for idx in sorted(imgs):
+        draw exactly that band instead.
+
+        Stacking within a pass is by (vis, index): vis is the layer STRATUM
+        (higher draws on top), the showimg index only breaks ties within one
+        stratum. Index-only ordering buried the v6 bomber's -GraalUI HUD
+        lettering: it draws white A/S/D/Q glyphs at vis 6 (indices 237-241)
+        and their black drop-shadow copies at vis 5 on HIGHER indices
+        (242-246), so the shadows painted over the white text and the HUD
+        read as unlit black-on-red (live-verified 2026-07-24; the C# client
+        strata-sorts, same as its world bands)."""
+        for idx in sorted(imgs, key=lambda i: (imgs[i].get('vis', 4), i)):
             rec = imgs[idx]
             # findimg(i).visible = false (gs2_client._LayerImage writes the
             # rec key) hides the layer without destroying it; unset means

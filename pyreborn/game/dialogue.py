@@ -1,6 +1,69 @@
 """Font-aware wrapping and paging for the in-game dialogue box."""
 
+import re
 from typing import Callable, List
+
+# Control-function -> bound key display name, matching input.py's
+# _feed_gs1_input mapping (scripting-gs1-functions.md control table):
+# 0=up 1=left 2=down 3=right 4=weapon(D) 5=sword(S) 6=grab(A) 7=map(M)
+# 8=chat(Tab) 9=inventory(Q) 10=pause(P, unbound here).
+_SIGN_KEY_NAMES = {
+    0: "Up", 1: "Left", 2: "Down", 3: "Right", 4: "D", 5: "S", 6: "A",
+    7: "M", 8: "Tab", 9: "Q", 10: "P",
+}
+
+# Sign button-symbol escapes (GServer LevelSign.cpp signSymbols): the real
+# client draws these as key/arrow glyphs; render readable names instead of
+# leaking the raw "#u"/"#A" tokens into the box.
+_SIGN_SYMBOL_NAMES = {
+    'u': "Up", 'd': "Down", 'l': "Left", 'r': "Right",
+    'A': "A", 'B': "B", 'X': "X", 'Y': "Y", 'h': "Start",
+}
+
+
+def format_sign_text(text: str) -> str:
+    """Translate decoded sign-code escapes into displayable text.
+
+    The wire decoder (packets.decode_sign_text) is a faithful mirror of
+    GServer's decodeSignCode and leaves the classic escape tokens in the
+    string; the real client renders them as glyphs. Translations here follow
+    LevelSign.cpp's encoder semantics:
+
+    - ``#K(nn)`` is the server's escape for a raw character with ASCII code
+      nn ("Write the character code directly into the sign") -> chr(nn).
+      Filenames survive this: eye#K(95)bomber.png -> eye_bomber.png.
+    - ``#k(n)`` shows the key bound to control function n -> our binding
+      names (see _SIGN_KEY_NAMES).
+    - ``#u/#d/#l/#r/#A/...`` button symbols -> readable names.
+    - ``#i(image[,x,y,w,h])`` inline images aren't drawn in the text box ->
+      dropped (a leading empty ``#i()`` line collapses away via the strip).
+    """
+    def _chr_escape(m):
+        try:
+            code = int(m.group(1))
+        except ValueError:
+            return m.group(0)
+        return chr(code) if 32 <= code < 127 else ''
+
+    def _key_escape(m):
+        try:
+            return _SIGN_KEY_NAMES.get(int(m.group(1)), m.group(0))
+        except ValueError:
+            return m.group(0)
+
+    text = re.sub(r'#K\((\d+)\)', _chr_escape, text)
+    text = re.sub(r'#k\((\d+)\)', _key_escape, text)
+    text = re.sub(r'#i\([^)]*\)', '', text)
+    text = re.sub(r'#([udlrABXYh])',
+                  lambda m: _SIGN_SYMBOL_NAMES[m.group(1)], text)
+    # Drop lines that became empty after an inline-image strip, but keep
+    # deliberate blank lines (they were whitespace-only on the wire too).
+    lines = text.split('\n')
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return '\n'.join(lines)
 
 
 def wrap_dialogue(text: str, measure: Callable[[str], int], max_width: int) -> List[str]:

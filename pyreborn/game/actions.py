@@ -460,7 +460,16 @@ class ActionsMixin:
 
         return None
     def _show_dialogue(self, text: str, classic_font: bool = False):
-        """Show dialogue text in the dialogue box."""
+        """Show dialogue text in the dialogue box.
+
+        classic_font marks sign-style text (level signs, PLO_SAY2): those
+        carry the classic sign-code escapes (#K(nn) raw chars, #k(n) key
+        names, #u/#d/... button symbols, #i() inline images), which the real
+        client renders as glyphs — translate them instead of leaking the raw
+        tokens into the box (see dialogue.format_sign_text)."""
+        if classic_font:
+            from .dialogue import format_sign_text
+            text = format_sign_text(text)
         self.dialogue_text = text
         self.dialogue_classic_font = classic_font
         self.dialogue_time = time.time()

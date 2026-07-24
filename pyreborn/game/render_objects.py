@@ -305,6 +305,11 @@ class LevelObjectsRenderMixin:
             self.screen.blit(sprite, (int(sx), int(sy)))
     def _check_and_render_signs(self):
         """Check if player is near a sign in the current level and show popup."""
+        # The A-read dialogue box supersedes the proximity popup: drawing
+        # both at once double-displayed the same sign text (live: bomber v6
+        # piano sign showed the parchment popup AND the dialogue pager).
+        if getattr(self, 'dialogue_text', None) is not None:
+            return
         signs = self.client.signs.get(self.client._current_level_name)
         if not signs:
             return
@@ -327,12 +332,27 @@ class LevelObjectsRenderMixin:
             # Compare against the sign TILE CENTRE (+0.5): flush against a
             # blocking sign the feet sample sits exactly 2.0 tiles from the
             # anchor, so an anchor-based `< 2` misses at the only distance a
-            # walking player can actually reach.
-            if abs(px - (sx + 0.5)) <= 2 and abs(py - (sy + 0.5)) <= 2:
+            # walking player can actually reach. Tolerance is 2.35, not 2.0:
+            # under scripted movement (disabledefmovement — Bomber v6's
+            # -Test/Movement) the script steps the player in 0.3-tile quanta
+            # and stops SHORT of flush contact (rest position up to 0.29
+            # tiles shy), so the feet sample sits at up to ~2.3 — an exact
+            # 2.0 radius made popups unreachable there (live-measured 2.2 at
+            # the bomblobby piano sign). The next tile row is a full 3.0
+            # away, so 2.35 cannot false-positive across a walkway.
+            if abs(px - (sx + 0.5)) <= 2.35 and abs(py - (sy + 0.5)) <= 2.35:
                 self._render_sign_popup(text)
                 break  # Only show one sign at a time
     def _render_sign_popup(self, text: str):
         """Render sign text as popup overlay."""
+        if not text:
+            return
+
+        # Sign-code escapes (#K(nn)/#k(n)/#u/#i(...)) render as glyphs on
+        # the real client — translate, don't leak raw tokens (same
+        # normalization as the A-read dialogue box).
+        from .dialogue import format_sign_text
+        text = format_sign_text(text)
         if not text:
             return
 
