@@ -84,8 +84,7 @@ _CHARPROP_NPC = {
 _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "noplayerkilling",
-    "setcursor", "sleep", "seteffectmode",
-    "setcoloreffect", "setzoomeffect", "callweapon", "callnpc",
+    "setcursor", "sleep", "callweapon", "callnpc",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
@@ -639,6 +638,15 @@ class GS1ClientHost(Host):
                 rec.setdefault("vis", 4)
                 return
         if isinstance(npc, dict):
+            if name == "setzoomeffect" and args:
+                npc["zoom_effect"] = to_num(args[0])
+                return
+            if name == "seteffectmode" and args:
+                npc["effect_mode"] = int(to_num(args[0]))
+                return
+            if name == "setcoloreffect" and len(args) >= 4:
+                npc["coloreffect"] = tuple(to_num(v) for v in args[:4])
+                return
             if name == "showcharacter":
                 npc["is_character"] = True
                 return

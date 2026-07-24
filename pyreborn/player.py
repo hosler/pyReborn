@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 class Player:
     """Minimal player state"""
     # Identity
+    id: int = 0
     account: str = ""
     nickname: str = ""
 
@@ -73,6 +74,8 @@ class Player:
 
     def update_from_props(self, props: dict):
         """Update player state from parsed properties"""
+        if 'id' in props:
+            self.id = props['id']
         if 'account' in props:
             self.account = props['account']
         if 'nickname' in props:

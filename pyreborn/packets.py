@@ -501,7 +501,7 @@ _NPC_STRING_KEYS = {0: 'image', 15: 'message', 20: 'nickname',
                     21: 'horseimage', 35: 'bodyimage', 52: 'curlevel'}
 
 
-def parse_npc_props(data: bytes) -> dict:
+def _parse_npc_props_once(data: bytes, colors_len: int) -> tuple:
     """
     Parse PLO_NPCPROPS (packet 3) -> NPC info dict.
 
@@ -512,11 +512,13 @@ def parse_npc_props(data: bytes) -> dict:
     NOT OSTYPE/codepage).
     """
     if len(data) < 3:
-        return {}
+        return {}, False
 
     n = len(data)
     pos = 3  # GInt3 npc id
     props = {'id': ((data[0] - 32) << 14) + ((data[1] - 32) << 7) + (data[2] - 32)}
+    clean = True
+    last_prop_id = -1
 
     def read_gstr():
         """[gchar len][raw len bytes] -> str (advances pos)."""
@@ -534,8 +536,10 @@ def parse_npc_props(data: bytes) -> dict:
     while pos < n:
         prop_id = data[pos] - 32
         pos += 1
-        if prop_id < 0 or prop_id >= 78:
-            break  # outside the NPCProp range -> bail rather than misalign
+        if prop_id < 0 or prop_id >= 78 or prop_id <= last_prop_id:
+            clean = False
+            break
+        last_prop_id = prop_id
 
         if prop_id in _NPC_STRING_PROPS:
             s = read_gstr()
@@ -545,6 +549,7 @@ def parse_npc_props(data: bytes) -> dict:
 
         elif prop_id == 1:  # SCRIPT - PropertyGS1Script: gshort len + raw
             if pos + 1 >= n:
+                clean = False
                 break
             slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
             pos += 2
@@ -560,6 +565,7 @@ def parse_npc_props(data: bytes) -> dict:
 
         elif prop_id in (75, 76, 77):  # X2 / Y2 / Z2 - PixelCoordinate (gshort)
             if pos + 1 >= n:
+                clean = False
                 break
             value = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
             pos += 2
@@ -620,9 +626,12 @@ def parse_npc_props(data: bytes) -> dict:
             if v >= 10:
                 read_gstr()
 
-        elif prop_id == 19:  # COLORS - 8 bytes (new-world) / 5 (classic)
-            props['colors'] = [data[i] - 32 for i in range(pos, min(pos + 8, n))]
-            pos += 8
+        elif prop_id == 19:  # COLORS
+            if pos + colors_len > n:
+                clean = False
+            props['colors'] = [
+                data[i] - 32 for i in range(pos, min(pos + colors_len, n))]
+            pos += colors_len
 
         elif prop_id == 16:  # HURTDXDY - 2 bytes
             pos += 2
@@ -641,6 +650,7 @@ def parse_npc_props(data: bytes) -> dict:
 
         elif prop_id == 74:  # CLASS - PropertyLongString: gshort len + raw
             if pos + 1 >= n:
+                clean = False
                 break
             slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
             pos += 2
@@ -653,7 +663,17 @@ def parse_npc_props(data: bytes) -> dict:
             # Unknown id within range: assume single byte (best-effort).
             pos += 1
 
-    return props
+        if pos > n:
+            clean = False
+    return props, clean and pos == n
+
+
+def parse_npc_props(data: bytes, colors_len: int = 5,
+                    diagnostics: Optional[Dict[str, int]] = None) -> dict:
+    """Parse an NPC property stream, retrying the alternate color width."""
+    return _parse_with_colors_retry(
+        lambda width: _parse_npc_props_once(data, width),
+        colors_len, diagnostics)
 
 
 def parse_chat(data: bytes) -> tuple:
@@ -1370,6 +1390,10 @@ def parse_player_props(data: bytes, colors_len: int = 5,
                 end = min(pos + colors_len, len(data))
                 props['colors'] = [max(0, data[i] - 32) for i in range(pos, end)]
                 pos = end
+            elif prop_id == 14:       # ID
+                val, pos = _read_gbyte(data, pos, 2)
+                if val is not None:
+                    props['id'] = val
             elif prop_id == 15:       # X (half-tiles)
                 if pos < len(data):
                     props['x'] = (data[pos] - 32) / 2.0

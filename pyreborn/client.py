@@ -1515,6 +1515,8 @@ class Client:
         # Update local state
         if level_name != self._current_level_name:
             self._reset_level_state()
+        elif self.gs2_host is not None:
+            self.gs2_host.begin_level_visit()
         # On a gmap, store WORLD coords (grid*64 + local) for the target segment
         # so position stays consistent with the world-coordinate model. A fresh
         # gmap entry (grid not loaded yet) relies on the server's PLAYERPROPS to
@@ -3111,7 +3113,8 @@ class Client:
 
         # NPC properties
         elif packet_id == PacketID.PLO_NPCPROPS:
-            props = parse_npc_props(data)
+            props = parse_npc_props(
+                data, self._colors_len, self.prop_parse_diagnostics)
             if props and 'id' in props:
                 npc_id = props['id']
                 # Associate the NPC with a level. Preference order:

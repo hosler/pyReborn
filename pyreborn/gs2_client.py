@@ -87,6 +87,7 @@ _GS1_FUNCTIONS = frozenset({"onwall", "onwall2", "keydown", "keydown2", "hasweap
 #: is keyed "player<name>"; GS2 accesses the same fields as object members)
 _PLAYER_MEMBER_ATTR = {k[len("player"):]: v for k, v in PLAYER_ATTR.items()}
 _PLAYER_MEMBER_ATTR.update({
+    "id": "id",
     "nick": "nickname",
     "ani": "gani",
     # v6 HUD scripts read these members directly (the bomber's scripted HUD
@@ -204,7 +205,14 @@ class _FlagScopeObject(GS2Object):
         k = self._key(key)
         if k in self._scope:
             return self._scope[k]
-        return self._scope.get(k.lower(), "")
+        lower = k.lower()
+        if lower in self._scope:
+            return self._scope[lower]
+        if self._prefix:
+            if key in self._scope:
+                return self._scope[key]
+            return self._scope.get(key.lower(), "")
+        return ""
 
     def set(self, key: str, value: Any) -> None:
         if self._local_writes:
@@ -219,7 +227,21 @@ class _FlagScopeObject(GS2Object):
         # returning True unconditionally there would silently redirect every
         # bare local inside `with(server){...}` to a networked flag.
         k = self._key(key)
-        return k in self._scope or k.lower() in self._scope
+        return (k in self._scope or k.lower() in self._scope
+                or (bool(self._prefix)
+                    and (key in self._scope or key.lower() in self._scope)))
+
+
+class _LevelNameObject(GS2Object):
+    __slots__ = ("_level_name",)
+
+    def __init__(self, level_name: str):
+        super().__init__(name=level_name)
+        self._level_name = level_name
+        self.set("name", level_name)
+
+    def __str__(self):
+        return self._level_name
 
 
 class _PlayerObject(GS2Object):
@@ -269,7 +291,7 @@ class _PlayerObject(GS2Object):
                 lvl = getattr(p, "level", "") or ""
                 if not lvl and cl is not None:
                     lvl = getattr(cl, "_current_level_name", "") or ""
-                return to_str(lvl)
+                return _LevelNameObject(to_str(lvl))
             if key == "weapon":
                 # The player's currently selected weapon as an object
                 # (scripted HUDs read player.weapon.image for the D-slot
@@ -639,10 +661,20 @@ class GS2ClientHost(GS2Host):
             if gs1 is None:
                 return 0.0
             return gs1._host.get_builtin(name, [], self.rt2._gs1_ctx(None))
+        if name == "players":
+            return self.rt2.player_list_objects()
+        if name == "tiles":
+            return self.rt2.tiles_view()
         # a named weapon's script object (findweapon-style access)
         vm = self.rt2.vms["weapon"].get(name)
         if vm is not None:
             return vm.this
+        gs1 = self.rt2.gs1
+        if gs1 is not None:
+            value = gs1._host.get_builtin(
+                name, [], self.rt2._gs1_ctx(None))
+            if value is not UNSET:
+                return value
         return None
 
     def create_object(self, classname: str, arg: Any) -> GS2Object:
@@ -1095,6 +1127,8 @@ class ClientGS2:
         # onPlayerEnters bookkeeping: which VMs got it for the current level
         self._entered_level: Optional[str] = None
         self._entered_vms: set = set()
+        self._tiles_source = None
+        self._tiles_view = None
         # GUI-controls tree (showgui/GuiControl); None when pygame isn't
         # installed (headless callers, e.g. game_tester's GameBot).
         self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
@@ -1154,15 +1188,64 @@ class ClientGS2:
             return []
         found = []
         for player_id, player in getattr(client, "players", {}).items():
-            dx, dy = to_num(getattr(player, "x", 0)) - x, to_num(getattr(player, "y", 0)) - y
+            get = player.get if isinstance(player, dict) else (
+                lambda key, default=None: getattr(player, key, default))
+            dx = to_num(get("x", 0)) - x
+            dy = to_num(get("y", 0)) - y
             distance = (dx * dx + dy * dy) ** 0.5
             item = GS2Object(name=f"player:{player_id}")
-            for key, value in (("id", player_id), ("account", getattr(player, "account", "")),
-                               ("nick", getattr(player, "nickname", "")), ("x", getattr(player, "x", 0)),
-                               ("y", getattr(player, "y", 0)), ("distance", distance)):
+            for key, value in (
+                    ("id", player_id), ("account", get("account", "")),
+                    ("nick", get("nickname", "")),
+                    ("nickname", get("nickname", "")),
+                    ("chat", get("chat", "")),
+                    ("x", get("x", 0)), ("y", get("y", 0)),
+                    ("distance", distance)):
                 item.set(key, value)
             found.append((distance, item))
         return [item for _, item in sorted(found, key=lambda pair: pair[0])]
+
+    def player_list_objects(self) -> list:
+        client = self.client
+        if client is None:
+            return []
+        local = getattr(client, "player", None)
+        records = [{
+            "id": getattr(local, "id", 0),
+            "account": getattr(local, "account", ""),
+            "nick": getattr(local, "nickname", ""),
+            "nickname": getattr(local, "nickname", ""),
+            "chat": getattr(local, "chat", ""),
+            "x": getattr(client, "x", getattr(local, "x", 0)),
+            "y": getattr(client, "y", getattr(local, "y", 0)),
+        }]
+        for player_id, player in (getattr(client, "players", {}) or {}).items():
+            records.append({
+                "id": player_id, "account": player.get("account", ""),
+                "nick": player.get("nickname", ""),
+                "nickname": player.get("nickname", ""),
+                "chat": player.get("chat", ""), "x": player.get("x", 0),
+                "y": player.get("y", 0),
+            })
+        result = []
+        for index, record in enumerate(records):
+            obj = GS2Object(name=f"player:{index}")
+            for key, value in record.items():
+                obj.set(key, value)
+            result.append(obj)
+        return result
+
+    def tiles_view(self) -> list:
+        tiles = getattr(self.client, "tiles", None) if self.client else None
+        if tiles is not self._tiles_source:
+            self._tiles_source = tiles
+            self._tiles_view = [
+                [float(tiles[y * 64 + x])
+                 if tiles is not None and y * 64 + x < len(tiles) else 0.0
+                 for y in range(64)]
+                for x in range(64)
+            ]
+        return self._tiles_view
 
     def find_image(self, vm, index: int):
         """findimg(index) -> a LIVE view of the layer record (see
@@ -1254,7 +1337,8 @@ class ClientGS2:
             # one: onCreated (constructor semantics, like GS1's load_weapon
             # never re-firing an equivalent hook) only fires the first time.
             vm.run_toplevel()
-            if old is None and vm.has_function("onCreated"):
+            if (old is None and vm.has_function("onCreated")
+                    and (kind == "weapon" or self.client is None)):
                 self._run(vm, "onCreated")
         return vm
 
@@ -1567,8 +1651,14 @@ class ClientGS2:
                     if npc_level and npc_level != level:
                         continue          # belongs to another level
                 self._entered_vms.add(id(vm))
+                if kind == "npc" and vm.has_function("onCreated"):
+                    self._run(vm, "onCreated")
                 if vm.has_function("onPlayerEnters"):
                     self._run(vm, "onPlayerEnters")
+
+    def begin_level_visit(self):
+        self._entered_level = None
+        self._entered_vms.clear()
 
     def process_timeouts(self, dt: float):
         """Count down each VM's pending timeout and fire onTimeout when it

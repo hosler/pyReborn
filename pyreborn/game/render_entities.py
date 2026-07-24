@@ -1073,8 +1073,9 @@ class EntityRenderMixin:
             effects = parse_npc_visual_effects(script, image_name or '')
             effects['_key'] = effects_key
             self.npc_effects[npc_id] = effects
-        is_light = effects.get('drawaslight', False)
-        coloreffect = effects.get('coloreffect')  # (r, g, b, a)
+        is_light = (npc.get('effect_mode') == 2
+                    or effects.get('drawaslight', False))
+        coloreffect = npc.get('coloreffect', effects.get('coloreffect'))
 
         if gani_name:
             # Use animation
@@ -1130,7 +1131,7 @@ class EntityRenderMixin:
                 # safe now that additive lights are DEFERRED past the tint —
                 # under the old tint-eraser scheme a zoomed glow erased a huge
                 # rectangle of ambience instead.
-                zoom = effects.get('zoom')
+                zoom = npc.get('zoom_effect', effects.get('zoom'))
                 if zoom and zoom > 0 and zoom != 1.0:
                     zcache = getattr(self, '_npc_zoom_cache', None)
                     if zcache is None:
