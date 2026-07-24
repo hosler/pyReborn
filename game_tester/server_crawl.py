@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import signal
@@ -87,6 +88,34 @@ def real_gs2_stubbed_surface() -> set[str]:
 
 class _WallBudgetExceeded(BaseException):
     """Escape the VM's ordinary Exception backstop when wall time expires."""
+
+
+class _ResolvedCallFilter(logging.Filter):
+    """Drop the VM's "unknown function/method" warnings for names the REAL
+    client host resolves.
+
+    The crawl deliberately runs bytecode against RecordingHost, which answers
+    every host call with NOT_HANDLED so the call gets recorded — the VM then
+    logs "unknown function X()" even though the live client's GS2ClientHost
+    implements X. Those warnings misled a whole debugging round (sendtext/
+    sort/makefirstresponder/findweapon/echo/isobject were all reported
+    "unknown" while the catalog correctly classified them implemented).
+    Classification is untouched — builtins_missing/host.calls still record
+    everything; only the misleading stderr line is suppressed, so surviving
+    unknown-call warnings during a crawl are genuine true gaps."""
+
+    _CALL = re.compile(r"unknown (?:function|method) ([\w:.]+)\(\)")
+
+    def __init__(self, resolved_names: set[str]):
+        super().__init__()
+        self._resolved = resolved_names
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        match = self._CALL.search(record.getMessage())
+        if match is None:
+            return True
+        name = match.group(1).casefold()
+        return not (name in self._resolved or is_known_unsupported(name))
 
 
 def shaped_error(phase: str, *, level: str = "", asset: str = "",
@@ -267,10 +296,19 @@ def _classify_calls(calls: Counter[str], surface: set[str]) -> dict[str, Any]:
 
 
 def enumerate_gs2_events(functions: Any) -> list[str]:
-    """Return event-shaped entries discovered from a GS2 function table."""
+    """Return event-shaped entries discovered from a GS2 function table.
+
+    Covers bare events (onCreated) and dotted control/universe handlers
+    (GlobalChat_ChatTab.onSelect, universe.onPlayerLogin) -- the official
+    Login weapons register plenty of the latter and the old startswith("on")
+    filter skipped them all."""
     names = functions.keys() if isinstance(functions, dict) else functions
-    return sorted({str(name) for name in names if str(name).lower().startswith("on")},
-                  key=str.casefold)
+    events = set()
+    for name in names:
+        text = str(name)
+        if text.rsplit(".", 1)[-1].lower().startswith("on"):
+            events.add(text)
+    return sorted(events, key=str.casefold)
 
 
 def run_gs2_bounded(blob: bytes, name: str = "script",
@@ -304,7 +342,14 @@ def run_gs2_bounded(blob: bytes, name: str = "script",
             if vm._errors:
                 event_failures.append(event)
 
-    wall_capped = _with_wall_alarm(wall_seconds, execute)
+    vm_logger = logging.getLogger("reborn_protocol.gs2.vm")
+    resolved_filter = _ResolvedCallFilter(
+        {item.casefold() for item in real_gs2_surface()})
+    vm_logger.addFilter(resolved_filter)
+    try:
+        wall_capped = _with_wall_alarm(wall_seconds, execute)
+    finally:
+        vm_logger.removeFilter(resolved_filter)
     elapsed = time.monotonic() - started
     capped = op_capped or wall_capped or elapsed >= wall_seconds
     skipped = sorted(op for op, count in GS2VM.ops_skipped.items()

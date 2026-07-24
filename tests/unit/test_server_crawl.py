@@ -243,6 +243,72 @@ def test_host_call_classification_uses_real_surfaces_and_registry():
     assert classify_host_call("switchopenglrenderer", gs1_surface) == "known_unsupported"
 
 
+def test_resolved_call_filter_hides_only_real_host_names():
+    # RecordingHost answers every call NOT_HANDLED (to record it), which
+    # makes the VM log "unknown function X()" even for names the live
+    # GS2ClientHost implements (sendtext/sort/... misled a whole round).
+    # The filter drops exactly those, keeping true-gap warnings visible.
+    import logging
+
+    from game_tester.server_crawl import _ResolvedCallFilter
+
+    surface = {item.casefold() for item in real_gs2_surface()}
+    assert {"sendtext", "sort", "makefirstresponder", "isobject",
+            "findweapon", "echo"} <= surface
+    filt = _ResolvedCallFilter(surface)
+
+    def record(msg, *args):
+        return logging.LogRecord("reborn_protocol.gs2.vm", logging.WARNING,
+                                 __file__, 1, msg, args, None)
+
+    for name in ("sendtext", "findweapon"):
+        assert not filt.filter(record("GS2 %s: unknown function %s()",
+                                      "weapon:-Serverlist_Chat", name))
+    assert not filt.filter(record("GS2 %s: unknown method %s()",
+                                  "weapon:-Serverlist_Chat", "sort"))
+    assert not filt.filter(record("GS2 x: unknown function %s()",
+                                  "quattro::setvolume"))  # known-unsupported
+    assert filt.filter(record("GS2 x: unknown function %s()",
+                              "crawler_only_missing_call"))
+    assert filt.filter(record("GS2 x: unimplemented opcode %s, skipping", 47))
+
+
+def test_run_gs2_bounded_suppresses_implemented_name_warnings(caplog):
+    # weapon:-Rescripted/IRC/Login3 shape: onCreated calls findweapon()/
+    # isObject()/echo() -- all implemented on the real client host, so a
+    # bounded recording run must not log them as unknown.
+    import logging
+
+    import reborn_protocol.gs2.vm as vm_module
+
+    class _FakeVM:
+        ops_skipped = {}
+        builtins_missing = {}
+        functions = {}
+
+        def __init__(self, blob, name, host):
+            self._ops_used = 0
+            self.max_ops = 0
+            self._name = name
+            self._host = host
+
+        def run_toplevel(self):
+            log = logging.getLogger("reborn_protocol.gs2.vm")
+            for name in ("findweapon", "echo", "some_true_gap"):
+                self._host.call_builtin(self, name, [])
+                log.warning("GS2 %s: unknown function %s()", self._name, name)
+
+    with caplog.at_level(logging.WARNING, logger="reborn_protocol.gs2.vm"):
+        import unittest.mock
+        with unittest.mock.patch.object(vm_module, "GS2VM", _FakeVM):
+            report = run_gs2_bounded(b"bytecode", name="weapon:test")
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert not any("findweapon" in msg or "echo()" in msg for msg in messages)
+    assert any("some_true_gap" in msg for msg in messages)
+    assert report["true_gaps"] == ["some_true_gap"]
+    assert report["implemented_count"] == 2
+
+
 def test_gs2_event_enumeration_comes_from_function_table():
     functions = {"helper": 1, "oncreated": 2, "onTimeout": 3,
                  "onPlayerEnters": 4}

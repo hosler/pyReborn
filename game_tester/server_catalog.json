@@ -1632,12 +1632,12 @@
           "25": 1,
           "28": 2,
           "3": 1,
-          "32": 35,
+          "32": 11,
           "33": 3,
           "34": 3,
           "39": 1,
           "41": 1,
-          "42": 13,
+          "42": 5,
           "44": 1,
           "47": 1,
           "6": 1,
@@ -1670,24 +1670,7 @@
           "npcs": 1,
           "signs": 0
         },
-        "errors": [
-          {
-            "asset": "weapon:-Rescripted/IRC/Login3",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 00 21 00 00 00 01 6f 6e 43 72 65 61 74 65",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:-Serverlist_Chat",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 03 ec 00 00 02 05 70 75 62 6c 69 63 2e 73",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          }
-        ],
+        "errors": [],
         "files_parsed": {
           "failed": 0,
           "ok": 1
@@ -1714,14 +1697,34 @@
         },
         "gs2": {
           "capped": 0,
-          "event_names": [],
+          "event_names": [
+            "globalchat_channelmenu.onselect",
+            "globalchat_channels.ondblclick",
+            "globalchat_channels.onopenmenu",
+            "globalchat_chatfield.onaction",
+            "globalchat_chattab.ondeselect",
+            "globalchat_chattab.onselect",
+            "oncreated",
+            "ondefaultstylechanges",
+            "onplayerchanges",
+            "onplayerenters",
+            "onplayerlogin",
+            "onplayerlogout",
+            "onpm",
+            "onreceivetext",
+            "onserverlisterconnect",
+            "onsmiliebutton",
+            "universe.onplayerlogin",
+            "universe.onplayerlogout",
+            "universe.onserverlisterconnect"
+          ],
           "events_failed": 0,
-          "events_found": 0,
-          "events_ran": 0,
-          "failed": 2,
-          "implemented_count": 0,
+          "events_found": 20,
+          "events_ran": 20,
+          "failed": 0,
+          "implemented_count": 29,
           "known_unsupported": [],
-          "ran": 0,
+          "ran": 2,
           "true_gaps": []
         },
         "levels_visited": [
@@ -1750,10 +1753,10 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-22T02:19:27.763329+00:00",
+      "last_probed": "2026-07-24T18:13:07.986604+00:00",
       "last_updated": {
-        "base": "2026-07-22T02:19:27.763329+00:00",
-        "crawl": "2026-07-22T02:19:27.763329+00:00",
+        "base": "2026-07-24T18:13:07.986604+00:00",
+        "crawl": "2026-07-24T18:13:07.986604+00:00",
         "versions": "2026-07-21T01:34:20.440702+00:00"
       },
       "testable_tests": [
@@ -1847,7 +1850,7 @@
           "34": 3,
           "39": 1,
           "41": 1,
-          "42": 13,
+          "42": 5,
           "44": 1,
           "47": 1,
           "6": 1,
@@ -1880,24 +1883,7 @@
           "npcs": 2,
           "signs": 0
         },
-        "errors": [
-          {
-            "asset": "weapon:-Rescripted/IRC/Login3",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 00 21 00 00 00 01 6f 6e 43 72 65 61 74 65",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "onlinestartlocal.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:-Serverlist_Chat",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 03 ec 00 00 02 05 70 75 62 6c 69 63 2e 73",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "onlinestartlocal.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          }
-        ],
+        "errors": [],
         "files_parsed": {
           "failed": 0,
           "ok": 1
@@ -1924,14 +1910,34 @@
         },
         "gs2": {
           "capped": 0,
-          "event_names": [],
+          "event_names": [
+            "globalchat_channelmenu.onselect",
+            "globalchat_channels.ondblclick",
+            "globalchat_channels.onopenmenu",
+            "globalchat_chatfield.onaction",
+            "globalchat_chattab.ondeselect",
+            "globalchat_chattab.onselect",
+            "oncreated",
+            "ondefaultstylechanges",
+            "onplayerchanges",
+            "onplayerenters",
+            "onplayerlogin",
+            "onplayerlogout",
+            "onpm",
+            "onreceivetext",
+            "onserverlisterconnect",
+            "onsmiliebutton",
+            "universe.onplayerlogin",
+            "universe.onplayerlogout",
+            "universe.onserverlisterconnect"
+          ],
           "events_failed": 0,
-          "events_found": 0,
-          "events_ran": 0,
-          "failed": 2,
-          "implemented_count": 0,
+          "events_found": 20,
+          "events_ran": 20,
+          "failed": 0,
+          "implemented_count": 29,
           "known_unsupported": [],
-          "ran": 0,
+          "ran": 2,
           "true_gaps": []
         },
         "levels_visited": [
@@ -1960,10 +1966,10 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-22T02:25:39.928411+00:00",
+      "last_probed": "2026-07-24T18:13:33.114027+00:00",
       "last_updated": {
-        "base": "2026-07-22T02:25:39.928411+00:00",
-        "crawl": "2026-07-22T02:25:39.928411+00:00",
+        "base": "2026-07-24T18:13:33.114027+00:00",
+        "crawl": "2026-07-24T18:13:33.114027+00:00",
         "versions": "2026-07-21T01:38:55.846804+00:00"
       },
       "testable_tests": [
@@ -2037,10 +2043,10 @@
         "packet_counts": {
           "0": 1,
           "10": 1,
-          "100": 10,
+          "100": 6,
           "101": 1,
           "14": 1,
-          "140": 9,
+          "140": 5,
           "156": 1,
           "168": 1,
           "174": 2,
@@ -2057,7 +2063,7 @@
           "34": 6,
           "39": 1,
           "41": 1,
-          "42": 13,
+          "42": 5,
           "44": 1,
           "47": 1,
           "48": 1,
@@ -2091,48 +2097,7 @@
           "npcs": 1,
           "signs": 0
         },
-        "errors": [
-          {
-            "asset": "weapon:-Mobile/Serverlist",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 01 56 00 00 00 2f 61 64 64 47 75 69 50 72",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:-ReShared",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 00 5b 00 00 00 17 69 6e 69 74 56 61 72 69",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:-Adventure",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 00 bb 00 00 00 64 67 65 74 44 65 76 69 63",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:-LoginScreen",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 01 6e 00 00 00 31 70 72 65 6c 6f 61 64 46",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          },
-          {
-            "asset": "weapon:CadavreTest",
-            "context": "00 00 00 01 00 00 00 04 00 00 00 00 00 00 00 02 00 00 00 37 00 00 00 36 65 63 68 6f 32 00 00 00",
-            "exception": "SyntaxError: invalid syntax (<unknown>, line 1)",
-            "level": "black.nw",
-            "phase": "gs2",
-            "traceback": "Traceback (most recent call last):\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 704, in _run_bytecodes\n    report = run_gs2_bounded(blob, f\"{kind}:{key}\")\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 319, in run_gs2_bounded\n    **_classify_calls(calls, real_gs2_surface()),\n                             ~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/game_tester/server_crawl.py\", line 80, in real_gs2_surface\n    return set(GS2ClientHost.host_surface())\n               ~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/home/hosler/Projects/opengraal2/pyReborn/pyreborn/gs2_client.py\", line 210, in host_surface\n    \"\"\"Return builtins handled directly or delegated to the real GS1 host.\"\"\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    import ast\n    ^^^^^^^^^^\n  File \"/usr/lib/python3.14/ast.py\", line 46, in parse\n    return compile(source, filename, mode, flags,\n                   _feature_version=feature_version, optimize=optimize)\n  File \"<unknown>\", line 1\n    finally:\n    ^^^^^^^\nSyntaxError: invalid syntax\n"
-          }
-        ],
+        "errors": [],
         "files_parsed": {
           "failed": 0,
           "ok": 1
@@ -2159,14 +2124,33 @@
         },
         "gs2": {
           "capped": 0,
-          "event_names": [],
+          "event_names": [
+            "gr_loginscreen_credentials.onaction",
+            "gr_loginscreen_startconnectbutton.onaction",
+            "gr_loginscreen_startgetaccountbutton.onaction",
+            "graalcontrol.onresize",
+            "oncreated",
+            "onhandleserverwarp",
+            "oninitserverwarp",
+            "onkeypressed",
+            "onlogmessage",
+            "onreceivetext",
+            "onserverlogin",
+            "ontimeout",
+            "serverlist_interface_optionsbutton.onaction"
+          ],
           "events_failed": 0,
-          "events_found": 0,
-          "events_ran": 0,
-          "failed": 5,
-          "implemented_count": 0,
-          "known_unsupported": [],
-          "ran": 0,
+          "events_found": 19,
+          "events_ran": 19,
+          "failed": 0,
+          "implemented_count": 43,
+          "known_unsupported": [
+            "adventure_setframetick",
+            "getgamesubversion",
+            "getplatform",
+            "getpremiumoption"
+          ],
+          "ran": 5,
           "true_gaps": []
         },
         "levels_visited": [
@@ -2195,10 +2179,10 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-22T02:23:37.522734+00:00",
+      "last_probed": "2026-07-24T18:15:23.787808+00:00",
       "last_updated": {
-        "base": "2026-07-22T02:23:37.522734+00:00",
-        "crawl": "2026-07-22T02:23:37.522734+00:00",
+        "base": "2026-07-24T18:15:23.787808+00:00",
+        "crawl": "2026-07-24T18:15:23.787808+00:00",
         "versions": "2026-07-21T01:37:09.765924+00:00"
       },
       "testable_tests": [
