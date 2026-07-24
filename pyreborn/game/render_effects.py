@@ -152,12 +152,14 @@ class EffectsRenderMixin:
         CLAUDE.md), these effect coordinates are drop/impact POINTS - the
         primitives they replace were drawn centered there too (circles/
         triangles at that exact point), so a plain TILE_SIZE offset keeps the
-        same placement."""
+        same placement. (The full -TILE_SIZE x offset bakes in the 8px that
+        used to live in _render_animated_entity's canvas shift, preserving
+        the tuned centring now that ganis anchor at the passed x.)"""
         anim = AnimationState(self.gani_parser)
         anim.gani = gani
         anim.direction = direction
         anim.frame = int(max(0.0, elapsed) / AnimationState.FRAME_DURATION)
-        ox = screen_x - TILE_SIZE / 2
+        ox = screen_x - TILE_SIZE
         oy = screen_y - TILE_SIZE / 2
         self._render_animated_entity(ox, oy, anim, {})
 

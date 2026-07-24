@@ -538,7 +538,11 @@ class EntityRenderMixin:
             if mode == 3 and int(time.time() * 10) % 2 == 0:
                 return
             head = _BADDY_HEADS.get(btype, _BADDY_DEFAULT_HEAD)
-            self._render_animated_entity(x, y, anim,
+            # This legacy composite borrows player character ganis (walk/
+            # hurt/dead), which centre the body at canvas x+8; the sheet path
+            # above blits the baddy at raw (x, y). Shift the canvas 8px left
+            # so the fallback body lands where the sheet frames would.
+            self._render_animated_entity(x - (48 - TILE_SIZE * 2) // 2, y, anim,
                                          {'head_image': head, 'body_image': 'body.png'})
             return
 
@@ -568,17 +572,15 @@ class EntityRenderMixin:
             if self.debug_mode:
                 self.screen.blit(self.npc_placeholder, (x, y))
 
-    # _render_animated_entity/_render_speech_bubble are shared with NPC/baddy/
-    # horse/showani rendering and bake in a canvas shift (-8px) / centre
-    # offset (+16px) that assume a 2-tile-wide entity — correct for those
-    # other callers, which this task doesn't touch. The player's sprite is
-    # honestly 3 tiles wide per the classic-engine spec (48px GANI canvas ==
-    # 3 tiles, no fudge), so its true visual centre is x+1.5 tiles (+24px),
-    # half a tile right of what those shared helpers assume. Compensate ONLY
-    # at these player call sites by shifting the x they see +8px (TILE_SIZE
-    # // 2) so their internal -8/+16 math lands on the honest x+24 centre,
-    # without changing behavior for any other entity type.
-    _PLAYER_ANCHOR_FIX = TILE_SIZE // 2  # 8px: cancels the shared -8px/+16px assumption
+    # _render_speech_bubble centres its bubble at x+16 (one tile), which fits
+    # a 2-tile-wide NPC anchored at x. The player's sprite is honestly 3
+    # tiles wide per the classic-engine spec (48px GANI canvas == 3 tiles),
+    # so its true visual centre is x+1.5 tiles (+24px) — shift the bubble
+    # anchor +8px (TILE_SIZE // 2) at player call sites only. NOTE: this no
+    # longer feeds _render_animated_entity — gani sprites anchor the frame
+    # canvas at the entity's own (x, y) for every entity type (see the
+    # anchor note inside _render_animated_entity).
+    _PLAYER_ANCHOR_FIX = TILE_SIZE // 2  # 8px: bubble centring for 3-tile-wide players
 
     # Classic v2.31 draws NPC nicknames in blue (players get white); tunable
     # against a fresh real-client reference if the shade looks off.
@@ -586,10 +588,10 @@ class EntityRenderMixin:
 
     def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
         """Render the local player with animation."""
-        anchor_x = x + self._PLAYER_ANCHOR_FIX
+        anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
         base_alpha = 115 if self.client.ghost_mode else 255
         alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
-        self._render_animated_entity(anchor_x, y, anim, {
+        self._render_animated_entity(x, y, anim, {
                 'body_image': player.body_image or 'body.png',
                 'head_image': player.head_image or 'head0.png',
                 'sword_image': player.sword_image or 'sword1.png',
@@ -766,12 +768,12 @@ class EntityRenderMixin:
             if p:
                 equip[f'attr{i}_image'] = p
         hidden = bool(int(pdata.get('status') or 0) & 0x02)
-        # See _render_player's _PLAYER_ANCHOR_FIX comment: the shared
-        # animated-entity/speech-bubble helpers assume a 2-tile-wide entity;
-        # other players are the same honestly-3-tile-wide sprite as the
-        # local player, so cancel that assumption the same way.
+        # See _render_player's _PLAYER_ANCHOR_FIX comment: other players are
+        # the same honestly-3-tile-wide sprite as the local player, so their
+        # speech bubble needs the same +8px anchor shift. The sprite itself
+        # anchors at raw (x, y) like every other gani entity.
         anchor_x = x + self._PLAYER_ANCHOR_FIX
-        self._render_animated_entity(anchor_x, y, anim, equip,
+        self._render_animated_entity(x, y, anim, equip,
                                      alpha=115 if hidden else 255)
 
         # Render chat bubble above player (if they have chat text)
@@ -1109,9 +1111,9 @@ class EntityRenderMixin:
                     if p:
                         equip[f'attr{i}_image'] = p
                 self._render_animated_entity(x, y, anim, equip)
-                # NPCs pass raw x to _render_animated_entity (unlike players,
-                # which add _PLAYER_ANCHOR_FIX): body centre = x + TILE_SIZE,
-                # feet row = y + 48 (the 48px gani canvas).
+                # Gani canvas anchors at raw (x, y); for a typical 2-tile NPC
+                # sprite: body centre = x + TILE_SIZE, feet row = y + 48
+                # (the 48px gani canvas).
                 nick_anchor = (x + TILE_SIZE, y + 48)
 
         elif image_name and not is_character:
@@ -1928,16 +1930,20 @@ class EntityRenderMixin:
             self.screen.blit(sprite, (x, y))
             return
 
-        # Gani sprite positions are relative to a 48px-wide frame canvas with
-        # the character CENTERED in it (idle.gani places body/head at x=8,
-        # shadow center 23.5 — canvas center 24). Entity position (x, y) is
-        # the top-left of the 2-tile (32px) logical box, so anchor the canvas
-        # 8px left to line the character up with its box: body center lands
-        # at x+15.5, matching the collision feet box, the nametag, and the
-        # carried-object blit (all of which center on the box). Vertical
-        # needs no shift — body y=16..47 already puts feet in the y+2..y+3
-        # collision rows.
-        base_offset_x = -(48 - TILE_SIZE * 2) // 2
+        # Gani frame offsets are relative to a logical canvas whose ORIGIN is
+        # the entity's world (x, y) — the real client applies them as-is with
+        # no centring (classic-client spec: the player is a 3x3-tile sprite
+        # anchored top-left; idle.gani putting the body at canvas x=8 is
+        # exactly why the collision rect starts at x+0.5). Ground truth from
+        # server content: itsasign2.gani places its 32x32 sign sprite at
+        # frame offset (0,0) and the NPC script pairs it with
+        # `setshape 1,32,32` at the same (x, y); sen_piano.gani encodes its
+        # own placement as negative offsets (-3,-30). A former blanket
+        # -(48-32)//2 = -8px "centre the canvas on a 2-tile box" shift here
+        # drew every gani NPC half a tile left (Bomber lobby signs bug);
+        # players had it cancelled with a +8 at their call sites — both
+        # halves are gone now.
+        base_offset_x = 0
         base_offset_y = 0
 
         # Render each sprite in the frame, from the memoized layer resolution
