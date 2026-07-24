@@ -112,6 +112,7 @@ from .packets import (
     build_shoot_v1,
     build_player_gattrib,
     build_triggeraction,
+    build_weapon_add,
     build_npc_props,
     build_flag_set,
     build_flag_del,
@@ -1390,6 +1391,13 @@ class Client:
         from .packets import _gtokenize
         packet_id = PacketID.PLI_REQUESTTEXT if request else PacketID.PLI_SENDTEXT
         return self._protocol.send_packet(packet_id, _gtokenize(text).encode("latin-1"))
+
+    def send_weapon_add(self, npc_id: int) -> bool:
+        """Ask the server to grant the weapon represented by a level NPC."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(
+            PacketID.PLI_WEAPONADD, build_weapon_add(npc_id))
 
     def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
         """

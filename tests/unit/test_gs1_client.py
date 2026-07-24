@@ -24,7 +24,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1
+from pyreborn.game.setup import SetupMixin
 from pyreborn.packets import PacketID, build_baddy_hurt
+from reborn_protocol import PacketBuilder
 from pyreborn.tiletypes import TILE_TYPES, TileType
 
 
@@ -52,6 +54,35 @@ def _fake_connected_client():
 def _this(gs1, key):
     """The `this.` scope dict for a loaded script/weapon prog."""
     return gs1._progs[key]["scopes"]["this"]
+
+
+def test_level_npc_toweapons_copies_runs_and_notifies_server():
+    client = _fake_connected_client()
+    npc_id = 321
+    script = (
+        "if (created) { setstring client.weaponcreated,yes; }\n"
+        "if (playerenters) { this.entered = 1; }\n"
+        "toweapons *Bomb Bag;"
+    )
+    client.npcs[npc_id] = {
+        "x": 4.0, "y": 5.0, "image": "bombbag.png", "script": script.encode("latin-1"),
+    }
+    gs1 = ClientGS1(client)
+    game = type("_Game", (SetupMixin,), {})()
+    game.client = client
+    game.gs1 = gs1
+    game.player_anim = type("_Animation", (), {})()
+    game._setup_gs1_callbacks()
+
+    gs1.load_script("npc_321", script, npc_id=npc_id, x=4, y=5)
+    gs1.trigger_npc_event(npc_id, "created")
+
+    assert client.weapons["*Bomb Bag"] == {
+        "name": "*Bomb Bag", "image": "bombbag.png", "script": script,
+    }
+    assert gs1._shared["client"]["weaponcreated"] == "yes"
+    payload = PacketBuilder().write_gchar(1).write_gint3(npc_id).build()
+    assert (int(PacketID.PLI_WEAPONADD), payload) in client._protocol.sent
 
 
 class TestHitObjects:

@@ -410,6 +410,20 @@ class InputMixin:
             gs1.keys_raw = set()
         self._gs1_keypress_queue.clear()
 
+    def _fire_gs1_keypress_queue(self):
+        """Deliver queued GS1 `keypressed` events (see _handle_events)."""
+        if not self._gs1_keypress_queue:
+            return
+        gs1 = getattr(self, 'gs1', None)
+        queued, self._gs1_keypress_queue = self._gs1_keypress_queue, []
+        if gs1 is not None:
+            for pygame_key, ch in queued:
+                vk = self._vk_cache.get(pygame_key)
+                if vk is None:
+                    vk = pygame_key_to_vk(pygame_key)
+                    self._vk_cache[pygame_key] = vk
+                gs1.fire_keypress(vk, ch)
+
     def _feed_gs1_input(self, keys):
         """Mirror pygame keyboard/mouse + screen size into the GS1 engine so
         weapon scripts (arenaSYS reads keydown()/playerx, arenaGUI reads the
@@ -477,11 +491,15 @@ class InputMixin:
             self._clear_gs1_input()
             return
 
-        # A GS1 `freezeplayer N` (e.g. talking to a lobby NPC) locks input until
-        # the timer expires.
+        # A GS1 `freezeplayer N` (e.g. talking to a lobby NPC) locks MOVEMENT
+        # and actions until the timer expires — but scripts must still see the
+        # keyboard: classic intro/cutscene NPCs (GTA's splashscreen menu does
+        # `freezeplayer 99` then polls keydown(5) for "Press S to Select")
+        # freeze the player precisely so the script can own the keys.
         if current_time < getattr(self, '_frozen_until', 0.0):
             self.is_moving = False
-            self._clear_gs1_input()
+            self._feed_gs1_input(pygame.key.get_pressed())
+            self._fire_gs1_keypress_queue()
             return
 
         # Dead players can't move or act until the server respawns them (it
@@ -498,16 +516,7 @@ class InputMixin:
         # keys_dir above reflects the just-pressed key — so a script's
         # `keypressed && keydown(5)` (see npcserver.md's sword emulation)
         # actually sees it true on the same frame the event fires.
-        if self._gs1_keypress_queue:
-            gs1 = getattr(self, 'gs1', None)
-            queued, self._gs1_keypress_queue = self._gs1_keypress_queue, []
-            if gs1 is not None:
-                for pygame_key, ch in queued:
-                    vk = self._vk_cache.get(pygame_key)
-                    if vk is None:
-                        vk = pygame_key_to_vk(pygame_key)
-                        self._vk_cache[pygame_key] = vk
-                    gs1.fire_keypress(vk, ch)
+        self._fire_gs1_keypress_queue()
 
         # Arena mode: a weapon called disabledefmovement and drives movement +
         # bomb placement itself by reading keydown()/playerx. Don't run the

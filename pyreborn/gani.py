@@ -41,6 +41,21 @@ class GaniFrame:
 
 
 @dataclass
+class MovieKeyframe:
+    """One actor update at a movie tick."""
+    tick: int
+    values: Dict[str, object]
+
+
+@dataclass
+class MovieActor:
+    """A named cast member and its ordered timeline updates."""
+    kind: str
+    name: str
+    keyframes: List[MovieKeyframe] = field(default_factory=list)
+
+
+@dataclass
 class Gani:
     """Parsed GANI animation data."""
     name: str
@@ -59,6 +74,9 @@ class Gani:
     # synthesized effect rather than the frame data, which draws almost
     # nothing on its own.
     has_script: bool = False
+    is_movie: bool = False
+    movie_length: int = 0
+    actors: List[MovieActor] = field(default_factory=list)
 
     def get_frame(self, direction: int, frame_index: int) -> Optional[GaniFrame]:
         """Get a specific frame for a direction."""
@@ -169,6 +187,8 @@ class GaniParser:
 
         in_ani = False
         in_script = False
+        in_movie = False
+        movie_actor: Optional[MovieActor] = None
         frame_lines: List[str] = []  # Collect lines for current frame group
         pending_sound: Optional[Tuple[str, float, float]] = None
 
@@ -217,6 +237,39 @@ class GaniParser:
                 in_script = False
                 continue
             if in_script:
+                continue
+
+            if line.startswith('FRAMES '):
+                try:
+                    gani.movie_length = int(line.split(None, 1)[1])
+                except (ValueError, IndexError):
+                    pass
+                continue
+
+            if line == 'MOVIE':
+                gani.is_movie = True
+                in_movie = True
+                continue
+            if line == 'MOVIEEND':
+                in_movie = False
+                movie_actor = None
+                continue
+            if in_movie:
+                if line.startswith('ACTOR '):
+                    parts = line.split(None, 2)
+                    if len(parts) == 3:
+                        movie_actor = MovieActor(
+                            kind=parts[1].upper(), name=parts[2].strip())
+                        gani.actors.append(movie_actor)
+                    continue
+                if line == 'ACTOREND':
+                    movie_actor = None
+                    continue
+                if line.startswith('FRAME ') and movie_actor is not None:
+                    keyframe = self._parse_movie_frame(line)
+                    if keyframe is not None:
+                        movie_actor.keyframes.append(keyframe)
+                    continue
                 continue
 
             # Parse SPRITE definitions
@@ -319,6 +372,36 @@ class GaniParser:
 
         return gani
 
+    @staticmethod
+    def _parse_movie_frame(line: str) -> Optional[MovieKeyframe]:
+        """Parse ``FRAME tick key=value,...`` without treating commas in
+        unkeyed text as fields."""
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            return None
+        try:
+            tick = int(parts[1])
+        except ValueError:
+            return None
+        values: Dict[str, object] = {}
+        if len(parts) == 3:
+            for item in parts[2].split(','):
+                if '=' not in item:
+                    continue
+                key, value = item.split('=', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if key in {'dx', 'dy', 'dir', 'layer', 'sprite #'}:
+                    try:
+                        values['sprite' if key == 'sprite #' else key] = int(value)
+                    except ValueError:
+                        continue
+                elif key == 'visible':
+                    values[key] = value.lower() == 'true'
+                else:
+                    values[key] = value
+        return MovieKeyframe(tick=tick, values=values)
+
     def _parse_sprite_line(self, line: str) -> Optional[GaniSprite]:
         """Parse a SPRITE definition line."""
         # SPRITE <id> <layer> <x> <y> <w> <h> [description]
@@ -385,6 +468,7 @@ class AnimationState:
     def __init__(self, gani_parser: GaniParser):
         self.parser = gani_parser
         self.gani: Optional[Gani] = None
+        self.requested_name: Optional[str] = None  # last set_animation ask
         self.direction: int = 2  # Default facing down
         self.frame: int = 0
         self.frame_time: float = 0.0
@@ -401,6 +485,7 @@ class AnimationState:
         # local player's state wires this to GS1 `replaceani` (walk ->
         # eye_bomber_walk0 etc.); NPC/other-player states leave it None.
         self.name_resolver = None
+        self.movie: Optional["MoviePlaybackState"] = None
 
     def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):
         """Set the current animation by name."""
@@ -416,6 +501,11 @@ class AnimationState:
                 direction = int(direction) & 3
             except (TypeError, ValueError):
                 direction = 0
+        # Remember what the caller asked for even if the gani file isn't
+        # cached yet — the renderer uses this to request the download and
+        # hide the entity instead of drawing a placeholder (GTA's cutscene
+        # `setani hiddenstill,` drew a magenta box until the file arrived).
+        self.requested_name = name
         # Don't restart same animation unless forced
         if not force and self.gani and self.gani.name == name:
             if direction is not None and direction != self.direction:
@@ -430,6 +520,7 @@ class AnimationState:
         gani = self.parser.parse(name)
         if gani:
             self.gani = gani
+            self.movie = MoviePlaybackState(gani, self.parser) if gani.is_movie else None
             if direction is not None:
                 self.direction = direction
             resumed = False
@@ -473,6 +564,10 @@ class AnimationState:
         if not self.gani or not self.playing or self.finished:
             return sounds
 
+        if self.movie is not None:
+            self.movie.update(dt)
+            return sounds
+
         self.frame_time += dt
         frame_count = self.gani.get_frame_count(self.direction)
 
@@ -485,9 +580,13 @@ class AnimationState:
             old_frame = self.frame
             self.frame += 1
 
-            # Check if animation ended
+            # Check if animation ended. Only LOOP repeats: CONTINUOUS alone
+            # (classic cn_dead) means "resume where it left off when re-set",
+            # NOT "loop" — looping ganis declare both (cn_walk/carry/swim are
+            # LOOP+CONTINUOUS). Treating CONTINUOUS as looping replayed the
+            # death spin forever.
             if self.frame >= frame_count:
-                if self.gani.loops or self.gani.continuous:
+                if self.gani.loops:
                     self.frame = 0
                 else:
                     self.frame = frame_count - 1
@@ -525,6 +624,166 @@ class AnimationState:
         self.frame_time = 0.0
         self.finished = False
         self.playing = True
+        if self.movie is not None:
+            self.movie.reset()
+
+
+@dataclass
+class MovieActorState:
+    """Resolved state of one cast member at the current movie time."""
+    kind: str
+    name: str
+    dx: float
+    dy: float
+    direction: int
+    layer: int
+    ani: str
+    animation: Optional[AnimationState]
+    body: str
+    head: str
+    sword: str
+    shield: str
+    horse: str
+    attr1: str
+    colors: Tuple[str, ...]
+    chat: str
+    params: Dict[str, str]
+    sprite: Optional[int] = None
+    file: str = ""
+
+
+class MoviePlaybackState:
+    """Advances and resolves the independent actors in a movie gani."""
+
+    FRAME_DURATION = 0.05
+
+    def __init__(self, gani: Gani, gani_parser: GaniParser):
+        if not gani.is_movie:
+            raise ValueError("MoviePlaybackState requires a movie gani")
+        self.gani = gani
+        self.parser = gani_parser
+        self.elapsed = 0.0
+        self._actor_anims: Dict[int, AnimationState] = {}
+        self._actor_ani_keys: Dict[int, Tuple[str, int]] = {}
+
+    @property
+    def tick(self) -> float:
+        return min(self.elapsed / self.FRAME_DURATION,
+                   float(self.gani.movie_length))
+
+    def reset(self):
+        self.elapsed = 0.0
+        self._actor_anims.clear()
+        self._actor_ani_keys.clear()
+
+    def update(self, dt: float):
+        dt = max(0.0, dt)
+        self.elapsed = min(
+            self.elapsed + dt,
+            self.gani.movie_length * self.FRAME_DURATION)
+        for animation in self._actor_anims.values():
+            animation.update(dt)
+
+    def visible_actors(self) -> List[MovieActorState]:
+        """Return visible cast members, ordered by layer then source order."""
+        resolved = []
+        for index, actor in enumerate(self.gani.actors):
+            state = self._resolve_actor(index, actor, self.tick, with_animation=True)
+            if state is not None:
+                resolved.append((state.layer, index, state))
+        resolved.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in resolved]
+
+    def actor_state(self, name: str, tick: float) -> Optional[MovieActorState]:
+        """Resolve a named actor at an arbitrary tick, primarily for tooling."""
+        for index, actor in enumerate(self.gani.actors):
+            if actor.name == name:
+                return self._resolve_actor(index, actor, tick, with_animation=False)
+        return None
+
+    def _resolve_actor(self, index: int, actor: MovieActor, tick: float,
+                       with_animation: bool) -> Optional[MovieActorState]:
+        if not actor.keyframes or tick < actor.keyframes[0].tick:
+            return None
+        tick = min(max(0.0, tick), float(self.gani.movie_length))
+        values: Dict[str, object] = {}
+        ani_tick = 0
+        for keyframe in actor.keyframes:
+            if keyframe.tick > tick:
+                break
+            values.update(keyframe.values)
+            if 'ani' in keyframe.values:
+                ani_tick = keyframe.tick
+        if values.get('visible', True) is False:
+            return None
+
+        dx = self._interpolated_axis(actor, tick, 'dx', values.get('dx', 0))
+        dy = self._interpolated_axis(actor, tick, 'dy', values.get('dy', 0))
+        direction = int(values.get('dir', 2))
+        ani_name = str(values.get('ani', ''))
+        animation = None
+        if with_animation and actor.kind == 'CHAR' and ani_name:
+            animation = self._actor_anims.get(index)
+            ani_key = (ani_name, ani_tick)
+            if animation is None:
+                animation = self._actor_anims[index] = AnimationState(self.parser)
+            if self._actor_ani_keys.get(index) != ani_key:
+                animation.set_animation(ani_name, direction, force=True)
+                if animation.gani is not None:
+                    animation.update(max(0.0, tick - ani_tick) * self.FRAME_DURATION)
+                self._actor_ani_keys[index] = ani_key
+            else:
+                was_missing = animation.gani is None
+                animation.set_animation(ani_name, direction)
+                if was_missing and animation.gani is not None:
+                    animation.update(
+                        max(0.0, tick - ani_tick) * self.FRAME_DURATION)
+                animation.set_direction(direction)
+
+        colors = tuple(str(values.get(
+            f'color{i}', 'white')) for i in range(5))
+        params = {
+            key: str(value) for key, value in values.items()
+            if key.startswith('param')
+        }
+        return MovieActorState(
+            kind=actor.kind, name=actor.name, dx=dx, dy=dy,
+            direction=direction, layer=int(values.get('layer', 1)),
+            ani=ani_name, animation=animation, body=str(values.get(
+                'body', self.gani.defaults.get('BODY', 'body.png'))),
+            head=str(values.get(
+                'head', self.gani.defaults.get('HEAD', 'head0.png'))),
+            sword=str(values.get('sword', 'sword1.png')),
+            shield=str(values.get('shield', 'shield1.png')),
+            horse=str(values.get('horse', '')),
+            attr1=str(values.get(
+                'attr1', self.gani.defaults.get('ATTR1', ''))),
+            colors=colors, chat=str(values.get('chat', '')),
+            params=params,
+            sprite=values.get('sprite') if isinstance(values.get('sprite'), int) else None,
+            file=str(values.get('file', '')),
+        )
+
+    @staticmethod
+    def _interpolated_axis(actor: MovieActor, tick: float, key: str,
+                           current: object) -> float:
+        try:
+            start_value = float(current)
+        except (TypeError, ValueError):
+            start_value = 0.0
+        start_tick = actor.keyframes[0].tick
+        for keyframe in actor.keyframes:
+            if keyframe.tick <= tick and key in keyframe.values:
+                start_tick = keyframe.tick
+                start_value = float(keyframe.values[key])
+            elif keyframe.tick > tick and key in keyframe.values:
+                span = keyframe.tick - start_tick
+                if span <= 0:
+                    return float(keyframe.values[key])
+                fraction = (tick - start_tick) / span
+                return start_value + (
+                    float(keyframe.values[key]) - start_value) * fraction
+        return start_value
 
 
 # Utility functions for common animation needs

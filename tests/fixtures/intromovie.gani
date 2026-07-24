@@ -1,0 +1,537 @@
+GANI0002
+SPRITE    0         SPRITES    0    0   24   12 shadow
+SPRITE   19 watershotani.mng    0    0   48   48 shot
+SPRITE   20 deathshotani.mng    0    0   48   48 shot
+SPRITE   21  warshotani.mng    0    0   32   32 shot
+SPRITE   22 famineshotani.mng    0    0   48   48 shot
+SPRITE   23 pestilenceshotani.mng    0    0   32   32 shot
+SPRITE   24 fireshotani.mng    0    0   48   48 shot
+SPRITE   25       bomb1.png    0   32   32   32 explosion (0, 0)
+SPRITE   26       bomb1.png   32   32   32   32 explosion (1, 0)
+SPRITE   27       bomb1.png   64   32   32   32 explosion (2, 0)
+SPRITE   31       bomb1.png    0   96   32   32 explosion (0, 2)
+SPRITE   32       bomb1.png   32   96   32   32 explosion (1, 2)
+SPRITE   33       bomb1.png   64   96   32   32 explosion (2, 2)
+SPRITE   34       bomb1.png   96   96   32   32 explosion (2, 2)
+SPRITE   37       bomb1.png    0  160   32   32 explosion (0, 4)
+SPRITE   38       bomb1.png   32  160   32   32 explosion (1, 4)
+SPRITE   39       bomb1.png   64  160   32   32 explosion (2, 4)
+SPRITE   40       bomb1.png    0  192   32   32 explosion (0, 5)
+SPRITE   41       bomb1.png   96  160   32   32 explosion (2, 4)
+SPRITE   42       bomb1.png   96  192   32   32 explosion (2, 5)
+SPRITE   43       bomb1.png    0  224   32   32 explosion (0, 6)
+SPRITE   44       bomb1.png   96   32   32   32 explosion (2, 0)
+SPRITE   45       bomb1.png   96  224   32   32 explosion (2, 6)
+SPRITE   46       bomb1.png    0  256   32   32 explosion (0, 7)
+SPRITE   48       bomb1.png   96  256   32   32 explosion (2, 7)
+SPRITE   49       bomb1.png    0  288   32   32 explosion (0, 8)
+SPRITE   51       bomb1.png   96  288   32   32 explosion (2, 8)
+
+FRAMES 800
+DEFAULTATTR1 hat0.png
+DEFAULTHEAD head19.png
+DEFAULTBODY body.png
+
+MOVIE
+  ACTOR CHAR Actor15
+    FRAME 201 ani=jshot,body=body.png,color0=orange,color1=gray,color2=darkblue,color3=brown,color4=black,dir=2,dx=-47,dy=79,head=head19.png,horse=ride.png,layer=1,shield=shield1.png,sword=sword1.png,visible=true
+    FRAME 206 dx=-33,dy=79
+    FRAME 207 visible=false
+  ACTOREND
+
+  ACTOR CHAR Athenea
+    FRAME 0 ani=cn_walkslow,body=body18.png,color0=orange,color1=white,color2=lightgray,color3=lightgray,color4=white,dir=1,dx=86,dy=-64,head=head21.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 23 ani=cn_idle,body=body18.png,dx=23,dy=-55
+    FRAME 24 dir=2,dx=23,dy=-55
+    FRAME 36 ani=cn_dead,body=body18.png
+    FRAME 60 dx=23,dy=-55
+    FRAME 80 dx=23,dy=-55
+  ACTOREND
+
+  ACTOR CHAR Azazel
+    FRAME 69 ani=cn_walk,body=body13.png,color0=black,color1=black,color2=orange,color3=darkpurple,color4=gray,dir=2,dx=0,dy=-615,head=head91.png,horse=ride.png,layer=1,shield=bookofwizardy-shield.png,sword=sword1.png,visible=true
+    FRAME 101 chat=Would someone shut him up?
+    FRAME 110 ani=cn_read,body=body13.png,dx=0,dy=0
+    FRAME 111 chat=THANK you.
+    FRAME 131 chat=
+    FRAME 428 ani=cn_hurt,chat=Imbecille!,dir=3,dx=0,dy=0
+    FRAME 442 ani=cn_lift,dx=-138,dy=34
+    FRAME 443 ani=cn_carrystill
+    FRAME 470 chat=DIE!
+    FRAME 489 ani=cn_walkslow,chat=Rise!  The time has come!,dx=-138,dy=34
+    FRAME 523 ani=cn_carrystill,dir=2,dx=0,dy=0
+    FRAME 524 color3=gray
+    FRAME 526 color2=lightgray
+    FRAME 527 chat=,head=azelstat.png
+  ACTOREND
+
+  ACTOR CHAR Bathmog
+    FRAME 50 ani=cn_walkslow,body=body13.png,color0=red,color1=black,color2=red,color3=darkred,color4=brown,dir=0,dx=-2,dy=458,head=head938.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 80 ani=cn_idle,body=body13.png,dx=2,dy=161
+    FRAME 81 dir=1
+    FRAME 82 dir=2
+    FRAME 105 dir=1
+    FRAME 106 dir=0
+    FRAME 107 ani=cn_shoot,body=body13.png,param1=firerod.png
+    FRAME 114 ani=cn_idle,body=body13.png,dir=1,dx=2,dy=161
+    FRAME 115 dir=2
+    FRAME 150 dx=2,dy=161
+    FRAME 151 dir=3,dx=2,dy=161
+    FRAME 152 ani=cn_walk,dir=0
+    FRAME 161 dir=3,dx=0,dy=83
+    FRAME 170 ani=cn_idle,dx=63,dy=77
+    FRAME 173 ani=cn_shoot
+    FRAME 191 ani=cn_hurt,dx=63,dy=77
+    FRAME 201 ani=cn_shoot,dx=-36,dy=79
+    FRAME 206 dx=-36,dy=79
+    FRAME 207 ani=corpse,body=body13.png,dx=-11,dy=56
+    FRAME 220 ani=cn_shoot,body=body13.png,dir=1,dx=247,dy=-7
+    FRAME 228 ani=cn_lift
+    FRAME 244 dir=2
+    FRAME 245 ani=corpse
+    FRAME 489 ani=cn_lift,dir=3
+    FRAME 490 ani=cn_idle,dir=2
+    FRAME 491 ani=cn_walk,dir=1,dx=247,dy=-7
+    FRAME 523 dx=64,dy=64
+    FRAME 524 ani=cn_carrystill,dir=2
+    FRAME 525 color3=lightgray
+    FRAME 526 color4=gray
+    FRAME 527 color0=lightgray,color2=lightgray
+    FRAME 528 head=bathstat.png
+  ACTOREND
+
+  ACTOR CHAR Druid
+    FRAME 50 ani=cn_walkslow,body=body13.png,color0=orange,color1=black,color2=orange,color3=green,color4=darkgreen,dir=3,dx=-538,dy=-23,head=head136.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 80 ani=cn_idle,body=body13.png,dx=-154,dy=-20
+    FRAME 81 dir=2
+    FRAME 82 dir=1
+    FRAME 151 dir=2,dx=-154,dy=-20
+    FRAME 152 ani=cn_walk,dir=3
+    FRAME 161 dir=2,dx=-67,dy=-10
+    FRAME 170 ani=cn_idle,dx=-66,dy=46
+    FRAME 173 ani=cn_shoot
+    FRAME 188 ani=cn_hurt,dx=-66,dy=46
+    FRAME 195 ani=walk,dir=2,dx=-70,dy=-20
+    FRAME 216 ani=idle,dir=2,dx=-72,dy=31
+    FRAME 217 ani=cn_burningwalk
+    FRAME 242 ani=corpse,dx=-70,dy=54
+    FRAME 489 ani=cn_lift,dir=3
+    FRAME 490 ani=cn_idle,dir=2
+    FRAME 491 ani=cn_walkslow,dx=-70,dy=54
+    FRAME 523 dx=-64,dy=64
+    FRAME 524 ani=cn_carrystill
+    FRAME 525 color3=lightgray
+    FRAME 526 color4=gray
+    FRAME 527 color0=lightgray,color2=lightgray
+    FRAME 528 head=druidstat.png
+  ACTOREND
+
+  ACTOR CHAR Horus
+    FRAME 50 ani=cn_walkslow,body=body13.png,color0=yellow,color1=black,color2=yellow,color3=yellow,color4=lightgray,dir=2,dx=5,dy=-411,head=head797.png,horse=ride.png,layer=1,shield=no-shield.png,sword=blackrocksword.png,visible=true
+    FRAME 79 ani=cn_idle,body=body13.png,dx=6,dy=-154
+    FRAME 81 dir=1
+    FRAME 82 dir=0
+    FRAME 151 dir=1,dx=6,dy=-154
+    FRAME 152 ani=cn_walk,dir=2
+    FRAME 161 dir=1,dx=6,dy=-76
+    FRAME 170 ani=cn_idle,dx=-35,dy=-71
+    FRAME 173 ani=cn_shoot,param1=stonerod.png
+    FRAME 188 ani=cn_hurt,dx=-35,dy=-71
+    FRAME 195 ani=cn_shoot,dir=2,dx=48,dy=-69,layer=1
+    FRAME 200 ani=zorbibubble
+    FRAME 279 ani=ashipdrop
+    FRAME 280 dx=-62,dy=-264
+    FRAME 295 ani=cn_walk
+    FRAME 326 ani=cn_shoot,dir=3,dx=-69,dy=-144
+    FRAME 356 ani=cn_walk,dx=-69,dy=-144
+    FRAME 397 ani=cn_hurt,dx=52,dy=-65
+    FRAME 431 ani=cn_sword,dx=-28,dy=-146
+    FRAME 437 ani=cn_parry
+    FRAME 446 ani=cn_sword
+    FRAME 451 ani=cn_parry
+    FRAME 456 ani=cn_sword
+    FRAME 457 ani=cn_hurt,dir=3,dx=-28,dy=-146
+    FRAME 464 ani=cn_idle
+    FRAME 465 ani=cn_hurt
+    FRAME 489 ani=cn_lift,dx=-197,dy=-219
+    FRAME 490 ani=cn_idle,dir=2
+    FRAME 491 ani=cn_walk,dx=-197,dy=-219
+    FRAME 523 dx=-64,dy=-64
+    FRAME 524 ani=cn_carrystill
+    FRAME 525 color3=gray
+    FRAME 527 color0=gray,color2=gray
+    FRAME 528 dx=-64,dy=-64,head=horustat.png
+  ACTOREND
+
+  ACTOR CHAR Lozolin2
+    FRAME 150 ani=cn_warp,body=body11.png,color0=orange,color1=darkblue,color2=white,color3=white,color4=blue,dir=2,dx=-73,dy=82,head=head24.png,horse=ride.png,layer=1,shield=corson-prima-shield.png,sword=broadgoldsword.png,visible=true
+    FRAME 168 ani=cn_idle,Azazel!,chat=Azazel!  Don't do it!,dir=0
+    FRAME 178 ani=deathblock
+    FRAME 184 ani=cn_sword
+    FRAME 189 ani=judgement,dir=3
+    FRAME 201 chat=You'll destroy us all!
+    FRAME 209 ani=cn_walk,dx=-73,dy=82
+    FRAME 225 chat=
+    FRAME 250 ani=cn_sword,dx=61,dy=6
+    FRAME 258 ani=cn_walk,chat=But we can't give up!
+    FRAME 263 ani=cn_sword,dir=1,dx=131,dy=-8
+    FRAME 269 ani=spin
+    FRAME 282 ani=cn_sword
+    FRAME 287 ani=spin
+    FRAME 304 ani=cn_lift
+    FRAME 320 chat=Azazel!!!
+    FRAME 321 chat=Azazel!  No!!!
+    FRAME 361 chat=Ulysses?!?
+    FRAME 400 ani=victory,chat=Right!,dx=131,dy=-8
+    FRAME 419 ani=dragoonjump,dx=131,dy=-8
+    FRAME 429 chat=
+    FRAME 431 ani=spin,dx=30,dy=0
+    FRAME 483 ani=graalblock
+    FRAME 484 ani=cn_hurt,dx=30,dy=0
+    FRAME 489 ani=corpse,dx=243,dy=-80
+  ACTOREND
+
+  ACTOR CHAR Mathias
+    FRAME 150 ani=cn_warp,body=body11.png,color0=lightgreen,color1=black,color2=brown,color3=gray,color4=gray,dir=2,dx=-66,dy=-70,head=head943.png,horse=ride.png,layer=1,shield=nightmareshield.png,sword=sword1.png,visible=true
+    FRAME 168 ani=cn_idle,dir=3
+    FRAME 178 ani=graalblock
+    FRAME 184 ani=cn_gnome_sword,param1=hammer3t.png
+    FRAME 191 ani=cn_shoot,param1=
+    FRAME 193 dx=-66,dy=-70
+    FRAME 225 chat=It's no good!  We're outnumbered!
+    FRAME 248 dir=0
+    FRAME 258 chat=
+    FRAME 314 ani=frozen,dir=2
+    FRAME 400 ani=cn_carrystill
+    FRAME 406 ani=drunkidle
+    FRAME 484 ani=cn_idle,chat=Lozolin!,dir=3
+    FRAME 489 ani=cn_walk,dir=3,dx=-66,dy=-70
+    FRAME 562 ani=cn_grab,chat=Speak to me!,dir=2,dx=246,dy=-101
+    FRAME 598 chat=
+    FRAME 730 ani=cn_walkslow,dir=3,dx=246,dy=-101
+    FRAME 746 ani=cn_idle,dir=2,dx=300,dy=-101
+    FRAME 747 dir=1
+    FRAME 759 dx=300,dy=-101
+    FRAME 760 chat=...goodbye...old friend...,comrade...
+    FRAME 772 dir=2
+    FRAME 773 ani=cn_walk,dir=3,dx=300,dy=-101
+    FRAME 800 dx=600,dy=-101
+  ACTOREND
+
+  ACTOR CHAR Neko
+    FRAME 0 ani=cn_walk,body=body18.png,color0=orange,color1=white,color2=lightgray,color3=lightgray,color4=white,dir=2,dx=-3,dy=-248,head=head1008.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 23 ani=cn_grab,chat=Look out!,dx=-1,dy=57
+    FRAME 24 ani=cn_carrystill,body=body18.png
+    FRAME 35 layer=1
+    FRAME 36 ani=cn_dead,chat=
+  ACTOREND
+
+  ACTOR CHAR Retaw
+    FRAME 50 ani=cn_walkslow,body=body13.png,color0=blue,color1=black,color2=blue,color3=blue,color4=darkblue,dir=1,dx=495,dy=-29,head=head1200.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 80 ani=cn_idle,body=body13.png,dx=144,dy=-30
+    FRAME 81 dir=2
+    FRAME 82 dir=3
+    FRAME 151 dir=0,dx=144,dy=-30
+    FRAME 152 ani=cn_walk,dir=1
+    FRAME 161 dir=0,dx=94,dy=-18
+    FRAME 170 ani=cn_idle,dx=94,dy=-42
+    FRAME 173 ani=cn_shoot,param1=waterrod.png
+    FRAME 191 ani=zorbibubble,dx=94,dy=-42
+    FRAME 211 ani=ashipdrop,dx=97,dy=67
+    FRAME 229 ani=cn_hammered_walkslow
+    FRAME 252 ani=cn_hammered_stretch
+    FRAME 259 ani=cn_hammered_walkslow
+    FRAME 264 dx=96,dy=-13
+    FRAME 280 ani=cn_hammered_popup,dir=1,dx=96,dy=-35
+    FRAME 288 ani=cn_shoot
+    FRAME 297 ani=cn_dead
+    FRAME 489 ani=cn_lift,dir=3
+    FRAME 490 ani=cn_idle,dir=0
+    FRAME 491 ani=cn_walkslow,dx=96,dy=-35
+    FRAME 523 dx=64,dy=-64
+    FRAME 524 ani=cn_carrystill,dir=2
+    FRAME 525 color3=gray
+    FRAME 526 color4=lightgray
+    FRAME 527 color0=gray,color2=gray
+    FRAME 528 head=retawstat.png
+  ACTOREND
+
+  ACTOR CHAR Sage
+    FRAME 150 ani=cn_warp,body=bodysage2.mng,color0=orange,color1=brown,color2=red,color3=darkred,color4=black,dir=2,dx=95,dy=80,head=head721.png,horse=ride.png,layer=1,shield=floatingorbstaff-shield.png,sword=sword1.png,visible=true
+    FRAME 168 ani=cn_idle,dir=1
+    FRAME 178 ani=cn_burningwalk
+    FRAME 184 ani=cn_carrystill
+    FRAME 188 ani=cn_alien_sword
+    FRAME 196 ani=cn_aliencharge
+    FRAME 208 ani=cn_alien_beam,param1=zalcannon.png
+    FRAME 212 ani=deathhit
+    FRAME 222 ani=cn_grab
+    FRAME 223 ani=corpse,dir=2
+    FRAME 383 ani=lunarlive,dir=0
+    FRAME 406 ani=drunkidle
+    FRAME 489 ani=cn_walk,dx=95,dy=80
+    FRAME 547 ani=cn_grab,dx=248,dy=-63
+    FRAME 638 chat=Guys?  The island's sinking!
+    FRAME 715 ani=ashiplift,chat=
+    FRAME 751 visible=false
+  ACTOREND
+
+  ACTOR CHAR Tabbard
+    FRAME 0 ani=cn_walkslow,body=body.png,color0=orange,color1=white,color2=orange,color3=orange,color4=white,dir=2,dx=0,dy=0,head=head5.png,horse=ride.png,layer=1,shield=no-shield.png,sword=brundt-sword.png,visible=true
+    FRAME 23 ani=cn_idle,dx=-1,dy=88
+    FRAME 24 ani=cn_sit,body=body.png
+    FRAME 35 ani=corpse,dx=41,dy=167
+    FRAME 36 ani=cn_lift,chat=What...?,dir=3
+    FRAME 37 ani=cn_idle,dir=0,dx=38,dy=165
+    FRAME 45 ani=cn_walk,chat=NO!,dx=38,dy=165
+    FRAME 60 ani=cn_grab,dx=14,dy=86
+    FRAME 80 ani=knightpose,chat=You!?!  But why?!?,dir=2
+    FRAME 81 chat=You!?!  But why?!?,dx=14,dy=86
+    FRAME 111 ani=cn_dead,chat=
+  ACTOREND
+
+  ACTOR CHAR thrownhammer
+    FRAME 192 ani=thrownhammer,body=body.png,color0=orange,color1=gray,color2=darkblue,color3=brown,color4=black,dir=3,dx=-54,dy=-60,head=head19.png,horse=ride.png,layer=1,param1=hammer3t.png,shield=shield1.png,sword=sword1.png,visible=true
+    FRAME 229 ani=cn_idle,dx=84,dy=69,visible=false
+    FRAME 248 ani=thrownhammer,dir=0,dx=-61,dy=-73,visible=true
+    FRAME 279 ani=cn_idle,visible=false
+    FRAME 280 dx=-61,dy=-252
+  ACTOREND
+
+  ACTOR CHAR Ulysses
+    FRAME 341 ani=vampdash,body=body13.png,chat=Looks like you could use a hand,color0=orange,color1=gray,color2=gray,color3=darkblue,color4=gray,dir=0,dx=65,dy=502,head=head488.png,horse=ride.png,layer=1,shield=dagger-shield.png,sword=alucard-sword.png,visible=true
+    FRAME 354 ani=deathblock,dir=1,dx=79,dy=-50
+    FRAME 382 ani=cn_carrystill,chat=I got your back.  Hurry!,dir=2
+    FRAME 397 ani=cn_sword,dir=1
+    FRAME 403 ani=cn_walk,dx=79,dy=-50
+    FRAME 431 ani=cn_parry,dx=9,dy=-133
+    FRAME 436 ani=cn_sword
+    FRAME 448 ani=cn_parry
+    FRAME 451 ani=cn_sword
+    FRAME 456 ani=cn_spin
+    FRAME 472 ani=cn_idle,chat=Look out!,dir=2
+    FRAME 489 ani=cn_walk,dir=3,dx=9,dy=-133
+    FRAME 490 chat=
+    FRAME 542 chat=,dir=2,dx=242,dy=-122
+    FRAME 550 ani=cn_grab,chat=,dir=1,dx=287,dy=-79
+    FRAME 598 chat=No good...he's too far gone
+    FRAME 638 chat=
+    FRAME 688 ani=vampdash,chat=Leave him!,dir=2,dx=287,dy=-79
+    FRAME 690 chat=Leave him!  There's nothing we can do for him now!
+    FRAME 759 dx=0,dy=800
+  ACTOREND
+
+  ACTOR CHAR Valik
+    FRAME 0 ani=cn_walkslow,body=body18.png,color0=orange,color1=white,color2=lightgray,color3=lightgray,color4=white,dir=0,dx=-33,dy=170,head=head846.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 23 dir=1,dx=-5,dy=6
+    FRAME 35 dx=-166,dy=-5
+    FRAME 36 ani=cn_dead,body=body18.png
+  ACTOREND
+
+  ACTOR CHAR Vtor
+    FRAME 0 ani=cn_walkslow,body=body.png,color0=cynober,color1=white,color2=cynober,color3=cynober,color4=white,dir=3,dx=-145,dy=-46,head=head517.png,horse=ride.png,layer=1,shield=no-shield.png,sword=sword1.png,visible=true
+    FRAME 23 ani=cn_idle,dx=-7,dy=-55
+    FRAME 24 dir=2
+    FRAME 36 ani=cn_dead,dx=-6,dy=-55
+    FRAME 80 dx=-6,dy=-55
+  ACTOREND
+
+  ACTOR CHAR ZorbiCid1
+    FRAME 150 ani=cn_warp,attr1=hat163.png,body=body18.png,color0=cynober,color1=darkblue,color2=darkblue,color3=lightblue,color4=blue,dir=2,dx=94,dy=-69,head=head35.png,horse=ride.png,layer=1,shield=flgr-shield.png,sword=sword1.png,visible=true
+    FRAME 168 ani=cn_idle
+    FRAME 178 ani=frozen
+    FRAME 184 ani=cn_carrystill
+    FRAME 188 ani=bubblewand
+    FRAME 197 ani=cn_idle,dir=1
+    FRAME 198 ani=bubblewand
+    FRAME 243 ani=cn_burningidle
+    FRAME 271 ani=corpse
+    FRAME 383 ani=lunarlive
+    FRAME 406 ani=drunkidle
+    FRAME 489 ani=cn_idle,dir=3,dx=94,dy=-69
+    FRAME 490 ani=cn_walk,dx=94,dy=-69
+    FRAME 545 ani=cn_grab,dx=214,dy=-81
+    FRAME 659 chat=No!  We were too late!!!
+    FRAME 727 ani=cn_walk,chat=,dir=1,dx=214,dy=-81
+    FRAME 751 visible=true
+    FRAME 759 dx=-800,dy=-81
+  ACTOREND
+
+  ACTOR SPRITE DeathShot
+    FRAME 23 dx=-1,dy=338,sprite #=20,visible=true
+    FRAME 35 dx=7,dy=78
+    FRAME 36 visible=false
+    FRAME 195 dx=57,dy=-46,visible=true
+    FRAME 212 dx=90,dy=78,visible=false
+    FRAME 326 dx=-43,dy=-130,visible=true
+    FRAME 354 dx=56,dy=-49,visible=false
+  ACTOREND
+
+  ACTOR SPRITE exploc
+    FRAME 111 dx=21,dy=114,layer=2,sprite #=31,visible=true
+    FRAME 112 sprite #=32
+    FRAME 113 sprite #=33
+    FRAME 114 sprite #=34
+    FRAME 115 visible=false
+  ACTOREND
+
+  ACTOR SPRITE explol
+    FRAME 111 dx=-11,dy=115,sprite #=40,visible=true
+    FRAME 112 dx=-11,dy=117,sprite #=43
+    FRAME 113 dx=-11,dy=115,sprite #=46
+    FRAME 114 sprite #=49
+    FRAME 115 visible=false
+  ACTOREND
+
+  ACTOR SPRITE explor
+    FRAME 111 dx=53,dy=114,sprite #=42,visible=true
+    FRAME 112 sprite #=45
+    FRAME 113 sprite #=48
+    FRAME 114 sprite #=51
+    FRAME 115 visible=false
+  ACTOREND
+
+  ACTOR SPRITE explos
+    FRAME 111 dx=19,dy=146,sprite #=37,visible=true
+    FRAME 112 dx=23,dy=145,sprite #=38
+    FRAME 113 sprite #=39
+    FRAME 114 sprite #=41
+    FRAME 115 visible=false
+  ACTOREND
+
+  ACTOR SPRITE explou
+    FRAME 111 dx=19,dy=82,layer=2,sprite #=25,visible=true
+    FRAME 112 dx=22,dy=83,sprite #=26
+    FRAME 113 sprite #=27
+    FRAME 114 sprite #=44
+    FRAME 115 visible=false
+  ACTOREND
+
+  ACTOR SPRITE Fireshot
+    FRAME 107 dx=16,dy=150,sprite #=24,visible=true
+    FRAME 110 dx=22,dy=98
+    FRAME 111 visible=false
+    FRAME 201 dx=-10,dy=93,visible=true
+    FRAME 211 dx=77,dy=93
+    FRAME 216 dx=-63,dy=41
+    FRAME 217 visible=false
+    FRAME 220 dx=241,dy=7,visible=true
+    FRAME 242 dx=107,dy=-60,visible=false
+  ACTOREND
+
+  ACTOR SPRITE PestShot
+    FRAME 23 dx=7,dy=-338,sprite #=23,visible=true
+    FRAME 35 dx=5,dy=-44
+    FRAME 36 visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite11
+    FRAME 288 dx=84,dy=-31,sprite #=19,visible=true
+    FRAME 314 dx=-60,dy=-68,visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite12
+    FRAME 443 dx=-143,dy=53,sprite #=21,visible=true
+    FRAME 461 dx=-59,dy=64
+    FRAME 484 dx=31,dy=25,visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite13
+    FRAME 443 dx=-157,dy=-10,sprite #=21,visible=true
+    FRAME 461 dx=-79,dy=-28
+    FRAME 484 dx=35,dy=-7,visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite13
+    FRAME 23 dx=-433,dy=-25,sprite #=22,visible=true
+    FRAME 35 dx=-165,dy=3
+    FRAME 36 visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite14
+    FRAME 443 dx=-165,dy=72,sprite #=21,visible=true
+    FRAME 461 dx=-78,dy=82
+    FRAME 484 dx=36,dy=38,visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite15
+    FRAME 443 dx=-175,dy=-28,sprite #=21,visible=true
+    FRAME 461 dx=-91,dy=-43
+    FRAME 484 dx=49,dy=-7,visible=false
+  ACTOREND
+
+  ACTOR SPRITE Sprite16
+    FRAME 443 dx=-180,dy=89,sprite #=21,visible=true
+    FRAME 461 dx=-91,dy=99
+    FRAME 484 dx=56,dy=28,visible=false
+  ACTOREND
+
+  ACTOR SPRITE WarShot
+    FRAME 23 dx=452,dy=-29,sprite #=21,visible=true
+    FRAME 35 dx=26,dy=-33
+    FRAME 36 visible=false
+    FRAME 443 dx=-141,dy=5,visible=true
+    FRAME 461 dx=-61,dy=-13
+    FRAME 484 dx=35,dy=18,visible=false
+  ACTOREND
+
+  ACTOR SOUND shoot
+    FRAME 3 dx=12,dy=-469,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound1
+    FRAME 111 dx=23,dy=114,file=bomb.wav
+  ACTOREND
+
+  ACTOR SOUND Sound10
+    FRAME 173 dx=-55,dy=54,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound11
+    FRAME 178 dx=-59,dy=-58,file=swordon.wav
+  ACTOREND
+
+  ACTOR SOUND Sound12
+    FRAME 184 dx=107,dy=-62,file=glass6.wav
+  ACTOREND
+
+  ACTOR SOUND Sound13
+    FRAME 186 dx=-54,dy=-67,file=axe.wav
+  ACTOREND
+
+  ACTOR SOUND Sound14
+    FRAME 201 dx=-9,dy=95,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound15
+    FRAME 400 dx=-56,dy=-63,file=glass6.wav
+  ACTOREND
+
+  ACTOR SOUND Sound3
+    FRAME 4 dx=541,dy=-35,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound4
+    FRAME 5 dx=5,dy=599,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound5
+    FRAME 5 dx=-775,dy=3,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound6
+    FRAME 107 dx=19,dy=177,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound7
+    FRAME 173 dx=-15,dy=-56,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound8
+    FRAME 173 dx=106,dy=-29,file=arrow.wav
+  ACTOREND
+
+  ACTOR SOUND Sound9
+    FRAME 173 dx=80,dy=90,file=arrow.wav
+  ACTOREND
+MOVIEEND

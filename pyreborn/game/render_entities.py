@@ -10,7 +10,7 @@ import pygame
 
 from ..gani import AnimationState
 from ..player import Player
-from ..sprites import REBORN_PALETTE
+from ..sprites import palette_name_to_index
 from .assets import render_outlined_text
 from .constants import (
     TILE_SIZE, parse_npc_visual_effects,
@@ -991,8 +991,8 @@ class EntityRenderMixin:
         except (TypeError, ValueError):
             pass
         try:
-            return REBORN_PALETTE.index(str(v).strip().lower())
-        except ValueError:
+            return palette_name_to_index(v)
+        except (TypeError, ValueError):
             return 0
 
     @staticmethod
@@ -1093,6 +1093,9 @@ class EntityRenderMixin:
                 # (like the missing-image path), rather than drawing the magenta
                 # placeholder. It pops in once on_file caches it.
                 self._request_asset(gani_name + '.gani')
+            elif anim.gani.is_movie and anim.movie is not None:
+                self._render_movie(x, y, anim)
+                nick_anchor = (x + TILE_SIZE, y + 48)
             else:
                 # A character NPC composites head/body/colours like a player.
                 equip = {}
@@ -1199,6 +1202,48 @@ class EntityRenderMixin:
             text, chat_time = self.npc_chat_texts[npc_id]
             if time.time() - chat_time < self.chat_bubble_duration:
                 self._render_speech_bubble(x, y, text)
+
+    def _render_movie(self, x: float, y: float, anim: AnimationState):
+        """Render the visible cast of a movie gani around its owning NPC."""
+        for actor in anim.movie.visible_actors():
+            actor_x = x + actor.dx
+            actor_y = y + actor.dy
+            if actor.kind == 'CHAR':
+                if actor.animation is None:
+                    continue
+                equipment = {
+                    'body_image': actor.body,
+                    'head_image': actor.head,
+                    'sword_image': actor.sword,
+                    'shield_image': actor.shield,
+                    'horse_image': actor.horse,
+                    'attr1_image': actor.attr1,
+                    'colors': [self._palette_slot(value)
+                               for value in actor.colors],
+                }
+                for key, value in actor.params.items():
+                    equipment[key] = value
+                    suffix = key[5:]
+                    if suffix.isdigit():
+                        equipment[f'attr{suffix}_image'] = value
+                self._render_animated_entity(
+                    actor_x, actor_y, actor.animation, equipment)
+                if actor.chat:
+                    self._render_speech_bubble(actor_x, actor_y, actor.chat)
+            elif actor.kind == 'SPRITE' and actor.sprite is not None:
+                sprite_def = anim.gani.sprites.get(actor.sprite)
+                if sprite_def is None:
+                    continue
+                layer = sprite_def.layer
+                image = (layer.lower() if '.' in layer else
+                         anim.gani.defaults.get(layer, 'sprites.png'))
+                sprite = self.sprite_mgr.get_sprite(
+                    image, sprite_def.x, sprite_def.y,
+                    sprite_def.width, sprite_def.height)
+                if sprite is not None:
+                    self.screen.blit(sprite, (actor_x, actor_y))
+                else:
+                    self._request_asset(image)
 
     # -- GS1 showimg / showtext layers -------------------------------------
     def _render_npc_layers(self, imgs: dict, over: bool,
@@ -1923,9 +1968,20 @@ class EntityRenderMixin:
         Position (x, y) is the top-left of the entity's tile position.
         """
         frame = anim.get_frame() if anim.gani else None
+        requested = getattr(anim, 'requested_name', None)
+        if requested and anim.gani is not None and anim.gani.name != requested:
+            # A switch to a not-yet-downloaded gani: keep playing the old one
+            # (set_animation retries each frame) but get the download going.
+            self._request_asset(f"{requested}.gani")
 
         if not frame:
-            # Fallback to placeholder - position at top-left
+            # The requested gani isn't downloaded yet: ask for it and draw
+            # nothing (real-client behavior), instead of a placeholder box —
+            # GTA's cutscene `setani hiddenstill,` drew the player as a
+            # magenta rectangle until the file arrived.
+            if requested:
+                self._request_asset(f"{requested}.gani")
+                return
             sprite = self._sprite_with_alpha(self.placeholder_sprite, alpha)
             self.screen.blit(sprite, (x, y))
             return

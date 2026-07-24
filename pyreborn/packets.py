@@ -2038,6 +2038,11 @@ def build_triggeraction(x: float, y: float, action: str, npc_id: int = 0) -> byt
     return bytes(packet)
 
 
+def build_weapon_add(npc_id: int) -> bytes:
+    """Build PLI_WEAPONADD: type 1 followed by the level NPC's gint3 id."""
+    return PacketBuilder().write_gchar(1).write_gint3(npc_id).build()
+
+
 def build_npc_props(npc_id: int, prop_name: str, value: str) -> bytes:
     """
     Build PLI_NPCPROPS (packet 3) - update NPC properties.

@@ -66,7 +66,13 @@ class RenderMixin:
         # Check if animation finished and needs setback
         if self.player_anim.is_finished():
             setback = self.player_anim.get_setback()
-            if setback:
+            if self.client.player.hearts <= 0 and self.current_anim_name == "dead":
+                # A finished death gani holds its final frame until the
+                # respawn path resets to idle — falling back to idle here
+                # stood the corpse up (and any later hurt re-played the
+                # whole death spin).
+                pass
+            elif setback:
                 self.player_anim.set_animation(setback, self.client.player.direction)
                 self.current_anim_name = setback
                 self.client.set_animation(setback)
@@ -272,8 +278,15 @@ class RenderMixin:
             else:
                 self.camera.set_bounds(0, 0, 64, 64)
 
-        self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
-                               gmap_visual_y + self.CAMERA_BODY_DY)
+        focus = getattr(self, '_camera_focus', None)
+        if focus is not None:
+            # A GS1 `setfocus x,y` aims the camera at a level position (the
+            # splash/cutscene NPCs park the player off-level and stage the
+            # scene around the focus); resetfocus/level change clears it.
+            self.camera.set_center(focus[0], focus[1])
+        else:
+            self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
+                                   gmap_visual_y + self.CAMERA_BODY_DY)
         self.camera.set_render_offset()
         started = getattr(self, '_camera_shake_started', None)
         if started is not None and not getattr(self.client, '_local_level_transition', ''):

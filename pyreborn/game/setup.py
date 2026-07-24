@@ -182,6 +182,13 @@ class SetupMixin:
         def on_server_text(text: str):
             if text:
                 self._append_chat(f"[server] {text}")
+            # This assignment replaces the hook ClientGS2.attach() installed
+            # (attach runs before _setup_callbacks), so forward the engine
+            # event explicitly: onReceiveText drives the Login serverlist
+            # chat weapon.
+            gs2 = getattr(self, 'gs2', None)
+            if gs2 is not None:
+                gs2.handle_server_text(text)
 
         def on_start_message(text: str):
             """Put up to five non-empty initial-message lines in chat."""
@@ -203,9 +210,10 @@ class SetupMixin:
                 # arrived — drop the tile cache so blocks re-render with it
                 # instead of the default.
                 tm = self.tileset_mgr
-                if (any(img == filename for img, _ in tm.tiledefs.values())
+                if (any(img == filename for img, _, _, _ in tm.tiledefs)
                         or any(img == filename for img, _ in tm.full_tiledefs)):
                     tm.clear_cache()
+                    self.world_surface = None
             elif ext == 'gani':
                 # The server streams gani scripts on demand; cache the parsed
                 # animation so NPCs/players using it stop falling back to the
@@ -227,8 +235,10 @@ class SetupMixin:
         def on_weapon_add(name, weapon):
             script = weapon.get('script', '')
             if script and getattr(self, 'gs1', None) is not None:
-                self.gs1.load_weapon(name, script)
+                is_new = self.gs1.load_weapon(name, script)
                 try:
+                    if is_new:
+                        self.gs1.trigger_event('created', name=f'weapon_{name}')
                     self.gs1.trigger_event('playerenters', name=f'weapon_{name}')
                 except Exception:
                     pass
@@ -456,11 +466,32 @@ class SetupMixin:
         def on_freezeplayer(seconds):
             self._frozen_until = time.time() + max(0.0, float(seconds or 0))
 
-        # toweapons <name> — script wants this weapon present locally; make sure
-        # it's registered so #w()/weapon logic see it (server also streams it).
-        def on_toweapons(name):
-            if name and name not in self.client.weapons:
+        # toweapons <name> converts a level NPC into a local weapon and asks the
+        # server to persist the grant. Weapon callers retain name-only behavior.
+        def on_toweapons(name, npc_id=None, script=None, image=None):
+            if not name:
+                return
+            current = self.client.weapons.get(name)
+            if npc_id is not None and (current is None or not current.get('script')):
+                script = script or ''
+                self.client.weapons[name] = {
+                    'name': name, 'image': image or '', 'script': script,
+                }
+                if script and getattr(self, 'gs1', None) is not None:
+                    is_new = self.gs1.load_weapon(name, script)
+                    try:
+                        if is_new:
+                            self.gs1.trigger_event('created', name=f'weapon_{name}')
+                        self.gs1.trigger_event('playerenters', name=f'weapon_{name}')
+                    except Exception:
+                        pass
+            elif current is None:
                 self.client.weapons[name] = {'name': name, 'image': '', 'script': ''}
+            if npc_id is not None:
+                try:
+                    self.client.send_weapon_add(npc_id)
+                except Exception:
+                    pass
 
         # setminimap img,txt,... — remember the minimap source + fetch the file.
         # Via _request_asset (not raw request_file) so it's requested once per
@@ -535,6 +566,13 @@ class SetupMixin:
         self.gs1.on_freezeplayer = on_freezeplayer
         self.gs1.on_toweapons = on_toweapons
         self.gs1.on_setminimap = on_setminimap
+
+        # setfocus/resetfocus — scripted camera target (splash/cutscenes).
+        # Consumed by render.py's per-frame centering; cleared on level
+        # reload (scripts re-issue it on playerenters if they still want it).
+        def on_setfocus(x, y):
+            self._camera_focus = None if x is None else (float(x), float(y))
+        self.gs1.on_setfocus = on_setfocus
         self.gs1.on_seteffect = on_seteffect
         # setplayerprop #code,value — NPCs talk to you and change your look this
         # way (e.g. NPC 64 sets #c,:Added: when you join a room). #c shows as a
@@ -555,19 +593,18 @@ class SetupMixin:
                 setattr(self.client.player, _PLAYER_PROP[code], value)
             # other codes (#P1-#P30 gattribs, ...) not modelled yet — ignore
 
-        # addtiledef2/removetiledefs — remap tile-blocks to custom tileset images
-        # (Bomber Arena's chocolate tiles). Point the tileset manager at the
-        # image (downloading it if needed) so the board renders with it.
-        def on_tiledef(block, image, levelstart=""):
-            if block is None:
+        # Point the tileset manager at custom sheets, downloading them if
+        # needed, so the board renders with the active definitions.
+        def on_tiledef(kind, image, levelstart="", x=0, y=0):
+            if kind is None:
                 self.tileset_mgr.clear_tiledefs()
                 self.world_surface = None
                 return
-            if block == -1:
+            if kind == "full":
                 # addtiledef: whole-tileset replacement sheet
                 self.tileset_mgr.set_full_tiledef(image, levelstart)
             else:
-                self.tileset_mgr.set_tiledef(block, image, levelstart)
+                self.tileset_mgr.set_tiledef(image, levelstart, x, y)
             # tileset_mgr's tile_cache is cleared above, but the baked
             # per-segment surfaces in render_world.py's _segments() cache
             # are keyed off tiles_id/layers_snapshot only - a tiledef swap
@@ -629,12 +666,20 @@ class SetupMixin:
                 cache.pop(npc_id, None)
 
     def _load_npc_scripts(self):
-        """Load NPC scripts into the GS1 interpreter."""
+        """Load NPC scripts into the GS1 interpreter and fire each one's
+        `created` event — the real client runs onCreated when a level NPC
+        spawns (each level visit). GTA's system NPCs rely on it: their
+        `if (created) hide;` is what keeps the weapon-icon NPCs (*Clock and
+        friends, placed mid-level on splashscreen.nw) invisible."""
         for npc_id, npc in self.client.npcs.items():
             script = npc.get('script', '')
             if script:
                 x, y = npc.get('x', 0), npc.get('y', 0)
                 self.gs1.load_script(f"npc_{npc_id}", script, npc_id=npc_id, x=x, y=y)
+                try:
+                    self.gs1.trigger_event('created', name=f"npc_{npc_id}")
+                except Exception:
+                    pass
         self._load_weapon_scripts()
 
     def _load_weapon_scripts(self):
@@ -644,7 +689,11 @@ class SetupMixin:
         for name, weapon in self.client.weapons.items():
             script = weapon.get('script', '')
             if script:
-                self.gs1.load_weapon(name, script)
+                if self.gs1.load_weapon(name, script):
+                    try:
+                        self.gs1.trigger_event('created', name=f'weapon_{name}')
+                    except Exception:
+                        pass
     def _trigger_playerenters(self):
         """Fire `playerenters` once across all loaded NPC scripts (trigger_event
         with no name already runs every program; calling it per-script would run
@@ -677,6 +726,7 @@ class SetupMixin:
                 new.append(npc_id)
         for npc_id in new:
             try:
+                self.gs1.trigger_npc_event(npc_id, 'created')
                 self.gs1.trigger_npc_event(npc_id, 'playerenters')
             except Exception:
                 pass
@@ -832,6 +882,7 @@ class SetupMixin:
         # bomber's arena NPC 162 does).
         self.tileset_mgr.set_current_level(self.client._current_level_name)
         self.world_surface = None
+        self._camera_focus = None   # scripted setfocus dies with its level
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()

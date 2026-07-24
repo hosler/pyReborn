@@ -56,6 +56,12 @@ REBORN_PALETTE_RGB: Dict[str, Tuple[int, int, int]] = {
     "brown": (139, 90, 43), "cynober": (227, 66, 52), "purple": (160, 32, 240),
     "darkpurple": (100, 20, 150), "lightgray": (200, 200, 200), "gray": (128, 128, 128),
     "black": (20, 20, 20), "transparent": (0, 0, 0),
+    "darkgray": (64, 64, 64), "cyan": (0, 255, 255),
+}
+
+REBORN_PALETTE_ALIASES = {
+    "cyan": "cynober",
+    "darkgray": "gray",
 }
 
 # Marker RGB baked into body*.png, in (skin, coat, sleeves, shoes, belt) slot
@@ -76,6 +82,16 @@ def palette_index_to_rgb(index) -> Tuple[int, int, int]:
     except (IndexError, ValueError, TypeError):
         return (255, 255, 255)
     return REBORN_PALETTE_RGB.get(name, (255, 255, 255))
+
+
+def palette_name_to_index(name) -> int:
+    """Resolve a classic color name while preserving the fixed wire palette."""
+    normalized = str(name).strip().lower()
+    normalized = REBORN_PALETTE_ALIASES.get(normalized, normalized)
+    try:
+        return REBORN_PALETTE.index(normalized)
+    except ValueError:
+        return 0
 
 
 # Bounds on the below caches, same LRU-eviction idea as render_world.py's
@@ -428,13 +444,16 @@ class TilesetManager:
         # once in its preloader) and are scoped by a levelstart prefix --
         # "" applies everywhere, "bombarena" only to bombarena*.nw. Only a
         # script's removetiledefs clears them.
-        # Per-block (addtiledef2): block (tile_id // 512) -> (image, prefix).
-        self.tiledefs: Dict[int, Tuple[str, str]] = {}
+        # Partial-sheet pastes (addtiledef2), in script order. Later entries
+        # are blitted last and therefore win where images overlap.
+        self.tiledefs: List[Tuple[str, str, int, int]] = []
         # Whole-tileset replacements (addtiledef): the image IS a full
         # 2048x512 tileset. Later defs win; first match by prefix.
         self.full_tiledefs: List[Tuple[str, str]] = []
         # Player's current level, lowercased -- selects which defs apply.
         self.current_level = ""
+        self._composed_sheet: Optional[pygame.Surface] = None
+        self._composed_sheet_valid = False
 
     def _applies(self, prefix: str) -> bool:
         return not prefix or self.current_level.startswith(prefix)
@@ -445,15 +464,14 @@ class TilesetManager:
         name = (level_name or "").lower()
         if name != self.current_level:
             self.current_level = name
-            self.tile_cache.clear()
+            self.clear_cache()
 
-    def set_tiledef(self, block: int, image: str, levelstart: str = ""):
-        """addtiledef2: use `image` for tile-block `block` (tile_id // 512)
-        in levels starting with `levelstart`."""
-        entry = (image, (levelstart or "").lower())
-        if self.tiledefs.get(block) != entry:
-            self.tiledefs[block] = entry
-            self.tile_cache.clear()
+    def set_tiledef(self, image: str, levelstart: str, x: int, y: int):
+        """addtiledef2: paste `image` at sheet pixel (`x`, `y`) in levels
+        starting with `levelstart`."""
+        self.tiledefs.append(
+            (image, (levelstart or "").lower(), int(x), int(y)))
+        self.clear_cache()
 
     def set_full_tiledef(self, image: str, levelstart: str = ""):
         """addtiledef: replace the whole default tileset with `image` in
@@ -461,14 +479,43 @@ class TilesetManager:
         entry = (image, (levelstart or "").lower())
         if entry not in self.full_tiledefs:
             self.full_tiledefs.append(entry)
-            self.tile_cache.clear()
+            self.clear_cache()
 
     def clear_tiledefs(self):
         """removetiledefs: revert to the default tileset."""
         if self.tiledefs or self.full_tiledefs:
             self.tiledefs.clear()
             self.full_tiledefs.clear()
-            self.tile_cache.clear()
+            self.clear_cache()
+
+    def _get_composed_sheet(self) -> Optional[pygame.Surface]:
+        """Build the active sheet from its base and applicable pastes."""
+        if self._composed_sheet_valid:
+            return self._composed_sheet
+
+        base_name = self.default_tileset
+        for image, prefix in reversed(self.full_tiledefs):
+            if self._applies(prefix) and self.sprite_mgr.has_sheet(image):
+                base_name = image
+                break
+
+        base = self.sprite_mgr.load_sheet(base_name)
+        if base is None:
+            self._composed_sheet = None
+            self._composed_sheet_valid = True
+            return None
+
+        composed = base.copy()
+        for image, prefix, x, y in self.tiledefs:
+            if not self._applies(prefix):
+                continue
+            paste = self.sprite_mgr.load_sheet(image)
+            if paste is not None:
+                composed.blit(paste, (x, y))
+
+        self._composed_sheet = composed
+        self._composed_sheet_valid = True
+        return composed
 
     def get_tile(self, tile_id: int, tileset: Optional[str] = None) -> Optional[pygame.Surface]:
         """
@@ -481,22 +528,23 @@ class TilesetManager:
         Returns:
             pygame.Surface or None
         """
-        # A per-block tiledef (addtiledef2) wins over the default tileset. The
-        # block image is one Reborn block: 16 cols x 32 rows of 16px tiles, so
-        # the tile sits at its LOCAL position within the 256x512 image.
         if tileset is None:
-            entry = self.tiledefs.get(tile_id // 512)
-            if entry is not None and self._applies(entry[1]):
-                tdef = entry[0]
-                cache_key = (tdef, tile_id)
+            if any(self._applies(prefix)
+                   for _, prefix, _, _ in self.tiledefs):
+                cache_key = ("<composed>", tile_id)
                 if cache_key in self.tile_cache:
                     return self.tile_cache[cache_key]
-                px = (tile_id % 16) * self.TILE_SIZE
-                py = ((tile_id // 16) % 32) * self.TILE_SIZE
-                tile = self.sprite_mgr.get_sprite(tdef, px, py,
-                                                  self.TILE_SIZE, self.TILE_SIZE)
-                if tile:                       # image not downloaded yet -> None,
-                    self.tile_cache[cache_key] = tile  # fall through to default
+
+                sheet = self._get_composed_sheet()
+                if sheet is None:
+                    return None
+                tx = (tile_id // 512) * 16 + (tile_id % 16)
+                ty = (tile_id // 16) % 32
+                rect = (tx * self.TILE_SIZE, ty * self.TILE_SIZE,
+                        self.TILE_SIZE, self.TILE_SIZE)
+                if sheet.get_rect().contains(rect):
+                    tile = sheet.subsurface(rect).copy()
+                    self.tile_cache[cache_key] = tile
                     return tile
             # Whole-tileset replacement (addtiledef): same layout as the
             # default tileset, just a different sheet. Latest applicable wins;
@@ -563,8 +611,10 @@ class TilesetManager:
         self.sprite_mgr.load_sheet(tileset)
 
     def clear_cache(self):
-        """Clear tile cache."""
+        """Clear extracted tiles and the lazily composed sheet."""
         self.tile_cache.clear()
+        self._composed_sheet = None
+        self._composed_sheet_valid = False
 
 
 def create_placeholder_sprite(width: int = 32, height: int = 32,

@@ -206,6 +206,16 @@ class GS1ClientHost(Host):
             return bool(npc.get("visible", True))
         if name == "isweapon":
             return bool(getattr(ctx, "_is_weapon", False))
+        if name == "statsoff":
+            # `showstats 0` hides the whole stats bar; the classic client then
+            # reports statsoff true, and HUD scripts skip drawing (GTA's
+            # splashscreen relies on this to keep the clock/counter overlays
+            # off the loading screen). Scripts can also set/unset the flag
+            # themselves, so only claim the name while the mask says hidden —
+            # otherwise fall through to the plain flag lookup.
+            if self.rt.stats_mask == 0:
+                return True
+            return UNSET
         if name == "weaponscount":
             return float(len(getattr(self.rt.client, "weapons", {}) or {}))
         if name == "weaponsenabled":
@@ -373,29 +383,29 @@ class GS1ClientHost(Host):
         if name == "disableweapons":
             rt.weapons_enabled = False
             return
-        # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — remap a tile-block
-        # to a custom tileset image (Bomber Arena's chocolate tiles). The block
-        # is xoffset/256 (8 images x 256px build the level's 2048px tileset).
+        # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — paste an image
+        # onto the active tileset sheet at the given pixel offset.
         # removetiledefs reverts to the default tileset.
         if name == "addtiledef2":
             if len(args) >= 3 and rt.on_tiledef:
                 image = to_str(args[0])
                 levelstart = to_str(args[1]) if len(args) >= 2 else ""
-                block = int(to_num(args[2])) // 256
-                rt.on_tiledef(block, image, levelstart)
+                x = int(to_num(args[2]))
+                y = int(to_num(args[3])) if len(args) >= 4 else 0
+                rt.on_tiledef("paste", image, levelstart, x, y)
             return
         # addtiledef <image>[, <levelstart>[, <type>]] — replace the WHOLE
         # tileset (the image is a full 2048x512 sheet; Bomber v6's
-        # bmb_pics1.png). block -1 marks it for the callback.
+        # bmb_pics1.png).
         if name == "addtiledef":
             if args and rt.on_tiledef:
                 image = to_str(args[0])
                 levelstart = to_str(args[1]) if len(args) >= 2 else ""
-                rt.on_tiledef(-1, image, levelstart)
+                rt.on_tiledef("full", image, levelstart)
             return
         if name == "removetiledefs":
             if rt.on_tiledef:
-                rt.on_tiledef(None, None)   # None block = clear all
+                rt.on_tiledef(None, None)
             return
         # seteffect r,g,b,a — fullscreen colour tint (Tier 3d). 0..1 floats.
         if name == "seteffect" and rt.on_seteffect and len(args) >= 4:
@@ -468,8 +478,29 @@ class GS1ClientHost(Host):
         if name == "setminimap" and rt.on_setminimap:
             rt.on_setminimap([to_str(a) for a in args])
             return
+        # setfocus x,y — camera looks at a level position instead of the
+        # player (GTA's splashscreen/cutscenes); resetfocus returns it.
+        if name == "setfocus" and rt.on_setfocus and len(args) >= 2:
+            rt.on_setfocus(to_num(args[0]), to_num(args[1]))
+            return
+        if name == "resetfocus":
+            if rt.on_setfocus:
+                rt.on_setfocus(None, None)
+            return
         if name == "toweapons" and rt.on_toweapons and args:
-            rt.on_toweapons(to_str(args[0]))
+            weapon_name = to_str(args[0])
+            if getattr(ctx, "_is_weapon", False):
+                rt.on_toweapons(weapon_name)
+                return
+            script = npc.get("script", "") if isinstance(npc, dict) else ""
+            image = npc.get("image", "") if isinstance(npc, dict) else ""
+            if isinstance(script, bytes):
+                script = script.decode("latin-1")
+            try:
+                rt.on_toweapons(weapon_name, npc_id, script, image)
+            except TypeError:
+                # Some headless integrations still expose the original callback.
+                rt.on_toweapons(weapon_name)
             return
 
         # -- showimg / changeimg* layer system -----------------------------
@@ -485,7 +516,22 @@ class GS1ClientHost(Host):
             if name in ("showimg", "showimg2") and len(args) >= 2:
                 idx = int(to_num(args[0]))
                 rec = imgs.setdefault(idx, {})
-                rec["image"] = to_str(args[1])
+                src = to_str(args[1])
+                if src.startswith("@"):
+                    # Classic text form: showimg idx,@font@text,x,y (font may
+                    # be empty). GTA's splashscreen menu is drawn entirely
+                    # this way (@b@Start / @Wingdings@è); treating it as an
+                    # image filename rendered nothing.
+                    parts = src.split("@", 2)
+                    rec.pop("image", None)
+                    rec["font"] = parts[1] if len(parts) > 1 else ""
+                    rec["style"] = ""
+                    rec["text"] = parts[2] if len(parts) > 2 else ""
+                    rec["text_is"] = True
+                else:
+                    rec["image"] = src
+                    rec.pop("text", None)
+                    rec.pop("text_is", None)
                 if len(args) >= 4:
                     rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
                 rec["screen"] = (name == "showimg2")
@@ -1229,6 +1275,7 @@ class ClientGS1:
         self.on_freezeplayer = None
         self.on_warp = None
         self.on_setminimap = None
+        self.on_setfocus = None
         self.on_toweapons = None
         self.on_tiledef = None
         self.on_seteffect = None
@@ -1294,8 +1341,15 @@ class ClientGS1:
     def load_weapon(self, name, code):
         """Load a player weapon script (e.g. -validation, -arenaSYS). Weapons
         run client-side like NPCs but have no NPC object; `isweapon` reads true
-        and they're keyed off any NPC-touch path (npc_id -1)."""
+        and they're keyed off any NPC-touch path (npc_id -1).
+
+        Returns True when this registers a NEW weapon (or replaces its script)
+        — the caller should then fire its `created` event, like a real client
+        compiling a freshly added weapon. GTA's system weapons set their
+        install-handshake flags (gotsys2/gotclock) in `created`; without it the
+        -System weapon bounces the player back to splashscreen.nw forever."""
         key = f"weapon_{name}"
+        is_new = self.scripts.get(key) != code
         self.scripts[key] = code
         prog = self._parse_cached(key, code)
         # Preserve a weapon's persistent this./local. scope across re-loads so a
@@ -1306,6 +1360,7 @@ class ClientGS1:
             "prog": prog, "npc_id": -1, "is_weapon": True, "_key": key,
             "weapon_name": name, "scopes": scopes,
         }
+        return is_new
 
     def clear(self):
         # Keep weapon progs across a level change (they belong to the player, not
@@ -1369,7 +1424,8 @@ class ClientGS1:
                 self._run(entry, event)
 
     def trigger_npc_event(self, npc_id, event):
-        for entry in self._progs.values():
+        # An NPC event may run `toweapons`, which adds a weapon program.
+        for entry in list(self._progs.values()):
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
 

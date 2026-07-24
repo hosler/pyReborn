@@ -89,7 +89,7 @@ class TestTiledefInvalidatesSegmentCache:
         # exact same Surface object.
         assert h._get_segment_surface("level1.nw") is first
 
-        h.gs1.on_tiledef(0, "custom_tiles.png")
+        h.gs1.on_tiledef("paste", "custom_tiles.png", "", 0, 0)
         # Reproduce _render_world()'s per-frame invalidation-application step.
         h._apply_pending_full_invalidate()
 
@@ -108,7 +108,7 @@ class TestTiledefInvalidatesSegmentCache:
 
         h = _RenderHarness(c)
         h._apply_pending_full_invalidate()
-        h.gs1.on_tiledef(0, "custom_tiles.png")
+        h.gs1.on_tiledef("paste", "custom_tiles.png", "", 0, 0)
         h._apply_pending_full_invalidate()
         first = h._get_segment_surface("level1.nw")
         assert first is not None
