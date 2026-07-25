@@ -889,16 +889,30 @@ class Client:
 
             # If crossing GMAP boundary, send a level warp to notify server
             if crossing_boundary and new_level_name:
-                # Send PLI_LEVELWARP to tell server we changed levels
-                warp_data = build_level_warp(local_x, local_y, new_level_name)
-                self._protocol.send_packet(PacketID.PLI_LEVELWARP, warp_data)
-                self._current_level_name = new_level_name
-                # Request adjacent levels for new position
-                self.request_adjacent_levels()
+                self.enter_gmap_segment(new_level_name, local_x, local_y)
 
             return True
 
         return False
+
+    def enter_gmap_segment(self, level_name: str, local_x: float,
+                           local_y: float) -> bool:
+        """Tell the server we walked into gmap segment `level_name`.
+
+        A seam crossing is NOT a warp: no level-state reset, no roster drop —
+        just PLI_LEVELWARP so the server re-homes us, plus a request for the
+        newly-adjacent segments. Factored out of move_to() so scripted
+        movement (which never calls move_to; see
+        ActionsMixin._check_scripted_gmap_segment) announces crossings the
+        exact same way instead of growing a second, drifting copy."""
+        if not self.connected or not self._authenticated:
+            return False
+        warp_data = build_level_warp(local_x, local_y, level_name)
+        if not self._protocol.send_packet(PacketID.PLI_LEVELWARP, warp_data):
+            return False
+        self._current_level_name = level_name
+        self.request_adjacent_levels()
+        return True
 
     def send_position(self) -> bool:
         """Re-broadcast the player's current position without moving.

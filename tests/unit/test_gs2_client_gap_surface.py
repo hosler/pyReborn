@@ -112,8 +112,10 @@ def test_coordinates_map_music_camera_and_nearest_players():
     assert call(rt, "screeny", [3]) == 55
     assert call(rt, "getmapx") == 2 and call(rt, "getmapy") == 1
     assert call(rt, "getmusicfilename") == "theme.ogg"
-    nearest = call(rt, "getnearestplayers", [130, 65])
-    assert [item.get("id") for item in nearest] == [1, 2]
+    # players[] INDICES (0 = us), nearest first: we stand at the probe point
+    # and player 1 is nearer than player 2. players{} insertion order gives
+    # 2 -> index 1 and 1 -> index 2.
+    assert call(rt, "getnearestplayers", [131.5, 67]) == [0.0, 2.0, 1.0]
     call(rt, "setzoom", [1.75])
     call(rt, "enabledefaultcamera")
     assert camera.zoom == 1.75 and rt.game_shell._camera_enabled is True
@@ -168,10 +170,44 @@ def test_documented_stubs_are_classified_separately():
         "adventure_reconnect",
         # native-canvas rebuild toggle (Login serverlist init); no native
         # canvas exists here
-        "adventure_setgraalcontrolrecreate"})
+        "adventure_setgraalcontrolrecreate",
+        # credential surface (2026-07-24 Login corpus)
+        "setpasswordofaccount", "applypassword", "clearpassword",
+        "adventure_geteditnickname", "adventure_geteditaccountnames",
+        # external-application / URL surface
+        "opengraalurl", "gotowebpage", "adventure_openexternaloptions",
+        "showupdatewindow", "startgraalstreaming",
+        "showfriendinvitationwindow", "showgiftinvitationwindow",
+        # native platform toggles
+        "adventure_startofflinemode", "adventure_setallowedsocketsconnect",
+        "adventure_setfullscreen", "adventure_setchat",
+        "createsmartphoneui", "mouselock",
+        # serverlist connect-through (pyReborn joins from its own browser)
+        "connecttoselectedserver", "serverdirectconnect", "startscriptedrc",
+        "initserverlist", "requestserverinfo", "selectservercategory",
+        # platform account windows
+        "showshop", "showprofile", "showoptions", "openchat", "haspanel",
+        # no directory query exists in the file protocol
+        "loadfolder",
+        # native patcher status (terminating constants, see below)
+        "gettotalupdatepackagesize", "getdownloadedupdatepackagesize",
+        "getpackagesdownloaded", "isdownloadingfiles",
+        "getpackagesdownloadcomplete", "getdownloadingpackage"})
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, set(), set(GS2ClientHost.stubbed)) == "implemented_stub"
-        assert call(ClientGS2(), name) == 0.0
+        assert call(ClientGS2(), name) == \
+            GS2ClientHost._PATCHER_STUB_VALUES.get(name, 0.0)
+
+
+def test_patcher_stubs_answer_with_terminating_values():
+    """IRC_Installer polls the update-package counters in a progress loop;
+    an all-zero answer for getPackagesDownloadComplete() spins forever."""
+    rt = ClientGS2()
+    assert call(rt, "getpackagesdownloadcomplete") == 1.0
+    assert call(rt, "gettotalupdatepackagesize") == 0.0
+    assert call(rt, "getdownloadedupdatepackagesize") == 0.0
+    assert call(rt, "isdownloadingfiles") == 0.0
+    assert call(rt, "getdownloadingpackage") == ""
 
 
 def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
@@ -181,13 +217,20 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         "sort", "savelines", "screenx", "screeny", "getmapx", "getmapy",
         "getmusicfilename", "getnearestplayers", "findplayerbyid", "findimg",
         "enabledefaultcamera", "setzoom", "sendtext", "requesttext",
+        # 2026-07-24 Login-corpus gaps closed with real behavior
+        "gettextheight", "md5", "extractfilename", "extractfilebase",
+        "extractfileext", "fileexists", "pushdialog", "popdialog",
+        "bringtofront", "isfullscreenmode", "scheduleevent", "cancelevents",
+        # 2026-07-24 Zelda-corpus gaps (see test_gs2_zelda_host_gaps.py)
+        "findnearestplayers", "findnearestplayer", "getstringkeys",
+        "getcallstack", "isinclass", "leave",
     }
     surface = set(GS2ClientHost.host_surface())
     for name in real:
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented"
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented_stub"
-    assert len(real | set(GS2ClientHost.stubbed)) == 37
+    assert len(real | set(GS2ClientHost.stubbed)) == 91
 
 
 def test_addcontrol_still_adds_to_gui_root():

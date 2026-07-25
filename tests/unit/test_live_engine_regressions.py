@@ -99,11 +99,61 @@ def test_server_replica_prefers_prefixed_then_bare_flags():
     assert scope.has("lobby") and scope.has("bombrush")
 
 
-def test_nearest_players_reads_wire_records():
-    client = SimpleNamespace(players={
-        2: {"x": 8, "y": 6, "account": "far", "nickname": "Far"},
-        1: {"x": 2, "y": 1, "account": "near", "nickname": "Near"},
-    })
-    nearest = ClientGS2(client).nearest_players(0, 0)
-    assert [p.get("id") for p in nearest] == [1, 2]
-    assert nearest[0].get("account") == "near"
+def test_nearest_player_indices_read_wire_records():
+    """getnearestplayers() ranks the DICT-shaped wire records too (they are
+    what parse_other_player stores), and answers players[] indices --
+    players[0] is always us, so the remotes here are 1 and 2 in insertion
+    order and rank 2, 1 by distance from (0, 0)."""
+    client = SimpleNamespace(player=SimpleNamespace(x=40, y=40), x=40, y=40,
+                             players={
+                                 2: {"x": 8, "y": 6, "account": "far"},
+                                 1: {"x": 2, "y": 1, "account": "near"},
+                             })
+    rt = ClientGS2(client)
+    assert rt.nearest_player_indices(0, 0) == [2.0, 1.0, 0.0]
+    assert rt.player_positions() == [(40, 40), (8, 6), (2, 1)]
+
+
+def test_serverlist_string_globals_answer_as_strings_not_unset():
+    """2026-07-25 outage: the Login server list came up EMPTY.
+
+    `serverstartconnect` was unanswered, so it resolved to the lattice's
+    NUMBER 0.0 -- and the official number/string rule is
+    compareNumberValues(0.0, strtofloat(s)) (TScriptMachine::compare,
+    Preagonal/FourPlay/quattroplay/src/TScriptMachine.cpp:1458-1461), where
+    strtofloat of a non-numeric string is 0.0. So an unset global compared
+    EQUAL TO EVERY WORD. initServerlist() hit
+    `if (serverstartconnect == "skills")`
+    (Preagonal/graal-loginserver/weapons/weapon-Rescripted_Serverlist.txt:85),
+    rewrote it to "login3", fell into the `!= ""` arm at :106 and ran
+    `Serverlist_Panel.visible = false; serverwarp("login3");` with
+    donormallogin = false -- so sendServerListRequest() at :121 never ran.
+
+    The reference allocates all four TServerList globals as TStrings up front
+    (TInitStatics.cpp:4928-4937), so an untouched one is the EMPTY STRING and
+    is compared with strcasecmp.
+    """
+    client = Client("localhost", 14900)
+    gs1 = ClientGS1(client)
+    rt = ClientGS2(client, gs1)
+
+    for name in ("serverstartconnect", "serverstartparams", "serveraddr"):
+        value = rt.host.get_object(name)
+        assert value == "", (name, value)
+        assert isinstance(value, str), name
+        # the branches initServerlist() actually takes
+        for word in ("skills", "playerworlds", "zone", "kingdoms"):
+            assert not gs2_eq(value, word), f"{name} == {word!r}"
+        # ...while the guard the script relies on still holds
+        assert gs2_eq(value, "")
+
+
+def test_unset_global_still_equals_any_word_so_the_host_must_answer():
+    """Pins WHY the fix belongs in the host, not in gs2_compare.
+
+    The compare rule is faithful to the reference and must not be "fixed";
+    the bug was that the host left a string-typed global unanswered.
+    """
+    assert gs2_eq(None, "skills")
+    assert gs2_eq(None, "anything at all")
+    assert not gs2_eq("", "skills")

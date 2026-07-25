@@ -22,7 +22,7 @@ from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.parser import parse
 from reborn_protocol.gs1.values import to_num, to_str
-from .tiletypes import is_blocking, is_water
+from .tiletypes import get_tile_type, is_blocking, is_water
 
 logger = logging.getLogger(__name__)
 
@@ -899,6 +899,13 @@ class GS1ClientHost(Host):
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
             return bool(self.rt.is_water_at(x, y))
+        if name == "tiletype":
+            # tiletype(x, y) — bare, or as `level.tiletype(...)` (the member
+            # form arrives here too; the level object has no such member so
+            # the VM falls through to the host). Zelda's -Player/Movement
+            # gates sitting (3), sleeping (4/5) and ledge-jumps (21) on it.
+            return self.rt.tile_type_at(to_num(args[0]) if args else 0.0,
+                                        to_num(args[1]) if len(args) > 1 else 0.0)
         if name == "textwidth":
             # textwidth(zoom, font, style, text) — approximate: Reborn text is
             # ~8px/char at zoom 1 (scripts do int((textwidth(...)+7)/8) to get
@@ -1244,6 +1251,16 @@ class ClientGS1:
         # name ("walk"/"idle"/...); the pygame client wires this to its
         # animation state, headless tests can leave it unset.
         self.player_ani_source = None
+        # optional callable (x, y) -> tile id for WORLD coordinates, wired by
+        # the pygame client to its gmap-aware CollisionMixin._get_tile_at.
+        # Without it the tile probes below fall back to the current level's
+        # own 64x64 board, which is right for a standalone level and WRONG
+        # inside a gmap: script coords there run 0..gmap_width*64, so every
+        # probe landed outside 0..63 and answered "not a wall, not water".
+        # Zelda's whole movement engine is such probes (its CheckTiles /
+        # CheckSqrTiles / CheckJump call onwall/tiletype with player.x+1.5),
+        # so on that world the player walked through walls, water and cliffs.
+        self.tile_source = None
         self._freeze_until = 0.0       # monotonic deadline used by `playerfreezetime`
         self.selected_weapon_index = lambda: 0
         self.keys_dir: set = set()
@@ -1453,33 +1470,70 @@ class ClientGS1:
             self._shape_blocks |= mine
             self._shape_block_owners[npc_id] = mine
 
-    def is_wall(self, x, y):
-        """Collision test at world tile (x, y) for onwall(). Checks the current
-        level board (a blocking tile id), plus any dynamic collision rects set
-        via setshape2 (the arena's falling sudden-death choc blocks)."""
+    def tile_at(self, x, y):
+        """Tile id under world coordinate (x, y), or None when no board
+        resolves there.
+
+        Prefers the host's `tile_source` (the pygame client's gmap-aware
+        segment lookup); falls back to the current level's own 64x64 board so
+        headless callers with no game shell keep working."""
+        if self.tile_source is not None:
+            try:
+                tile = self.tile_source(x, y)
+            except Exception:
+                tile = None
+            if tile is not None:
+                return None if tile < 0 else tile
+            return None
         ix, iy = int(x), int(y)
         if 0 <= ix < 64 and 0 <= iy < 64:
             tiles = getattr(self.client, "tiles", None) if self.client else None
             if tiles and len(tiles) >= 64 * 64:
                 try:
-                    if is_blocking(tiles[iy * 64 + ix]):
-                        return True
+                    return tiles[iy * 64 + ix]
                 except (IndexError, TypeError):
                     pass
+        return None
+
+    def is_wall(self, x, y):
+        """Collision test at world tile (x, y) for onwall(). Checks the level
+        board under (x, y) (a blocking tile id), plus any dynamic collision
+        rects set via setshape2 (the arena's falling sudden-death choc
+        blocks)."""
+        tile = self.tile_at(x, y)
+        if tile is not None:
+            try:
+                if is_blocking(tile):
+                    return True
+            except TypeError:
+                pass
+        elif self.tile_source is not None:
+            # tile_source resolved nothing: off the world (its own -1 case).
+            return True
         # dynamic shapes (setshape2) recorded as world-tile blocking cells
-        return (ix, iy) in self._shape_blocks
+        return (int(x), int(y)) in self._shape_blocks
 
     def is_water_at(self, x, y):
         """Water test at world tile (x, y) for onwater() — deep or shallow."""
-        ix, iy = int(x), int(y)
-        if 0 <= ix < 64 and 0 <= iy < 64:
-            tiles = getattr(self.client, "tiles", None) if self.client else None
-            if tiles and len(tiles) >= 64 * 64:
-                try:
-                    return is_water(tiles[iy * 64 + ix])
-                except (IndexError, TypeError):
-                    pass
-        return False
+        tile = self.tile_at(x, y)
+        if tile is None:
+            return False
+        try:
+            return bool(is_water(tile))
+        except TypeError:
+            return False
+
+    def tile_type_at(self, x, y):
+        """`tiletype(x, y)`: the tile's TYPE code (tiletypes.py / the classic
+        0-21 table), not its tile id. Zelda's movement engine reads it for
+        chairs (3), beds (4/5) and jumpable ledges (21)."""
+        tile = self.tile_at(x, y)
+        if tile is None:
+            return 0.0
+        try:
+            return float(int(get_tile_type(tile)))
+        except (TypeError, ValueError):
+            return 0.0
 
     def resolve_ani(self, name):
         """Apply any `replaceani` mapping to a logical player ani name."""

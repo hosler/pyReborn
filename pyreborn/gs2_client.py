@@ -20,6 +20,7 @@ handlers (client.gs2_host), and the game loop pumps process_timeouts(dt).
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,9 @@ SAVE_LINES_CACHE_MAX_BYTES = 5 * 1024 * 1024
 TIMER_RESOLUTION = 1.0 / 120.0
 TIMER_BACKLOG_CAP = 0.25
 PENDING_EVENT_CAP = 16
+# Ceiling on scheduleevent() arms in flight across every script (a runaway
+# script must not be able to grow the queue without bound).
+SCHEDULED_EVENT_CAP = 256
 
 # GS2 GUI-controls layer (showgui/GuiControl -- see gs2_gui.py's module
 # docstring for how `new GuiButtonCtrl(...) { onAction = function(){...}; }`
@@ -80,8 +84,39 @@ _GS1_COMMANDS = frozenset(_GS1_COMMANDS) | {
     "play", "play2", "playlooped", "setmusic", "stopmidi", "stopsong",
 }
 
-#: GS1 function names answered by GS1ClientHost.call_function
-_GS1_FUNCTIONS = frozenset({"onwall", "onwall2", "keydown", "keydown2", "hasweapon"})
+#: GS1 function names answered by GS1ClientHost.call_function.
+#: onwater/onwater2 are v6 bindings too (FourPlay TInitStatics.cpp:4240-4241,
+#: `{'b',"dd"}` / `{'b',"dddd"}` -> TServerLevel::isOnWater), and the GS1 host
+#: already implements exactly that against the same tile store -- routing them
+#: here keeps one water test for both engines. Zelda's movement weapon gates
+#: its whole swim branch on onwater(player.x+1.5, player.y+2.25).
+#: tiletype(x, y) is the same family: one tile store, one answer for both
+#: engines. Zelda's -Player/Movement calls it bare AND as `level.tiletype(...)`
+#: (the level object has no such member, so the member form lands here too)
+#: to detect chairs, beds and jumpable ledges.
+_GS1_FUNCTIONS = frozenset({"onwall", "onwall2", "onwater", "onwater2",
+                            "keydown", "keydown2", "hasweapon", "tiletype"})
+
+#: The GS1 interpreter's PURE (host-independent) function table, so a name
+#: both engines expose resolves to ONE implementation instead of a second
+#: copy that can drift. Only explicitly listed names are routed to it.
+try:
+    from reborn_protocol.gs1.interp import _PURE as _GS1_PURE
+except ImportError:  # pragma: no cover - older reborn-protocol
+    _GS1_PURE = {}
+
+#: TStringConstants::wordborder -- the character class contains() treats as a
+#: word boundary (FourPlay quattroplay/src/TInitStatics.cpp:283, installed at
+#: :5085). Verbatim, including the two latin-1 characters.
+_WORD_BORDER = frozenset(" .,;:-_><|!\"§$%&/\\()=?`´{[]}+*~#''^")
+
+#: GS1-command argument positions that become DISPLAY TEXT. A number a GS2
+#: script passes there is stringified with GS2's rule before the GS1 host
+#: sees it -- see ClientGS2._gs1_args.
+_GS1_TEXT_ARGS = {
+    "showtext": (5,), "showtext2": (6,),
+    "say": (0,), "say2": (0,), "message": (0,),
+}
 
 #: player.<member> -> pyReborn Player attribute (reuses the GS1 table, which
 #: is keyed "player<name>"; GS2 accesses the same fields as object members)
@@ -232,26 +267,188 @@ class _FlagScopeObject(GS2Object):
                     and (key in self._scope or key.lower() in self._scope)))
 
 
-class _LevelNameObject(GS2Object):
-    __slots__ = ("_level_name",)
+class _NameObject(GS2Object):
+    """A handle scripts read BOTH as a string and through `.name`.
 
-    def __init__(self, level_name: str):
-        super().__init__(name=level_name)
-        self._level_name = level_name
-        self.set("name", level_name)
+    The engine hands back an object where a naive port hands back a string:
+    Zelda's CheckHurt gates on `i.ani.name == "zlttp_sword"` while other
+    content compares `player.ani` straight against a string. Both work here
+    -- gs2_compare's object/string rule compares the object's .name, and
+    to_str() falls through to __str__."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text: str):
+        super().__init__(name=text)
+        self._text = text
+        self.set("name", text)
 
     def __str__(self):
-        return self._level_name
+        return self._text
+
+
+#: Number of gani attributes a player carries (#P1..#P30 on the wire).
+PLAYER_ATTR_COUNT = 30
+
+#: What `player.platform` / getplatform() report. The reference client bakes
+#: one token per build (TIdentification::platformname); we report the real
+#: host OS in the same vocabulary the corpus branches on -- and never a token
+#: that would impersonate a client we are not.
+_PLATFORM_NAMES = {"win32": "win", "cygwin": "win", "darwin": "mac"}
+PLATFORM_NAME = _PLATFORM_NAMES.get(sys.platform, "linux")
+
+
+def _guild_from_nick(nick: Any) -> str:
+    """The guild tag inside a nickname, "" when there is none.
+
+    Reference: TServerPlayer::setNick (FourPlay quattroplay/src/
+    TServerPlayer.cpp:300-340) -- find the first '(', then the next ')'
+    after it, and keep what is between them."""
+    text = to_str(nick)
+    open_at = text.find("(")
+    if open_at < 0:
+        return ""
+    close_at = text.find(")", open_at + 1)
+    return text[open_at + 1:close_at] if close_at >= 0 else ""
+
+
+class _PlayerAttrObject(GS2Object):
+    """`player.attr[i]` / `pl.attr[i]`: the gani-attribute slots.
+
+    ONE-BASED, with a permanently empty cell 0. The reference builds the
+    array that way explicitly -- FourPlay quattroplay/src/TGaniObject.cpp:
+    332-344 adds a plain empty TGraalVar first and then TGaniParam(this, i)
+    for i = 1..30 -- which is why Zelda's carry code writes
+    `(pl.attr[0] != null ? pl.attr[0] : 0)`: attr[0] is ALWAYS null, attr[1]
+    is gattrib 1. Slot i is the same value the GS1 engine reaches as #P<i>.
+
+    A remote player's slots are a read-only view of that player's record
+    (the wire props parse_other_player stored). The local player's slots
+    read and write the shared GS1 store and sync to the server exactly the
+    way GS1's `setplayerprop #P<i>` does -- the same single writer, so the
+    two engines can't disagree about what we are carrying."""
+
+    __slots__ = ("_rt2", "_player_id")
+
+    def __init__(self, rt2: "ClientGS2", player_id=None):
+        super().__init__(name="player.attr")
+        self._rt2 = rt2
+        #: None == the local player
+        self._player_id = player_id
+
+    @staticmethod
+    def _slot(key: str) -> Optional[int]:
+        try:
+            i = int(to_num(key))
+        except (TypeError, ValueError):
+            return None
+        return i if 1 <= i <= PLAYER_ATTR_COUNT else None
+
+    def _record(self) -> Optional[dict]:
+        client = self._rt2.client
+        if client is None or self._player_id is None:
+            return None
+        record = (getattr(client, "players", {}) or {}).get(self._player_id)
+        return record if isinstance(record, dict) else None
+
+    def get(self, key: str) -> Any:
+        index = self._slot(key)
+        if index is None:
+            return super().get(key)
+        if self._player_id is not None:
+            record = self._record()
+            return to_str(record.get(f"gattrib{index}", "")) if record else ""
+        gs1 = self._rt2.gs1
+        if gs1 is not None:
+            return to_str(gs1._player_props.get(f"P{index}", ""))
+        player = getattr(self._rt2.client, "player", None)
+        return to_str((getattr(player, "gattribs", None) or {}).get(index, ""))
+
+    def set(self, key: str, value: Any) -> None:
+        index = self._slot(key)
+        if index is None:
+            super().set(key, value)
+            return
+        text = to_str(value)
+        if self._player_id is not None:
+            # Another player's attributes are server-owned; keep the local
+            # copy consistent for the rest of the frame, send nothing.
+            record = self._record()
+            if record is not None:
+                record[f"gattrib{index}"] = text
+            return
+        gs1 = self._rt2.gs1
+        if gs1 is not None:
+            gs1._player_props[f"P{index}"] = text
+        client = self._rt2.client
+        if client is not None:
+            try:
+                client.set_gattrib(index, text)
+            except Exception:
+                pass
+
+    def has(self, key: str) -> bool:
+        return self._slot(key) is not None or super().has(key)
+
+
+class _PlayerColorsObject(GS2Object):
+    """`player.colors[i]` / `pl.colors[i]`: the five body-colour slots
+    (FourPlay TGaniObject.cpp:2717 iterates color0..color4). Zelda's lift
+    code packs a carried player's appearance as
+    `pl.headimg @ ":" @ ... @ pl.colors[0] @ ... @ pl.colors[4]`, so these
+    have to answer off a REMOTE player's record too."""
+
+    __slots__ = ("_rt2", "_player_id")
+
+    #: PLPROP_COLORS carries 8 entries on v6 clients but only the first five
+    #: are the gani colour slots the script surface exposes.
+    COLOR_COUNT = 5
+
+    def __init__(self, rt2: "ClientGS2", player_id=None):
+        super().__init__(name="player.colors")
+        self._rt2 = rt2
+        self._player_id = player_id
+
+    @classmethod
+    def _slot(cls, key: str) -> Optional[int]:
+        try:
+            i = int(to_num(key))
+        except (TypeError, ValueError):
+            return None
+        return i if 0 <= i < cls.COLOR_COUNT else None
+
+    def _colors(self) -> list:
+        client = self._rt2.client
+        if client is None:
+            return []
+        if self._player_id is None:
+            return list(getattr(getattr(client, "player", None), "colors", []) or [])
+        record = (getattr(client, "players", {}) or {}).get(self._player_id)
+        if isinstance(record, dict):
+            return list(record.get("colors", []) or [])
+        return []
+
+    def get(self, key: str) -> Any:
+        index = self._slot(key)
+        if index is None:
+            return super().get(key)
+        colors = self._colors()
+        return float(colors[index]) if index < len(colors) else 0.0
+
+    def has(self, key: str) -> bool:
+        return self._slot(key) is not None or super().has(key)
 
 
 class _PlayerObject(GS2Object):
     """`player.` bridged onto the live pyReborn client/player."""
 
-    __slots__ = ("_rt2",)
+    __slots__ = ("_rt2", "_attr", "_colors")
 
     def __init__(self, rt2: "ClientGS2"):
         super().__init__(name="player")
         self._rt2 = rt2
+        self._attr = None
+        self._colors = None
 
     def _player(self):
         cl = self._rt2.client
@@ -260,6 +457,14 @@ class _PlayerObject(GS2Object):
     def get(self, key: str) -> Any:
         key = key.lower()
         cl = self._rt2.client
+        if key == "attr":
+            if self._attr is None:
+                self._attr = _PlayerAttrObject(self._rt2)
+            return self._attr
+        if key in ("colors", "color"):
+            if self._colors is None:
+                self._colors = _PlayerColorsObject(self._rt2)
+            return self._colors
         # WORLD-frame tile position (local + segment*64 on a gmap), matching
         # GServer-v2's scriptParameters "x"/"y" binding (Character::
         # getTilePosition = mapX*64 + local, shared by GS1's playerx/playery
@@ -271,8 +476,50 @@ class _PlayerObject(GS2Object):
             return float(getattr(cl, "x", 0)) if cl else 0.0
         if key == "y":
             return float(getattr(cl, "y", 0)) if cl else 0.0
+        # -- STRING-VALUED identity properties -----------------------------
+        # These must answer a STRING even when we have nothing to say. An
+        # unanswered member reads as None, and comparing None against a
+        # non-numeric string literal is EQUAL (both sides coerce to 0), so
+        # every `player.<prop> == "<anything>"` in real content fires. Live
+        # measurement on the Login server: 48 comparisons per 25s session of
+        # `player.platform` against "linuxstream", which made
+        # weapon-Rescripted_Serverlist.txt:336 and :2247 hide their controls
+        # and :441 take the mobile branch. Anything else content
+        # string-compares belongs in this group -- a corpus sweep of
+        # `player.<name> ==/!=/in "..."` across Preagonal/graal-* found
+        # exactly platform (46), account (18), chat (8), level (7),
+        # communityname (7), guild (534 across era/GTA) and ani (1); all but
+        # platform/communityname/guild were already answered below.
+        if key == "platform":
+            # The reference reports its BUILD's platform name
+            # (TServerPlayerProperties.cpp:627 -> TPlayer::platform, set from
+            # TIdentification::platformname, TPlayer.cpp:663). We report our
+            # real host OS in the same vocabulary content uses -- and
+            # deliberately never one of the tokens that would impersonate a
+            # client we are not ("linuxstream" is the streamed Linux client,
+            # "android"/"iphone"/"bada" the handsets).
+            return PLATFORM_NAME
+        if key == "communityname":
+            # Read-only in the reference too
+            # (TServerPlayerProperties.cpp:330, no writer). We hold no
+            # platform community account, and "" is exactly what the
+            # serverlist's profile pane tests for before offering its
+            # "Choose one" link.
+            return ""
         p = self._player()
+        if key == "guild":
+            # Derived from the nick, not carried separately: the reference's
+            # TServerPlayer::setNick (TServerPlayer.cpp:300-340) takes the
+            # text between the first '(' and the next ')' and stores it as
+            # `guild` (empty when the nick has no parentheses).
+            return _guild_from_nick(getattr(p, "nickname", "") if p else "")
         if p is not None:
+            if key in ("ani", "gani"):
+                # The animation is a HANDLE, not a string: Zelda's CheckHurt
+                # reads `i.ani.name` off every player findnearestplayers()
+                # hands it (weapon-Player_Movement.txt:734). _NameObject
+                # keeps the plain-string comparisons working too.
+                return _NameObject(to_str(getattr(p, "gani", "") or ""))
             if key in _PLAYER_MEMBER_ATTR:
                 v = getattr(p, _PLAYER_MEMBER_ATTR[key], 0)
                 return v if isinstance(v, str) else to_num(v)
@@ -291,7 +538,7 @@ class _PlayerObject(GS2Object):
                 lvl = getattr(p, "level", "") or ""
                 if not lvl and cl is not None:
                     lvl = getattr(cl, "_current_level_name", "") or ""
-                return _LevelNameObject(to_str(lvl))
+                return _NameObject(to_str(lvl))
             if key == "weapon":
                 # The player's currently selected weapon as an object
                 # (scripted HUDs read player.weapon.image for the D-slot
@@ -365,18 +612,20 @@ class _ThisObject(GS2Object):
             return self._rt2._timeouts.get(self._vm_key, 0.0)
         v = super().get(key)
         if v is None:
-            # `this.<name>` where <name> is a same-script function, not a
-            # stored member -- the shape `onAction = function(){...};` and
-            # plain `x = function(){...}; x();` lambdas both compile to
-            # this.<generated-function-name> (ExpressionFnObject; see
-            # game/gs2_gui.py's module docstring point 2). GS2VM.has_function/
-            # .call already recurse into joined classes, so this also
-            # resolves a handler defined inside a joined class's own script.
+            # A script's `this` doubles as its PUBLIC INTERFACE: Login's
+            # -ReShared does `Gs2Utils = this;` in onCreated, and every
+            # other Login weapon then calls Gs2Utils.replaceAll(...) /
+            # .destroyObject(...) across VM boundaries. Those reads land
+            # here, on the foreign script's this-object, not on the reading
+            # VM's own `this` (which the shared VM resolves itself), so the
+            # public-function lookup has to happen here. Verified live: with
+            # this gone, Login Mobile logs 14 "unknown method replaceall()"
+            # per session. GS2VM.script_function recurses into joined
+            # classes, so a class's public function resolves too.
             kind, key_ = self._vm_key
             vm = self._rt2.vms.get(kind, {}).get(key_)
-            if vm is not None and vm.has_function(key):
-                fname = key.lower()
-                return lambda *args: vm.call(fname, *args)
+            if vm is not None:
+                return vm.script_function(key)
         return v
 
 
@@ -600,7 +849,84 @@ class GS2ClientHost(GS2Host):
         # native-canvas rebuild toggle the Login serverlist calls at init;
         # there is no native canvas here, so nothing to rebuild
         "adventure_setgraalcontrolrecreate",
+        # -- 2026-07-24 Login corpus (weapon-LoginScreen / -Rescripted_IRC_*
+        # / -Rescripted_Serverlist / ServerListScreen) ---------------------
+        # More of the same credential surface as the des_encrypt group
+        # above: a stored-account editor and password appliers. Inert BY
+        # POLICY -- pyReborn's accounts come from prefs.py and nothing a
+        # server script says may read, write or apply them.
+        "setpasswordofaccount",
+        "applypassword",
+        "clearpassword",
+        "adventure_geteditnickname",
+        "adventure_geteditaccountnames",
+        # External-application surface: opening a browser/native window on a
+        # server script's say-so is an attack primitive, never a rendering
+        # feature. Inert BY POLICY (the same reasoning as requesturl below,
+        # which is a documented no-fetch stub).
+        "opengraalurl",
+        "gotowebpage",
+        "adventure_openexternaloptions",
+        "showupdatewindow",
+        "startgraalstreaming",
+        "showfriendinvitationwindow",
+        "showgiftinvitationwindow",
+        # Native platform toggles with no headless analog (offline mode,
+        # socket policy, fullscreen switch, smartphone UI build, chat
+        # widget hand-off, pointer grab). Every observed call site discards
+        # the result.
+        "adventure_startofflinemode",
+        "adventure_setallowedsocketsconnect",
+        "adventure_setfullscreen",
+        "adventure_setchat",
+        "createsmartphoneui",
+        "mouselock",
+        # Serverlist CONNECT-THROUGH surface. pyReborn joins servers from
+        # its own browser (pygame_screens.py) after the user picks one; a
+        # script-initiated connect/RC session would hand control of who we
+        # talk to to remote content, so these stay inert here even though
+        # the reference client wires them to real actions.
+        "connecttoselectedserver",
+        "serverdirectconnect",
+        "startscriptedrc",
+        "initserverlist",
+        "requestserverinfo",
+        "selectservercategory",
+        # Store/profile/chat windows served by the platform account system,
+        # which this client has no session with.
+        "showshop",
+        "showprofile",
+        "showoptions",
+        "openchat",
+        "haspanel",
+        # Server-side directory listing (`files.loadfolder("x/*.gani", 0)`).
+        # The file protocol has no directory query, so there is nothing
+        # truthful to return; the caller iterates the (empty) result.
+        "loadfolder",
+        # Native client patcher. Never real here (pyReborn downloads assets
+        # through the ordinary file-request path, not update packages), but
+        # the RETURN VALUES matter: IRC_Installer polls these in a progress
+        # loop, so they must read as "nothing to download, already
+        # complete" or the loop never terminates -- hence the value table
+        # below rather than the blanket 0.0 the rest of this set gets.
+        "gettotalupdatepackagesize",
+        "getdownloadedupdatepackagesize",
+        "getpackagesdownloaded",
+        "isdownloadingfiles",
+        "getpackagesdownloadcomplete",
+        "getdownloadingpackage",
     })
+
+    #: Terminating constants for the patcher queries listed in `stubbed`:
+    #: zero bytes outstanding, download complete, nothing in flight.
+    _PATCHER_STUB_VALUES = {
+        "gettotalupdatepackagesize": 0.0,
+        "getdownloadedupdatepackagesize": 0.0,
+        "getpackagesdownloaded": 0.0,
+        "isdownloadingfiles": 0.0,
+        "getpackagesdownloadcomplete": 1.0,
+        "getdownloadingpackage": "",
+    }
 
     #: host_surface() cache -- computed once per process. The introspection
     #: below re-reads THIS FILE from disk (inspect.getsource -> linecache):
@@ -638,10 +964,12 @@ class GS2ClientHost(GS2Host):
                              and isinstance(value.value, str))
         # control METHODS answered by GuiControl.get() bound callables
         # (method-form and with-scope calls never reach call_builtin's
-        # dispatch, but they ARE part of the live host surface)
+        # dispatch, but they ARE part of the live host surface). Every
+        # control CLASS contributes: a tree view's addNodeByPath is no less
+        # implemented than the base class's showTop.
         if GS2GuiManager is not None:
-            from .game.gs2_gui import GuiControl
-            names |= GuiControl._METHOD_NAMES
+            from .game.gs2_gui import control_method_names
+            names |= control_method_names()
         GS2ClientHost._surface_cache = frozenset(names) | GS2ClientHost.stubbed
         return GS2ClientHost._surface_cache
 
@@ -710,6 +1038,31 @@ class GS2ClientHost(GS2Host):
             # non-login case); unresolved it read "" and the empty-labeled
             # server button covered the Servers button.
             return to_str(getattr(self.rt2.client, "server_name", "") or "")
+        if name in ("serverstartconnect", "serverstartparams", "serveraddr"):
+            # The other three TServerList globals. They MUST answer as
+            # STRINGS, not as "unresolved" -- the reference allocates all
+            # four as TStrings up front (`TServerList::serverstartconnect =
+            # new TString()`, FourPlay quattroplay/src/TInitStatics.cpp:
+            # 4928-4937, alongside the servername = "Offline" above), so an
+            # untouched one is the empty STRING and compares by strcasecmp.
+            #
+            # Left unanswered they resolved to None -> lattice cell NUMBER
+            # 0.0 (TScriptStackEntry::resolve), and the official number/string
+            # rule is compareNumberValues(0.0, strtofloat(s))
+            # (TScriptMachine::compare, src/TScriptMachine.cpp:1458-1461):
+            # strtofloat of any non-numeric string is 0.0, so an unset global
+            # tested EQUAL TO EVERY WORD. -Rescripted/Serverlist's
+            # initServerlist then took `serverstartconnect == "skills"`
+            # (weapon-Rescripted_Serverlist.txt:85), rewrote it to "login3",
+            # fell into the `!= ""` arm at :106 and did
+            # `Serverlist_Panel.visible = false; serverwarp("login3");` with
+            # temp.donormallogin = false -- so sendServerListRequest() at
+            # :121 never ran and the server tree stayed EMPTY, silently.
+            #
+            # `serverstartconnect` carries the server the client was launched
+            # to auto-join (a graal:// URL / command line); pyReborn is always
+            # launched at a server directly, so it is always empty here.
+            return ""
         if name == "worldsf":
             # v6 C# client world handle: scripts call WorldsF.setFrameTick(ms)
             # (v6 preloader init + npc 10371). Method calls on an object the
@@ -859,11 +1212,6 @@ class GS2ClientHost(GS2Host):
     def call_builtin(self, vm: GS2VM, name: str, args: List[Any],
                      obj: Optional[GS2Object] = None) -> Any:
         rt2 = self.rt2
-        if vm is not None:
-            # See ClientGS2._last_vm: lets GUI controls resolve script-
-            # function member reads (`onAction = function(){...}` under the
-            # VM's with-rebound `this`).
-            rt2._last_vm = vm
 
         if name == "catchevent":
             # catchevent(target, eventname, handlername): route a GUI
@@ -893,14 +1241,57 @@ class GS2ClientHost(GS2Host):
                                  _vm.call(_h, _c))
             return 0.0
 
+        if name == "objecttype":
+            # obj.objecttype() -> the object's class name (TGraalVar method,
+            # TGraalVarProperties.cpp:475-483 `{'s', ""}`). Login's
+            # serverlist filters its taskbar with
+            # `temp.button.objecttype() != "GuiButtonCtrl"`
+            # (weapon-Rescripted_Serverlist.txt:351) and -Staff/GUIExplorer
+            # labels every node with it. GuiControl subclasses carry the
+            # authoritative spelling on CTRL_CLASS; everything the host
+            # builds through create_object() is named after its `new`
+            # classname. Answered ABOVE the obj-method block below, which
+            # ends in NOT_HANDLED for anything it doesn't recognize.
+            target = obj if obj is not None else getattr(vm, "this", None)
+            return to_str(getattr(target, "CTRL_CLASS", None)
+                          or getattr(target, "name", "") or "")
+
         if obj is not None:
             if name == "sort" and isinstance(obj, list):
                 obj.sort(key=lambda value: (to_str(value).casefold(), to_num(value)))
+                return obj
+            if name in ("sortascending", "sortdescending") and isinstance(obj, list):
+                # The shared VM implements sortbyvalue but not these two
+                # (Login's staff file-explorer weapon sorts its listing with
+                # `files.sortascending()`); the host gets first refusal, so
+                # this is the only place they can live.
+                obj.sort(key=lambda value: (to_str(value).casefold(), to_num(value)),
+                         reverse=name == "sortdescending")
                 return obj
             if name == "savelines" and isinstance(obj, list):
                 if args:
                     rt2.save_lines(to_str(args[0]), obj)
                 return 0.0
+            if isinstance(obj, str):
+                # String METHODS the compiler does not lower to an opcode.
+                # `.lower()`/`.upper()` are the two the live corpus uses
+                # (Login's staff sprite-editor weapon keys its per-gani
+                # default map on `this.gdefault.(@def.lower())`).
+                if name in ("lower", "lowercase"):
+                    return obj.lower()
+                if name in ("upper", "uppercase"):
+                    return obj.upper()
+                # ("-Serverlist_Options").showOptions() -- a method call on a
+                # string that NAMES a weapon script dispatches to that
+                # weapon's public function (the reference engine's
+                # weapon-as-object form; Login uses it for -ScriptedRC,
+                # -Serverlist_Options and -ShopGlobal). Only already-loaded
+                # weapons are considered: resolving one would mean a
+                # findweapon-style server fetch on every unknown string
+                # method, which is neither free nor obviously wanted.
+                wvm = rt2.vms["weapon"].get(obj.lower())
+                if wvm is not None and wvm.has_function(name):
+                    return wvm.call(name, *args)
             # Other list methods (add/addarray/size/clear/index/sortbyvalue)
             # deliberately fall through as NOT_HANDLED: the shared VM
             # implements them natively and gives the host first refusal
@@ -985,6 +1376,22 @@ class GS2ClientHost(GS2Host):
                 if args:
                     rt2.join_class(vm, to_str(args[0]))
                 return 0.0
+
+            if name in ("leave", "isinclass", "getcallstack") and vm is not None:
+                # The object-method spelling of the three bare forms below.
+                # Every live call site uses THIS one: Zelda's
+                # class:gui_builder built() ends with
+                # `this.leave("gui_builder"); echo(... this.isinclass(
+                # "gui_builder"))`, and g2k1's weaponParticleEditor dumps
+                # `this.getCallStack()`.
+                if name == "getcallstack":
+                    return rt2.call_stack(vm)
+                if name == "isinclass":
+                    return 1.0 if (args and rt2.is_in_class(
+                        vm, to_str(args[0]))) else 0.0
+                if args:
+                    rt2.leave_class(vm, to_str(args[0]))
+                return 0.0
             if name == "destroy" and rt2.gui is not None:
                 # ctrl.destroy() -- the object-method form (see the bare
                 # destroy(ctrl) global form below for the other one).
@@ -1001,6 +1408,33 @@ class GS2ClientHost(GS2Host):
                     return obj.get_selected_row()
                 if name in ("getrowtext", "gettextbyid") and args:
                     return obj.get_row_text(args[0])
+            if name in ("scheduleevent", "cancelevents") and vm is not None:
+                # `this.scheduleevent(1, "TurnOffBorder", obj)` -- the same
+                # engine call as the bare form below, reached as a method of
+                # the script's own `this` (every live call site spells it
+                # that way).
+                if name == "scheduleevent" and len(args) >= 2:
+                    rt2.schedule_event(vm, to_num(args[0]), to_str(args[1]),
+                                       list(args[2:]))
+                elif name == "cancelevents":
+                    rt2.cancel_events(vm, to_str(args[0]) if args else "")
+                return 0.0
+            if isinstance(obj, GS2Object):
+                # Dynamic-member (VariableCollection) surface. Login's
+                # Staff weapons manage their caches with it:
+                # `this.spritecache.clearvars()` per rebuild, and
+                # `for (v: this.gdefault.getdynamicvarnames())` to walk one.
+                # Private bookkeeping keys (leading "_", e.g. the layer
+                # store's "_findimg") are engine-internal and stay hidden.
+                names = [key for key in obj._members
+                         if not str(key).startswith("_")]
+                if name == "clearvars":
+                    for key in names:
+                        del obj._members[key]
+                    return 0.0
+                if name in ("getvarnames", "getdynamicvarnames"):
+                    return [key for key in names
+                            if not callable(obj._members[key])]
             # other object methods with no member function bound: no GS1
             # equivalent
             return NOT_HANDLED
@@ -1020,7 +1454,7 @@ class GS2ClientHost(GS2Host):
             return 0.0
 
         if name in self.stubbed:
-            return 0.0
+            return self._PATCHER_STUB_VALUES.get(name, 0.0)
 
         if name in ("requesturl", "requesturlasgamefile"):
             # Inert BY POLICY: this client never fetches script-supplied
@@ -1059,10 +1493,44 @@ class GS2ClientHost(GS2Host):
             return to_str(getattr(manager, "_current_music", "") or "")
 
         if name == "getnearestplayers":
+            # players[] INDICES, nearest first -- see nearest_player_indices
+            # for why this is not findnearestplayers' payload.
             player = getattr(rt2.client, "player", None)
             x = to_num(args[0]) if args else to_num(getattr(player, "x", 0))
             y = to_num(args[1]) if len(args) > 1 else to_num(getattr(player, "y", 0))
-            return rt2.nearest_players(x, y)
+            return rt2.nearest_player_indices(x, y)
+
+        if name in ("findnearestplayers", "findnearestplayer"):
+            # Same sort as getnearestplayers above, different payload: the
+            # player OBJECTS instead of their players[] indices (quattroplay
+            # TInitStatics.cpp:2088 vs :2067). The SINGULAR form is the same
+            # search returning only the winner, or null when the level is
+            # empty (:2044, over the same list including ourselves --
+            # Zelda's lift code checks `pl.account != player.account`).
+            player = getattr(rt2.client, "player", None)
+            x = to_num(args[0]) if args else to_num(getattr(player, "x", 0))
+            y = to_num(args[1]) if len(args) > 1 else to_num(getattr(player, "y", 0))
+            found = rt2.find_nearest_players(x, y)
+            if name == "findnearestplayers":
+                return found
+            return found[0] if found else 0.0
+
+        if name == "getstringkeys":
+            return rt2.string_keys(to_str(args[0]) if args else "")
+
+        if name == "getcallstack":
+            return rt2.call_stack(vm)
+
+        if name == "isinclass":
+            return 1.0 if (vm is not None and args
+                           and rt2.is_in_class(vm, to_str(args[0]))) else 0.0
+
+        if name == "leave":
+            # leave("classname"): the inverse of join() -- drop the class
+            # from the calling script again.
+            if vm is not None and args:
+                rt2.leave_class(vm, to_str(args[0]))
+            return 0.0
 
         if name == "findplayerbyid":
             return rt2.player_by_id(int(to_num(args[0]))) if args else 0.0
@@ -1220,15 +1688,20 @@ class GS2ClientHost(GS2Host):
         if name == "timevar2":
             return time.time()
 
-        if name in ("getimgwidth", "getimgheight"):
+        if name in ("getimgwidth", "getimgheight", "imgwidth", "imgheight"):
             # Answered from the downloaded file's header; preloader-style
             # scripts poll this in a wait loop until the download lands, so
             # a miss also (re-)requests the file.
+            # imgwidth/imgheight are the LEGACY GS1 spellings (they are in
+            # reborn_protocol.gs1's FUNCTIONS table; v6's binding table only
+            # has the get* pair, TInitStatics.cpp:2287-2288) -- routed to the
+            # same answer here so both engines share one implementation.
             fname = to_str(args[0]) if args else ""
             dims = rt2.image_size(fname) if fname else None
             if dims is None:
                 return 0.0
-            return float(dims[0] if name == "getimgwidth" else dims[1])
+            return float(dims[0] if name in ("getimgwidth", "imgwidth")
+                         else dims[1])
 
         if name == "tiletype":
             if rt2.client is not None and len(args) >= 2:
@@ -1289,6 +1762,110 @@ class GS2ClientHost(GS2Host):
             b = to_str(args[1]) if len(args) > 1 else ""
             return 1.0 if a.lower() == b.lower() else 0.0
 
+        # -- 2026-07-24 static-census gaps ----------------------------------
+        # Each name below was confirmed missing at RUNTIME first (compiled
+        # with the real gs2 compiler, run on this host, seen in
+        # GS2VM.builtins_missing) and only then shaped from the reference
+        # client's binding tables in Preagonal/FourPlay/quattroplay/src.
+
+        if name == "contains":
+            # contains(source, needle) -- NOT a plain substring test: the
+            # engine requires the match to be bounded by a WORD BORDER on
+            # both sides (or by the ends of the string), case-insensitively
+            # (TInitStatics.cpp:1962-1990, border set vars24 at :283;
+            # binding :2287 `{'b', "ss"}`). era's weapongun.txt:270 gates on
+            # contains(this.weapon_opposite, "Dual") and -Commands.txt:1159
+            # on contains(player.level.name, "mall") -- both of which a
+            # substring test would over-match ("Dualist", "smallroom").
+            source = to_str(args[0]).lower() if args else ""
+            needle = to_str(args[1]).lower() if len(args) > 1 else ""
+            if not needle:
+                return False
+            start = 0
+            while True:
+                found = source.find(needle, start)
+                if found < 0:
+                    return False
+                left_ok = found == 0 or source[found - 1] in _WORD_BORDER
+                after = found + len(needle)
+                right_ok = after >= len(source) or source[after] in _WORD_BORDER
+                if left_ok and right_ok:
+                    return True
+                start = after
+
+        if name in ("degtorad", "radtodeg"):
+            # TInitStatics.cpp:1999/2004, bindings :2289-2290 `{'d', "d"}`.
+            # era's particle scripts pass modifier ranges as degtorad(0),
+            # degtorad(15); bomber's weaponjoey_test1 spreads shots with
+            # degtoRad(22.5).
+            import math
+            value = to_num(args[0]) if args else 0.0
+            return (value * math.pi / 180.0 if name == "degtorad"
+                    else value * 180.0 / math.pi)
+
+        if name == "findplayer":
+            # findplayer(account) -> that player's object, else null.
+            # Reference TInitStatics.cpp:2127 (binding :2301 `{'o', "s"}`)
+            # checks the LOCAL player's account first, then the level's
+            # other players. Zelda's carry code compares the result's
+            # .account against player.account, so the local hit must be the
+            # very object `player` resolves to, and a remote hit must be the
+            # same per-id object findnearestplayers hands out.
+            #
+            # The binding coerces its argument to a string, but the live
+            # call site feeds it a player OBJECT --
+            # `findplayer(players[pls[i]])` in graal-lttp
+            # weapon-Player_Movement.txt:91 -- so an object argument is
+            # resolved through its `account` member rather than stringified
+            # into a repr that could never match.
+            wanted = args[0] if args else ""
+            if isinstance(wanted, GS2Object):
+                wanted = wanted.get("account")
+            wanted = to_str(wanted)
+            if not wanted:
+                return 0.0
+            client = rt2.client
+            local = getattr(client, "player", None) if client else None
+            if local is not None and to_str(
+                    getattr(local, "account", "")).lower() == wanted.lower():
+                return rt2.player_object
+            for pid, record in (getattr(client, "players", {}) or {}).items():
+                get = record.get if isinstance(record, dict) else (
+                    lambda key, default=None: getattr(record, key, default))
+                if to_str(get("account", "")).lower() == wanted.lower():
+                    return rt2.script_player_object(pid, record)
+            return 0.0
+
+        if name in ("cursoron", "cursoroff", "iscursoron"):
+            # GuiCanvas cursor visibility (GuiCanvas.cpp:47-63, bindings
+            # :83-85). Called BARE by Login's serverlist when it takes over
+            # the screen. No corpus calls cursorOff/isCursorOn, so this can
+            # only ever confirm the pointer visible in practice.
+            gui = rt2.gui
+            if gui is None:
+                return 0.0
+            if name == "iscursoron":
+                return 1.0 if gui.cursor_on else 0.0
+            gui.set_cursor_on(name == "cursoron")
+            return 0.0
+
+        if name == "keycode":
+            # keycode("f") -> that key's virtual-key code. NOT a v6 binding
+            # (no entry anywhere in quattroplay/src): it is a legacy GS1
+            # function that the 2006 era corpus still calls from GS2 blocks
+            # (weaponKatana%032Blade.txt:106 etc.), so it resolves here
+            # through the SAME implementation the GS1 engine uses rather
+            # than a second copy of the keymap.
+            #
+            # Known limit, not worth working around: those call sites write
+            # `keydown2(keycode(f), false)` with a BARE token, which the GS2
+            # compiler emits as a read of an undefined variable `f`
+            # (verified by compiling it with gs2test) -- the letter is gone
+            # before the host is reached, so those particular calls answer
+            # 0 here exactly as they do on the reference client.
+            fn = _GS1_PURE.get("keycode")
+            return fn(None, list(args)) if fn is not None else 0.0
+
         if name == "gettextwidth":
             # gettextwidth(zoom, font, styles, text) -> width in client px.
             # -warn uses it to centre eye_bomber_notice.png:
@@ -1313,17 +1890,181 @@ class GS2ClientHost(GS2Host):
             # headless fallback: mean glyph advance ~0.55em
             return float(len(text)) * size * 0.55
 
+        if name == "gettextheight":
+            # gettextheight(zoom, font, styles) -> line height in client px,
+            # the sibling of gettextwidth above and BY FAR the most-called
+            # gap in the live Login corpus (732 calls in one pass): the
+            # serverlist screen sizes nearly every label's extent with
+            # `extent = { w, gettextheight(scale, "friz", "b") }`, so an
+            # unanswered 0 collapsed those controls to zero height.
+            zoom = to_num(args[0]) if args else 1.0
+            fontname = to_str(args[1]) if len(args) > 1 else ""
+            style = to_str(args[2]) if len(args) > 2 else ""
+            size = max(8, int(16 * (zoom or 1.0)))
+            game = getattr(rt2, "game_shell", None)
+            if game is not None and hasattr(game, "_showtext_font"):
+                try:
+                    font = game._showtext_font(fontname or "Arial", size,
+                                               "b" in style)
+                    return float(font.get_height())
+                except Exception:
+                    pass
+            # headless fallback: the same 1.2em leading pygame's default
+            # font reports
+            return float(int(size * 1.2))
+
+        if name == "md5":
+            import hashlib
+            raw = to_str(args[0]) if args else ""
+            return hashlib.md5(raw.encode("latin-1", "replace")).hexdigest()
+
+        if name in ("extractfilename", "extractfilebase", "extractfileext"):
+            # Pure path helpers (the engine's own spelling of basename /
+            # stem / suffix); both separators, since script-built paths mix
+            # them. extractfileext keeps the dot, matching the call sites'
+            # `if (extractfileext(f) == ".gani")` comparisons.
+            leaf = to_str(args[0]).replace("\\", "/").rsplit("/", 1)[-1] \
+                if args else ""
+            if name == "extractfilename":
+                return leaf
+            base, dot, ext = leaf.rpartition(".")
+            if not dot:
+                return leaf if name == "extractfilebase" else ""
+            return base if name == "extractfilebase" else dot + ext
+
+        if name == "fileexists":
+            # True only for content this client actually holds: a file the
+            # server already sent us, or one in the sprite cache. Never a
+            # local-filesystem probe -- a script must not be able to
+            # enumerate the user's disk.
+            fname = to_str(args[0]) if args else ""
+            if not fname:
+                return 0.0
+            client = rt2.client
+            received = getattr(client, "_received_files", {}) or {}
+            if fname in received or fname.lower() in {
+                    str(key).lower() for key in received}:
+                return 1.0
+            game = getattr(rt2, "game_shell", None)
+            sprites = getattr(game, "sprite_mgr", None)
+            if sprites is not None and sprites.load_sheet(fname) is not None:
+                return 1.0
+            return 0.0
+
+        if name in ("pushdialog", "popdialog"):
+            # Torque modal-dialog stack. Headlessly a dialog is just a
+            # control raised to the top of the canvas (pushDialog) or
+            # hidden again (popDialog) -- Login pushes its "connecting"
+            # and error dialogs this way.
+            if rt2.gui is not None and args:
+                if name == "pushdialog":
+                    rt2.gui.show(args[0])
+                else:
+                    rt2.gui.hide(args[0])
+            return 0.0
+
+        if name == "bringtofront":
+            # global form; the with-scope/method form is a control method
+            if rt2.gui is not None and args:
+                ctrl = rt2.gui._resolve(args[0])
+                if ctrl is not None:
+                    rt2.gui.bring_to_front(ctrl)
+            return 0.0
+
+        if name == "isfullscreenmode":
+            game = getattr(rt2, "game_shell", None)
+            return 1.0 if getattr(game, "fullscreen", False) else 0.0
+
+        if name == "scheduleevent":
+            # scheduleevent(delay, "EventName", params...): call the calling
+            # script's own EventName after `delay` seconds. Driven by the
+            # same per-frame pump as settimer (see process_timeouts).
+            if vm is not None and len(args) >= 2:
+                rt2.schedule_event(vm, to_num(args[0]), to_str(args[1]),
+                                   list(args[2:]))
+            return 0.0
+
+        if name == "cancelevents":
+            # cancelevents(["EventName"]): drop this script's pending
+            # scheduled events (all of them when no name is given).
+            if vm is not None:
+                rt2.cancel_events(vm, to_str(args[0]) if args else "")
+            return 0.0
+
+        if name == "findobject":
+            # findobject(name) -> the named engine object / GUI control, or
+            # 0.0. Same registry every bare-name reference resolves through
+            # (get_object); Login Mobile's gui_scaler and -LoginScreen look
+            # their controls up this way instead of by bare name.
+            found = self.get_object(to_str(args[0])) if args else None
+            return found if found is not None else 0.0
+
+        if name in ("loadvars", "loadvarsfromarray"):
+            # The inverse of savevars(): repopulate the calling script's
+            # this. members from `name=value` lines -- either from this
+            # client's own server-scoped cache (loadvars, the only place
+            # savevars is allowed to write) or straight from an array.
+            this = getattr(vm, "this", None) if vm is not None else None
+            if this is None:
+                return 0.0
+            if name == "loadvarsfromarray":
+                lines = args[0] if args and isinstance(args[0], list) else []
+            else:
+                lines = rt2.load_lines(to_str(args[0]) if args else "")
+            for line in lines:
+                key, sep, value = to_str(line).partition("=")
+                if sep and key.strip():
+                    this.set(key.strip(), value)
+            return 0.0
+
         if name == "getscalefactor":
             # -Zoom onCreated: this.maxscale = getScaleFactor() + 1, and the
             # desktop default for client.mobile_smoothzoom_* -> 1 on PC
             # (maxscale 2 matches -System's own scalefactor = 2).
             return 1.0
 
+        if name == "getplatform":
+            # Same value player.platform reports -- the reference reads both
+            # off TIdentification::platformname (TInitStatics.cpp:2796-2801
+            # binding :4214 `{'s', ""}`, and TPlayer.cpp:663). It used to
+            # share the 0.0 group below, which made `getplatform() ==
+            # "android"` compare EQUAL (0 == strtofloat("android")) and sent
+            # Login Mobile's -Adventure down the handset branch.
+            return PLATFORM_NAME
+
+        if name in ("getgamesubversion", "getpremiumoption", "fileupdate"):
+            # Native build/entitlement/patcher queries the live Login MOBILE
+            # server's -Adventure and -Mobile/Serverlist make every session.
+            # No honest answer exists for a portable Python client -- and
+            # 0.0 is the TRUTHFUL one for the entitlement query, since we
+            # hold no premium option. Deliberately NOT in
+            # `stubbed`: game_tester/server_crawl.py's
+            # KNOWN_UNSUPPORTED_CALLS is the registry that classifies these,
+            # and it must stay the single source of truth for the boundary.
+            # Answering them here only stops the per-session unknown-call
+            # warning; the crawler still reports them known_unsupported.
+            return 0.0
+
         if name == "getdevicemodel":
             # -Zoom uses it only as a client-flag name suffix
             # (client.mobile_smoothzoom_<model>): any stable, benign
             # desktop-ish token works.
             return "PC"
+
+        if name in ("getiphonemodel", "getandroiddevicemodel"):
+            # Login Mobile's gui_scaler picks its layout scale off the
+            # handset model. We are not one -- the empty string is the
+            # truthful answer and lands the class on its desktop branch.
+            # It is also literally what the reference client returns off
+            # the handset: scriptfun_android_getandroiddevicemodel
+            # (FourPlay TInitStatics.cpp:5610, binding :5979 `{'s', ""}`)
+            # constructs an empty TString and returns it, with no JNI call
+            # at all -- unlike its neighbours in that file, which do go
+            # through javaenvironment. Both live call sites take .lower()
+            # or compare the result, never branch on emptiness
+            # (graal-loginserver-mobile weapon-Adventure.txt getDeviceModel,
+            # graal-bomber-gs2 scripts/utility_device.txt:19).
+            return ""
 
         if name in ("gameobject::find", "object::findanyobjectbytype"):
             # -System: cam = object::findanyobjectbytype(type::camera); then
@@ -1341,12 +2082,27 @@ class GS2ClientHost(GS2Host):
             return [_engine_object(rt2, f"component:{key}".lower())]
 
         if (name in ("setframetick", "adventure_setframetick",
-                     "switchopengldevicescale", "setretinadisplaynoantialias")
+                     "adventure_getframetick", "switchopengldevicescale",
+                     "setretinadisplaynoantialias", "switchtodirectx",
+                     "adventure_setcheatwindows")
                 or name.startswith("quattro::debugtools::")):
-            # Frame pacing / GL-scale / retina / exception-report toggles for
-            # the C# client's renderer. Every observed call discards the
-            # result (OP_INDEX_DEC at each site in -System, -System_Preloader,
-            # -Zoom, npc 10371) -- inert by design.
+            # Frame pacing / GL-scale / retina / renderer-backend / staff
+            # cheat-window toggles for the C# client's renderer. Every
+            # observed call discards the result (OP_INDEX_DEC at each site in
+            # -System, -System_Preloader, -Zoom, npc 10371, and the live
+            # Login -Serverlist) -- inert by design.
+            return 0.0
+
+        if name == "adventure_invokekeyevent":
+            # Synthesising key events on a server script's say-so is an
+            # input-spoofing primitive, not a rendering feature: the script
+            # could drive any bound action (including chat and movement) as
+            # if the user had typed it. Inert BY POLICY. Live Login Mobile
+            # uses it only to dismiss its own soft keyboard.
+            if name not in rt2._policy_stub_logged:
+                rt2._policy_stub_logged.add(name)
+                logger.info("GS2 %s(): inert stub (no synthetic input by "
+                            "policy)", name)
             return 0.0
 
         # GS1 function surface (returns a value)
@@ -1385,24 +2141,21 @@ class ClientGS2:
         self._entered_vms: set = set()
         self._tiles_source = None
         self._tiles_view = None
+        # findnearestplayers() entries, kept per player id so the objects
+        # scripts hold on to keep their identity (see script_player_object)
+        self._script_players: Dict[Any, GS2Object] = {}
         # GUI-controls tree (showgui/GuiControl); None when pygame isn't
         # installed (headless callers, e.g. game_tester's GameBot).
         self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
         self.game_shell = None
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
+        # scheduleevent() arms: [{key, left, event, params}] -- see
+        # schedule_event/_process_scheduled_events
+        self._scheduled: List[dict] = []
         self._pending_joins: Dict[str, List[GS2VM]] = {}
         self._prev_bytecode_cb = None
         self._prev_server_text_cb = None
-        # The most recently executing VM (stamped by _run/load_bytecode and
-        # every host builtin call). GuiControl.get uses it to resolve a
-        # missing member that names a script function to a call-closure:
-        # `onAction = function(){...}` compiles to a READ of
-        # this.<generated-name>, and the VM's official with-rebinding makes
-        # `this` the control under construction -- the control alone cannot
-        # reach the script's function table. VM execution is synchronous, so
-        # "last" is "current" for every construction-time read.
-        self._last_vm: Optional[GS2VM] = None
         # Bytecode that arrived inside the client's packet loop, waiting to
         # be loaded/run from the game loop (see _on_bytecode).
         self._pending_bytecode: List[tuple] = []
@@ -1452,6 +2205,28 @@ class ClientGS2:
             return False
         return True
 
+    def load_lines(self, filename: str) -> List[str]:
+        """Read back lines this client's own save_lines/savevars wrote.
+
+        Same server-scoped cache directory and same leaf-name confinement,
+        so a script can only ever read what it stored here -- never an
+        arbitrary path. Missing/unreadable file -> empty list."""
+        from .prefs import config_dir
+        import hashlib
+        server = to_str(getattr(self.client, "server_name", "") or
+                        getattr(self.client, "host", "") or "default")
+        scope = hashlib.sha256(server.encode("utf-8")).hexdigest()[:16]
+        leaf = Path(str(filename).replace("\\", "/")).name
+        if not leaf or leaf in (".", "..") or "\x00" in leaf:
+            return []
+        target = config_dir() / "client-cache" / scope / leaf
+        try:
+            if target.stat().st_size > SAVE_LINES_CACHE_MAX_BYTES:
+                return []
+            return target.read_text(encoding="utf-8").splitlines()
+        except (OSError, ValueError, UnicodeDecodeError):
+            return []
+
     def wire_weapon_name(self, vm: Optional[GS2VM]) -> str:
         """The calling script's wire identity for sendtext/requesttext: the
         weapon's original-case name, or "GraalEngine" for engine-originated
@@ -1489,29 +2264,240 @@ class ClientGS2:
                 fields.append(to_str(arg))
         return fields
 
-    def nearest_players(self, x: float, y: float) -> list:
-        """Return live other-player objects ordered by distance from (x, y)."""
+    def player_positions(self) -> list:
+        """(x, y) per entry of the `players[]` array, in ITS order.
+
+        Shares one construction order with player_list_objects() so an index
+        from nearest_player_indices() always addresses the same entry the
+        script then reads out of players[]."""
+        client = self.client
+        if client is None:
+            return []
+        local = getattr(client, "player", None)
+        found = [(to_num(getattr(client, "x", getattr(local, "x", 0)) or 0),
+                  to_num(getattr(client, "y", getattr(local, "y", 0)) or 0))]
+        for record in (getattr(client, "players", {}) or {}).values():
+            get = record.get if isinstance(record, dict) else (
+                lambda key, default=None: getattr(record, key, default))
+            found.append((to_num(get("x", 0)), to_num(get("y", 0))))
+        return found
+
+    def nearest_player_indices(self, x: float, y: float) -> list:
+        """getnearestplayers(x, y) -> `players[]` INDICES, nearest first.
+
+        Deliberately NOT the same payload as findnearestplayers(), which
+        returns the player OBJECTS: the reference sorts one copy of the
+        player list by distance and then emits
+        `players->indexOf(entry)` per entry as a float array
+        (quattroplay TInitStatics.cpp:2067-2086 vs :2088-2098). The live
+        call site only works that way round -- graal-lttp
+        weapon-Player_Movement.txt:88-91 RenderNicks does
+        `temp.pls = getnearestplayers(...); temp.pl = findplayer(players[
+        pls[i]]);`, i.e. it INDEXES players[] with what it gets back.
+
+        The LOCAL player is index 0 and is part of the ranking: RenderNicks
+        draws one caption per returned entry and branches on
+        `pl.account != player.account` to decide whether to show our own,
+        which is unreachable if we are missing from the list.
+
+        Distance is measured from each player's stand point (+1.5, +2), the
+        pair the reference's comparator adds to every player before
+        comparing (same offsets find_nearest_players uses)."""
+        positions = self.player_positions()
+        ranked = sorted(
+            range(len(positions)),
+            key=lambda i: ((positions[i][0] + 1.5 - x) ** 2
+                           + (positions[i][1] + 2.0 - y) ** 2))
+        return [float(i) for i in ranked]
+
+    #: findnearestplayers() entry members -> (remote-player record key,
+    #: default). The record keys are the ones packets.parse_other_player
+    #: writes. Content reads the combat fields off these objects, not just
+    #: the identity ones -- Zelda's CheckHurt uses .ani, .dir, .swordpower,
+    #: .account, .x and .y.
+    _SCRIPT_PLAYER_MEMBERS = (
+        ("account", "account", ""), ("nick", "nickname", ""),
+        ("nickname", "nickname", ""), ("chat", "chat", ""),
+        ("level", "level", ""), ("swordimg", "sword_image", ""),
+        ("shieldimg", "shield_image", ""), ("headimg", "head_image", ""),
+        ("bodyimg", "body_image", ""),
+        ("x", "x", 0.0), ("y", "y", 0.0), ("dir", "direction", 0.0),
+        ("sprite", "sprite", 0.0), ("hearts", "hearts", 0.0),
+        ("fullhearts", "max_hearts", 0.0), ("ap", "ap", 0.0),
+        ("mp", "mp", 0.0), ("swordpower", "sword_power", 0.0),
+        ("shieldpower", "shield_power", 0.0),
+        ("glovepower", "glove_power", 0.0),
+    )
+
+    def script_player_object(self, player_id, record) -> GS2Object:
+        """The script-facing object for ONE remote player, stable per id.
+
+        Identity matters: content compares entries against each other and
+        against `player` (Login's -Serverlist_Observer picks a follow target
+        with `if (temp.pl != player)`), and gs2_compare's object/object rule
+        is pointer identity -- so the same player must hand back the same
+        object every call, refreshed in place."""
+        cache = self._script_players
+        item = cache.get(player_id)
+        if item is None:
+            item = cache[player_id] = GS2Object(name=f"player:{player_id}")
+            # Indexed views, bound to the id rather than to this particular
+            # record dict: they resolve the live record on every access, so
+            # they keep working after client.players[id] is re-created.
+            # Zelda's lift code reads BOTH off a remote player object --
+            # `pl.attr[3] == player.account` (weapon-Player_Movement.txt:858)
+            # and `pl.colors[0..4]` (:204-208).
+            item.set("attr", _PlayerAttrObject(self, player_id))
+            item.set("colors", _PlayerColorsObject(self, player_id))
+            item.set("color", item.get("colors"))
+        get = record.get if isinstance(record, dict) else (
+            lambda key, default=None: getattr(record, key, default))
+        item.set("id", player_id)
+        for member, key, default in self._SCRIPT_PLAYER_MEMBERS:
+            value = get(key, default)
+            item.set(member, default if value is None else value)
+        item.set("ani", _NameObject(to_str(get("ani", "") or get("gani", "") or "")))
+        # Derived, never carried on the wire (see _guild_from_nick). era and
+        # GTA content string-compares player/other-player guilds ~534 times;
+        # an unanswered member would compare EQUAL to every guild name.
+        item.set("guild", _guild_from_nick(get("nickname", "")))
+        return item
+
+    def find_nearest_players(self, x: float, y: float) -> list:
+        """findnearestplayers(x, y) -> EVERY player object, nearest first.
+
+        Deliberately NOT an alias of getnearestplayers(): the reference
+        engine sorts the same list both ways but getnearestplayers returns
+        players[] INDICES while findnearestplayers returns the player
+        objects themselves (quattroplay TInitStatics.cpp:2067 vs :2088).
+
+        The local player is part of the list -- both live call sites filter
+        themselves back out (Zelda's CheckHurt skips `i.account !=
+        player.account`, the Login observer skips `pl != player`), which
+        only works if we hand back the very object those comparisons expect,
+        so our entry IS self.player_object. Distance is measured from each
+        player's stand point (+1.5, +2 -- the offsets the reference's
+        comparator adds to every player before comparing, the same pair
+        TClient::sendPlayerHurt uses)."""
         client = self.client
         if client is None:
             return []
         found = []
-        for player_id, player in getattr(client, "players", {}).items():
-            get = player.get if isinstance(player, dict) else (
-                lambda key, default=None: getattr(player, key, default))
-            dx = to_num(get("x", 0)) - x
-            dy = to_num(get("y", 0)) - y
-            distance = (dx * dx + dy * dy) ** 0.5
-            item = GS2Object(name=f"player:{player_id}")
-            for key, value in (
-                    ("id", player_id), ("account", get("account", "")),
-                    ("nick", get("nickname", "")),
-                    ("nickname", get("nickname", "")),
-                    ("chat", get("chat", "")),
-                    ("x", get("x", 0)), ("y", get("y", 0)),
-                    ("distance", distance)):
-                item.set(key, value)
-            found.append((distance, item))
+        local = getattr(client, "player", None)
+        if local is not None:
+            dx = to_num(getattr(client, "x", getattr(local, "x", 0))) + 1.5 - x
+            dy = to_num(getattr(client, "y", getattr(local, "y", 0))) + 2.0 - y
+            found.append(((dx * dx + dy * dy) ** 0.5, self.player_object))
+        live = getattr(client, "players", {}) or {}
+        for stale in [key for key in self._script_players if key not in live]:
+            del self._script_players[stale]
+        for player_id, record in live.items():
+            item = self.script_player_object(player_id, record)
+            dx = to_num(item.get("x")) + 1.5 - x
+            dy = to_num(item.get("y")) + 2.0 - y
+            found.append(((dx * dx + dy * dy) ** 0.5, item))
         return [item for _, item in sorted(found, key=lambda pair: pair[0])]
+
+    def string_keys(self, prefix: str) -> List[str]:
+        """getstringkeys(prefix) -> the matching flag names, prefix stripped.
+
+        Reference (quattroplay TInitStatics.cpp:2218): walk the player's own
+        var collection, keep the names starting with `prefix`, DROP the ones
+        holding an empty string or 0, strip the prefix off what is left and
+        sort it. The player's vars are the client./clientr. flag namespace,
+        which is what an unprefixed prefix searches here; a leading scope
+        token selects that scope's store instead. Our stores key flags
+        WITHOUT the wire prefix (gs1_client's _PlayerFlagScope /
+        _ServerFlagScope), so the token is stripped from the search prefix
+        as well -- Zelda's addMinorFlag asks for "clientr.minorflags_" and
+        means the clientr flags named minorflags_*."""
+        shared = self.gs1._shared if self.gs1 is not None else {}
+        text = to_str(prefix)
+        lowered = text.lower()
+        store, inner = shared.get("client", {}), text
+        for token in ("clientr.", "client.", "serverr.", "server."):
+            if lowered.startswith(token):
+                store = shared.get("server" if token.startswith("server")
+                                   else "client", {})
+                # serverr flags live in the server store under their wire
+                # prefix (see _FlagScopeObject), client/clientr share one
+                # unprefixed player store.
+                inner = (token if token == "serverr." else "") + text[len(token):]
+                break
+        keep = []
+        for key, value in list(store.items()):
+            name = str(key)
+            if not name.lower().startswith(inner.lower()):
+                continue
+            if not (value if isinstance(value, str) else to_num(value)):
+                continue
+            keep.append(name[len(inner):])
+        return sorted(keep, key=str.casefold)
+
+    def call_stack(self, vm: Optional[GS2VM]) -> list:
+        """getcallstack() -> the script call stack, outermost FIRST.
+
+        Entry shape (quattroplay TCallStackEntryProperties.cpp plus g2k1's
+        weaponParticleEditor dumpCallStack): `.name` is the frame's function
+        name and `.scriptcallobject` is the object whose script declared it,
+        which is why content indexes `stack[stack.size()-2].scriptcallobject
+        .name` for its immediate CALLER (Zelda's destroy() guards).
+
+        The shared VM keeps its frames on the Python stack and publishes no
+        frame list, so there is nothing here to enumerate -- and neither has
+        the reference binding this port targets, which returns an EMPTY
+        array (TInitStatics.cpp:2242, makeArrayVar with nothing added to
+        it). Both live call sites degrade to an empty caller name rather
+        than misbehaving. If the VM grows a real stack (a `call_stack` list
+        of (vm, function name) pairs), it lights up here with no change."""
+        entries = []
+        for frame in (getattr(vm, "call_stack", None) or []):
+            try:
+                frame_vm, function = frame
+            except (TypeError, ValueError):
+                continue
+            entry = GS2Object(name=to_str(function))
+            entry.set("name", to_str(function))
+            entry.set("scriptcallobject", getattr(frame_vm, "this", None))
+            entries.append(entry)
+        return entries
+
+    def owner_vm(self, vm: GS2VM) -> GS2VM:
+        """The top-level weapon/npc VM a (possibly joined-class) VM acts for."""
+        kind, key = self._timeout_key(vm)
+        return self.vms.get(kind, {}).get(key, vm)
+
+    def is_in_class(self, vm: GS2VM, classname: str) -> bool:
+        """isinclass("name"): has the calling script joined that class?
+
+        A property of the OBJECT, not of the running code: Zelda's
+        class:gui_builder built() calls it right after this.leave(
+        "gui_builder") -- from inside gui_builder itself -- and echoes the
+        result to show the class is gone, so the answer comes from the
+        joiner's class list alone."""
+        cname = to_str(classname).lower()
+        return any(getattr(joined, "_gs2_key", None) == cname
+                   for joined in self.owner_vm(vm).joined)
+
+    def leave_class(self, vm: GS2VM, classname: str) -> bool:
+        """leave("classname"): the inverse of join(). Returns whether the
+        class was attached. Safe to call from inside the class's own code
+        (Zelda's gui_builder.built() does exactly that) -- the running
+        instance stays alive for the rest of the call, it just stops being
+        reachable from the joiner."""
+        cname = to_str(classname).lower()
+        owner = self.owner_vm(vm)
+        remaining = [joined for joined in owner.joined
+                     if getattr(joined, "_gs2_key", None) != cname]
+        left = len(remaining) != len(owner.joined)
+        owner.joined = remaining
+        waiting = self._pending_joins.get(cname)
+        if waiting:
+            self._pending_joins[cname] = [joiner for joiner in waiting
+                                          if joiner is not owner]
+            if not self._pending_joins[cname]:
+                del self._pending_joins[cname]
+        return left
 
     def player_by_id(self, player_id: int):
         """Return the player object with this id (local or remote), else 0.0."""
@@ -1607,6 +2593,22 @@ class ClientGS2:
         self.client.gs2_host = self
         self._prev_bytecode_cb = self.client.on_gs2_bytecode
         self.client.on_gs2_bytecode = self._on_bytecode
+        # Bytecode that arrived BEFORE this hook existed still has to run.
+        # The embedding app logs in first and builds GameClient (and with it
+        # this runtime) only afterwards -- pygame_game.py:191 -- so every
+        # PLO_NPCBYTECODE/PLO_NPCWEAPONSCRIPT/PLO_LOADSCRIPT/PLO_GANISCRIPT
+        # in the login burst landed in client.gs2_bytecode with nobody
+        # listening and was silently dropped. Measured against the local
+        # 2006 Era world (GServer-v2 bin/servers/era, :14901): the start
+        # level's only bytecode NPC arrived during login and NEVER got a VM,
+        # while an identical NPC entered after a warp did. Classes first so
+        # a weapon's toplevel join() resolves immediately (a late class
+        # still resolves via _pending_joins, this just avoids the detour).
+        pending = getattr(self.client, "gs2_bytecode", None) or {}
+        for kind in ("class", "weapon", "npc", "gani"):
+            for key, blob in list(pending.get(kind, {}).items()):
+                self._pending_bytecode.append((kind, key, blob))
+        self.pump_pending()
         # PLO_SERVERTEXT -> onReceiveText engine event. NB the pygame shell's
         # _setup_callbacks() later replaces client.on_server_text with its own
         # chat-log handler, which forwards here explicitly (game/setup.py) --
@@ -1716,7 +2718,6 @@ class ClientGS2:
             # so a re-send is a continuation of the same object, not a new
             # one: onCreated (constructor semantics, like GS1's load_weapon
             # never re-firing an equivalent hook) only fires the first time.
-            self._last_vm = vm
             vm.run_toplevel()
             if (old is None and vm.has_function("onCreated")
                     and (kind == "weapon" or self.client is None)):
@@ -1839,7 +2840,6 @@ class ClientGS2:
     # -- events --------------------------------------------------------------
 
     def _run(self, vm: GS2VM, event: str, *args) -> None:
-        self._last_vm = vm
         key = self._timeout_key(vm)
         if key in self._active_coro_keys:
             pending = self._pending_events.setdefault(key, [])
@@ -2041,6 +3041,8 @@ class ClientGS2:
             self._entered_vms.discard(id(vm))
             tkey = ("npc", key)
             self._timeouts.pop(tkey, None)
+            self._scheduled = [item for item in self._scheduled
+                               if item["key"] != tkey]
             self._cancel_vm_coroutines(vm)
 
     def pump_level_events(self):
@@ -2087,8 +3089,14 @@ class ClientGS2:
                     if npc_level and npc_level != level:
                         continue          # belongs to another level
                 self._entered_vms.add(id(vm))
-                if kind == "npc" and vm.has_function("onCreated"):
-                    self._run(vm, "onCreated")
+                if kind == "npc":
+                    # Remember WHICH level this NPC last came alive in, so
+                    # _npc_timer_suppressed can tell a script left behind by
+                    # a warp from one whose props simply have not streamed
+                    # in yet (see there).
+                    vm._gs2_entered_level = level
+                    if vm.has_function("onCreated"):
+                        self._run(vm, "onCreated")
                 if vm.has_function("onPlayerEnters"):
                     self._run(vm, "onPlayerEnters")
 
@@ -2109,8 +3117,9 @@ class ClientGS2:
         self.pump_pending()
         self.pump_level_events()
         for kind in ("weapon", "npc"):
-            for vm in list(self.vms[kind].values()):
-                if vm.has_function("onUpdate"):
+            for key, vm in list(self.vms[kind].items()):
+                if (vm.has_function("onUpdate")
+                        and not self._npc_timer_suppressed(kind, key, vm)):
                     self._run(vm, "onUpdate")
         self._timer_accumulator = min(
             self._timer_accumulator + max(0.0, dt), TIMER_BACKLOG_CAP)
@@ -2120,8 +3129,58 @@ class ClientGS2:
             self._process_timeout_step(TIMER_RESOLUTION)
         self._sync_script_position()
 
+    def schedule_event(self, vm: GS2VM, delay: float, event: str,
+                       params: List[Any]) -> None:
+        """scheduleevent(delay, name, params...): arm a one-shot call of the
+        script's own `name` function. Distinct from settimer/onTimeout --
+        a script may have many in flight at once, each with its own
+        arguments -- so they live in their own list, keyed by the same
+        (kind, key) VM identity settimer uses (joined classes file under
+        their joiner, see _timeout_key)."""
+        if not event:
+            return
+        key = self._timeout_key(vm)
+        if key is None:
+            return
+        if len(self._scheduled) >= SCHEDULED_EVENT_CAP:
+            # a script looping scheduleevent() must not grow this without
+            # bound; drop the newest rather than starve the armed ones
+            return
+        self._scheduled.append({"key": key, "left": max(0.0, to_num(delay)),
+                                "event": event, "params": list(params)})
+
+    def cancel_events(self, vm: GS2VM, event: str = "") -> None:
+        """cancelevents([name]): drop this script's pending scheduled events
+        (all of them when no name is given)."""
+        key = self._timeout_key(vm)
+        if key is None:
+            return
+        wanted = event.lower()
+        self._scheduled = [
+            item for item in self._scheduled
+            if item["key"] != key or (wanted and item["event"].lower() != wanted)
+        ]
+
+    def _process_scheduled_events(self, dt: float) -> None:
+        due = []
+        for item in self._scheduled:
+            item["left"] -= dt
+            if item["left"] <= 0:
+                due.append(item)
+        if not due:
+            return
+        fired = {id(item) for item in due}
+        self._scheduled = [item for item in self._scheduled
+                           if id(item) not in fired]
+        for item in due:
+            kind, key = item["key"]
+            vm = self.vms.get(kind, {}).get(key)
+            if vm is not None and not self._npc_timer_suppressed(kind, key, vm):
+                self._run(vm, item["event"], *item["params"])
+
     def _process_timeout_step(self, dt: float):
         """Advance script timers by one fixed update quantum."""
+        self._process_scheduled_events(dt)
         for vm_key in list(self._timeouts):
             t = self._timeouts[vm_key] - dt
             if t > 0:
@@ -2132,12 +3191,11 @@ class ClientGS2:
             vm = self.vms.get(kind, {}).get(key)
             if vm is None:
                 continue
-            # Don't fire the timer of an NPC that has moved to another level
-            # (ghost effects from a stale settimer). A truly despawned NPC's
-            # VM is already gone via forget_npc (PLO_NPCDEL); an NPC not
-            # tracked in client.npcs at all is left alone (weapons and
-            # test/headless VMs have no NPC record and must still tick).
-            if kind == "npc" and self._npc_in_other_level(key):
+            # Don't fire the timer of an NPC that isn't in the level we're
+            # standing in (ghost effects from a stale settimer). A truly
+            # despawned NPC's VM is already gone via forget_npc
+            # (PLO_NPCDEL).
+            if self._npc_timer_suppressed(kind, key, vm):
                 continue
             if vm.has_function("onTimeout"):
                 self._run(vm, "onTimeout")
@@ -2169,6 +3227,34 @@ class ClientGS2:
             client.send_position()
         except Exception:
             pass
+
+    def _npc_timer_suppressed(self, kind: str, key, vm) -> bool:
+        """True when this VM's timed events must NOT fire.
+
+        NPC VMs deliberately OUTLIVE their level: gs2emu streams a level's
+        static data (and its NPC bytecode) only once per session, so
+        dropping the VM on exit would leave every script dead on re-entry.
+        But client.npcs IS cleared on a level change (_reset_level_state),
+        which left every departed NPC's settimer loop firing forever against
+        a record that no longer exists -- measured against the local 2006
+        Era world: 3596 orphan onTimeout calls vs 3912 live ones over a
+        24-second, 4-level walk, each one running showimg/setcharani side
+        effects for an NPC that is not in the level.
+
+        The discriminator is the level the VM last came alive in
+        (stamped by pump_level_events). A VM that has never entered a level
+        keeps ticking exactly as before -- that is the not-yet-streamed
+        case, plus weapons and the headless/test VMs with no NPC record at
+        all. Re-entering the level re-fires onCreated (which re-arms the
+        timer) and re-stamps the level, so this is a pause, not a kill."""
+        if kind != "npc":
+            return False
+        entered = getattr(vm, "_gs2_entered_level", None)
+        if entered is not None:
+            level = getattr(self.client, "_current_level_name", "") or ""
+            if level and entered != level:
+                return True
+        return self._npc_in_other_level(key)
 
     def _npc_in_other_level(self, key) -> bool:
         """True only if this NPC is present in client.npcs AND tagged to a
@@ -2218,4 +3304,32 @@ class ClientGS2:
     def _gs1_command(self, name: str, args: List[Any], vm: Optional[GS2VM]):
         if self.gs1 is None:
             return
-        self.gs1._host.call_command(name, list(args), self._gs1_ctx(vm))
+        self.gs1._host.call_command(name, self._gs1_args(name, args),
+                                    self._gs1_ctx(vm))
+
+    @staticmethod
+    def _gs1_args(name: str, args: List[Any]) -> List[Any]:
+        """Hand the GS1 host this command's arguments, with the ones that
+        end up as DISPLAY TEXT already stringified by GS2's rule.
+
+        The two engines print numbers differently and deliberately stay that
+        way: GS2 emits at most 9 decimals ("%.9f" trimmed, anything under
+        1e-4 as "0") while GS1/GServer print the shortest round-tripping
+        repr. Which rule applies is decided by where the VALUE came from, so
+        a bare number a GS2 script passes as caption text (`showtext(0, x,
+        y, "arial", "", 2/3)`) has to be converted HERE -- gs1_client's own
+        to_str would print 0.6666666666666666 where the reference client
+        draws 0.666666667. Text a script BUILDS with @ is already correct:
+        OP_JOIN stringifies inside the VM.
+
+        Only the caption positions are touched; coordinates and indices stay
+        numeric so the GS1 host keeps full precision."""
+        positions = _GS1_TEXT_ARGS.get(name)
+        if not positions:
+            return list(args)
+        out = list(args)
+        for index in positions:
+            if index < len(out) and isinstance(out[index], (int, float)) \
+                    and not isinstance(out[index], bool):
+                out[index] = to_str(out[index])
+        return out

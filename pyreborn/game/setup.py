@@ -632,6 +632,17 @@ class SetupMixin:
         self.player_anim.name_resolver = self.gs1.resolve_ani
         self.client.ani_resolver = self.gs1.resolve_ani
 
+        # Script tile probes (onwall/onwater/tiletype) must read the same
+        # board our own collision does. CollisionMixin._get_tile_at resolves
+        # a WORLD coordinate through the gmap grid to the owning segment;
+        # the GS1 host's own fallback only knows a single 64x64 level, so on
+        # a gmap (Zelda is one 10x10 gmap) every probe fell off the board and
+        # reported open ground -- the world's movement engine then walked
+        # through walls, water and ledges.
+        # (guarded: unit harnesses mix SetupMixin in without CollisionMixin,
+        # and the GS1 host's own single-level fallback is right for them.)
+        self.gs1.tile_source = getattr(self, "_get_tile_at", None)
+
         # A sword swing connected with a level NPC (client.py _sword_hit_npcs):
         # fire `washit` on it, same as the real client (scripting-gs1-events.md).
         self.client.on_sword_hit_npc = (

@@ -250,12 +250,49 @@ class ActionsMixin:
         if pos == getattr(self, '_scripted_link_pos', None):
             return False
         self._scripted_link_pos = pos
+        self._check_scripted_gmap_segment()
         warped = self._try_link_warp()
         if warped:
             # Stamp the post-warp position so the next frame's probe only
             # fires again on genuine further movement.
             self._scripted_link_pos = (self.client.x, self.client.y)
         return warped
+
+    def _check_scripted_gmap_segment(self) -> bool:
+        """Announce a GMAP segment crossing made by scripted movement.
+
+        Third gap of the same family as the two probes above. Client.move_to()
+        notices when a step carries the player into a different gmap cell and
+        tells the server (props in the new segment's local frame, then
+        PLI_LEVELWARP). A script that writes `player.x` / `playerx` from the
+        VM never goes through move_to, so on a fully script-driven world the
+        server was never told we had left the spawn segment: it kept us in
+        that level, so it never streamed the segments we walked into, never
+        sent their NPCs/signs/links, and our own `_current_level_name` stayed
+        pinned to the spawn level while the camera scrolled across the map.
+
+        Live on Zelda (one 10x10 gmap, `-Player/Movement` calls
+        disabledefmovement and drives everything itself): a 54-tile walk west
+        crossed two cell boundaries with `_current_level_name` never leaving
+        `zlttp-e5.nw` and `levels` stuck at the 9 segments from login.
+
+        Uses the same wire sequence as move_to so there is one definition of
+        "we crossed a seam" on the wire.
+        """
+        client = self.client
+        if not getattr(client, 'is_gmap', False) or not client.gmap_grid:
+            return False
+        grid = (math.floor(client.x / 64), math.floor(client.y / 64))
+        if grid == getattr(self, '_scripted_gmap_cell', None):
+            return False
+        level = client.gmap_grid.get(grid)
+        # Unknown cell (hole in the grid, or off its edge): remember it so we
+        # don't re-probe every frame, but say nothing to the server.
+        self._scripted_gmap_cell = grid
+        if not level or level == client._current_level_name:
+            return False
+        client.send_position()
+        return client.enter_gmap_segment(level, client.x % 64, client.y % 64)
 
     def _update_push_hold(self, dx: int, dy: int):
         """Track how long the currently-pressed direction has been held

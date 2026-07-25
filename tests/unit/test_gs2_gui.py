@@ -946,7 +946,13 @@ class TestLoginVisualFidelity:
         tree = GuiTreeViewCtrl("SL")
         tree.set("columns", [0, 230])           # Login's construction field
         assert tree.column_offsets() == [0.0, 230.0]
-        tree._m_setcolumnoffset(200, 1)         # setColumnOffset overrides
+        # setColumnOffset(index, offset) -- Torque's argument order, and the
+        # one both live call sites use (setColumnOffset(1, 150) on Global
+        # Chat's 600-wide two-column frame set, Preagonal/gbf/bytecode/login/
+        # _Serverlist_Chat.gs2bc.gs2:578). This assertion previously had the
+        # arguments the other way round; nothing in the corpus called it that
+        # way, so the mistake never showed up live.
+        tree._m_setcolumnoffset(1, 200)         # setColumnOffset overrides
         assert tree.column_offsets() == [0.0, 200.0]
 
     def test_tree_count_column_parsed_from_tab_separated_text(self):
@@ -1188,3 +1194,133 @@ class TestLoginVisualFidelity:
                                    {"y": -100, "pos": (50, 50)})
         assert self.gui.handle_event(wheel)
         assert scroll.scroll_y == 300.0                  # clamped to content
+
+    # -- frame sets (Global Chat) ------------------------------------------
+
+    def test_frame_set_lays_children_out_in_row_major_cells(self):
+        """Global Chat's splitter: one row, two columns, divider at x=150 in
+        a 600x400 client area (Preagonal/gbf/bytecode/login/
+        _Serverlist_Chat.gs2bc.gs2:570-616). Unimplemented, both cells kept
+        their constructor defaults stacked at (0,0), which squashed the chat
+        pane into a ~150px strip."""
+        frames = self.gui.create_control("GuiFrameSetCtrl", "GlobalChat_Frames")
+        frames.set("extent", [600, 400])
+        frames.set("rowcount", 1)
+        frames.set("columncount", 2)
+        frames._m_setcolumnoffset(1, 150)
+        left = self.gui.create_control("GuiScrollCtrl", "Channels")
+        self.gui.addcontrol(left)
+        right = self.gui.create_control("GuiControl", "ChatPanel")
+        self.gui.addcontrol(right)
+        self.gui.addcontrol(frames)
+
+        assert (left.x, left.y, left.width, left.height) == (0, 0, 150, 400)
+        assert (right.x, right.y, right.width, right.height) == (150, 0, 450, 400)
+        # the pane the placeholder text lives in must be the WIDE one
+        assert right.get("clientwidth") == 450.0
+
+    def test_frame_set_splits_rows_and_falls_back_to_an_even_split(self):
+        """setRowOffset(1, 140) over a two-row 412x280 frame set is Login's
+        PM window (Preagonal/gbf/bytecode/login/_Playerlist.gs2bc.gs2:
+        2517-2519). A divider nobody set splits evenly."""
+        frames = self.gui.create_control("GuiFrameSetCtrl", "PMFrames")
+        frames.set("extent", [412, 280])
+        frames.set("rowcount", 2)
+        frames.set("columncount", 1)
+        frames._m_setrowoffset(1, 140)
+        top = self.gui.create_control("GuiControl", "Top")
+        self.gui.addcontrol(top)
+        bottom = self.gui.create_control("GuiControl", "Bottom")
+        self.gui.addcontrol(bottom)
+        self.gui.addcontrol(frames)
+        assert (top.y, top.height) == (0, 140)
+        assert (bottom.y, bottom.height) == (140, 140)
+
+        even = self.gui.create_control("GuiFrameSetCtrl", "Even")
+        even.set("extent", [400, 100])
+        even.set("rowcount", 1)
+        even.set("columncount", 4)
+        cells = []
+        for index in range(4):
+            cell = self.gui.create_control("GuiControl", f"Cell{index}")
+            self.gui.addcontrol(cell)
+            cells.append(cell)
+        self.gui.addcontrol(even)
+        assert [c.x for c in cells] == [0, 100, 200, 300]
+        assert [c.width for c in cells] == [100, 100, 100, 100]
+
+    def test_client_extent_write_resizes_the_outer_window(self):
+        """`extent = (bounds.extent - m_size) + clientExtent`
+        (propfun_guicontrol_clientextent_w, FourPlay quattroplay/src/gui/
+        GuiControlProperties.cpp:115-122), and the reader hands back the
+        CLIENT size. Treating clientextent as the outer extent gave Global
+        Chat a 600x400 window with a 600x378 client area, so its bottom row
+        hung 22px out through the frame."""
+        from pyreborn.game.gs2_gui import GuiWindowCtrl
+        win = self.gui.create_control("GuiWindowCtrl", "Win")
+        win.set("clientextent", [600, 400])
+        assert (win.width, win.height) == (600, 400 + GuiWindowCtrl.TITLE_H)
+        assert win.get("clientextent") == [600.0, 400.0]
+        assert win.get("clientheight") == 400.0
+
+        # a plain control has no chrome, so it is a plain extent write
+        panel = self.gui.create_control("GuiControl", "Panel")
+        panel.set("clientextent", [300, 120])
+        assert (panel.width, panel.height) == (300, 120)
+        assert panel.get("clientextent") == [300.0, 120.0]
+
+        # clientheight/clientwidth writes go the same way
+        win2 = self.gui.create_control("GuiWindowCtrl", "Win2")
+        win2.set("clientwidth", 280)
+        win2.set("clientheight", 90)
+        assert (win2.width, win2.height) == (280, 90 + GuiWindowCtrl.TITLE_H)
+
+    def test_context_menu_starts_hidden(self):
+        """GuiContextMenuCtrl::initObject sets m_visible = false (FourPlay
+        quattroplay/src/gui/GuiContextMenuCtrl.cpp:35-46). As an unknown
+        class it fell back to a VISIBLE generic control, so Global Chat's
+        channel menu drew as a stray filled rectangle at the canvas origin,
+        over the top of the server-list window."""
+        from pyreborn.game.gs2_gui import GuiContextMenuCtrl
+        menu = self.gui.create_control("GuiContextMenuCtrl",
+                                       "GlobalChat_ChannelMenu")
+        assert isinstance(menu, GuiContextMenuCtrl)
+        assert menu.visible is False
+
+    def test_login_control_classes_are_all_known(self):
+        """Every control class the Login corpus constructs must resolve to a
+        real class -- an unknown one silently becomes a generic, always
+        visible, never-laid-out GuiControl."""
+        from pyreborn.game.gs2_gui import _CONTROL_CLASSES
+        for name in ("GuiFrameSetCtrl", "GuiContextMenuCtrl", "GuiTreeViewCtrl",
+                     "GuiTextListCtrl", "GuiTabCtrl", "GuiWindowCtrl",
+                     "GuiMLTextCtrl", "GuiScrollCtrl"):
+            assert name.lower() in _CONTROL_CLASSES, name
+
+    def test_center_sizing_only_applies_on_a_canvas_resize(self):
+        """Not a bug -- pinned because it looked like one.
+
+        Global Chat is built with horizSizing/vertSizing = "center" and no
+        x/y, so it starts at the origin and is only centred when the canvas
+        resizes. That is what the reference does too: setting horizsizing
+        just records the mode (propfun_guicontrol_horizsizing_w, FourPlay
+        quattroplay/src/gui/GuiControlProperties.cpp:342-352) and neither
+        GuiControl::addObject nor showtop() repositions anything
+        (GuiControl.cpp:2244-2274 and :2224-2232).
+
+        So a Global Chat window sitting over the Account Info pane is a
+        correctly CENTRED floating window, not a layout fault -- the report
+        that it "should not be sitting there" was really about its collapsed
+        contents (see the frame-set tests above).
+        """
+        gui = self.gui
+        gui.canvas_size = (800, 600)
+        win = gui.create_control("GuiWindowCtrl", "GlobalChat_Window")
+        win.set("horizsizing", "center")
+        win.set("vertsizing", "center")
+        win.set("clientextent", [600, 400])
+        gui.addcontrol(win)
+        assert (win.x, win.y) == (0.0, 0.0)
+        gui.on_canvas_resize(1262, 594)
+        assert win.x == (1262 - 600) / 2
+        assert win.y == (594 - 422) / 2

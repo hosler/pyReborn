@@ -47,24 +47,20 @@ the ground-truth toolchain our disassembler/VM corpus is checked against.
    name like `function_100_1`), and the assignment's RHS becomes
    `this.function_100_1` (OP_THIS + OP_MEMBER_ACCESS + OP_CONV_TO_OBJECT) --
    `this` being the *calling* script's this (e.g. the weapon's onCreated),
-   not the with-block's target. For that RHS to actually evaluate to a
-   callable, `this.<generated-function-name>` member access has to resolve
-   to a bound wrapper around the owning VM's own `function_100_1` -- which
-   the shared VM (reborn_protocol/gs2/vm.py) does **not** do: its `this` is a
-   bare GS2Object (plain dict), so `this.function_100_1` read back `None`
-   (verified: this also silently breaks the plain
-   `x = function(){...}; x();` lambda idiom used by
-   reborn-protocol/tests/fixtures/gs2_baselines/functions/03_lambdas.gs2,
-   independent of GUI). Per the task's fallback guidance, this is fixed at
-   the *host* layer instead of the shared VM: gs2_client.py's `_ThisObject`
-   (pyReborn's `this`-object bridge, not the shared vm.py) now falls back to
-   a bound `vm.call(name, *args)` closure when a member isn't a stored value
-   but *is* a function on the owning VM -- `GS2VM.has_function`/`.call`
-   already recurse into joined classes, so this also covers a handler defined
-   inside a joined class's own `new ... {}` block. No change to the shared
-   VM's opcode semantics was made or needed; `host.create_object()` was
-   already consulted for every `new` (see `_op_new_object` in vm.py) so no
-   vm.py change was needed for construction either -- only gs2_client.py.
+   not the with-block's target. The shared VM (reborn_protocol/gs2/vm.py)
+   resolves that RHS itself: reading `this.<generated-function-name>` yields
+   a `GS2ScriptFunction` bound to the owning VM, so the assignment stores a
+   real callable in the control's `onaction` slot and `fire_event`'s
+   `handler = self.get(event); if callable(handler)` path picks it up with
+   no host involvement. (An earlier round emulated this at the host layer,
+   here and in gs2_client.py's `_ThisObject`; both emulations were removed
+   once the VM took the resolution over.)
+   `GS2VM.script_function(name)` is the explicit lookup if a handler ever
+   needs resolving by name instead of by slot; it recurses into joined
+   classes, so a handler defined inside a joined class's own `new ... {}`
+   block resolves too. `host.create_object()` was already consulted for
+   every `new` (see `_op_new_object` in vm.py), so construction needed no
+   vm.py change either.
 
 Wiring
 ------
@@ -869,7 +865,29 @@ class GuiControl(GS2Object):
     _METHOD_NAMES = frozenset({
         "showtop", "show", "hide", "makefirstresponder",
         "seticonsize", "clearrows", "addrow", "sort", "setcolumnoffset",
+        "setrowoffset",
         "pushtoback", "clearcontrols", "isactuallyvisible",
+        # 2026-07-24 live Login corpus (weapon-*.gs2 under the GS2 compiler's
+        # loginserver test scripts): these were the with-scope/method calls
+        # the host answered with "unknown method".
+        "isfirstresponder", "bringtofront", "settext", "gettext",
+        "setlines", "getlines", "clearall",
+        "globaltolocalcoord", "localtoglobalcoord",
+        # second wave: the deep crawler's client-install weapon fetch
+        # (-Serverlist_Chat's log/chat panes, -Serverlist's chat bar)
+        "addtext", "scrolltobottom", "openatmouse",
+        # third wave (2026-07-24 static census): isEmpty() has no entry in
+        # the reference client's binding tables (FourPlay quattroplay/src/gui
+        # has none) -- it is a Torque control method the live Login corpus
+        # calls on its password field, `if (!PassEdit.isEmpty()) doLogin();`
+        # (graal-loginserver weapon-Rescripted_IRC_Login2001.txt:65,
+        # weapon-LoginScreen.txt:78). Answering it as "the edit buffer is
+        # empty" is both the plain reading and the only one consistent with
+        # this client's credential policy: pyReborn never lets a script fill
+        # or read a password field, so the field IS empty and the
+        # auto-login branch correctly does not fire. Unanswered it returned
+        # 0.0, i.e. "not empty", which would have taken that branch.
+        "isempty",
     })
 
     def __init__(self, ctor_arg: Any = None):
@@ -934,11 +952,14 @@ class GuiControl(GS2Object):
         # right-aligned taskbar buttons at `clientwidth - width - 25`).
         # These reads previously fell through to the empty member dict ->
         # None -> 0, collapsing the whole layout to zero/negative sizes.
-        if k == "clientwidth" and k not in self._members:
+        # These three are DERIVED, never stored: the reference readers hand
+        # back m_size (the client size) unconditionally, and the writers
+        # resize the outer bounds to suit -- see set() below.
+        if k == "clientwidth":
             return float(self.client_width())
-        if k == "clientheight" and k not in self._members:
+        if k == "clientheight":
             return float(self.client_height())
-        if k == "clientextent" and k not in self._members:
+        if k == "clientextent":
             return [float(self.client_width()), float(self.client_height())]
         if k == "extent" and k not in self._members:
             return [float(self.width), float(self.height)]
@@ -959,19 +980,10 @@ class GuiControl(GS2Object):
             # renderer can show it (same recorder tree nodes use)
             v = self._members[k] = _TreeNodeIcon(self)
             return v
-        v = super().get(k)
-        if v is None and k not in self._members:
-            # `onAction = function(){...}` compiles to a READ of
-            # this.<generated-name>; the VM's official with-rebinding makes
-            # `this` the control under construction, so the script-function
-            # fallback _ThisObject.get provides must exist here too. VM
-            # execution is synchronous, so the runtime's last-executing VM
-            # is the one whose construction block is reading.
-            rt2 = getattr(self._manager, "rt2", None)
-            vm = getattr(rt2, "_last_vm", None)
-            if vm is not None and vm.has_function(k):
-                return lambda *args, _vm=vm, _k=k: _vm.call(_k, *args)
-        return v
+        # `onAction = function(){...}` stores a VM-bound GS2ScriptFunction in
+        # the slot (see module docstring point 2), so a plain member read is
+        # all fire_event needs.
+        return super().get(k)
 
     # -- script-callable methods -----------------------------------------
 
@@ -986,6 +998,11 @@ class GuiControl(GS2Object):
 
     _m_show = _m_showtop
 
+    def _m_isempty(self, *args) -> bool:
+        """isEmpty(): True when this control holds no text. See the
+        _METHOD_NAMES note for why the polarity matters on Login."""
+        return not to_str(self.text)
+
     def _m_hide(self, *args) -> float:
         if self._manager is not None:
             self._manager.hide(self)
@@ -998,17 +1015,138 @@ class GuiControl(GS2Object):
             self._manager.focus(self if not args or to_bool(args[0]) else None)
         return 0.0
 
+    def _m_isfirstresponder(self, *args) -> float:
+        """isFirstResponder(): does this control hold keyboard focus?
+        Login's staff sprite-editor weapon gates its whole key handler on it
+        (`if (<zoom edit>.isFirstResponder()) return;`), so a missing answer
+        read 0 and the editor swallowed every keystroke."""
+        return 1.0 if (self._manager is not None
+                       and self._manager._focus is self) else 0.0
+
+    def _m_bringtofront(self, *args) -> float:
+        """bringToFront(): raise to the top of the sibling z-order WITHOUT
+        touching visibility (showTop does both). Called bare inside
+        construction blocks (`with (window) { ...; bringtofront(); }`)."""
+        if self._manager is not None:
+            self._manager.bring_to_front(self)
+        return 0.0
+
+    def _m_settext(self, *args) -> float:
+        self.text = to_str(args[0]) if args else ""
+        return 0.0
+
+    def _m_gettext(self, *args) -> str:
+        return self.text
+
+    def _m_setlines(self, *args) -> float:
+        """setLines(array): replace the text with one line per element."""
+        lines = args[0] if args else []
+        if not isinstance(lines, (list, tuple)):
+            lines = [lines]
+        self.text = "\n".join(to_str(line) for line in lines)
+        return 0.0
+
+    def _m_getlines(self, *args) -> List[str]:
+        return self.text.split("\n") if self.text else []
+
+    def _m_addtext(self, *args) -> float:
+        """addText(text, [scrollToBottom]): append to a log/chat pane
+        (`addtext(msg SPC ... NL "", true)` in Login's F2 log window). The
+        optional second argument asks the engine to follow the tail, which
+        is scrollToBottom()'s job."""
+        self.text += to_str(args[0]) if args else ""
+        if len(args) > 1 and to_bool(args[1]):
+            self._m_scrolltobottom()
+        return 0.0
+
+    def _m_openatmouse(self, *args) -> float:
+        """openAtMouse(): show this control with its top-left at the
+        pointer -- a context menu (the live -ShopGlobal opens its item menu
+        this way). The manager records the pointer in the same
+        virtual-canvas space control x/y live in, so no remapping is
+        needed; with no pointer seen yet the control opens where it is."""
+        if self._manager is not None:
+            pos = self._manager.last_mouse
+            if pos is not None:
+                self.x, self.y = float(pos[0]), float(pos[1])
+            self._manager.show(self)
+        else:
+            self.visible = True
+        return 0.0
+
+    def _m_scrolltobottom(self, *args) -> float:
+        """scrollToBottom(): pin the enclosing scroll view to its end --
+        what a chat/log pane does after every appended line."""
+        node: Optional["GuiControl"] = self
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                return 0.0
+            if isinstance(node, GuiScrollCtrl):
+                node.scroll_y = node.max_scroll_y()
+                return 0.0
+            node = node.parent
+        return 0.0
+
+    def _m_clearall(self, *args) -> float:
+        """clearAll(): the engine's "empty this control" verb. On a plain
+        control that is its row model (the tree/list subclasses override)."""
+        return self._m_clearrows()
+
+    def _m_globaltolocalcoord(self, *args) -> List[float]:
+        """globalToLocalCoord({x, y}): canvas coordinates -> this control's
+        own coordinate space. Login's staff sprite-editor weapon maps every
+        mouse position through it before hit-testing its sprite canvas."""
+        x, y = self._coord_arg(args)
+        ox, oy = self.effective_offset()
+        return [x - (self.x + ox), y - (self.y + oy)]
+
+    def _m_localtoglobalcoord(self, *args) -> List[float]:
+        """localToGlobalCoord({x, y}): the inverse -- Login anchors its start
+        menu with Serverlist_TaskButton_Start.localtoglobalcoord({0, 0})."""
+        x, y = self._coord_arg(args)
+        ox, oy = self.effective_offset()
+        return [x + self.x + ox, y + self.y + oy]
+
+    @staticmethod
+    def _coord_arg(args) -> Tuple[float, float]:
+        """A coordinate argument, as either one {x, y} array or two scalars."""
+        if len(args) >= 2:
+            return to_num(args[0]), to_num(args[1])
+        pair = GuiControl._num_pair(args[0]) if args else None
+        return pair if pair is not None else (0.0, 0.0)
+
     def _m_seticonsize(self, *args) -> float:
         if len(args) >= 2:
             self.icon_w, self.icon_h = to_num(args[0]), to_num(args[1])
         return 0.0
 
     def _m_setcolumnoffset(self, *args) -> float:
-        """setColumnOffset(offset, column): frameset/text-list column
-        geometry -- recorded for layout, no other effect headlessly."""
+        """setColumnOffset(index, offset): the x of column divider `index`.
+
+        Torque's argument order, and the one both live call sites use --
+        `setColumnOffset(1, 150)` on a 600-wide two-column frameset
+        (Preagonal/gbf/bytecode/login/_Serverlist_Chat.gs2bc.gs2:578, the
+        Global Chat window) and `setColumnOffset(1, 210)` on a two-column
+        one (_IRC_InstallerGUI.gs2bc.gs2:90). Read the other way round those
+        would be "column 150 at offset 1" and "column 210 at offset 1",
+        which is nonsense; read this way they are the divider positions the
+        layouts obviously want.
+        """
         offsets = self._members.setdefault("_column_offsets", {})
         if len(args) >= 2:
-            offsets[int(to_num(args[1]))] = to_num(args[0])
+            offsets[int(to_num(args[0]))] = to_num(args[1])
+        elif args:
+            offsets[0] = to_num(args[0])
+        return 0.0
+
+    def _m_setrowoffset(self, *args) -> float:
+        """setRowOffset(index, offset): the y of row divider `index`.
+        Same convention as setColumnOffset; Login's Playerlist splits its PM
+        window with `setrowoffset(1, 140)` over a 280-tall two-row frameset
+        (Preagonal/gbf/bytecode/login/_Playerlist.gs2bc.gs2:2517-2519)."""
+        offsets = self._members.setdefault("_row_offsets", {})
+        if len(args) >= 2:
+            offsets[int(to_num(args[0]))] = to_num(args[1])
         elif args:
             offsets[0] = to_num(args[0])
         return 0.0
@@ -1068,11 +1206,16 @@ class GuiControl(GS2Object):
 
     # -- client-area geometry --------------------------------------------
 
+    def client_inset(self) -> Tuple[float, float]:
+        """(outer - client) for this control class: the non-client chrome.
+        Zero for a plain control, the title bar for a window."""
+        return 0.0, 0.0
+
     def client_width(self) -> float:
-        return self.width
+        return max(0.0, self.width - self.client_inset()[0])
 
     def client_height(self) -> float:
-        return self.height
+        return max(0.0, self.height - self.client_inset()[1])
 
     @staticmethod
     def _num_pair(value) -> Optional[Tuple[float, float]]:
@@ -1110,9 +1253,34 @@ class GuiControl(GS2Object):
         if k in self._STR_ATTRS:
             setattr(self, self._STR_ATTRS[k], to_str(value))
             return
-        if k in ("position", "extent", "clientextent"):
-            # geometry-bearing Torque fields feed the real rect (clientextent
-            # sizes the client area; close enough to extent headlessly)
+        if k in ("clientextent", "clientwidth", "clientheight"):
+            # Torque client-area WRITES resize the OUTER bounds so that the
+            # CLIENT area ends up the requested size -- the reference is
+            #   extent = (bounds.extent - m_size) + clientExtent
+            # (propfun_guicontrol_clientextent_w / _clientheight_w, FourPlay
+            # quattroplay/src/gui/GuiControlProperties.cpp:115-133). On a
+            # plain GuiControl the chrome is 0 and this is a plain extent
+            # write; on a GuiWindowCtrl it is the title bar.
+            #
+            # We used to store the value and treat it AS the outer extent,
+            # so `clientextent = {600, 400}` on Global Chat's window
+            # (Preagonal/gbf/bytecode/login/_Serverlist_Chat.gs2bc.gs2:566)
+            # gave a 600x400 outer window with a 600x378 client area, while
+            # the frame set inside it was built 400 tall from the stored
+            # value -- its bottom row (chat field + smilie buttons) hung 22px
+            # out through the bottom of the window. Nothing is stored now:
+            # the reader above recomputes from the live bounds, exactly as
+            # propfun_guicontrol_clientextent_r returns m_size.
+            pair = self._num_pair(value)
+            if k == "clientwidth":
+                pair = (to_num(value), self.client_height())
+            elif k == "clientheight":
+                pair = (self.client_width(), to_num(value))
+            if pair is not None:
+                inset = self.client_inset()
+                self.width, self.height = pair[0] + inset[0], pair[1] + inset[1]
+            return
+        if k in ("position", "extent"):
             pair = self._num_pair(value)
             if pair is not None:
                 if k == "position":
@@ -1285,9 +1453,9 @@ class GuiWindowCtrl(GuiControl):
         r = self.rect()
         return pygame.Rect(r.x, r.y, r.width, min(self.TITLE_H, r.height))
 
-    def client_height(self) -> float:
+    def client_inset(self) -> Tuple[float, float]:
         # the client area children are laid out in starts below the title bar
-        return max(0.0, self.height - self.TITLE_H)
+        return 0.0, float(self.TITLE_H)
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
@@ -1541,6 +1709,8 @@ class GuiScrollCtrl(GuiControl):
         self.scroll_x = 0.0
         self.scroll_y = 0.0
 
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"scrolldelta"})
+
     def content_height(self) -> float:
         bottom = 0.0
         for c in self.children:
@@ -1550,6 +1720,15 @@ class GuiScrollCtrl(GuiControl):
 
     def max_scroll_y(self) -> float:
         return max(0.0, self.content_height() - self.height)
+
+    def _m_scrolldelta(self, *args) -> float:
+        """scrollDelta(dx, dy): scroll BY the given amount (the wheel path
+        does the same clamp; Login Mobile's gui_scroll class drives its
+        touch-drag scrolling through it)."""
+        dx, dy = self._coord_arg(args)
+        self.scroll_x = max(0.0, self.scroll_x + dx)
+        self.scroll_y = max(0.0, min(self.scroll_y + dy, self.max_scroll_y()))
+        return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
@@ -1603,12 +1782,41 @@ class GuiTextEditCtrl(GuiControl):
     routes focus + key/Enter handling; `.text` is the live edit buffer)."""
 
     CTRL_CLASS = "GuiTextEditCtrl"
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"setselection", "getselection"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 150.0, 22.0
         self.focused = False
         self.max_len = 256
+        #: [start, end] character range, empty when start == end. Login's
+        #: chat bar recalls a message and then selects all of it
+        #: (`ChatBar.setSelection(0, ChatBar.text.length())`) precisely so
+        #: the next keystroke REPLACES it -- see take_selection().
+        self.selection: Tuple[int, int] = (0, 0)
+
+    def _m_setselection(self, *args) -> float:
+        start = int(to_num(args[0])) if args else 0
+        end = int(to_num(args[1])) if len(args) > 1 else start
+        limit = len(self.text)
+        start = max(0, min(start, limit))
+        end = max(0, min(end, limit))
+        self.selection = (min(start, end), max(start, end))
+        return 0.0
+
+    def _m_getselection(self, *args) -> List[float]:
+        return [float(self.selection[0]), float(self.selection[1])]
+
+    def take_selection(self) -> bool:
+        """Consume a pending selection by deleting the selected characters.
+        Returns whether anything was removed (the caller then inserts)."""
+        start, end = self.selection
+        self.selection = (0, 0)
+        if start >= end or end > len(self.text):
+            return False
+        self.text = self.text[:start] + self.text[end:]
+        return True
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
@@ -1631,6 +1839,71 @@ class GuiTextEditCtrl(GuiControl):
         if self.focused and (pygame.time.get_ticks() // 500) % 2 == 0:
             cx = r.x + 4 + font.size(self.text)[0]
             pygame.draw.line(surf, prof.fg, (cx, r.y + 3), (cx, r.bottom - 3), 1)
+
+
+class GuiAccountPasswordCtrl(GuiTextEditCtrl):
+    """The Login screen's password field (gr_LoginScreen_PassEdit). Same
+    edit control, rendered masked -- the reference client never echoes the
+    characters, and neither should a client whose credential surface is
+    deliberately inert (see GS2ClientHost.stubbed)."""
+
+    CTRL_CLASS = "GuiAccountPasswordCtrl"
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        shown, self.text = self.text, "*" * len(self.text)
+        try:
+            super()._draw_self(surf, fonts, sprite_mgr)
+        finally:
+            self.text = shown
+
+
+class GuiMLTextEditCtrl(GuiMLTextCtrl):
+    """Editable multi-line text pane (Staff's script editor). Rendered with
+    GuiMLTextCtrl's markup pipeline; setLines/getLines (GuiControl) are the
+    surface the scripts actually drive it through, and focus/typing route
+    through GS2GuiManager exactly as for GuiTextEditCtrl."""
+
+    CTRL_CLASS = "GuiMLTextEditCtrl"
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.focused = False
+        self.max_len = 65536
+
+
+class GuiProgressCtrl(GuiControl):
+    """Horizontal progress bar. `progress` is 0..1 (Login's IRC_Installer
+    drives three of them off the update-package byte counts); the label, if
+    any, is a child GuiTextCtrl, so this control only paints the bar."""
+
+    CTRL_CLASS = "GuiProgressCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({"progress"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 150.0, 20.0
+        self.progress = 0.0
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "progress":
+            return float(self.progress)
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "progress":
+            self.progress = max(0.0, min(1.0, to_num(value)))
+            return
+        super().set(key, value)
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        prof = self.resolve_profile()
+        r = self.rect()
+        _fill_rect(surf, prof.bg if prof.bg is not None else prof.title_bg, r)
+        filled = int(r.width * self.progress)
+        if filled > 0:
+            _fill_rect(surf, prof.title_bg,
+                       pygame.Rect(r.x, r.y, filled, r.height))
+        pygame.draw.rect(surf, prof.border[:3], r, 1)
 
 
 class GuiCheckBoxCtrl(GuiControl):
@@ -1757,10 +2030,63 @@ class GuiShowImgCtrl(GuiBitmapCtrl):
     CTRL_CLASS = "GuiShowImgCtrl"
 
 
+class GuiBitmapButtonCtrl(GuiButtonCtrl):
+    """A button whose face is a bitmap (Login Mobile's Rescripted/IRC/
+    Login2001 builds its on-screen keys this way). Clicking behaves exactly
+    like GuiButtonCtrl -- only the face differs, so the profile skin/label
+    path is replaced by the `bitmap` image and the text is drawn over it."""
+
+    CTRL_CLASS = "GuiBitmapButtonCtrl"
+    _TORQUE_PROPS = GuiButtonCtrl._TORQUE_PROPS | frozenset({"bitmap", "image"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.bitmap = ""
+
+    def get(self, key: str) -> Any:
+        if key.lower() in ("bitmap", "image"):
+            return self.bitmap
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() in ("bitmap", "image"):
+            self.bitmap = to_str(value)
+            return
+        super().set(key, value)
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        r = self.rect()
+        img = (sprite_mgr.load_sheet(self.bitmap)
+               if (sprite_mgr is not None and self.bitmap) else None)
+        if img is None:
+            if self.bitmap and self._manager is not None:
+                self._manager.request_image(self.bitmap)
+            super()._draw_self(surf, fonts, sprite_mgr)
+            return
+        if img.get_size() != r.size:
+            img = pygame.transform.smoothscale(img, r.size)
+        surf.blit(img, r.topleft)
+        if self.text and fonts is not None:
+            prof = self.resolve_profile()
+            font = _font(fonts, prof)
+            width = font.size(self.text)[0]
+            _draw_label(surf, font, self.text, prof.fg,
+                        (r.centerx - width // 2,
+                         r.centery - font.get_height() // 2),
+                        prof.text_shadow)
+
+
 class GuiPopUpEditCtrl(GuiControl):
     """Single-selection combo box with a manager-rendered popup list."""
 
     CTRL_CLASS = "GuiPopUpEditCtrl"
+    # getSelectedRow/getSelectedText also reach this control by METHOD form
+    # (call_builtin's obj branch), but with-scope bare calls only consult
+    # get(), so they must be declared here too.
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"getselectedrow", "getselectedtext", "setselectedrow",
+         "setselectedbyid", "getrowtext", "clear",
+         "setselected", "findtext"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -1794,6 +2120,58 @@ class GuiPopUpEditCtrl(GuiControl):
     def get_selected_row(self) -> Any:
         if 0 <= self.selected_row < len(self.rows):
             return self.rows[self.selected_row][0]
+        return -1.0
+
+    def _m_getselectedrow(self, *args) -> Any:
+        return self.get_selected_row()
+
+    def _m_clear(self, *args) -> float:
+        return self.clear_rows()
+
+    def _m_getselectedtext(self, *args) -> str:
+        """getSelectedText(): the selected row's LABEL (Login's staff
+        sprite-editor weapon reads its batch-mode combo that way)."""
+        if 0 <= self.selected_row < len(self.rows):
+            return self.rows[self.selected_row][1]
+        return ""
+
+    def _m_getrowtext(self, *args) -> str:
+        return self.get_row_text(args[0] if args else None)
+
+    def _m_setselectedrow(self, *args) -> float:
+        if args:
+            self.select_row(int(to_num(args[0])))
+        return 0.0
+
+    def _m_setselectedbyid(self, *args) -> float:
+        if args:
+            wanted = to_str(args[0])
+            for index, (row_id, _text) in enumerate(self.rows):
+                if to_str(row_id) == wanted:
+                    self.select_row(index)
+                    break
+        return 0.0
+
+    #: setSelected(id) is the reference spelling of setSelectedById: the
+    #: engine's GuiPopUpMenuCtrl::setSelected resolves its argument with
+    #: findEntryById, NOT as a row index (FourPlay quattroplay/src/gui/
+    #: GuiPopUpMenuCtrl.cpp:316-327; binding GuiPopUpMenuCtrlProperties.cpp:74
+    #: `{"setselected", false, 'v', "i"}`). Live sites construct the combo and
+    #: call it in the same with-block (era weaponGraalNet.txt:106,
+    #: pdamod_browser.txt:60), where row ids and indices happen to coincide.
+    _m_setselected = _m_setselectedbyid
+
+    def _m_findtext(self, *args) -> float:
+        """findText(text) -> the matching row's INDEX, or -1.
+
+        Reference: GuiPopUpMenuCtrlProperties.cpp:69 `{'i', "s"}` ->
+        GuiTextListCtrl::findEntryByText, which returns the ARRAY POSITION
+        (FourPlay quattroplay/src/gui/GuiTextListCtrl.cpp:747-758) -- not the
+        row id, and -1 when nothing matches."""
+        wanted = to_str(args[0]) if args else ""
+        for index, (_row_id, text) in enumerate(self.rows):
+            if to_str(text) == wanted:
+                return float(index)
         return -1.0
 
     def get_row_text(self, row_id: Any) -> str:
@@ -1862,6 +2240,215 @@ class GuiPopUpEditCtrl(GuiControl):
         pygame.draw.rect(surf, prof.border[:3], pr, 1)
 
 
+class GuiPopUpMenuCtrl(GuiPopUpEditCtrl):
+    """The non-editable spelling of the same combo box. Login's staff
+    sprite-editor weapon builds every one of its selectors as
+    GuiPopUpMenuCtrl and then calls getSelectedRow()/getSelectedText() on
+    them -- as an unknown class they fell back to a plain GuiControl, which
+    answered neither (45 misses in the 2026-07-24 corpus run, the
+    second-largest gap after gettextheight)."""
+
+    CTRL_CLASS = "GuiPopUpMenuCtrl"
+
+
+class GuiFrameSetCtrl(GuiControl):
+    """A splitter: divides its own client area into `rowcount` x
+    `columncount` cells and gives each child ONE cell, in the order the
+    children were added (row-major).
+
+    Divider positions come from setRowOffset(i, y) / setColumnOffset(i, x);
+    dividers 0 and `count` are implicit (0 and the frameset's own extent),
+    and a divider nobody set falls back to an even split. The Global Chat
+    window is one row by two columns with `setColumnOffset(1, 150)` over a
+    600x400 client area (Preagonal/gbf/bytecode/login/
+    _Serverlist_Chat.gs2bc.gs2:570-616), i.e. a 150-wide channel list beside
+    a 450-wide chat panel.
+
+    Sizing HAS to happen when a child is added, not at render time: the
+    scripts build a cell's contents in a following `with (<cell>) {...}`
+    block that reads `<cell>.clientwidth`/`.clientheight` to size them
+    (:617-660). Unimplemented, the class fell back to a generic GuiControl,
+    both cells kept their constructor defaults stacked at (0,0) -- a 160x120
+    channel scroll drawn OVER a 100x24 chat panel -- and the chat panel's
+    placeholder text wrapped into a ~150px strip clipped at the bottom,
+    which is exactly the reported symptom.
+    """
+
+    CTRL_CLASS = "GuiFrameSetCtrl"
+
+    def _cell_bounds(self, count: int, span: float, key: str) -> List[float]:
+        """The `count`+1 divider positions along one axis."""
+        count = max(1, count)
+        given = self._members.get(key) or {}
+        out = [0.0]
+        for i in range(1, count):
+            v = given.get(i)
+            out.append(to_num(v) if v is not None else span * i / count)
+        out.append(span)
+        # dividers must stay ordered and inside the frame
+        for i in range(1, len(out)):
+            out[i] = max(out[i - 1], min(out[i], span))
+        return out
+
+    def relayout(self) -> None:
+        rows = max(1, int(to_num(self._members.get("rowcount") or 1)))
+        cols = max(1, int(to_num(self._members.get("columncount") or 1)))
+        ys = self._cell_bounds(rows, float(self.client_height()), "_row_offsets")
+        xs = self._cell_bounds(cols, float(self.client_width()), "_column_offsets")
+        for index, child in enumerate(self.children):
+            if child.is_profile:
+                continue
+            r, c = divmod(index, cols)
+            if r >= rows:
+                break               # more children than cells: leave as-is
+            child.x, child.y = xs[c], ys[r]
+            child.width = max(0.0, xs[c + 1] - xs[c])
+            child.height = max(0.0, ys[r + 1] - ys[r])
+
+    def add_child(self, child: "GuiControl") -> bool:
+        added = super().add_child(child)
+        if added:
+            self.relayout()
+        return added
+
+    def set(self, key: str, value: Any) -> None:
+        super().set(key, value)
+        if key.lower() in ("rowcount", "columncount", "extent", "clientextent",
+                           "width", "height"):
+            self.relayout()
+
+    def _m_setcolumnoffset(self, *args) -> float:
+        rv = super()._m_setcolumnoffset(*args)
+        self.relayout()
+        return rv
+
+    def _m_setrowoffset(self, *args) -> float:
+        rv = super()._m_setrowoffset(*args)
+        self.relayout()
+        return rv
+
+
+class GuiContextMenuCtrl(GuiPopUpEditCtrl):
+    """A right-click menu: a row list that is HIDDEN until openAtMouse().
+
+    `m_visible = false` in the constructor (FourPlay quattroplay/src/gui/
+    GuiContextMenuCtrl.cpp:35-46, GuiContextMenuCtrl::initObject) -- as an
+    unknown class it fell back to a generic, VISIBLE GuiControl, so Global
+    Chat's channel menu (`new GuiContextMenuCtrl("GlobalChat_ChannelMenu")`,
+    width 120, three rows, Preagonal/gbf/bytecode/login/
+    _Serverlist_Chat.gs2bc.gs2:697-717) drew as a stray filled rectangle at
+    the canvas origin, on top of the server-list window."""
+
+    CTRL_CLASS = "GuiContextMenuCtrl"
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.visible = False
+        self.width, self.height = 120.0, 22.0
+
+
+class GuiDrawingPanel(GuiControl):
+    """A script-driven canvas: `with (panel) { clearall(); drawline(...); }`.
+    The draw calls are RECORDED (they are issued once, outside the render
+    loop, and must persist across frames) and replayed every frame in the
+    control's own coordinate space. Login's staff sprite-editor weapon
+    draws its guidelines and sprite sheet this way."""
+
+    CTRL_CLASS = "GuiDrawingPanel"
+    _MAX_OPS = 4096          # a runaway script must not grow this forever
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.draw_ops: List[Tuple] = []
+
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"drawline", "drawrect", "drawimage", "drawimagestretched",
+         "drawimagerectangle"})
+
+    def _record(self, op: Tuple) -> float:
+        if len(self.draw_ops) < self._MAX_OPS:
+            self.draw_ops.append(op)
+        return 0.0
+
+    def _m_clearall(self, *args) -> float:
+        self.draw_ops.clear()
+        return 0.0
+
+    def _m_drawline(self, *args) -> float:
+        """drawLine(x1, y1, x2, y2, thickness)."""
+        values = [to_num(a) for a in args[:5]]
+        while len(values) < 5:
+            values.append(1.0)
+        return self._record(("line", *values))
+
+    def _m_drawrect(self, *args) -> float:
+        values = [to_num(a) for a in args[:4]]
+        while len(values) < 4:
+            values.append(0.0)
+        return self._record(("rect", *values))
+
+    def _m_drawimage(self, *args) -> float:
+        """drawImage(x, y, image)."""
+        if len(args) < 3:
+            return 0.0
+        return self._record(("image", to_num(args[0]), to_num(args[1]),
+                             to_str(args[2]), 0.0, 0.0))
+
+    def _m_drawimagestretched(self, *args) -> float:
+        """drawImageStretched(x, y, w, h, image, ...)."""
+        if len(args) < 5:
+            return 0.0
+        return self._record(("image", to_num(args[0]), to_num(args[1]),
+                             to_str(args[4]), to_num(args[2]),
+                             to_num(args[3])))
+
+    def _m_drawimagerectangle(self, *args) -> float:
+        """drawImageRectangle(x, y, image, partx, party, partw, parth):
+        blit ONE sub-rectangle of a sheet (the sprite editor's sheet view
+        and the chat window's smilie strip both slice art this way)."""
+        if len(args) < 7:
+            return 0.0
+        return self._record(("imagepart", to_num(args[0]), to_num(args[1]),
+                             to_str(args[2]),
+                             tuple(to_num(a) for a in args[3:7])))
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        super()._draw_self(surf, fonts, sprite_mgr)
+        prof = self.resolve_profile()
+        r = self.rect()
+        for op in self.draw_ops:
+            if op[0] == "line":
+                _, x1, y1, x2, y2, thickness = op
+                pygame.draw.line(surf, prof.fg[:3],
+                                 (r.x + int(x1), r.y + int(y1)),
+                                 (r.x + int(x2), r.y + int(y2)),
+                                 max(1, int(thickness)))
+            elif op[0] == "rect":
+                _, x, y, w, h = op
+                pygame.draw.rect(surf, prof.fg[:3],
+                                 pygame.Rect(r.x + int(x), r.y + int(y),
+                                             max(0, int(w)), max(0, int(h))), 1)
+            elif op[0] in ("image", "imagepart"):
+                name = op[3]
+                img = (sprite_mgr.load_sheet(name)
+                       if (sprite_mgr is not None and name) else None)
+                if img is None:
+                    if name and self._manager is not None:
+                        self._manager.request_image(name)
+                    continue
+                x, y = op[1], op[2]
+                if op[0] == "imagepart":
+                    px, py, pw, ph = op[4]
+                    area = pygame.Rect(int(px), int(py), max(0, int(pw)),
+                                       max(0, int(ph)))
+                    surf.blit(img, (r.x + int(x), r.y + int(y)), area)
+                    continue
+                w, h = op[4], op[5]
+                if w > 0 and h > 0 and img.get_size() != (int(w), int(h)):
+                    img = pygame.transform.smoothscale(img, (int(w), int(h)))
+                surf.blit(img, (r.x + int(x), r.y + int(y)))
+
+
 class GuiTextListCtrl(GuiControl):
     """Vertical list of addRow() rows; click selects a row and fires
     onSelect(entryid, entrytext, entryindex) -- same convention as
@@ -1928,8 +2515,46 @@ class GuiTextListCtrl(GuiControl):
                     break
         return 0.0
 
+    def _m_getselectedrow(self, *args) -> Any:
+        """getSelectedRow(): the selected row's ID (Torque returns the id,
+        not the index -- Login's own setSelectedById round-trips it)."""
+        if 0 <= self.selected_index < len(self.list_rows):
+            return self.list_rows[self.selected_index].get("id")
+        return -1.0
+
+    def _m_getselectedtext(self, *args) -> str:
+        if 0 <= self.selected_index < len(self.list_rows):
+            return to_str(self.list_rows[self.selected_index].get("text"))
+        return ""
+
+    def _m_sortascending(self, *args) -> float:
+        self.list_rows.sort(key=lambda row: to_str(row.get("text")).casefold())
+        return 0.0
+
+    def _m_sortdescending(self, *args) -> float:
+        self.list_rows.sort(key=lambda row: to_str(row.get("text")).casefold(),
+                            reverse=True)
+        return 0.0
+
+    def _m_findtext(self, *args) -> float:
+        """findText(text) -> the matching row's INDEX, or -1.
+
+        Reference: GuiTextListCtrlProperties.cpp:420 `{'i', "s"}` ->
+        GuiTextListCtrl::findEntryByText (FourPlay quattroplay/src/gui/
+        GuiTextListCtrl.cpp:747-758), a linear scan returning the array
+        position. The sibling binding findTextId() is the one that maps that
+        position to a row id -- so this must NOT return the id. Live site:
+        era weaponSkyld/RC.txt:916 uses it to find its "Admins"/"Players"
+        group header and insert the row after it."""
+        wanted = to_str(args[0]) if args else ""
+        for index, row in enumerate(self.list_rows):
+            if to_str(row.get("text")) == wanted:
+                return float(index)
+        return -1.0
+
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"setselectedrow", "setselectedbyid"})
+        {"setselectedrow", "setselectedbyid", "getselectedrow",
+         "getselectedtext", "sortascending", "sortdescending", "findtext"})
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         # keep our height in sync with content so ancestor GuiScrollCtrl
@@ -2120,12 +2745,44 @@ class GuiTreeNode(GS2Object):
             node = node.parent_node
         return "/".join(reversed(parts))
 
+    def level(self) -> float:
+        """Torque tree depth, 1-based (a root node is level 1). Login gates
+        its connect handler on it -- `if (node == null || node.level <= 1)
+        return;` skips the CATEGORY folder rows -- so an unanswered read
+        (0) made every row look like a folder and swallowed the connect."""
+        depth, node = 0, self
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None:
+                break
+            depth += 1
+            node = node.parent_node
+        return float(depth)
+
+    def profile_ref(self) -> Any:
+        """This node's own `profile` override, if the script set one.
+        Login's serverlist restyles its category folders with
+        `node.profile = IRC_TreeViewProfile2;` (a different fill), which the
+        renderer used to ignore -- every row drew in the tree's profile."""
+        return self._members.get("profile")
+
+    def add_node(self, *args) -> "GuiTreeNode":
+        child = GuiTreeNode(self.tree, to_str(args[0]) if args else "", self)
+        self.child_nodes.append(child)
+        return child
+
     def get(self, key: str) -> Any:
         k = key.lower()
         if k == "text":
             return self.text
+        if k == "level" and k not in self._members:
+            return self.level()
         if k == "select" and not super().has(k):
             return lambda *a: self.tree.select_node(self)
+        if k == "addnode" and not super().has(k):
+            # parentNode.addNode(text) -> the new CHILD node (Staff's
+            # GUIExplorer walks the control tree building one node per
+            # control this way)
+            return self.add_node
         if k == "icon" and k not in self._members:
             v = self._members[k] = _TreeNodeIcon(self)
             return v
@@ -2153,7 +2810,7 @@ class GuiTreeViewCtrl(GuiControl):
     CTRL_CLASS = "GuiTreeViewCtrl"
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({
         "clearnodes", "addnodebypath", "getnode", "getselectednode",
-        "setselectedbyid",
+        "setselectedbyid", "addnode",
     })
 
     def __init__(self, ctor_arg: Any = None):
@@ -2173,6 +2830,17 @@ class GuiTreeViewCtrl(GuiControl):
         self.root_nodes.clear()
         self.selected_node = None
         return 0.0
+
+    #: clearAll() on a tree empties its NODES, not the base class's row model
+    _m_clearall = _m_clearnodes
+
+    def _m_addnode(self, *args) -> GuiTreeNode:
+        """addNode(text) on the CONTROL: append a root node. (Staff's
+        GUIExplorer builds its object tree with parentNode.addNode(...) --
+        see GuiTreeNode's own addnode for the per-node form.)"""
+        node = GuiTreeNode(self, to_str(args[0]) if args else "", None)
+        self.root_nodes.append(node)
+        return node
 
     def _m_addnodebypath(self, *args) -> Optional[GuiTreeNode]:
         if not args:
@@ -2275,23 +2943,39 @@ class GuiTreeViewCtrl(GuiControl):
         out = [v for _i, v in sorted(offsets.items())]
         return out or [0.0]
 
+    def node_profile(self, node: GuiTreeNode, default: GuiProfile) -> GuiProfile:
+        """The effective style for ONE row: a node's own `profile` override
+        resolved through the same inheritance chain controls use, else the
+        tree's profile. Login styles its category folders with
+        IRC_TreeViewProfile2 (opaque, its own fill/font colour) while the
+        server rows keep IRC_TreeViewProfile."""
+        ref = node.profile_ref()
+        if not ref:
+            return default
+        return _profile_from_fields(_profile_fields(ref, self._manager, set()))
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         nodes = self.display_nodes()
         row_h = self.row_height()
         self.height = max(self.height, float(len(nodes) * row_h))
-        prof = self.resolve_profile()
+        tree_prof = self.resolve_profile()
         r = self.rect()
-        _fill_rect(surf, prof.bg, r)
+        _fill_rect(surf, tree_prof.bg, r)
         if fonts is None:
             return
-        font = _font(fonts, prof)
         icon_w = int(self.icon_w) or 16
         icon_h = int(self.icon_h) or 16
         col_offsets = self.column_offsets()
         for index, node in enumerate(nodes):
+            prof = self.node_profile(node, tree_prof)
+            font = _font(fonts, prof)
             rr = pygame.Rect(r.x, r.y + index * row_h, r.width, row_h)
             indent = 0 if node.parent_node is None else 16
             fg = prof.fg
+            if prof is not tree_prof and prof.opaque:
+                # a per-node profile paints its own row background (the
+                # folder-row banding the reference client shows)
+                _fill_rect(surf, prof.bg, rr)
             if node is self.selected_node:
                 _fill_rect(surf, prof.title_bg, rr)
                 fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
@@ -2383,11 +3067,27 @@ class GuiStartMenuCtrl(GuiTextListCtrl):
         self.width, self.height = 190.0, 24.0
         self.visible = False        # engine shows it on start-button click
 
+    _METHOD_NAMES = GuiTextListCtrl._METHOD_NAMES | frozenset({"open"})
+
     def select_index(self, index: int) -> bool:
         picked = super().select_index(index)
         if picked and self._manager is not None:
             self._manager.hide(self)
         return picked
+
+    def _m_open(self, *args) -> float:
+        """open(x, y): show the menu with its BOTTOM-left at the given
+        canvas point -- Login opens it from the start button's own
+        localToGlobalCoord({0, 0}), i.e. the button's top-left corner, and
+        the reference menu grows upwards from there."""
+        self.height = float(max(self.content_height(), self.ROW_H))
+        x, y = self._coord_arg(args)
+        self.x, self.y = x, y - self.height
+        if self._manager is not None:
+            self._manager.show(self)
+        else:
+            self.visible = True
+        return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         self.height = float(max(self.content_height(), self.ROW_H))
@@ -2438,8 +3138,29 @@ _CONTROL_CLASSES: Dict[str, type] = {
         GuiBitmapCtrl, GuiShowImgCtrl, GuiPopUpEditCtrl, GuiControlProfile,
         GuiTextListCtrl, GuiTabCtrl, GuiTreeViewCtrl, GuiTaskbar,
         GuiStartMenuCtrl,
+        # classes the 2026-07-24 Login corpus constructs that used to fall
+        # back to a generic GuiControl ("unknown control class")
+        GuiAccountPasswordCtrl, GuiMLTextEditCtrl, GuiProgressCtrl,
+        GuiBitmapButtonCtrl, GuiPopUpMenuCtrl, GuiDrawingPanel,
+        # 2026-07-25: the two remaining "unknown control class" warnings on
+        # Login, both raised by -Serverlist_Chat's Global Chat window
+        GuiFrameSetCtrl, GuiContextMenuCtrl,
     )
 }
+
+
+def control_method_names() -> frozenset:
+    """Every script-callable control method across the whole class table.
+
+    GS2ClientHost.host_surface() used to union GuiControl._METHOD_NAMES
+    alone, so every SUBCLASS method (setSelectedRow, getSelectedNode,
+    addNodeByPath, ...) was reported as an unimplemented gap by the deep
+    crawler even though the control answers it -- which is exactly the kind
+    of false gap that sends a coverage round chasing ghosts."""
+    names: set = set()
+    for cls in (*_CONTROL_CLASSES.values(), GuiControl):
+        names |= set(getattr(cls, "_METHOD_NAMES", ()))
+    return frozenset(names)
 
 
 def make_control(classname: str, ctor_arg: Any) -> GuiControl:
@@ -2499,10 +3220,30 @@ class GS2GuiManager:
         # requests for art the sprite manager doesn't have yet
         self._skins: Dict[str, _Skin] = {}
         self._requested_images: set = set()
+        # last pointer position seen by handle_event, already in the
+        # virtual-canvas space control x/y live in (see handle_event's
+        # docstring) -- what openAtMouse() anchors to
+        self.last_mouse: Optional[Tuple[int, int]] = None
         # canvas size the control tree was last laid out for; render()
         # compares against the live surface and propagates Torque-sizing
         # deltas on change (window resizes)
         self.canvas_size: Optional[Tuple[int, int]] = None
+        # GuiCanvas cursor visibility (cursorOn/cursorOff/isCursorOn --
+        # FourPlay quattroplay/src/gui/GuiCanvas.cpp:47-63, bindings :83-85).
+        # The canvas starts with the pointer shown, which is also pygame's
+        # default, so cursorOn() -- the only one of the three any corpus
+        # actually calls -- is a confirmation rather than a change.
+        self.cursor_on = True
+
+    def set_cursor_on(self, on: bool) -> None:
+        """cursorOn()/cursorOff(): show or hide the mouse pointer over the
+        canvas. Login's serverlist calls cursorOn() when it takes over the
+        screen (graal-loginserver weapon-Rescripted_Serverlist.txt:381)."""
+        self.cursor_on = bool(on)
+        try:
+            pygame.mouse.set_visible(self.cursor_on)
+        except Exception:      # no display yet / headless SDL driver
+            pass
 
     @property
     def keyboard_captured(self) -> bool:
@@ -2968,6 +3709,9 @@ class GS2GuiManager:
         via viewport.window_to_virtual() before calling in)."""
         self._reap_construction_leak()
         self._close_invalid_popup()
+        pos = getattr(event, "pos", None)
+        if pos is not None:
+            self.last_mouse = (int(pos[0]), int(pos[1]))
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             return self._on_mouse_down(event.pos)
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -3130,9 +3874,13 @@ class GS2GuiManager:
             self._focus.fire_action(self._focus.text)
             return True
         if event.key == pygame.K_BACKSPACE:
-            self._focus.text = self._focus.text[:-1]
+            # a pending setSelection() range is deleted whole, exactly as
+            # the reference client does for a select-all-then-edit
+            if not self._focus.take_selection():
+                self._focus.text = self._focus.text[:-1]
             return True
         if event.unicode and event.unicode.isprintable():
+            self._focus.take_selection()
             if len(self._focus.text) < self._focus.max_len:
                 self._focus.text += event.unicode
         return True

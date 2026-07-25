@@ -25,6 +25,46 @@ def _c255(v: float) -> int:
     return max(0, min(255, int(float(v) * 255)))
 
 
+# findimg(i).red/.green/.blue/.alpha — the GS2 way of tinting a scripted
+# layer. GS1's changeimgcolors packs all four into rec['colors'] at once;
+# GS2 scripts instead assign the channels one at a time on the image object
+# (gs2_client._LayerImage passes unknown property names straight through to
+# the same record), so the values land as separate keys that no renderer
+# read. Zelda's -Player/Movement puts up its hurt-flash quad that way:
+#
+#     showpoly(2000, {0,0,screenwidth,0,screenwidth,screenheight,0,screenheight});
+#     findimg(2000).red = 1; findimg(2000).blue = findimg(2000).green = 0;
+#     findimg(2000).alpha = 0;                    // invisible until hurt
+#
+# (Preagonal/graal-lttp weapons/weapon-Player_Movement.txt:155-160, and it
+# ramps .alpha up in onTimeout when the player takes damage). With the
+# channels ignored the quad fell back to "no colors -> opaque white" and
+# painted the entire canvas white every frame — the whole world, HUD and all,
+# vanished behind it on the live Zelda server.
+_LAYER_COLOR_KEYS = ("red", "green", "blue", "alpha")
+
+
+def _layer_colors(rec: dict):
+    """(r, g, b, a) 0..1 multipliers for a scripted layer, or None if the
+    script never coloured it.
+
+    changeimgcolors' packed rec['colors'] wins when present; otherwise any
+    per-channel findimg() assignment is honoured, with the engine's default
+    of 1.0 for the channels the script left alone."""
+    colors = rec.get('colors')
+    if colors:
+        return colors
+    if not any(k in rec for k in _LAYER_COLOR_KEYS):
+        return None
+    out = []
+    for k in _LAYER_COLOR_KEYS:
+        try:
+            out.append(float(rec.get(k, 1.0)))
+        except (TypeError, ValueError):
+            out.append(1.0)
+    return tuple(out)
+
+
 # Perceptual attenuation for changeimgmode-2 (subtractive) showimg layers.
 # 1.0 = arithmetically faithful subtraction, which black-clamps the scene
 # under opaque near-white smoke textures (the bomber lobby's
@@ -1454,7 +1494,7 @@ class EntityRenderMixin:
         w = max(1, int(sprite.get_width() * factor))
         h = max(1, int(sprite.get_height() * factor))
 
-        colors = rec.get('colors')
+        colors = _layer_colors(rec)
         # changeimgmode / wire drawMode share one numbering (GServer-v2
         # object/ShowImg.h prop 8): 0 = additive, 1 = replace (normal alpha
         # blend), 2 = subtractive, 3 = daynight. The bomber leans on this:
@@ -1661,7 +1701,7 @@ class EntityRenderMixin:
         else:
             size = max(8, int(16 * (rec.get('zoom') or 1.0) * (self.camera.scale / float(TILE_SIZE))))
         font = self._showtext_font(rec.get('font', '') or 'Arial', size, 'b' in style)
-        colors = rec.get('colors')
+        colors = _layer_colors(rec)
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2])) if colors else (255, 255, 255)
         # Showtext (NPC name/sign labels) is drawn straight over the level,
         # not on a plate, so it needs the same outline nameplates get.
@@ -1717,9 +1757,15 @@ class EntityRenderMixin:
         else:
             points = [self.camera.world_to_screen(pts[i], pts[i + 1])
                       for i in range(0, len(pts) - stride + 1, stride)]
-        colors = rec.get('colors')
+        colors = _layer_colors(rec)
         col = (_c255(colors[0]), _c255(colors[1]), _c255(colors[2]),
                _c255(colors[3]) if len(colors) > 3 else 255) if colors else (255, 255, 255, 255)
+        if col[3] == 0:
+            # Fully transparent: skip the surface allocation entirely. Scripts
+            # park a hurt/fade quad at alpha 0 for the whole session and only
+            # ramp it up on damage (see _layer_colors), so this is the common
+            # case for a full-screen poly, once per frame.
+            return
 
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
