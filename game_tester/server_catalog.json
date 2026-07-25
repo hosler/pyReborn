@@ -55,6 +55,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -203,6 +204,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -211,6 +213,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -224,10 +227,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -283,6 +294,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -302,6 +314,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": "2.17",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         }
@@ -369,6 +382,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -477,6 +491,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -485,6 +500,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -498,10 +514,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 10,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -557,6 +581,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": "6.037",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         },
@@ -576,6 +601,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -591,7 +617,8 @@
         "auto_address_substituted": true,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "hidden",
       "crawl": {
@@ -614,6 +641,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -622,6 +650,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -635,10 +664,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -675,6 +712,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         },
@@ -694,6 +732,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         }
@@ -709,7 +748,8 @@
         "auto_address_substituted": false,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "bronze",
       "crawl": {
@@ -732,6 +772,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -740,6 +781,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -753,10 +795,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -793,6 +843,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         },
@@ -812,6 +863,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         }
@@ -843,10 +895,9 @@
         "packet_counts": {
           "0": 1,
           "10": 1,
-          "100": 3,
+          "100": 2,
           "101": 1,
           "107": 1,
-          "131": 1,
           "156": 1,
           "16": 1,
           "174": 1,
@@ -865,6 +916,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "rejected",
         "tiles_ok": false,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -892,6 +944,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -900,6 +953,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -913,10 +967,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -929,9 +991,9 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-22T02:22:32.270329+00:00",
+      "last_probed": "2026-07-24T21:29:37.152415+00:00",
       "last_updated": {
-        "base": "2026-07-22T02:22:32.270329+00:00",
+        "base": "2026-07-24T21:29:37.152415+00:00",
         "crawl": "2026-07-22T02:22:32.270329+00:00",
         "versions": "2026-07-21T01:29:07.749825+00:00"
       },
@@ -953,6 +1015,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": "6.037",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         },
@@ -972,6 +1035,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         }
@@ -1038,6 +1102,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -1074,6 +1139,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -1082,6 +1148,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -1095,10 +1162,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 1,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -1154,6 +1229,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": "6.037",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         },
@@ -1173,6 +1249,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -1237,6 +1314,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -1297,6 +1375,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -1305,6 +1384,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -1318,10 +1398,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -1377,6 +1465,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -1396,6 +1485,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": "2.22",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         }
@@ -1461,6 +1551,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -1488,6 +1579,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -1496,6 +1588,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -1509,10 +1602,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -1568,6 +1669,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -1587,6 +1689,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": "2.22",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         }
@@ -1654,6 +1757,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "login",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -1681,6 +1785,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -1689,6 +1794,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -1722,10 +1828,112 @@
           "events_found": 20,
           "events_ran": 20,
           "failed": 0,
-          "implemented_count": 29,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 24,
+          "implemented_count": 58,
           "known_unsupported": [],
           "ran": 2,
-          "true_gaps": []
+          "scripts": [
+            {
+              "bytes": 403,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayerenters"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 8,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "-Rescripted/IRC/Login3",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 141,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 13838,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "globalchat_channelmenu.onselect",
+                "globalchat_channels.ondblclick",
+                "globalchat_channels.onopenmenu",
+                "globalchat_chatfield.onaction",
+                "globalchat_chattab.ondeselect",
+                "globalchat_chattab.onselect",
+                "oncreated",
+                "ondefaultstylechanges",
+                "onplayerchanges",
+                "onplayerlogin",
+                "onplayerlogout",
+                "onpm",
+                "onreceivetext",
+                "onserverlisterconnect",
+                "onsmiliebutton",
+                "universe.onplayerlogin",
+                "universe.onplayerlogout",
+                "universe.onserverlisterconnect"
+              ],
+              "function_failures": [],
+              "functions": [
+                "addchannelmenu",
+                "addchatwindowcontrols",
+                "addplayerstochatters",
+                "addplayertochatters",
+                "addtexttochannel",
+                "clearchanneltext",
+                "drawchattericon",
+                "findchannelentry",
+                "getchannelfullnick",
+                "geteventsbotforserver",
+                "getserverforeventsbot",
+                "handleircbotmessage",
+                "handleircdata",
+                "initlanguages",
+                "joinchannel",
+                "makechannelname",
+                "openchat",
+                "parsechat",
+                "partchannel",
+                "requestserverinfo",
+                "sendircbotmessage",
+                "sendircbotmessage2",
+                "sendjointable",
+                "sendlogin"
+              ],
+              "implemented_count": 50,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "-Serverlist_Chat",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 2670,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            }
+          ],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -1753,10 +1961,10 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-24T18:13:07.986604+00:00",
+      "last_probed": "2026-07-24T23:15:01.223365+00:00",
       "last_updated": {
-        "base": "2026-07-24T18:13:07.986604+00:00",
-        "crawl": "2026-07-24T18:13:07.986604+00:00",
+        "base": "2026-07-24T23:15:01.223365+00:00",
+        "crawl": "2026-07-24T23:15:01.223365+00:00",
         "versions": "2026-07-21T01:34:20.440702+00:00"
       },
       "testable_tests": [
@@ -1781,6 +1989,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -1800,6 +2009,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -1867,6 +2077,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "login",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -1894,6 +2105,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -1902,6 +2114,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -1935,10 +2148,18 @@
           "events_found": 20,
           "events_ran": 20,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 29,
           "known_unsupported": [],
           "ran": 2,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -1966,9 +2187,9 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-24T18:13:33.114027+00:00",
+      "last_probed": "2026-07-24T21:53:41.854699+00:00",
       "last_updated": {
-        "base": "2026-07-24T18:13:33.114027+00:00",
+        "base": "2026-07-24T21:53:41.854699+00:00",
         "crawl": "2026-07-24T18:13:33.114027+00:00",
         "versions": "2026-07-21T01:38:55.846804+00:00"
       },
@@ -1994,6 +2215,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -2013,6 +2235,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -2043,10 +2266,10 @@
         "packet_counts": {
           "0": 1,
           "10": 1,
-          "100": 6,
+          "100": 10,
           "101": 1,
           "14": 1,
-          "140": 5,
+          "140": 9,
           "156": 1,
           "168": 1,
           "174": 2,
@@ -2081,6 +2304,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "login",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -2108,6 +2332,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2116,6 +2341,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2143,6 +2369,10 @@
           "events_found": 19,
           "events_ran": 19,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 43,
           "known_unsupported": [
             "adventure_setframetick",
@@ -2151,7 +2381,11 @@
             "getpremiumoption"
           ],
           "ran": 5,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -2179,9 +2413,9 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-24T18:15:23.787808+00:00",
+      "last_probed": "2026-07-24T21:54:04.561027+00:00",
       "last_updated": {
-        "base": "2026-07-24T18:15:23.787808+00:00",
+        "base": "2026-07-24T21:54:04.561027+00:00",
         "crawl": "2026-07-24T18:15:23.787808+00:00",
         "versions": "2026-07-21T01:37:09.765924+00:00"
       },
@@ -2207,6 +2441,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -2226,6 +2461,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -2241,7 +2477,8 @@
         "auto_address_substituted": true,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "gold",
       "crawl": {
@@ -2264,6 +2501,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2272,6 +2510,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2285,10 +2524,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -2325,6 +2572,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         },
@@ -2344,6 +2592,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         }
@@ -2359,7 +2608,8 @@
         "auto_address_substituted": true,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "hidden",
       "crawl": {
@@ -2382,6 +2632,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2390,6 +2641,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2403,10 +2655,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -2436,7 +2696,8 @@
         "auto_address_substituted": true,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "gold",
       "crawl": {
@@ -2459,6 +2720,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2467,6 +2729,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2480,10 +2743,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -2520,6 +2791,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         },
@@ -2539,6 +2811,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         }
@@ -2604,6 +2877,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -2640,6 +2914,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2648,6 +2923,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2661,10 +2937,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 1,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -2720,6 +3004,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         },
@@ -2739,6 +3024,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -2807,6 +3093,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -2883,6 +3170,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -2891,6 +3179,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -2904,10 +3193,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 6,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -2963,6 +3260,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": "5.07",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         },
@@ -2982,6 +3280,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -3026,13 +3325,13 @@
           "194": 1,
           "197": 18,
           "25": 1,
-          "28": 1,
+          "28": 4,
           "3": 7,
           "33": 7,
           "34": 2,
           "39": 6,
           "41": 1,
-          "42": 17,
+          "42": 10,
           "43": 2,
           "44": 1,
           "47": 1,
@@ -3052,6 +3351,7 @@
         "requested_version": "6.037",
         "server_advertised_version": null,
         "server_kind": "game",
+        "status": "ok",
         "tiles_ok": true,
         "unhandled_plo_ids": [],
         "unknown_plo_ids": [],
@@ -3079,6 +3379,7 @@
             10
           ],
           "name": "zlttp.gmap",
+          "segments_skipped": [],
           "segments_visited": 2
         },
         "gs1_exec": {
@@ -3087,6 +3388,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -3094,10 +3396,17 @@
           "ok": 0
         },
         "gs2": {
-          "capped": 0,
+          "capped": 1,
           "event_names": [
+            "fpsconfig_graalticks.onselect",
+            "fpsconfig_targetframerate.onselect",
+            "fpsconfig_togglecounters.onaction",
+            "fpsconfig_togglespinners.onaction",
+            "fpsconfig_vsync.onselect",
+            "fpsconfig_window.onclosequery",
             "onactionclientside",
             "oncreated",
+            "onexploded",
             "onkeypressed",
             "onplayerchats",
             "onplayerenters",
@@ -3106,19 +3415,797 @@
             "onspinner60",
             "ontimeout",
             "onupdate",
+            "onwashit",
+            "onwaspelt",
+            "onwasshot",
             "onweaponfired"
           ],
           "events_failed": 0,
-          "events_found": 32,
-          "events_ran": 32,
+          "events_found": 56,
+          "events_ran": 56,
           "failed": 0,
-          "implemented_count": 1511,
+          "fetch_missing": [],
+          "fetched": 11,
+          "functions_failed": 0,
+          "functions_ran": 126,
+          "implemented_count": 7324,
           "known_unsupported": [
             "adventure_setframetick",
             "setframetick"
           ],
-          "ran": 11,
-          "true_gaps": []
+          "ran": 21,
+          "scripts": [
+            {
+              "bytes": 5332,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onkeypressed",
+                "onplayerenters",
+                "ontimeout",
+                "onupdate"
+              ],
+              "function_failures": [],
+              "functions": [
+                "destroy",
+                "digitatpos",
+                "drawnumber",
+                "drawnumbers",
+                "drawui",
+                "getlocation",
+                "getsetlocation",
+                "playlevelmusic",
+                "setlocation"
+              ],
+              "implemented_count": 1454,
+              "kind": "weapon",
+              "known_unsupported": [
+                "adventure_setframetick",
+                "setframetick"
+              ],
+              "name": "*System",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 30509,
+              "stubbed": [],
+              "true_gaps": [
+                "getcallstack"
+              ],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": [
+                "GS2 weapon:*System: unknown function getcallstack()"
+              ]
+            },
+            {
+              "bytes": 3972,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onactionclientside",
+                "oncreated"
+              ],
+              "function_failures": [],
+              "functions": [
+                "additem",
+                "addmajorflag",
+                "addminorflag",
+                "changelevel",
+                "checkflag",
+                "disablegani",
+                "disablegrab",
+                "disablestrafe",
+                "disablesword",
+                "enablegani",
+                "enablegrab",
+                "enablestrafe",
+                "enablesword",
+                "hit",
+                "hurtplayer",
+                "modifyclientr",
+                "raisestat",
+                "replaceani",
+                "shakescreen",
+                "throwobj"
+              ],
+              "implemented_count": 20,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "-Player/Functions",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 691,
+              "stubbed": [],
+              "true_gaps": [
+                "getstringkeys",
+                "hurtplayer",
+                "len"
+              ],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": [
+                "GS2 weapon:-Player/Functions: unknown function getstringkeys()",
+                "GS2 weapon:-Player/Functions: unknown method len()",
+                "GS2 weapon:-Player/Functions: unknown method hurtplayer()"
+              ]
+            },
+            {
+              "bytes": 21423,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onactionclientside",
+                "oncreated",
+                "onplayerchats",
+                "onplayerenters",
+                "ontimeout"
+              ],
+              "function_failures": [],
+              "functions": [
+                "checkhurt",
+                "checkjump",
+                "checkpit",
+                "checksqrtiles",
+                "checksqrtiletype",
+                "checktiles",
+                "checkwalldir",
+                "domovement",
+                "dosword",
+                "hitwall",
+                "hurtfly",
+                "hurtplayer",
+                "rendernicks",
+                "replaceani",
+                "respawn",
+                "returnidle",
+                "ridehorse",
+                "throwobj"
+              ],
+              "implemented_count": 74,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "-Player/Movement",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 7014,
+              "stubbed": [
+                "hit",
+                "modifyclientr"
+              ],
+              "true_gaps": [
+                "findnearestplayers",
+                "raisestat"
+              ],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": [
+                "GS2 weapon:-Player/Movement: unknown function findnearestplayers()",
+                "GS2 weapon:-Player/Movement: unknown method raisestat()"
+              ]
+            },
+            {
+              "bytes": 656,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onactionclientside",
+                "ontimeout",
+                "onweaponfired"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 14,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "Hammer",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 307,
+              "stubbed": [
+                "modifyclientr"
+              ],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 119,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onweaponfired"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 1,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "MobSpawn",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 15,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 365,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onweaponfired"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 5,
+              "kind": "weapon",
+              "known_unsupported": [],
+              "name": "Bomb",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 97,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 3969,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "fpsconfig_graalticks.onselect",
+                "fpsconfig_targetframerate.onselect",
+                "fpsconfig_togglecounters.onaction",
+                "fpsconfig_togglespinners.onaction",
+                "fpsconfig_vsync.onselect",
+                "fpsconfig_window.onclosequery",
+                "oncreated",
+                "onplayerchats",
+                "onspinner20",
+                "onspinner60",
+                "ontimeout",
+                "onupdate"
+              ],
+              "function_failures": [],
+              "functions": [
+                "drawfpsconfigwindow",
+                "showspinners",
+                "time::deltatime"
+              ],
+              "implemented_count": 24,
+              "kind": "weapon",
+              "known_unsupported": [
+                "setframetick"
+              ],
+              "name": "FpsCounter",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 437,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 1549,
+              "capped": true,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayertouchsme"
+              ],
+              "function_failures": [],
+              "functions": [
+                "doplay",
+                "doquit"
+              ],
+              "implemented_count": 5632,
+              "kind": "npc",
+              "known_unsupported": [],
+              "name": "10003",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 200099,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": [
+                "GS2 npc:10003: instruction budget exhausted (200000)"
+              ]
+            },
+            {
+              "bytes": 701,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayerenters",
+                "ontimeout"
+              ],
+              "function_failures": [],
+              "functions": [
+                "animate"
+              ],
+              "implemented_count": 13,
+              "kind": "npc",
+              "known_unsupported": [],
+              "name": "10006",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 301,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 722,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "ontimeout"
+              ],
+              "function_failures": [],
+              "functions": [
+                "animate"
+              ],
+              "implemented_count": 9,
+              "kind": "npc",
+              "known_unsupported": [],
+              "name": "10007",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 309,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 1423,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "ontimeout"
+              ],
+              "function_failures": [],
+              "functions": [
+                "animate",
+                "getstate"
+              ],
+              "implemented_count": 8,
+              "kind": "npc",
+              "known_unsupported": [],
+              "name": "10008",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "pushed",
+              "steps": 671,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 200,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 1,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "bomb",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 33,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 53,
+              "capped": false,
+              "event_failures": [],
+              "events": [],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 0,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "bomb_old",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 2,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 94,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayertouchsme"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 0,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "darts",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 11,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 241,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayertouchsme"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 3,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "door",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 37,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 1631,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "onactionclientside",
+                "oncreated"
+              ],
+              "function_failures": [],
+              "functions": [
+                "checktiles"
+              ],
+              "implemented_count": 2,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "explosion",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 628,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 894,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "ontimeout"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 10,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "fireball",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 357,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 94,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onplayertouchsme"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 0,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "gralats",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 11,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 6661,
+              "capped": false,
+              "event_failures": [],
+              "events": [],
+              "function_failures": [],
+              "functions": [
+                "above",
+                "addguiobject",
+                "addrows",
+                "adjust",
+                "below",
+                "bind",
+                "built",
+                "canclose",
+                "canmaximize",
+                "canminimize",
+                "canresize",
+                "catch",
+                "center",
+                "clear",
+                "copy",
+                "createbitmapborder",
+                "createbutton",
+                "createcheckbox",
+                "createcontrol",
+                "createmltext",
+                "createmltextedit",
+                "createpopupedit",
+                "createpopupmenu",
+                "createprogress",
+                "createradiobutton",
+                "createscroll",
+                "createslider",
+                "createtext",
+                "createtextedit",
+                "createtextlist",
+                "createwindow",
+                "debug",
+                "destroyguiobject",
+                "dimensions",
+                "features",
+                "getborder",
+                "getbutton",
+                "getcheckbox",
+                "getcontrol",
+                "getmltext",
+                "getmltextedit",
+                "getpopupedit",
+                "getpopupmenu",
+                "getprogress",
+                "getradiobutton",
+                "getscroll",
+                "getslider",
+                "gettext",
+                "gettextedit",
+                "gettextlist",
+                "getwindow",
+                "height",
+                "leftof",
+                "offset",
+                "position",
+                "profile",
+                "profilemod",
+                "profilemods",
+                "rightof",
+                "set",
+                "setvalue",
+                "setvalues",
+                "sizing",
+                "text",
+                "width"
+              ],
+              "implemented_count": 38,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "gui_builder",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 2381,
+              "stubbed": [],
+              "true_gaps": [
+                "isinclass",
+                "leave"
+              ],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": [
+                "GS2 class:gui_builder: unknown method leave()",
+                "GS2 class:gui_builder: unknown method isinclass()"
+              ]
+            },
+            {
+              "bytes": 185,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated"
+              ],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 3,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "hammer_hit_stump",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 32,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 37,
+              "capped": false,
+              "event_failures": [],
+              "events": [],
+              "function_failures": [],
+              "functions": [],
+              "implemented_count": 0,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "player_functions",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 1,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            },
+            {
+              "bytes": 2921,
+              "capped": false,
+              "event_failures": [],
+              "events": [
+                "oncreated",
+                "onexploded",
+                "ontimeout",
+                "onwashit",
+                "onwaspelt",
+                "onwasshot"
+              ],
+              "function_failures": [],
+              "functions": [
+                "animate",
+                "elim",
+                "getstate",
+                "init"
+              ],
+              "implemented_count": 13,
+              "kind": "class",
+              "known_unsupported": [],
+              "name": "zora",
+              "referenced_scripts": {
+                "class": [],
+                "weapon": []
+              },
+              "source": "fetched",
+              "steps": 1048,
+              "stubbed": [],
+              "true_gaps": [],
+              "unknown_opcodes": [],
+              "vm_errors": 0,
+              "warnings": []
+            }
+          ],
+          "stubbed": [
+            "hit",
+            "modifyclientr"
+          ],
+          "true_gaps": [
+            "findnearestplayers",
+            "getcallstack",
+            "getstringkeys",
+            "hurtplayer",
+            "isinclass",
+            "leave",
+            "len",
+            "raisestat"
+          ],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [
           {
@@ -3160,10 +4247,10 @@
         }
       },
       "errors": [],
-      "last_probed": "2026-07-22T02:15:17.943465+00:00",
+      "last_probed": "2026-07-24T21:51:30.695877+00:00",
       "last_updated": {
-        "base": "2026-07-22T02:15:17.943465+00:00",
-        "crawl": "2026-07-22T02:15:17.943465+00:00",
+        "base": "2026-07-24T21:51:30.695877+00:00",
+        "crawl": "2026-07-24T21:51:30.695877+00:00",
         "versions": "2026-07-21T01:29:11.549377+00:00"
       },
       "testable_tests": [
@@ -3188,6 +4275,7 @@
           "renegotiated_to": null,
           "requested_version": "2.22",
           "server_advertised_version": "1.39",
+          "status": "rejected",
           "tiles_ok": false,
           "version_status": "rejected"
         },
@@ -3207,6 +4295,7 @@
           "renegotiated_to": null,
           "requested_version": "6.037",
           "server_advertised_version": null,
+          "status": "ok",
           "tiles_ok": true,
           "version_status": "accepted"
         }
@@ -3222,7 +4311,8 @@
         "auto_address_substituted": false,
         "login": "not_attempted",
         "reachable": false,
-        "server_kind": "game"
+        "server_kind": "game",
+        "status": "unreachable"
       },
       "category": "bronze",
       "crawl": {
@@ -3245,6 +4335,7 @@
             0
           ],
           "name": "",
+          "segments_skipped": [],
           "segments_visited": 0
         },
         "gs1_exec": {
@@ -3253,6 +4344,7 @@
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
+          "stubbed": [],
           "true_gaps": []
         },
         "gs1_parse": {
@@ -3266,10 +4358,18 @@
           "events_found": 0,
           "events_ran": 0,
           "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
           "implemented_count": 0,
           "known_unsupported": [],
           "ran": 0,
-          "true_gaps": []
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
         },
         "levels_visited": [],
         "render": {
@@ -3306,6 +4406,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         },
@@ -3325,6 +4426,7 @@
           "renegotiated_to": null,
           "requested_version": null,
           "server_advertised_version": null,
+          "status": "unreachable",
           "tiles_ok": null,
           "version_status": null
         }

@@ -1,9 +1,10 @@
 import json
 
-from game_tester.server_crawl import (DeepCrawler, empty_crawl_record,
+from game_tester.server_crawl import (CrawlSession, DeepCrawler,
+                                      RecordingHost, empty_crawl_record,
                                       classify_host_call, enumerate_gs2_events,
-                                      parse_nw, real_gs1_surface,
-                                      real_gs2_surface,
+                                      other_gs2_functions, parse_nw,
+                                      real_gs1_surface, real_gs2_surface,
                                       run_gs1_bounded, run_gs2_bounded,
                                       shaped_error)
 from game_tester.server_probe import empty_catalog, load_catalog, run_catalog_tests, save_catalog
@@ -92,6 +93,7 @@ def test_gs2_step_cap_enforced(monkeypatch):
 
         def __init__(self, blob, name, host):
             self._ops_used = 0
+            self._errors = 0
             self.max_ops = 0
 
         def run_toplevel(self):
@@ -101,6 +103,48 @@ def test_gs2_step_cap_enforced(monkeypatch):
     report = run_gs2_bounded(b"bytecode", max_ops=7)
     assert report["capped"] is True
     assert report["steps"] == 7
+
+
+def test_cooperative_main_loop_is_bounded_by_yields_not_reported_as_capped(monkeypatch):
+    """A `while (true) { ...; sleep(); }` entry point is not a runaway script.
+
+    Zelda's piano NPC (npc:10003 doplay) used to burn the whole 200k op
+    budget here because a plain vm.call() makes sleep() inert; driven as the
+    coroutine the client runs, it settles at a few ops per iteration.
+    """
+    import reborn_protocol.gs2.vm as vm_module
+
+    class _LoopVM:
+        ops_skipped = {}
+        builtins_missing = {}
+        functions = {"oncreated": 0, "doplay": 1}
+
+        def __init__(self, blob, name, host):
+            self._ops_used = 0
+            self._errors = 0
+            self.max_ops = 0
+
+        def run_toplevel(self):
+            self._ops_used = 1
+
+        def iter_call(self, entry):
+            def generator():
+                self._ops_used = 0
+                if entry == "doplay":
+                    while True:
+                        self._ops_used += 10
+                        yield 0.05
+                self._ops_used = 2
+                return
+                yield  # pragma: no cover - makes this a generator
+
+            return generator()
+
+    monkeypatch.setattr(vm_module, "GS2VM", _LoopVM)
+    report = run_gs2_bounded(b"bytecode", max_ops=1000, max_yields=8)
+    assert report["cooperative"] == ["doplay"]
+    assert report["capped"] is False
+    assert report["steps"] == 1 + 2 + 8 * 10
 
 
 def test_error_record_shape_is_bounded_and_contextual():
@@ -178,7 +222,7 @@ def test_gmap_grid_bfs_visits_segments_and_parses_map():
     assert [entry["name"] for entry in result["levels_visited"]] == [
         "a.nw", "b.nw", "c.nw"]
     assert result["gmap"] == {"name": "world.gmap", "grid_size": [3, 1],
-                              "segments_visited": 3}
+                              "segments_visited": 3, "segments_skipped": []}
 
 
 def test_gmap_grid_aborts_on_foreign_warp():
@@ -188,6 +232,115 @@ def test_gmap_grid_aborts_on_foreign_warp():
                          renderer=lambda client, level: None).crawl()
     assert len(result["levels_visited"]) == 1
     assert any(error["phase"] == "gmap_warp" for error in result["errors"])
+
+
+class _GridGmapClient(_Client):
+    """2x2 gmap. A seam listed in `walls` accepts the movement packet but
+    never hands the segment over -- what a live server does at a blocked
+    seam, and what used to end the whole grid BFS with no error recorded."""
+
+    LEVELS = {(0, 0): "a.nw", (1, 0): "b.nw", (0, 1): "c.nw", (1, 1): "d.nw"}
+
+    def __init__(self, clock, walls=()):
+        super().__init__(clock, {name: [] for name in self.LEVELS.values()})
+        self.gmap_grid = dict(self.LEVELS)
+        self.gmap_width = self.gmap_height = 2
+        self.gmap_name = "world.gmap"
+        self.in_gmap_segment = True
+        self.walls = set(walls)
+        self.x = self.player.x = 32.0
+        self.y = self.player.y = 32.0
+        self._received_files["world.gmap"] = (
+            b"WIDTH 2\nHEIGHT 2\nLEVELNAMES\na.nw,b.nw\nc.nw,d.nw\nLEVELNAMESEND\n")
+
+    def _cell(self):
+        return next(pos for pos, name in self.gmap_grid.items()
+                    if name == self._current_level_name)
+
+    def move(self, dx, dy, step=0.5):
+        cell = self._cell()
+        target = (cell[0] + dx, cell[1] + dy)
+        if target not in self.gmap_grid or (cell, target) in self.walls:
+            return True                      # accepted, but nothing moves
+        local_x, local_y = self.x % 64, self.y % 64
+        self.x = self.player.x = target[0] * 64 + (
+            0.25 if dx > 0 else 63.75 if dx < 0 else local_x)
+        self.y = self.player.y = target[1] * 64 + (
+            0.25 if dy > 0 else 63.75 if dy < 0 else local_y)
+        self._current_level_name = self.player.level = self.gmap_grid[target]
+        return True
+
+
+class _SettleAwayGmapClient(_GridGmapClient):
+    """Hands the segment over and then moves us on again one pump later --
+    the post-warp level re-check that used to `return False` without
+    recording anything, killing the whole grid BFS."""
+
+    def __init__(self, clock):
+        super().__init__(clock)
+        self._pumps_in_b = 0
+
+    def update(self, timeout):
+        super().update(timeout)
+        if self._current_level_name != "b.nw":
+            self._pumps_in_b = 0
+            return
+        self._pumps_in_b += 1
+        if self._pumps_in_b >= 2:      # i.e. during the post-arrival settle
+            self.x = self.player.x = 64 + 32.0
+            self.y = self.player.y = 64 + 32.0
+            self._current_level_name = self.player.level = "d.nw"
+
+
+def _grid_crawl(client, clock, **kwargs):
+    return DeepCrawler(client, max_levels=4, timeout=60, clock=clock,
+                       sleep=clock.advance,
+                       renderer=lambda client, level: None, **kwargs).crawl()
+
+
+def test_gmap_walled_seam_is_recorded_and_routed_around():
+    clock = _Clock()
+    result = _grid_crawl(_GridGmapClient(clock, walls={((0, 0), (1, 0))}), clock)
+    # the walled seam costs one skip, not the other three segments
+    assert sorted(entry["name"] for entry in result["levels_visited"]) == [
+        "a.nw", "b.nw", "c.nw", "d.nw"]
+    assert result["gmap"]["segments_visited"] == 4
+    skipped = result["gmap"]["segments_skipped"]
+    assert [item["level"] for item in skipped] == ["b.nw"]
+    assert "never changed to b.nw" in skipped[0]["reason"]
+    assert any(error["phase"] == "gmap_seam" for error in result["errors"])
+
+
+def test_gmap_seam_that_settles_elsewhere_is_not_silent():
+    clock = _Clock()
+    result = _grid_crawl(_SettleAwayGmapClient(clock), clock)
+    reasons = [item["reason"] for item in result["gmap"]["segments_skipped"]]
+    assert reasons and all("settled in d.nw" in reason for reason in reasons)
+    assert any(error["phase"] == "gmap_warp" for error in result["errors"])
+    # b.nw is genuinely unreachable, everything else still gets crawled
+    assert sorted(entry["name"] for entry in result["levels_visited"]) == [
+        "a.nw", "c.nw", "d.nw"]
+
+
+def test_gmap_traversal_gives_up_after_repeated_seam_failures():
+    clock = _Clock()
+    walls = {((0, 0), (1, 0)), ((0, 0), (0, 1)), ((1, 0), (0, 0)),
+             ((0, 1), (0, 0)), ((1, 1), (1, 0)), ((1, 1), (0, 1))}
+    result = _grid_crawl(_GridGmapClient(clock, walls=walls), clock)
+    assert result["gmap"]["segments_visited"] == 1
+    assert result["gmap"]["segments_skipped"]
+    assert any("consecutive unusable seams" in error["exception"] or
+               error["phase"] == "gmap_seam" for error in result["errors"])
+
+
+def test_grid_route_avoids_blocked_seams():
+    grid = {cell: "x" for cell in ((0, 0), (1, 0), (0, 1), (1, 1))}
+    route = DeepCrawler._grid_route(grid, (0, 0), (1, 0), set())
+    assert route == [(0, 0), (1, 0)]
+    around = DeepCrawler._grid_route(grid, (0, 0), (1, 0), {((0, 0), (1, 0))})
+    assert around == [(0, 0), (0, 1), (1, 1), (1, 0)]
+    walled = {((0, 0), (1, 0)), ((0, 0), (0, 1))}
+    assert DeepCrawler._grid_route(grid, (0, 0), (1, 1), walled) is None
 
 
 def test_soak_tick_and_frame_cadence():
@@ -213,6 +366,53 @@ def test_soak_wall_cap_records_error():
     result = crawler.crawl()
     assert result["soak"]["errors"] == 1
     assert any(error["phase"] == "soak" for error in result["errors"])
+
+
+def _session_vm(session, kind, key, functions=()):
+    """A registered, empty VM that claims to declare `functions`."""
+    from reborn_protocol.gs2.container import GS2Container
+    vm = session.vm_for((kind, key), GS2Container())
+    for name in functions:
+        vm.functions[name.lower()] = 0
+    return vm
+
+
+def test_shared_session_resolves_cross_script_calls():
+    """Zelda's -Player/Movement calls plfunc.modifyclientr(...) and
+    ("-Player/Movement").HurtPlayer(...); with one host per script both
+    reached the host as unknown builtins and were reported as engine gaps."""
+    from reborn_protocol.gs2.vm import GS2ScriptFunction
+
+    session = CrawlSession()
+    functions = _session_vm(session, "weapon", "-Player/Functions",
+                            ["modifyclientr", "hit"])
+    movement = _session_vm(session, "weapon", "-Player/Movement", ["HurtPlayer"])
+    # what `plfunc = this` publishes, read back off the FOREIGN this-object
+    assert isinstance(functions.this.get("modifyclientr"), GS2ScriptFunction)
+    assert functions.this.get("nosuchmember") is None
+    # ("-Player/Movement") resolves to that weapon's script object
+    assert session.host.get_object("-player/movement") is movement.this
+    assert session.host.get_object("nobody") is None
+    # ...and both scripts write to ONE globals dict
+    movement.globals["plfunc"] = functions.this
+    assert functions.globals["plfunc"] is functions.this
+
+
+def test_isolated_session_keeps_scripts_apart():
+    session = CrawlSession()
+    _session_vm(session, "weapon", "-Player/Functions", ["modifyclientr"])
+    assert RecordingHost().get_object("-Player/Functions") is None
+
+
+def test_shared_host_call_counts_are_reported_per_script():
+    """The shared host's counters are cumulative; each script's report must
+    still describe only its own calls."""
+    session = CrawlSession()
+    _session_vm(session, "weapon", "empty")     # registers the VM; blob unused
+    session.host.call_builtin(None, "anotherscriptscall", [])
+    report = run_gs2_bounded(b"", "weapon:empty", session=session)
+    assert report["true_gaps"] == []
+    assert session.host.calls["anotherscriptscall"] == 1
 
 
 def test_recording_gs1_host_never_reaches_client_send_path():
@@ -288,6 +488,7 @@ def test_run_gs2_bounded_suppresses_implemented_name_warnings(caplog):
 
         def __init__(self, blob, name, host):
             self._ops_used = 0
+            self._errors = 0
             self.max_ops = 0
             self._name = name
             self._host = host
@@ -314,6 +515,90 @@ def test_gs2_event_enumeration_comes_from_function_table():
                  "onPlayerEnters": 4}
     assert enumerate_gs2_events(functions) == [
         "oncreated", "onPlayerEnters", "onTimeout"]
+
+
+def test_other_gs2_functions_excludes_the_events_already_called():
+    functions = {"onCreated": 1, "DoSword": 2, "fps.onSelect": 3, "helper": 4}
+    events = enumerate_gs2_events(functions)
+    assert other_gs2_functions(functions, events) == ["DoSword", "helper"]
+
+
+class _ScriptClient(_Client):
+    """Client that only serves script bytecode when it is asked for it."""
+
+    def __init__(self, clock):
+        super().__init__(clock, {"a.nw": []})
+        self.gs2_bytecode = {"weapon": {"Pushed": b"pushed"}, "class": {}}
+        self.gs2_script_headers = {
+            "Pushed": {"name": "Pushed", "type": "weapon", "bytecode": b"pushed"},
+            "door": {"name": "door", "type": "class", "bytecode": b""},
+        }
+        self.requested = []
+
+    def request_weapon_bytecode(self, name):
+        self.requested.append(("weapon", name))
+        return True
+
+    def request_class_bytecode(self, name, checksum=0):
+        self.requested.append(("class", name))
+        if name == "door":
+            self.gs2_bytecode["class"]["door"] = b"door-bytecode"
+        return True
+
+
+def _stub_gs2_reports(monkeypatch, reports):
+    def fake_run(blob, name="script", *args, **kwargs):
+        return reports[name]
+    monkeypatch.setattr("game_tester.server_crawl.run_gs2_bounded", fake_run)
+
+
+def _gs2_report(**overrides):
+    report = {"capped": False, "steps": 1, "elapsed": 0.0, "cooperative": [],
+              "unknown_opcodes": [],
+              "implemented_count": 0, "stubbed": [], "true_gaps": [],
+              "known_unsupported": [], "events": [], "event_failures": [],
+              "functions": [], "function_failures": [], "vm_errors": 0,
+              "warnings": [], "referenced_scripts": {"weapon": [], "class": []}}
+    report.update(overrides)
+    return report
+
+
+def test_announced_and_referenced_scripts_are_fetched_and_run(monkeypatch):
+    # Zelda announces 11 classes as header-only PLO_LOADSCRIPT records and a
+    # weapon names more through findweapon(); neither is ever pushed.
+    clock = _Clock()
+    client = _ScriptClient(clock)
+    _stub_gs2_reports(monkeypatch, {
+        "weapon:Pushed": _gs2_report(
+            true_gaps=["nosuchcall"], warnings=["unknown function nosuchcall()"],
+            referenced_scripts={"weapon": ["-Client/Install"], "class": []}),
+        "class:door": _gs2_report(events=["onCreated"], implemented_count=3),
+    })
+    result = DeepCrawler(client, timeout=20, clock=clock, sleep=clock.advance,
+                         renderer=lambda client, level: None).crawl()
+
+    assert sorted(client.requested) == [("class", "door"),
+                                        ("weapon", "-Client/Install")]
+    assert result["gs2"]["fetched"] == 1
+    assert result["gs2"]["fetch_missing"] == ["weapon:-Client/Install"]
+    scripts = {f"{item['kind']}:{item['name']}": item for item in result["gs2"]["scripts"]}
+    assert scripts["weapon:Pushed"]["source"] == "pushed"
+    assert scripts["weapon:Pushed"]["warnings"] == ["unknown function nosuchcall()"]
+    assert scripts["class:door"]["source"] == "fetched"
+    assert result["gs2"]["true_gaps"] == ["nosuchcall"]
+
+
+def test_script_fetching_respects_the_crawl_budget(monkeypatch):
+    clock = _Clock()
+    client = _ScriptClient(clock)
+    _stub_gs2_reports(monkeypatch, {"weapon:Pushed": _gs2_report()})
+    crawler = DeepCrawler(client, timeout=20, clock=clock, sleep=clock.advance,
+                          renderer=lambda client, level: None)
+    crawler.deadline = clock() - 1
+    crawler._run_bytecodes()
+    assert client.requested == []
+    assert crawler.result["gs2"]["fetched"] == 0
+    assert crawler.result["gs2"]["fetch_missing"] == []
 
 
 def test_catalog_unreachable_and_rejected_are_skips(tmp_path, monkeypatch, capsys):

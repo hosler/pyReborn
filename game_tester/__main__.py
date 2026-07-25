@@ -197,6 +197,27 @@ Examples:
                        help="Run the GS1 behavioral conformance suite: same GS1 "
                             "NPC scripts on pygserver vs the C++ gs2emu oracle, "
                             "diffing client-observable effects")
+    parser.add_argument("--behaviour", "--fingerprint", action="store_true",
+                       dest="behaviour",
+                       help="Run the live behavioural-fingerprint suite: log in "
+                            "with a real GameClient, then assert the SHAPE of "
+                            "what the server's scripts built (GUI tree, weapon "
+                            "VMs, events fired, host calls) against the "
+                            "checked-in baseline. Catches a script silently "
+                            "taking the wrong branch, which no other suite can.")
+    parser.add_argument("--behaviour-server", metavar="NAME", default=None,
+                       help="Fingerprint only this baseline entry (e.g. 'Login')")
+    parser.add_argument("--behaviour-seconds", type=float, default=None,
+                       metavar="SECONDS",
+                       help="Override the per-server observation window")
+    parser.add_argument("--rebaseline", action="store_true",
+                       help="With --behaviour: rewrite the baselines from this "
+                            "run instead of checking against them (deliberate "
+                            "re-baseline after a real server-content change)")
+    parser.add_argument("--rebaseline-pins", action="store_true",
+                       help="With --rebaseline: also reset the hand-curated "
+                            "required/forbidden sets (they are preserved by "
+                            "default, since they encode outage knowledge)")
     parser.add_argument("--report", type=str, default=None,
                        help="Base filename for reports (e.g., 'report' -> report.json, report.html)")
     catalog_group = parser.add_mutually_exclusive_group()
@@ -204,12 +225,32 @@ Examples:
                                help="Run the catalogued test subset for one server")
     catalog_group.add_argument("--catalog-all", action="store_true",
                                help="Run catalogued test subsets for every server")
+    parser.add_argument("--no-fingerprint", action="store_true",
+                       help="With --catalog-*: skip the behavioural fingerprint "
+                            "of catalogued servers that have a baseline")
 
     args = parser.parse_args()
 
+    # Behaviour fingerprints run standalone (own client lifecycle, own
+    # baseline file).
+    if args.behaviour:
+        from game_tester.behaviour_fingerprint import run_behaviour_checks
+        print("\n[BEHAVIOUR FINGERPRINTS]")
+        explicit_address = ("--host" in sys.argv) or ("--port" in sys.argv)
+        ok = run_behaviour_checks(
+            args.behaviour_server,
+            rebaseline=args.rebaseline,
+            reset_pins=args.rebaseline_pins,
+            host=args.host if explicit_address else None,
+            port=args.port if explicit_address else None,
+            seconds=args.behaviour_seconds,
+        )
+        sys.exit(0 if ok else 1)
+
     if args.catalog_server or args.catalog_all:
         from game_tester.server_probe import run_catalog_tests
-        ok = run_catalog_tests(args.catalog_server)
+        ok = run_catalog_tests(args.catalog_server,
+                               fingerprint=not args.no_fingerprint)
         sys.exit(0 if ok else 1)
 
     # GMAP suite runs standalone (own bot lifecycle + account-reset teardown).

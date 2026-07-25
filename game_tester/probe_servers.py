@@ -23,12 +23,16 @@ def main() -> None:
     parser.add_argument("--deep", action="store_true",
                         help="crawl linked levels and record parser/render coverage")
     parser.add_argument("--max-levels", type=int, default=15, metavar="N")
+    parser.add_argument("--deep-timeout", type=float, default=120.0, metavar="SECONDS",
+                        help="crawl budget per server (script fetching runs last)")
     parser.add_argument("--json-only", action="store_true")
     args = parser.parse_args()
     if args.wander is not None and args.wander < 0:
         parser.error("--wander must be non-negative")
     if args.max_levels < 0:
         parser.error("--max-levels must be non-negative")
+    if args.deep_timeout <= 0:
+        parser.error("--deep-timeout must be positive")
     try:
         versions = parse_versions(args.versions)
     except ValueError as exc:
@@ -38,11 +42,13 @@ def main() -> None:
               contextlib.redirect_stderr(io.StringIO())):
             catalog = probe_servers(args.server, args.timeout, args.catalog, args.wander,
                                     deep=args.deep, max_levels=args.max_levels,
+                                    deep_timeout=args.deep_timeout,
                                     versions=versions)
         print(json.dumps(catalog, sort_keys=True))
     else:
         catalog = probe_servers(args.server, args.timeout, args.catalog, args.wander,
                                 deep=args.deep, max_levels=args.max_levels,
+                                deep_timeout=args.deep_timeout,
                                 versions=versions)
         print(f"Catalogued {len(catalog['servers'])} server(s) in {args.catalog}")
 

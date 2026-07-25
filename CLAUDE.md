@@ -113,7 +113,58 @@ python -m game_tester --explore 60
 
 # Save reports (JSON + HTML)
 python -m game_tester --report my_report
+
+# Behavioural fingerprints against live servers (see below)
+python -m game_tester --behaviour
+python -m game_tester --behaviour --behaviour-server "Login"
+python -m game_tester --behaviour --behaviour-server "Login" --rebaseline
 ```
+
+### Behavioural fingerprints (`--behaviour`)
+
+**Run this after ANY change to the GS2 VM or client host.** The rest of the
+suite cannot detect a *branch flip* in real server content: if a semantic
+change makes a server's own scripts take the wrong path, there is no error,
+no warning and no failing test — the client just silently builds nothing.
+That is exactly how a `gs2_compare(<object>, null)` change broke the public
+Login server on 2026-07-24 with all 754 tests passing.
+
+`--behaviour` logs into each known server with a real `GameClient`, pumps a
+fixed window of frames, and asserts ~33 invariants against
+`game_tester/behaviour_baselines.json`, in three families:
+
+- **structure** — GUI root / named-control / control-class counts, which
+  weapons load and which must *never* load, event and host-call volumes, no
+  new missing builtins, no new warning templates;
+- **content** — `tree_nodes`, `list_rows`, `text_controls` and the
+  `required_filled_controls` pin. **Structure alone is not enough**: on
+  2026-07-25 the Login server list came up completely EMPTY and every
+  structural count stayed inside its band, so the harness reported 25/25 over
+  a broken UI. A control that exists is not a control that has anything in it;
+- **geometry** — `within_parent`, `nonzero_area`, `window_layout`. These catch
+  a layout that collapses without changing any count: an unimplemented
+  `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults
+  with *identical* roots/named/controls/tree_nodes/list_rows to the healthy
+  capture.
+
+A server's most interesting UI often only exists once someone opens it, so a
+target may list `open_ui` entries (`"<weapon vm>:<function>"`) that are
+invoked after the observation window — Login opens `-Serverlist_Chat.openChat`.
+**Only ever list openers that build UI locally**; a function that sends is a
+live action on someone else's server.
+
+Bands are deliberately loose enough to survive normal content churn and tight
+enough to catch a branch flip. When a real content or engine change moves a
+metric legitimately, re-baseline **that server** with `--rebaseline` (curated
+pins are preserved, and pin kinds added since the baseline was recorded get
+seeded; `--rebaseline-pins` resets them) and say why in the commit.
+
+`tests/fixtures/fingerprint_login_{good,broken,emptylist,layout}.json` are real
+captures of the healthy server and of three different outages, replayed offline
+by `tests/unit/test_behaviour_fingerprint.py` — so "does this still catch THE
+outage?" stays answerable with no network, even after a re-baseline. The
+`emptylist` and `layout` fixtures also assert the *converse*: that the
+structural invariants alone would NOT have caught them.
 
 ### Test Categories
 

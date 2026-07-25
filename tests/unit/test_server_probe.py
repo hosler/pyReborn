@@ -9,6 +9,7 @@ from game_tester.server_probe import (
     parse_server_name,
     parse_versions,
     probe_entry,
+    probe_status,
     save_catalog,
 )
 from pyreborn.client import Client, HANDLED_PLO_IDS
@@ -60,6 +61,20 @@ def test_catalog_round_trip(tmp_path):
     save_catalog(catalog, path)
     assert load_catalog(path) == catalog
     assert json.loads(path.read_text())["schema_version"] == 3
+
+
+def test_catalog_load_backfills_status_for_older_records(tmp_path):
+    path = tmp_path / "catalog.json"
+    catalog = empty_catalog()
+    catalog["servers"]["Staff Only"] = {
+        "capabilities": {"reachable": True, "login": "rejected",
+                         "login_reject_reason": "restricted to staff only"},
+        "versions": {"2.22": {"login": "rejected"}}}
+    save_catalog(catalog, path)
+    loaded = load_catalog(path)
+    record = loaded["servers"]["Staff Only"]
+    assert record["capabilities"]["status"] == "rejected"
+    assert record["versions"]["2.22"]["status"] == "rejected"
 
 
 def _probe_section_record(marker):
@@ -159,6 +174,41 @@ def test_rejected_login_keeps_reason_version_and_generation():
     assert capabilities["negotiated_version"] is None
     assert capabilities["encryption_gen"] == 3
     assert capabilities["gen_source"] == "handshake"
+
+
+def test_status_taxonomy_separates_refusal_from_failure():
+    assert probe_status({"reachable": True, "login": "accepted"}) == "ok"
+    # Staff-only listings and version gates: reachable, but not ours to test.
+    assert probe_status({"reachable": True, "login": "rejected"}) == "rejected"
+    assert probe_status({"reachable": True, "login": "timeout"}) == "timeout"
+    assert probe_status({"reachable": False, "login": "not_attempted"}) == "unreachable"
+    assert probe_status({"reachable": False}) == "unreachable"
+    # Only an exception before any verdict counts as our failure.
+    assert probe_status({"reachable": False, "login": "timeout"}) == "error"
+    # Per-version records carry no reachability flag of their own.
+    assert probe_status({"login": "rejected"}) == "rejected"
+
+
+def test_dead_address_is_unreachable_not_a_probe_error():
+    def refuse(*args, **kwargs):
+        raise OSError("Name or service not known")
+
+    entry = ServerEntry("Example", "", "", "", "", "6.037", 0, "gone.test", 14900)
+    record = probe_entry(entry, "account", "secret", timeout=0.01,
+                         client_factory=_RejectingClient, resolver=refuse)
+    assert record["capabilities"]["status"] == "unreachable"
+    assert record["capabilities"]["login"] == "not_attempted"
+    assert record["errors"] == ["address resolution failed: Name or service not known"]
+
+
+def test_rejected_probe_records_status_alongside_the_reason():
+    entry = ServerEntry("Example", "", "", "", "", "6.037", 0, "example.test", 14900)
+    record = probe_entry(
+        entry, "account", "secret", timeout=0.01,
+        client_factory=_RejectingClient,
+        resolver=lambda *args, **kwargs: [(None, None, None, None, None)],
+    )
+    assert record["capabilities"]["status"] == "rejected"
 
 
 def test_version_matrix_pins_each_requested_version_and_shapes_records():

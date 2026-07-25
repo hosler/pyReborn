@@ -1,0 +1,1206 @@
+{
+  "schema_version": 1,
+  "servers": {
+    "Login": {
+      "address": {
+        "host": "loginserver.graal.in",
+        "port": 14911
+      },
+      "ignore": [],
+      "observed": {
+        "address": {
+          "host": "loginserver.graal.in",
+          "port": 14911
+        },
+        "bytecodes": {
+          "class": 0,
+          "gani": 0,
+          "npc": 0,
+          "weapon": 3
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 453,
+          "distinct": 9,
+          "kinds": [
+            "weapon.oncreated",
+            "weapon.onplayerenters",
+            "weapon.onreceivetext",
+            "weapon.onserverlisterconnect",
+            "weapon.ontimeout"
+          ],
+          "weapon_events": [
+            "weapon:-rescripted/irc/login3.oncreated",
+            "weapon:-rescripted/irc/login3.onplayerenters",
+            "weapon:-rescripted/serverlist.oncreated",
+            "weapon:-rescripted/serverlist.onplayerenters",
+            "weapon:-rescripted/serverlist.onreceivetext",
+            "weapon:-rescripted/serverlist.onserverlisterconnect",
+            "weapon:-rescripted/serverlist.ontimeout",
+            "weapon:-serverlist_chat.oncreated",
+            "weapon:-serverlist_chat.onserverlisterconnect"
+          ]
+        },
+        "frames": 1560,
+        "gui": {
+          "classes": {
+            "GuiBitmapCtrl": 3,
+            "GuiButtonCtrl": 20,
+            "GuiContextMenuCtrl": 1,
+            "GuiControl": 16,
+            "GuiFrameSetCtrl": 1,
+            "GuiMLTextCtrl": 8,
+            "GuiScrollCtrl": 9,
+            "GuiStartMenuCtrl": 1,
+            "GuiTabCtrl": 4,
+            "GuiTaskbar": 1,
+            "GuiTextCtrl": 9,
+            "GuiTextEditCtrl": 8,
+            "GuiTextListCtrl": 2,
+            "GuiTreeViewCtrl": 1,
+            "GuiWindowCtrl": 6
+          },
+          "controls": 90,
+          "degenerate": [],
+          "filled_controls": [
+            "chatbar_toggletaskbarbutton",
+            "globalchat_chatlabel",
+            "globalchat_window",
+            "serverlist_description0",
+            "serverlist_descriptiontab",
+            "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_protectquery",
+            "serverlist_protectquery_cancelbutton",
+            "serverlist_protectquery_protectbutton",
+            "serverlist_protectquery_window",
+            "serverlist_serverdirectlabel",
+            "serverlist_serverlist",
+            "serverlist_tablestab",
+            "serverlist_tableswindow",
+            "serverlist_taskbar_label",
+            "serverlist_taskbar_label2",
+            "serverlist_taskbar_menu",
+            "serverlist_taskbutton_main",
+            "serverlist_taskbutton_toggle",
+            "serverlist_test_window",
+            "serverlist_window"
+          ],
+          "list_rows": 13,
+          "max_depth": 6,
+          "named": 108,
+          "overflowing": [],
+          "root_classes": {
+            "GuiButtonCtrl": 2,
+            "GuiContextMenuCtrl": 1,
+            "GuiControl": 1,
+            "GuiStartMenuCtrl": 1,
+            "GuiTaskbar": 1,
+            "GuiTextEditCtrl": 2,
+            "GuiWindowCtrl": 3
+          },
+          "root_names": [
+            "chatbar",
+            "chatbar_toggletaskbarbutton",
+            "globalchat_channelmenu",
+            "globalchat_window",
+            "serverlist_panel",
+            "serverlist_protectquery_window",
+            "serverlist_taskbar",
+            "serverlist_taskbar_menu",
+            "serverlist_test_window"
+          ],
+          "roots": 11,
+          "text_controls": 32,
+          "tree_names": [
+            "chatbar",
+            "chatbar_toggletaskbarbutton",
+            "globalchat_channelmenu",
+            "globalchat_channels",
+            "globalchat_channelsscroll",
+            "globalchat_chatcontainer",
+            "globalchat_chatfield",
+            "globalchat_chatlabel",
+            "globalchat_chatpanel",
+            "globalchat_chattab",
+            "globalchat_frames",
+            "globalchat_smiliebutton0",
+            "globalchat_smiliebutton1",
+            "globalchat_smiliebutton2",
+            "globalchat_smiliebutton3",
+            "globalchat_smiliebutton4",
+            "globalchat_smiliebutton5",
+            "globalchat_window",
+            "guibitmapctrl",
+            "guibuttonctrl",
+            "guimltextctrl",
+            "guitextctrl",
+            "guitexteditctrl",
+            "guitextlistctrl",
+            "item_scroll",
+            "serverdescription_scroll",
+            "serverlist_description0",
+            "serverlist_description1",
+            "serverlist_description2",
+            "serverlist_descriptionpanel",
+            "serverlist_descriptionpanel0",
+            "serverlist_descriptionpanel1",
+            "serverlist_descriptionpanel2",
+            "serverlist_descriptionscroll0",
+            "serverlist_descriptionscroll1",
+            "serverlist_descriptionscroll2",
+            "serverlist_descriptiontab",
+            "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_eventnews_scroll",
+            "serverlist_mainpanel",
+            "serverlist_mainpanel_back",
+            "serverlist_panel",
+            "serverlist_protectquery",
+            "serverlist_protectquery_cancelbutton",
+            "serverlist_protectquery_protectbutton",
+            "serverlist_protectquery_scroll",
+            "serverlist_protectquery_window",
+            "serverlist_serverdirectconnect",
+            "serverlist_serverdirectlabel",
+            "serverlist_serverlist",
+            "serverlist_serverlist_scroll",
+            "serverlist_serverpanel0",
+            "serverlist_tablespanel",
+            "serverlist_tablespanel0",
+            "serverlist_tablespanel1",
+            "serverlist_tablespanel2",
+            "serverlist_tablespanel3",
+            "serverlist_tablestab",
+            "serverlist_tableswindow",
+            "serverlist_taskbar",
+            "serverlist_taskbar_label",
+            "serverlist_taskbar_label2",
+            "serverlist_taskbar_menu",
+            "serverlist_taskbutton_main",
+            "serverlist_taskbutton_server",
+            "serverlist_taskbutton_start",
+            "serverlist_taskbutton_toggle",
+            "serverlist_test_window",
+            "serverlist_window",
+            "serverlist_window_panel",
+            "serverlistgui",
+            "test_back",
+            "test_tab"
+          ],
+          "tree_nodes": 15,
+          "window_overlaps": [
+            "globalchat_window|serverlist_descriptionwindow",
+            "globalchat_window|serverlist_tableswindow",
+            "globalchat_window|serverlist_window"
+          ]
+        },
+        "host_calls": {
+          "distinct": 33,
+          "missing": [],
+          "names": [
+            "addcontrol",
+            "addnodebypath",
+            "addrow",
+            "adventure_setgraalcontrolrecreate",
+            "catchevent",
+            "clearall",
+            "clearcontrols",
+            "clearnodes",
+            "clearrows",
+            "drawimage",
+            "drawimagestretched",
+            "echo",
+            "findweapon",
+            "getimgwidth",
+            "getnode",
+            "hide",
+            "isobject",
+            "keydown",
+            "lowercase",
+            "makefirstresponder",
+            "pushtoback",
+            "requesttext",
+            "requesturl",
+            "select",
+            "sendtext",
+            "setcolumnoffset",
+            "seticonsize",
+            "setselectedbyid",
+            "setselectedrow",
+            "settimer",
+            "show",
+            "showtop",
+            "sort"
+          ],
+          "total": 1628
+        },
+        "level": "black.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 25.0,
+        "ui_opened": {
+          "-serverlist_chat:openchat": "ok"
+        },
+        "version": "6.037",
+        "vms": {
+          "class": [],
+          "gani_count": 0,
+          "npc_count": 0,
+          "weapon": [
+            "-rescripted/irc/login3",
+            "-rescripted/serverlist",
+            "-serverlist_chat"
+          ]
+        },
+        "wall_seconds": 25.46,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 1,
+          "weapons": 2
+        }
+      },
+      "open_ui": [
+        "-serverlist_chat:openchat"
+      ],
+      "passive": true,
+      "pins": {
+        "allowed_window_overlaps": [
+          "globalchat_window|serverlist_descriptionwindow",
+          "globalchat_window|serverlist_tableswindow",
+          "globalchat_window|serverlist_window"
+        ],
+        "forbidden_weapons": [
+          "-serverlist",
+          "-serverlistscreen",
+          "-irc_login3"
+        ],
+        "required_controls": [
+          "chatbar",
+          "chatbar_toggletaskbarbutton",
+          "serverlist_panel",
+          "serverlist_protectquery_window",
+          "serverlist_taskbar",
+          "serverlist_taskbar_menu",
+          "serverlist_test_window"
+        ],
+        "required_event_kinds": [
+          "weapon.oncreated",
+          "weapon.onplayerenters",
+          "weapon.onserverlisterconnect",
+          "weapon.ontimeout"
+        ],
+        "required_filled_controls": [
+          "serverlist_serverlist",
+          "serverlist_description0",
+          "serverlist_eventnews",
+          "serverlist_taskbar_menu",
+          "serverlist_tablestab",
+          "globalchat_chatlabel"
+        ],
+        "required_weapon_events": [
+          "weapon:-rescripted/irc/login3.oncreated",
+          "weapon:-rescripted/irc/login3.onplayerenters",
+          "weapon:-rescripted/serverlist.oncreated",
+          "weapon:-rescripted/serverlist.onplayerenters",
+          "weapon:-rescripted/serverlist.onserverlisterconnect",
+          "weapon:-rescripted/serverlist.ontimeout",
+          "weapon:-serverlist_chat.oncreated",
+          "weapon:-serverlist_chat.onserverlisterconnect"
+        ],
+        "required_weapons": [
+          "-rescripted/irc/login3",
+          "-rescripted/serverlist",
+          "-serverlist_chat"
+        ]
+      },
+      "recorded_at": "2026-07-25T01:23:23.608360+00:00",
+      "seconds": 25.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
+    "Login DEV": {
+      "address": {
+        "host": "loginserver.graal.in",
+        "port": 14914
+      },
+      "ignore": [],
+      "observed": {
+        "address": {
+          "host": "loginserver.graal.in",
+          "port": 14914
+        },
+        "bytecodes": {
+          "class": 0,
+          "gani": 0,
+          "npc": 0,
+          "weapon": 3
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 452,
+          "distinct": 9,
+          "kinds": [
+            "weapon.oncreated",
+            "weapon.onplayerenters",
+            "weapon.onreceivetext",
+            "weapon.onserverlisterconnect",
+            "weapon.ontimeout"
+          ],
+          "weapon_events": [
+            "weapon:-rescripted/irc/login3.oncreated",
+            "weapon:-rescripted/irc/login3.onplayerenters",
+            "weapon:-rescripted/serverlist.oncreated",
+            "weapon:-rescripted/serverlist.onplayerenters",
+            "weapon:-rescripted/serverlist.onreceivetext",
+            "weapon:-rescripted/serverlist.onserverlisterconnect",
+            "weapon:-rescripted/serverlist.ontimeout",
+            "weapon:-serverlist_chat.oncreated",
+            "weapon:-serverlist_chat.onserverlisterconnect"
+          ]
+        },
+        "frames": 1560,
+        "gui": {
+          "classes": {
+            "GuiBitmapCtrl": 3,
+            "GuiButtonCtrl": 20,
+            "GuiContextMenuCtrl": 1,
+            "GuiControl": 16,
+            "GuiFrameSetCtrl": 1,
+            "GuiMLTextCtrl": 8,
+            "GuiScrollCtrl": 9,
+            "GuiStartMenuCtrl": 1,
+            "GuiTabCtrl": 4,
+            "GuiTaskbar": 1,
+            "GuiTextCtrl": 9,
+            "GuiTextEditCtrl": 8,
+            "GuiTextListCtrl": 2,
+            "GuiTreeViewCtrl": 1,
+            "GuiWindowCtrl": 6
+          },
+          "controls": 90,
+          "degenerate": [],
+          "filled_controls": [
+            "chatbar_toggletaskbarbutton",
+            "globalchat_chatlabel",
+            "globalchat_window",
+            "serverlist_description0",
+            "serverlist_descriptiontab",
+            "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_protectquery",
+            "serverlist_protectquery_cancelbutton",
+            "serverlist_protectquery_protectbutton",
+            "serverlist_protectquery_window",
+            "serverlist_serverdirectlabel",
+            "serverlist_serverlist",
+            "serverlist_tablestab",
+            "serverlist_tableswindow",
+            "serverlist_taskbar_label",
+            "serverlist_taskbar_label2",
+            "serverlist_taskbar_menu",
+            "serverlist_taskbutton_main",
+            "serverlist_taskbutton_toggle",
+            "serverlist_test_window",
+            "serverlist_window"
+          ],
+          "list_rows": 13,
+          "max_depth": 6,
+          "named": 108,
+          "overflowing": [],
+          "root_classes": {
+            "GuiButtonCtrl": 2,
+            "GuiContextMenuCtrl": 1,
+            "GuiControl": 1,
+            "GuiStartMenuCtrl": 1,
+            "GuiTaskbar": 1,
+            "GuiTextEditCtrl": 2,
+            "GuiWindowCtrl": 3
+          },
+          "root_names": [
+            "chatbar",
+            "chatbar_toggletaskbarbutton",
+            "globalchat_channelmenu",
+            "globalchat_window",
+            "serverlist_panel",
+            "serverlist_protectquery_window",
+            "serverlist_taskbar",
+            "serverlist_taskbar_menu",
+            "serverlist_test_window"
+          ],
+          "roots": 11,
+          "text_controls": 32,
+          "tree_names": [
+            "chatbar",
+            "chatbar_toggletaskbarbutton",
+            "globalchat_channelmenu",
+            "globalchat_channels",
+            "globalchat_channelsscroll",
+            "globalchat_chatcontainer",
+            "globalchat_chatfield",
+            "globalchat_chatlabel",
+            "globalchat_chatpanel",
+            "globalchat_chattab",
+            "globalchat_frames",
+            "globalchat_smiliebutton0",
+            "globalchat_smiliebutton1",
+            "globalchat_smiliebutton2",
+            "globalchat_smiliebutton3",
+            "globalchat_smiliebutton4",
+            "globalchat_smiliebutton5",
+            "globalchat_window",
+            "guibitmapctrl",
+            "guibuttonctrl",
+            "guimltextctrl",
+            "guitextctrl",
+            "guitexteditctrl",
+            "guitextlistctrl",
+            "item_scroll",
+            "serverdescription_scroll",
+            "serverlist_description0",
+            "serverlist_description1",
+            "serverlist_description2",
+            "serverlist_descriptionpanel",
+            "serverlist_descriptionpanel0",
+            "serverlist_descriptionpanel1",
+            "serverlist_descriptionpanel2",
+            "serverlist_descriptionscroll0",
+            "serverlist_descriptionscroll1",
+            "serverlist_descriptionscroll2",
+            "serverlist_descriptiontab",
+            "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_eventnews_scroll",
+            "serverlist_mainpanel",
+            "serverlist_mainpanel_back",
+            "serverlist_panel",
+            "serverlist_protectquery",
+            "serverlist_protectquery_cancelbutton",
+            "serverlist_protectquery_protectbutton",
+            "serverlist_protectquery_scroll",
+            "serverlist_protectquery_window",
+            "serverlist_serverdirectconnect",
+            "serverlist_serverdirectlabel",
+            "serverlist_serverlist",
+            "serverlist_serverlist_scroll",
+            "serverlist_serverpanel0",
+            "serverlist_tablespanel",
+            "serverlist_tablespanel0",
+            "serverlist_tablespanel1",
+            "serverlist_tablespanel2",
+            "serverlist_tablespanel3",
+            "serverlist_tablestab",
+            "serverlist_tableswindow",
+            "serverlist_taskbar",
+            "serverlist_taskbar_label",
+            "serverlist_taskbar_label2",
+            "serverlist_taskbar_menu",
+            "serverlist_taskbutton_main",
+            "serverlist_taskbutton_server",
+            "serverlist_taskbutton_start",
+            "serverlist_taskbutton_toggle",
+            "serverlist_test_window",
+            "serverlist_window",
+            "serverlist_window_panel",
+            "serverlistgui",
+            "test_back",
+            "test_tab"
+          ],
+          "tree_nodes": 15,
+          "window_overlaps": [
+            "globalchat_window|serverlist_descriptionwindow",
+            "globalchat_window|serverlist_tableswindow",
+            "globalchat_window|serverlist_window"
+          ]
+        },
+        "host_calls": {
+          "distinct": 33,
+          "missing": [],
+          "names": [
+            "addcontrol",
+            "addnodebypath",
+            "addrow",
+            "adventure_setgraalcontrolrecreate",
+            "catchevent",
+            "clearall",
+            "clearcontrols",
+            "clearnodes",
+            "clearrows",
+            "drawimage",
+            "drawimagestretched",
+            "echo",
+            "findweapon",
+            "getimgwidth",
+            "getnode",
+            "hide",
+            "isobject",
+            "keydown",
+            "lowercase",
+            "makefirstresponder",
+            "pushtoback",
+            "requesttext",
+            "requesturl",
+            "select",
+            "sendtext",
+            "setcolumnoffset",
+            "seticonsize",
+            "setselectedbyid",
+            "setselectedrow",
+            "settimer",
+            "show",
+            "showtop",
+            "sort"
+          ],
+          "total": 1625
+        },
+        "level": "onlinestartlocal.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 25.0,
+        "ui_opened": {
+          "-serverlist_chat:openchat": "ok"
+        },
+        "version": "6.037",
+        "vms": {
+          "class": [],
+          "gani_count": 0,
+          "npc_count": 0,
+          "weapon": [
+            "-rescripted/irc/login3",
+            "-rescripted/serverlist",
+            "-serverlist_chat"
+          ]
+        },
+        "wall_seconds": 25.45,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 2,
+          "weapons": 2
+        }
+      },
+      "open_ui": [
+        "-serverlist_chat:openchat"
+      ],
+      "passive": true,
+      "pins": {
+        "allowed_window_overlaps": [
+          "globalchat_window|serverlist_descriptionwindow",
+          "globalchat_window|serverlist_tableswindow",
+          "globalchat_window|serverlist_window"
+        ],
+        "forbidden_weapons": [
+          "-serverlist",
+          "-serverlistscreen",
+          "-irc_login3"
+        ],
+        "required_controls": [
+          "chatbar",
+          "chatbar_toggletaskbarbutton",
+          "serverlist_panel",
+          "serverlist_protectquery_window",
+          "serverlist_taskbar",
+          "serverlist_taskbar_menu",
+          "serverlist_test_window"
+        ],
+        "required_event_kinds": [
+          "weapon.oncreated",
+          "weapon.onplayerenters",
+          "weapon.onserverlisterconnect",
+          "weapon.ontimeout"
+        ],
+        "required_filled_controls": [
+          "serverlist_serverlist",
+          "serverlist_description0",
+          "serverlist_eventnews",
+          "serverlist_taskbar_menu",
+          "serverlist_tablestab",
+          "globalchat_chatlabel"
+        ],
+        "required_weapon_events": [
+          "weapon:-rescripted/irc/login3.oncreated",
+          "weapon:-rescripted/irc/login3.onplayerenters",
+          "weapon:-rescripted/serverlist.oncreated",
+          "weapon:-rescripted/serverlist.onplayerenters",
+          "weapon:-rescripted/serverlist.onserverlisterconnect",
+          "weapon:-rescripted/serverlist.ontimeout",
+          "weapon:-serverlist_chat.oncreated",
+          "weapon:-serverlist_chat.onserverlisterconnect"
+        ],
+        "required_weapons": [
+          "-rescripted/irc/login3",
+          "-rescripted/serverlist",
+          "-serverlist_chat"
+        ]
+      },
+      "recorded_at": "2026-07-25T01:23:52.437703+00:00",
+      "seconds": 25.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
+    "Login Mobile": {
+      "address": {
+        "host": "loginserver.graal.in",
+        "port": 14912
+      },
+      "ignore": [],
+      "observed": {
+        "address": {
+          "host": "loginserver.graal.in",
+          "port": 14912
+        },
+        "bytecodes": {
+          "class": 2,
+          "gani": 0,
+          "npc": 0,
+          "weapon": 5
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 444,
+          "distinct": 7,
+          "kinds": [
+            "weapon.oncreated",
+            "weapon.onreceivetext",
+            "weapon.ontimeout"
+          ],
+          "weapon_events": [
+            "weapon:-adventure.oncreated",
+            "weapon:-loginscreen.oncreated",
+            "weapon:-mobile/serverlist.oncreated",
+            "weapon:-mobile/serverlist.onreceivetext",
+            "weapon:-reshared.oncreated",
+            "weapon:cadavretest.oncreated",
+            "weapon:cadavretest.ontimeout"
+          ]
+        },
+        "frames": 1560,
+        "gui": {
+          "classes": {},
+          "controls": 0,
+          "degenerate": [],
+          "filled_controls": [],
+          "list_rows": 0,
+          "max_depth": 0,
+          "named": 3,
+          "overflowing": [],
+          "root_classes": {},
+          "root_names": [],
+          "roots": 0,
+          "text_controls": 0,
+          "tree_names": [],
+          "tree_nodes": 0,
+          "window_overlaps": []
+        },
+        "host_calls": {
+          "distinct": 18,
+          "missing": [],
+          "names": [
+            "addarray",
+            "addcontainer",
+            "addcontrol",
+            "adventure_setframetick",
+            "echo",
+            "fileupdate",
+            "getgamesubversion",
+            "getplatform",
+            "getpremiumoption",
+            "isobject",
+            "join",
+            "keydown2",
+            "lowercase",
+            "replaceall",
+            "requesttext",
+            "settimer",
+            "sortbyvalue",
+            "triggerserver"
+          ],
+          "total": 1366
+        },
+        "level": "black.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 25.0,
+        "ui_opened": {},
+        "version": "6.037",
+        "vms": {
+          "class": [
+            "gui_scaler",
+            "gui_scaler2"
+          ],
+          "gani_count": 0,
+          "npc_count": 0,
+          "weapon": [
+            "-adventure",
+            "-loginscreen",
+            "-mobile/serverlist",
+            "-reshared",
+            "cadavretest"
+          ]
+        },
+        "wall_seconds": 25.06,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 1,
+          "weapons": 5
+        }
+      },
+      "open_ui": [],
+      "passive": true,
+      "pins": {
+        "allowed_window_overlaps": [],
+        "forbidden_weapons": [],
+        "required_controls": [],
+        "required_event_kinds": [
+          "weapon.oncreated",
+          "weapon.onreceivetext",
+          "weapon.ontimeout"
+        ],
+        "required_filled_controls": [],
+        "required_weapon_events": [
+          "weapon:-adventure.oncreated",
+          "weapon:-loginscreen.oncreated",
+          "weapon:-mobile/serverlist.oncreated",
+          "weapon:-mobile/serverlist.onreceivetext",
+          "weapon:-reshared.oncreated",
+          "weapon:cadavretest.oncreated",
+          "weapon:cadavretest.ontimeout"
+        ],
+        "required_weapons": [
+          "-adventure",
+          "-loginscreen",
+          "-mobile/serverlist",
+          "-reshared",
+          "cadavretest"
+        ]
+      },
+      "recorded_at": "2026-07-25T01:24:20.847815+00:00",
+      "seconds": 25.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
+    "Zelda: A Link to the Past": {
+      "address": {
+        "host": "hastur.eevul.net",
+        "port": 14912
+      },
+      "ignore": [],
+      "observed": {
+        "address": {
+          "host": "hastur.eevul.net",
+          "port": 14912
+        },
+        "bytecodes": {
+          "class": 1,
+          "gani": 0,
+          "npc": 4,
+          "weapon": 7
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 6330,
+          "distinct": 12,
+          "kinds": [
+            "npc.oncreated",
+            "weapon.oncreated",
+            "weapon.onplayerenters",
+            "weapon.ontimeout",
+            "weapon.onupdate"
+          ],
+          "weapon_events": [
+            "weapon:*system.oncreated",
+            "weapon:*system.onplayerenters",
+            "weapon:*system.ontimeout",
+            "weapon:*system.onupdate",
+            "weapon:-player/functions.oncreated",
+            "weapon:-player/movement.oncreated",
+            "weapon:-player/movement.onplayerenters",
+            "weapon:-player/movement.ontimeout",
+            "weapon:fpscounter.oncreated",
+            "weapon:fpscounter.ontimeout",
+            "weapon:fpscounter.onupdate"
+          ]
+        },
+        "frames": 1500,
+        "gui": {
+          "classes": {
+            "GuiCheckBoxCtrl": 2,
+            "GuiPopUpMenuCtrl": 3,
+            "GuiTextCtrl": 3,
+            "GuiWindowCtrl": 1
+          },
+          "controls": 9,
+          "degenerate": [],
+          "filled_controls": [
+            "fpsconfig_graalticks",
+            "fpsconfig_graalticks_text",
+            "fpsconfig_targetframerate",
+            "fpsconfig_targetframerate_text",
+            "fpsconfig_togglecounters",
+            "fpsconfig_togglespinners",
+            "fpsconfig_vsync",
+            "fpsconfig_vsync_text",
+            "fpsconfig_window"
+          ],
+          "list_rows": 0,
+          "max_depth": 1,
+          "named": 11,
+          "overflowing": [],
+          "root_classes": {
+            "GuiWindowCtrl": 1
+          },
+          "root_names": [
+            "fpsconfig_window"
+          ],
+          "roots": 1,
+          "text_controls": 9,
+          "tree_names": [
+            "fpsconfig_graalticks",
+            "fpsconfig_graalticks_text",
+            "fpsconfig_targetframerate",
+            "fpsconfig_targetframerate_text",
+            "fpsconfig_togglecounters",
+            "fpsconfig_togglespinners",
+            "fpsconfig_vsync",
+            "fpsconfig_vsync_text",
+            "fpsconfig_window"
+          ],
+          "tree_nodes": 0,
+          "window_overlaps": []
+        },
+        "host_calls": {
+          "distinct": 42,
+          "missing": [],
+          "names": [
+            "addcontrol",
+            "addrow",
+            "addtiledef",
+            "addtiledef2",
+            "adventure_setframetick",
+            "changeimgpart",
+            "changeimgvis",
+            "changeimgzoom",
+            "clearrows",
+            "disabledefmovement",
+            "disableselectweapons",
+            "dontblock",
+            "drawoverplayer",
+            "echo",
+            "findimg",
+            "findplayer",
+            "freezeplayer",
+            "getmusicfilename",
+            "getnearestplayers",
+            "hideimg",
+            "hideimgs",
+            "hit",
+            "hurtplayer",
+            "join",
+            "modifyclientr",
+            "noplayerkilling",
+            "playlooped",
+            "replaceani",
+            "screenx",
+            "screeny",
+            "setani",
+            "seteffect",
+            "setframetick",
+            "setselectedrow",
+            "setspritesimage",
+            "settimer",
+            "showani",
+            "showimg",
+            "showpoly",
+            "showstats",
+            "showtext",
+            "triggerserver"
+          ],
+          "total": 606528
+        },
+        "level": "zlttp-e5.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 25.0,
+        "ui_opened": {},
+        "version": "6.037",
+        "vms": {
+          "class": [
+            "door"
+          ],
+          "gani_count": 0,
+          "npc_count": 4,
+          "weapon": [
+            "*system",
+            "-player/functions",
+            "-player/movement",
+            "bomb",
+            "fpscounter",
+            "hammer",
+            "mobspawn"
+          ]
+        },
+        "wall_seconds": 25.0,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 4,
+          "weapons": 7
+        }
+      },
+      "open_ui": [],
+      "passive": true,
+      "pins": {
+        "allowed_window_overlaps": [],
+        "forbidden_weapons": [],
+        "required_controls": [
+          "fpsconfig_window"
+        ],
+        "required_event_kinds": [
+          "weapon.oncreated",
+          "weapon.onplayerenters",
+          "weapon.ontimeout",
+          "weapon.onupdate"
+        ],
+        "required_filled_controls": [
+          "fpsconfig_graalticks",
+          "fpsconfig_graalticks_text",
+          "fpsconfig_targetframerate",
+          "fpsconfig_targetframerate_text",
+          "fpsconfig_togglecounters",
+          "fpsconfig_togglespinners",
+          "fpsconfig_vsync",
+          "fpsconfig_vsync_text",
+          "fpsconfig_window"
+        ],
+        "required_weapon_events": [
+          "weapon:*system.oncreated",
+          "weapon:*system.onplayerenters",
+          "weapon:*system.ontimeout",
+          "weapon:*system.onupdate",
+          "weapon:-player/functions.oncreated",
+          "weapon:-player/movement.oncreated",
+          "weapon:-player/movement.onplayerenters",
+          "weapon:-player/movement.ontimeout",
+          "weapon:fpscounter.oncreated",
+          "weapon:fpscounter.ontimeout",
+          "weapon:fpscounter.onupdate"
+        ],
+        "required_weapons": [
+          "*system",
+          "-player/functions",
+          "-player/movement",
+          "bomb",
+          "fpscounter",
+          "hammer",
+          "mobspawn"
+        ]
+      },
+      "recorded_at": "2026-07-25T01:24:49.892939+00:00",
+      "seconds": 25.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
+    "local gs2emu": {
+      "address": {
+        "host": "localhost",
+        "port": 14900
+      },
+      "ignore": [
+        "level_npcs",
+        "gs1_scripts",
+        "player_weapons"
+      ],
+      "observed": {
+        "address": {
+          "host": "localhost",
+          "port": 14900
+        },
+        "bytecodes": {
+          "class": 0,
+          "gani": 0,
+          "npc": 0,
+          "weapon": 0
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 0,
+          "distinct": 0,
+          "kinds": [],
+          "weapon_events": []
+        },
+        "frames": 900,
+        "gui": {
+          "classes": {},
+          "controls": 0,
+          "degenerate": [],
+          "filled_controls": [],
+          "list_rows": 0,
+          "max_depth": 0,
+          "named": 0,
+          "overflowing": [],
+          "root_classes": {},
+          "root_names": [],
+          "roots": 0,
+          "text_controls": 0,
+          "tree_names": [],
+          "tree_nodes": 0,
+          "window_overlaps": []
+        },
+        "host_calls": {
+          "distinct": 0,
+          "missing": [],
+          "names": [],
+          "total": 0
+        },
+        "level": "chicken1.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 15.0,
+        "ui_opened": {},
+        "version": "6.037",
+        "vms": {
+          "class": [],
+          "gani_count": 0,
+          "npc_count": 0,
+          "weapon": []
+        },
+        "wall_seconds": 15.0,
+        "world": {
+          "gs1_scripts": 1,
+          "npcs": 6,
+          "weapons": 2
+        }
+      },
+      "open_ui": [],
+      "passive": false,
+      "pins": {
+        "allowed_window_overlaps": [],
+        "forbidden_weapons": [],
+        "required_controls": [],
+        "required_event_kinds": [],
+        "required_filled_controls": [],
+        "required_weapon_events": [],
+        "required_weapons": []
+      },
+      "recorded_at": "2026-07-25T01:25:05.922866+00:00",
+      "seconds": 15.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
+    "local gs2emu 2006": {
+      "address": {
+        "host": "127.0.0.1",
+        "port": 14901
+      },
+      "ignore": [
+        "level_npcs",
+        "gs1_scripts",
+        "player_weapons"
+      ],
+      "observed": {
+        "address": {
+          "host": "127.0.0.1",
+          "port": 14901
+        },
+        "bytecodes": {
+          "class": 0,
+          "gani": 0,
+          "npc": 1,
+          "weapon": 0
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 0,
+          "distinct": 0,
+          "kinds": [],
+          "weapon_events": []
+        },
+        "frames": 900,
+        "gui": {
+          "classes": {},
+          "controls": 0,
+          "degenerate": [],
+          "filled_controls": [],
+          "list_rows": 0,
+          "max_depth": 0,
+          "named": 0,
+          "overflowing": [],
+          "root_classes": {},
+          "root_names": [],
+          "roots": 0,
+          "text_controls": 0,
+          "tree_names": [],
+          "tree_nodes": 0,
+          "window_overlaps": []
+        },
+        "host_calls": {
+          "distinct": 0,
+          "missing": [],
+          "names": [],
+          "total": 0
+        },
+        "level": "era_present_08-08.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [],
+          "samples": [],
+          "warnings": 0
+        },
+        "replayed_bytecode": 0,
+        "seconds": 15.0,
+        "ui_opened": {},
+        "version": "6.037",
+        "vms": {
+          "class": [],
+          "gani_count": 0,
+          "npc_count": 1,
+          "weapon": []
+        },
+        "wall_seconds": 15.0,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 1,
+          "weapons": 0
+        }
+      },
+      "open_ui": [],
+      "passive": false,
+      "pins": {
+        "allowed_window_overlaps": [],
+        "forbidden_weapons": [],
+        "required_controls": [],
+        "required_event_kinds": [],
+        "required_filled_controls": [],
+        "required_weapon_events": [],
+        "required_weapons": []
+      },
+      "recorded_at": "2026-07-25T01:25:21.975241+00:00",
+      "seconds": 15.0,
+      "tolerance": {},
+      "version": "6.037"
+    }
+  }
+}

@@ -51,6 +51,32 @@ def is_owned_server(host: str, name: str = "") -> bool:
     )
 
 
+def probe_status(capabilities: dict[str, Any]) -> str:
+    """Classify a probe outcome honestly.
+
+    A server that refuses our account (staff-only listing, version gate) and a
+    server that never answered are both untestable, but neither is a failure on
+    our side; only an exception escaping the probe is. The catalog used to
+    carry that distinction implicitly across two fields, so every non-accepted
+    server read as a bare connection failure.
+
+    ok           login accepted
+    rejected     reachable, but the server refused the login
+    timeout      reachable, but no login verdict inside the budget
+    unreachable  address did not resolve or the connection was refused
+    error        the probe itself raised before reaching a verdict
+    """
+    login = capabilities.get("login")
+    if login == "accepted":
+        return "ok"
+    # Per-version records carry no "reachable" flag; a login verdict implies it.
+    reachable = (capabilities["reachable"] if "reachable" in capabilities
+                 else login not in (None, "not_attempted"))
+    if reachable:
+        return "rejected" if login == "rejected" else "timeout"
+    return "error" if login and login != "not_attempted" else "unreachable"
+
+
 def capabilities_to_tests(capabilities: dict[str, Any], active_ok: bool = False) -> list[str]:
     tests: list[str] = []
     if capabilities.get("login") == "accepted":
@@ -84,6 +110,16 @@ def _merge_crawl_defaults(crawl: dict[str, Any]) -> None:
     crawl.get("gs2", {}).pop("unknown_host_calls", None)
 
 
+def _backfill_status(record: dict[str, Any]) -> None:
+    """Give records written before the status taxonomy their honest status."""
+    capabilities = record.get("capabilities")
+    if isinstance(capabilities, dict) and capabilities:
+        capabilities.setdefault("status", probe_status(capabilities))
+    for version in (record.get("versions") or {}).values():
+        if isinstance(version, dict) and version:
+            version.setdefault("status", probe_status(version))
+
+
 def _merge_record_timestamps(record: dict[str, Any]) -> None:
     """Backfill section timestamps for catalogs written before section merges."""
     timestamp = record.get("last_probed")
@@ -108,6 +144,7 @@ def load_catalog(path: Path | str = DEFAULT_CATALOG) -> dict[str, Any]:
         record.setdefault("crawl", empty_crawl_record())
         _merge_crawl_defaults(record["crawl"])
         _merge_record_timestamps(record)
+        _backfill_status(record)
     return data
 
 
@@ -118,6 +155,7 @@ def save_catalog(catalog: dict[str, Any], path: Path | str = DEFAULT_CATALOG) ->
         record.setdefault("crawl", empty_crawl_record())
         _merge_crawl_defaults(record["crawl"])
         _merge_record_timestamps(record)
+        _backfill_status(record)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -296,7 +334,14 @@ def _probe_entry_once(entry: ServerEntry, username: str, password: str, timeout:
     client = None
     started = time.monotonic()
     try:
-        resolver(entry.ip, entry.port, type=socket.SOCK_STREAM)
+        try:
+            resolver(entry.ip, entry.port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            # A dead address is "unreachable", not a probe failure: keep the
+            # one-line cause instead of a traceback and stop here.
+            record["capabilities"]["login"] = "not_attempted"
+            record["errors"].append(f"address resolution failed: {exc}")
+            return record
         version = forced_version or _initial_version(entry)
         requested_version = version
         auto_retry = False
@@ -368,6 +413,7 @@ def _probe_entry_once(entry: ServerEntry, username: str, password: str, timeout:
                 client.disconnect()
             except BaseException:
                 record["errors"].append(_redact(traceback.format_exc(), username, password))
+        record["capabilities"]["status"] = probe_status(record["capabilities"])
         record["testable_tests"] = capabilities_to_tests(record["capabilities"], active_ok)
     return record
 
@@ -378,7 +424,7 @@ def _version_record(record: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "requested_version", "version_status", "renegotiated_to",
         "negotiated_version", "server_advertised_version", "encryption_gen",
-        "gen_source", "login", "login_reject_reason",
+        "gen_source", "status", "login", "login_reject_reason",
         "board_received", "tiles_ok", "prop_parse_warnings",
         "prop_parse_errors", "prop_width_fallbacks", "player_position_sane",
         "disconnect_reason",
@@ -468,10 +514,23 @@ def iter_catalog_records(catalog: dict[str, Any], selected: str | None = None) -
             yield name, record
 
 
-def run_catalog_tests(selected: str | None = None, catalog_path: Path | str = DEFAULT_CATALOG) -> bool:
-    """Run only a catalog record's permitted scenario subset."""
+def run_catalog_tests(selected: str | None = None,
+                      catalog_path: Path | str = DEFAULT_CATALOG,
+                      fingerprint: bool = True) -> bool:
+    """Run only a catalog record's permitted scenario subset.
+
+    Servers that also have a behavioural baseline (game_tester/
+    behaviour_baselines.json) get their fingerprint checked on the SAME
+    connection the scenarios just used -- a branch flip in the server's own
+    scripts is invisible to the scenario subset, and re-connecting just to
+    look at it would double our footprint on someone else's server.
+    """
+    from game_tester.behaviour_fingerprint import (
+        capture_from_client, check_fingerprint, load_baselines)
     from game_tester.game_bot import GameBot
     from game_tester.test_scenarios import TestScenarios
+
+    baselines = load_baselines() if fingerprint else {"servers": {}}
 
     catalog = load_catalog(catalog_path)
     records = list(iter_catalog_records(catalog, selected))
@@ -505,12 +564,15 @@ def run_catalog_tests(selected: str | None = None, catalog_path: Path | str = DE
             bot._setup_callbacks()
         print(f"\n[CATALOG SERVER] {name}")
         capabilities = record.get("capabilities", {})
-        if not capabilities.get("reachable", False):
+        status = capabilities.get("status") or probe_status(capabilities)
+        if status == "unreachable":
             print("  SKIP unreachable during catalog probe")
             continue
-        if capabilities.get("login") != "accepted":
-            reason = capabilities.get("login_reject_reason") or capabilities.get("disconnect_reason") or capabilities.get("login", "login rejected")
-            print(f"  SKIP login rejected: {reason}")
+        if status != "ok":
+            reason = (capabilities.get("login_reject_reason") or
+                      capabilities.get("disconnect_reason") or
+                      capabilities.get("login", status))
+            print(f"  SKIP login {status}: {reason}")
             continue
         if not bot.connect(timeout=20.0):
             print("  FAIL connection")
@@ -526,6 +588,12 @@ def run_catalog_tests(selected: str | None = None, catalog_path: Path | str = DE
                 result = scenario_map[test_name](bot)
                 print(f"  {'PASS' if result.passed else 'FAIL'} {result.name}: {result.details}")
                 all_ok = all_ok and result.passed
+            entry = baselines.get("servers", {}).get(name)
+            if entry is not None and bot.client.connected:
+                observed = capture_from_client(
+                    bot.client, float(entry.get("seconds", 25.0)),
+                    replay_bytecode=True)
+                all_ok = check_fingerprint(name, observed, baselines) and all_ok
         except BaseException:
             print(traceback.format_exc())
             all_ok = False

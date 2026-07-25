@@ -1,0 +1,113 @@
+{
+  "address": {
+    "host": "loginserver.graal.in",
+    "port": 14911
+  },
+  "bytecodes": {
+    "class": 0,
+    "gani": 0,
+    "npc": 0,
+    "weapon": 6
+  },
+  "connected_at_end": true,
+  "events": {
+    "calls": 3064,
+    "distinct": 19,
+    "kinds": [
+      "weapon.oncreated",
+      "weapon.onplayerenters",
+      "weapon.onreceivetext",
+      "weapon.onserverlisterconnect",
+      "weapon.ontimeout"
+    ],
+    "weapon_events": [
+      "weapon:-irc_login3.oncreated",
+      "weapon:-irc_login3.onplayerenters",
+      "weapon:-rescripted/irc/login3.oncreated",
+      "weapon:-rescripted/irc/login3.onplayerenters",
+      "weapon:-rescripted/serverlist.oncreated",
+      "weapon:-rescripted/serverlist.onplayerenters",
+      "weapon:-rescripted/serverlist.onserverlisterconnect",
+      "weapon:-rescripted/serverlist.ontimeout",
+      "weapon:-serverlist.oncreated",
+      "weapon:-serverlist.onplayerenters",
+      "weapon:-serverlist.onreceivetext",
+      "weapon:-serverlist.onserverlisterconnect",
+      "weapon:-serverlist.ontimeout",
+      "weapon:-serverlist_chat.oncreated",
+      "weapon:-serverlist_chat.onserverlisterconnect",
+      "weapon:-serverlistscreen.oncreated",
+      "weapon:-serverlistscreen.onplayerenters",
+      "weapon:-serverlistscreen.onserverlisterconnect",
+      "weapon:-serverlistscreen.ontimeout"
+    ]
+  },
+  "frames": 1500,
+  "gui": {
+    "classes": {
+      "GuiButtonCtrl": 2,
+      "GuiTextEditCtrl": 2
+    },
+    "controls": 4,
+    "max_depth": 0,
+    "named": 3,
+    "root_classes": {
+      "GuiButtonCtrl": 2,
+      "GuiTextEditCtrl": 2
+    },
+    "root_names": [
+      "chatbar",
+      "chatbar_toggletaskbarbutton"
+    ],
+    "roots": 4,
+    "tree_names": [
+      "chatbar",
+      "chatbar_toggletaskbarbutton"
+    ]
+  },
+  "host_calls": {
+    "distinct": 10,
+    "missing": [],
+    "names": [
+      "addcontrol",
+      "echo",
+      "findweapon",
+      "gettextheight",
+      "gettextwidth",
+      "isobject",
+      "keydown",
+      "requesttext",
+      "sendtext",
+      "settimer"
+    ],
+    "total": 39193
+  },
+  "level": "black.nw",
+  "logs": {
+    "errors": 0,
+    "kinds": [],
+    "samples": [],
+    "warnings": 0
+  },
+  "seconds": 25.0,
+  "version": "6.037",
+  "vms": {
+    "class": [],
+    "gani_count": 0,
+    "npc_count": 0,
+    "weapon": [
+      "-irc_login3",
+      "-rescripted/irc/login3",
+      "-rescripted/serverlist",
+      "-serverlist",
+      "-serverlist_chat",
+      "-serverlistscreen"
+    ]
+  },
+  "wall_seconds": 25.0,
+  "world": {
+    "gs1_scripts": 0,
+    "npcs": 1,
+    "weapons": 2
+  }
+}
