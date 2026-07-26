@@ -24,6 +24,9 @@ from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
 from reborn_protocol.gs1.values import gs1_int, to_num, to_str
+from reborn_protocol.gs1.host_shared import (
+    A_CLASS_NPC_ATTR, A_CLASS_PLAYER_ATTR, host_value, tokens_count,
+)
 from .sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
 from .tiletypes import (
     TileType, get_tile_type, tilestype_for_level, type_is_blocking,
@@ -62,22 +65,9 @@ class GS1NoBoard(Exception):
     """
 
 # player-prefixed builtin -> attribute on the pyReborn Player
-PLAYER_ATTR = {
-    "playerdir": "direction", "playersprite": "sprite",
-    "playerrupees": "rupees", "playergralats": "rupees",
-    "playerhearts": "hearts", "playerfullhearts": "max_hearts",
-    "playerarrows": "arrows", "playerbombs": "bombs",
-    "playerswordpower": "sword_power", "playershieldpower": "shield_power",
-    "playernick": "nickname",
-    "playeraccount": "account", "playerhead": "head_image",
-    "playerbody": "body_image", "playersword": "sword_image",
-    "playershield": "shield_image",
-}
+PLAYER_ATTR = {**A_CLASS_PLAYER_ATTR, "playeraccount": "account"}
 # unprefixed builtin -> key on the client NPC dict (the NPC running the script)
-NPC_ATTR = {
-    "x": "x", "y": "y", "dir": "direction", "image": "image", "ani": "gani",
-    "nick": "nickname", "message": "message", "glovepower": "glove_power",
-}
+NPC_ATTR = dict(A_CLASS_NPC_ATTR)
 # command -> NPC dict key it writes (so the renderer reflects the change).
 # Image commands are handled explicitly in _dispatch (they also manage the
 # imagepart sub-rect), so they're not listed here.
@@ -416,7 +406,7 @@ class GS1ClientHost(Host):
     @_gs1_builtin(_GS1_BUILTINS, "tokenscount")
     def _gb_tokenscount(self, name, indices, ctx):
         # number of tokens from the last `tokenize`
-        return float(len(getattr(ctx, "tokenize_tokens", []) or []))
+        return tokens_count(ctx)
 
     @_gs1_builtin(_GS1_BUILTINS, "timevar")
     def _gb_timevar(self, name, indices, ctx):
@@ -1803,12 +1793,7 @@ def _pcode(code):
 
 
 def _num_or_str(v):
-    if isinstance(v, str):
-        return v
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
+    return host_value(v)
 
 
 def _version_number(version) -> float:
