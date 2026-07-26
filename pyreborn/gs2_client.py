@@ -1321,6 +1321,19 @@ class GS2ClientHost(GS2Host):
         "setpasswordofaccount",
         "applypassword",
         "clearpassword",
+        # -- 2026-07-26 mobile Login corpus (weapon-Mobile_Login /
+        # weapon-LoginScreen) ----------------------------------------------
+        # credential surface, same policy as des_encrypt above: the mobile
+        # saveCredentials/getSavedPassword pair round-trips account+password
+        # through des_encrypt/des_decrypt on a cache file. Decrypt must be
+        # exactly as inert as encrypt -- a functional decrypt over an inert
+        # encrypt would still hand scripts a constant, but implementing
+        # either endpoint invites the other.
+        "des_decrypt",
+        # native display reconfiguration for the iphone build
+        # (weapon-LoginScreen.txt:35, gated on getplatform() == "iphone",
+        # which this client never reports); no display to reconfigure
+        "initializeiphonedisplay",
         "adventure_geteditnickname",
         "adventure_geteditaccountnames",
         # external-app launch -- attack primitive, inert BY POLICY
@@ -2263,6 +2276,28 @@ class GS2ClientHost(GS2Host):
                         "policy); url=%r",
                         name, to_str(args[0]) if args else "")
         return GS2Object(name="urlrequest")
+
+    @_gs2_builtin(_GS2_BARE, "_")
+    def _bi_localize(self, vm, name, args, obj):
+        # `text = _(temp.text);` -- the mobile client's localization wrapper
+        # (weapon-Mobile_Login.txt:176; a `translations/` dir ships with the
+        # mobile server). Absent from FourPlay (Era/mobile-only name) and
+        # not script-defined in any corpus, so the untranslated identity is
+        # both the default-language behaviour and the only unguessed one.
+        # Left unanswered, every wrapped label read back Number 0.0.
+        return to_str(args[0]) if args else ""
+
+    @_gs2_builtin(_GS2_BARE, "char")
+    def _bi_char(self, vm, name, args, obj):
+        # char(code) -> the 1-character string (weapon-LoginScreen.txt:341
+        # builds a key suffix with char(33) = "!"). Absent from FourPlay
+        # (mobile/Era name); the usage admits only the C chr() reading.
+        # Out-of-range codes answer "" rather than raising.
+        try:
+            code = int(to_num(args[0])) if args else 0
+            return chr(code) if 0 < code < 0x110000 else ""
+        except (ValueError, OverflowError):
+            return ""
 
     @_gs2_builtin(_GS2_BARE, "screenx", "screeny")
     def _bi_screenxy(self, vm, name, args, obj):

@@ -174,6 +174,11 @@ def test_documented_stubs_are_classified_separately():
         # credential surface (2026-07-24 Login corpus)
         "setpasswordofaccount", "applypassword", "clearpassword",
         "adventure_geteditnickname", "adventure_geteditaccountnames",
+        # credential surface (2026-07-26 mobile Login corpus): decrypt is
+        # policy-inert exactly like des_encrypt
+        "des_decrypt",
+        # iphone-build display reconfiguration; unreachable platform here
+        "initializeiphonedisplay",
         # external-application / URL surface
         "opengraalurl", "gotowebpage", "adventure_openexternaloptions",
         "showupdatewindow", "startgraalstreaming",
@@ -230,7 +235,7 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented"
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented_stub"
-    assert len(real | set(GS2ClientHost.stubbed)) == 91
+    assert len(real | set(GS2ClientHost.stubbed)) == 93
 
 
 def test_addcontrol_still_adds_to_gui_root():

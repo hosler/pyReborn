@@ -1903,3 +1903,189 @@ def test_context_menu_open_close_and_isopen():
     menu.get("close")()
     assert menu.get("isopen")() == 0.0
     assert menu.has("maxpopupheight")
+
+
+def test_ontextchanged_fires_on_change_with_the_clipped_text():
+    """GuiTextCtrl::setText (GuiTextCtrl.cpp:170-199): unchanged text
+    early-outs with no event (:172-176), the maxchars clip applies first
+    (:181), then onTextChanged fires on the control with the CLIPPED text
+    (:190-193)."""
+    gui = ClientGS2().gui
+    label = gui.create_control("GuiTextCtrl", "Lbl")
+    gui.addcontrol(label)
+    seen = []
+    label.set("ontextchanged", lambda *a: seen.append(a))
+    label.set("maxchars", 5)
+    label.set("text", "abcdefgh")
+    assert seen == [("abcde",)]          # clipped BEFORE the event
+    label.set("text", "abcdefgh")        # clips to the same text: early-out
+    assert len(seen) == 1
+    label.get("settext")("xy")           # the settext method routes the same
+    assert seen[-1] == ("xy",)
+    # the member write itself must be claimed (construction-block closures)
+    assert label.has("ontextchanged")
+
+
+def test_text_property_write_clears_the_selection_but_settext_does_not():
+    """C7: the `text` PROPERTY setter zeroes both selection anchors, the
+    inherited settext() method does not (GuiTextEditCtrlProperties.cpp:31-36
+    vs GuiTextCtrlProperties.cpp:30-33)."""
+    gui = ClientGS2().gui
+    edit = gui.create_control("GuiTextEditCtrl", "Edit")
+    gui.addcontrol(edit)
+    edit.set("text", "hello world")
+    edit.get("setselection")(0, 5)
+    assert edit.selection == (0, 5)
+    edit.get("settext")("hello there")
+    assert edit.selection == (0, 5)      # method: selection intact
+    edit.set("text", "replaced")
+    assert edit.selection == (0, 0)      # property: anchors zeroed
+
+
+def test_useownprofile_copies_and_isolates_the_profile():
+    """`useownprofile = true` allocates a PRIVATE copyFrom'd profile
+    (GuiControl::setUseOwnProfile, GuiControl.cpp:1746-1806), the getter is
+    `ownProfile != nullptr` (GuiControlProperties.cpp:559-561), and the
+    profile getter prefers it (:411-418) -- so `profile.<field> = ...` after
+    it styles only this control. 3 mobile-corpus scripts rely on this."""
+    gui = ClientGS2().gui
+    prof = gui.create_control("GuiControlProfile", "SharedProf")
+    prof.set("fontcolor", [1, 2, 3])
+    gui.addcontrol(prof)
+    a = gui.create_control("GuiButtonCtrl", "OwnProfA")
+    gui.addcontrol(a)
+    b = gui.create_control("GuiButtonCtrl", "OwnProfB")
+    gui.addcontrol(b)
+    a.set("profile", prof)
+    b.set("profile", prof)
+    assert a.get("useownprofile") == 0.0
+    a.set("useownprofile", 1)
+    assert a.get("useownprofile") == 1.0
+    own = a.get("profile")
+    assert own is not prof and own.get("fontcolor") == [1, 2, 3]
+    own.set("fontcolor", [9, 9, 9])      # the corpus `profile.fontColor =` shape
+    assert prof.get("fontcolor") == [1, 2, 3]     # shared profile untouched
+    assert b.get("profile") is prof               # sibling unaffected
+    assert a.resolve_profile().fg == (9, 9, 9)
+    a.set("useownprofile", 0)                     # destroys the copy, reverts
+    assert a.get("profile") is prof
+    # assigning a profile also drops an active own copy (setProfile,
+    # GuiControl.cpp:1706-1709)
+    a.set("useownprofile", 1)
+    a.set("profile", prof)
+    assert a.get("useownprofile") == 0.0
+
+
+def test_copyfrom_copies_profiles_but_noops_on_controls():
+    """The TGraalVar::copyFrom gate (TGraalVar.cpp:2208-2214): every
+    Gui*Ctrl is engine-owned and silently no-ops; GuiControlProfile is the
+    one GUI class whose table opts in (GuiControlProfileProperties.cpp:618)."""
+    gui = ClientGS2().gui
+    src = gui.create_control("GuiControlProfile", "SrcProf")
+    src.set("fillcolor", [1, 2, 3, 4])
+    gui.addcontrol(src)
+    dst = gui.create_control("GuiControlProfile", "DstProf")
+    gui.addcontrol(dst)
+    dst.copy_from(src)
+    assert dst._members.get("fillcolor") == [1, 2, 3, 4]
+    assert dst._members["fillcolor"] is not src._members["fillcolor"]  # cloned
+    ctrl = gui.create_control("GuiButtonCtrl", "CopyBtn")
+    gui.addcontrol(ctrl)
+    ctrl.copy_from(src)
+    assert "fillcolor" not in ctrl._members       # silent no-op
+
+
+def test_context_menu_profile_is_the_scroll_slot_and_textprofile_styles_rows():
+    """`profile` and `scrollprofile` are pointer-identical accessors -- one
+    slot, styling the frame -- while `textprofile` styles the rows
+    (GuiContextMenuCtrlProperties.cpp:155-161, :44-64); the width setter
+    clamps to >= 1 (:74-78)."""
+    gui = ClientGS2().gui
+    frame_prof = gui.create_control("GuiControlProfile", "CtxFrameProf")
+    frame_prof.set("fontcolor", [10, 20, 30])
+    gui.addcontrol(frame_prof)
+    text_prof = gui.create_control("GuiControlProfile", "CtxTextProf")
+    text_prof.set("fontcolor", [200, 100, 50])
+    gui.addcontrol(text_prof)
+    menu = gui.create_control("GuiContextMenuCtrl", "AliasMenu")
+    gui.addcontrol(menu)
+    menu.set("scrollprofile", frame_prof)
+    assert menu.get("profile") is frame_prof       # one slot, both names
+    menu.set("profile", text_prof)
+    assert menu.get("scrollprofile") is text_prof
+    menu.set("profile", frame_prof)
+    menu.set("textprofile", text_prof)
+    assert menu._row_profile().fg == (200, 100, 50)
+    assert menu.resolve_profile().fg == (10, 20, 30)
+    menu.set("width", -5)
+    assert menu.width == 1.0
+
+
+def test_drawing_panel_full_method_table_and_ro_props():
+    """The 7 methods and 6 properties beyond the draw-op set already
+    modelled (funcDefs/propDefs, GuiDrawingPanelProperties.cpp:183-207):
+    drawcurve records, saveimage honours the sandbox gate (:152-157),
+    the unrecovered-body entries answer typed no-ops, and the four RO
+    part* fields drop writes."""
+    gui = ClientGS2().gui
+    panel = gui.create_control("GuiDrawingPanel", "CurvePanel")
+    gui.addcontrol(panel)
+    panel.get("drawcurve")(0, 0, 10, 0, 10, 10, 2)
+    assert panel.draw_ops[-1][0] == "curve"
+    panel.get("saveimage")("../../evil/path")       # gate: dropped
+    assert panel.saved_images == {}
+    panel.get("saveimage")("art/temp_sprite.png")   # basename + snapshot
+    assert "temp_sprite.png" in panel.saved_images
+    assert panel.get("drawobject")(0, 0, None) == 0.0
+    assert panel.get("filterrectangle")(0, 0, 4, 4, "blur") == 0.0
+    assert panel.get("maskimage")(0, 0, "a.png", "mode") == 0.0
+    assert panel.get("setdrawpalette")("pal", 128) == 0.0
+    assert panel.get("partx") == 0.0
+    assert panel.get("availablefilters") == []      # typed, not Number 0.0
+    panel.set("partx", 9)
+    assert panel.get("partx") == 0.0                # nullptr setter
+    panel.set("enablecache", 1)
+    assert panel.has("enablecache")
+
+
+def test_mobile_login_construction_props_are_claimed():
+    """weapon-Mobile_Login writes these bare in construction blocks; an
+    unclaimed name silently falls through to temps (GuiControlProperties.cpp
+    :660 clipchildren, :662 cliptobounds, :696 useownprofile)."""
+    gui = ClientGS2().gui
+    ctrl = gui.create_control("GuiControl", "GR_LoginScreen")
+    gui.addcontrol(ctrl)
+    for name in ("useownprofile", "clipchildren", "cliptobounds"):
+        assert ctrl.has(name), name
+
+
+def test_canvas_resize_fires_graalcontrol_onresize_but_not_per_control():
+    """Login hangs its chat-bar resize off the canvas's fixed name
+    (`function GraalControl.onResize(newwidth, newheight)`,
+    weapon-Rescripted_Serverlist.txt:2634) -- dispatched across the weapon
+    VMs on canvas resize. Per-control onResize is deliberately NOT fired
+    from the sizing sweep: the reference fires it from EVERY resize
+    (GuiControl.cpp:2615-2618) including script writes, and firing Login's
+    mutually-resizing Serverlist_*Window handlers from only one path
+    live-collapsed Serverlist_Map (see _apply_sizing's comment)."""
+    rt = ClientGS2()
+    gui = rt.gui
+    calls = []
+
+    class _VM:
+        def has_function(self, n):
+            return n == "graalcontrol.onresize"
+
+        def call(self, n, *a):
+            calls.append((n, a))
+
+    rt.vms["weapon"]["w"] = _VM()
+    win = gui.create_control("GuiWindowCtrl", "ResizeWin")
+    gui.addcontrol(win)
+    win.set("horizsizing", "width")
+    seen = []
+    win.set("onresize", lambda *a: seen.append(a))
+    gui.canvas_size = (800, 600)
+    gui.on_canvas_resize(1000, 600)
+    assert calls == [("graalcontrol.onresize", (1000.0, 600.0))]
+    assert seen == []

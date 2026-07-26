@@ -230,3 +230,39 @@ def test_tree_node_select_is_already_a_node_method():
     node = tree.get("nodes")[0]
     node.get("select")()
     assert tree.selected_node is node
+
+
+# --- 2026-07-26 mobile Login corpus round -----------------------------------
+
+def test_localization_wrapper_is_identity():
+    """`text = _(temp.text);` (weapon-Mobile_Login.txt:176) -- the mobile
+    client's localization lookup, absent from FourPlay and not script-
+    defined anywhere; identity is the default-language behaviour. Unanswered
+    it read Number 0.0 on every wrapped label."""
+    rt = _rt()
+    assert call(rt, "_", ["Account:"]) == "Account:"
+    assert call(rt, "_", [12.5]) == "12.5"
+    assert call(rt, "_", []) == ""
+
+
+def test_char_is_chr_with_out_of_range_answering_empty():
+    """char(33) builds a key suffix in weapon-LoginScreen.txt:341."""
+    rt = _rt()
+    assert call(rt, "char", [33]) == "!"
+    assert call(rt, "char", [65]) == "A"
+    assert call(rt, "char", [-1]) == ""
+    assert call(rt, "char", [0x110000]) == ""
+
+
+def test_des_decrypt_is_policy_inert_like_des_encrypt():
+    """The mobile saveCredentials/getSavedPassword pair (weapon-
+    Mobile_Login.txt:325-336) round-trips credentials through DES on a
+    cache file; BOTH endpoints must be inert stubs -- this client never
+    derives or recovers credential material for a script."""
+    rt = _rt()
+    assert call(rt, "des_decrypt", ["key", "blob"]) == 0.0
+    assert call(rt, "des_encrypt", ["key", "secret"]) == 0.0
+    assert call(rt, "initializeiphonedisplay", []) == 0.0
+    surface = GS2ClientHost.host_surface()
+    for name in ("_", "char", "des_decrypt", "initializeiphonedisplay"):
+        assert name in surface, name
