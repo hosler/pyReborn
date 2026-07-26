@@ -56,6 +56,7 @@ from .game.constants import (
 )
 from .packets import (
     PacketID,
+    PacketBuilder,
     build_movement,
     build_chat,
     build_player_chat,
@@ -942,6 +943,13 @@ class Client:
             return False
         return self._protocol.send_packet(
             PacketID.PLI_WEAPONADD, build_weapon_add(npc_id))
+
+    def delete_npc(self, npc_id: int) -> bool:
+        """Ask the server to delete a server-owned NPC."""
+        if not self.connected or not self._authenticated or npc_id <= 0:
+            return False
+        data = PacketBuilder().write_gint3(npc_id).build()
+        return self._protocol.send_packet(PacketID.PLI_NPCDEL, data)
 
     def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
         """

@@ -25,6 +25,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pytest
 
+from pyreborn import Client
+from pyreborn.game.dialogue import format_sign_text
+from pyreborn.game.setup import SetupMixin
+from pyreborn.packets import PacketBuilder, PacketID
 from reborn_protocol.gs1.runtime import UNSET
 from pyreborn.gs1_client import (
     NPC_ATTR, PLAYER_ATTR, ClientGS1, _GS1_BUILTINS, _GS1_LAYER_COMMANDS,
@@ -75,9 +79,12 @@ def test_builtin_handlers_do_not_shadow_the_attribute_tables():
 
 def test_destroy_hides_an_npc_but_unloads_a_weapon(rt):
     npc = {}
-    rt._host._dispatch("destroy", [], _npc_ctx(npc))
+    npc_ctx = _npc_ctx(npc)
+    rt._progs[npc_ctx._prog_key] = {}
+    rt._host._dispatch("destroy", [], npc_ctx)
     assert npc["visible"] is False
     assert "imgs" not in npc
+    assert rt._progs[npc_ctx._prog_key]["inactive"] is True
 
     ctx = _weapon_ctx()
     rt._progs[ctx._prog_key] = object()
@@ -88,6 +95,46 @@ def test_destroy_hides_an_npc_but_unloads_a_weapon(rt):
     assert ctx._prog_key not in rt._progs
     assert ctx._prog_key not in rt.scripts
     assert ctx._prog_key not in rt._weapon_imgs
+
+
+def test_destroy_sends_one_delete_for_server_npc_and_none_for_local_npc():
+    class Protocol:
+        connected = True
+
+        def __init__(self):
+            self.sent = []
+
+        def send_packet(self, packet_id, data=b""):
+            self.sent.append((int(packet_id), bytes(data)))
+            return True
+
+    client = Client("localhost", 14900)
+    client._authenticated = True
+    client._protocol = Protocol()
+    rt = ClientGS1(client)
+
+    rt._host._dispatch("destroy", [], _npc_ctx({}, npc_id=17))
+    expected = PacketBuilder().write_gint3(17).build()
+    assert client._protocol.sent == [(int(PacketID.PLI_NPCDEL), expected)]
+
+    rt._host._dispatch("destroy", [], _npc_ctx({}, npc_id=0))
+    assert client._protocol.sent == [(int(PacketID.PLI_NPCDEL), expected)]
+
+
+def test_say2_uses_sign_dialogue_path_and_formats_escapes():
+    shown = []
+    game = type("_Game", (SetupMixin,), {})()
+    game.gs1 = ClientGS1(client=None)
+    game.player_anim = SimpleNamespace()
+    game.client = SimpleNamespace()
+    game._show_dialogue = lambda text, classic_font=False: shown.append(
+        format_sign_text(text) if classic_font else text)
+    game._setup_gs1_callbacks()
+
+    game.gs1._host._dispatch(
+        "say2", ["Press #k(4): eye#K(95)bomber.png"], _weapon_ctx())
+
+    assert shown == ["Press D: eye_bomber.png"]
 
 
 # --- stage order: showimg / hideimg -----------------------------------------

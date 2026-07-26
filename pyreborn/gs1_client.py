@@ -1098,6 +1098,12 @@ class GS1ClientHost(Host):
     def _cmd_destroy_npc(self, name, args, ctx, imgs):
         ctx.this_obj["visible"] = False
         ctx.this_obj.pop("imgs", None)
+        entry = self.rt._progs.get(getattr(ctx, "_prog_key", None))
+        if entry is not None:
+            entry["inactive"] = True
+        npc_id = getattr(ctx, "_npc_id", 0)
+        if npc_id > 0 and self.rt.client is not None:
+            self.rt.client.delete_npc(npc_id)
 
     # -- _GS1_MAIN_COMMANDS -------------------------------------------------
 
@@ -1155,7 +1161,7 @@ class GS1ClientHost(Host):
         npc["image"] = to_str(args[0])
         npc.pop("imagepart", None)
 
-    @_gs1_command(_GS1_MAIN_COMMANDS, "message", "say2", "say")
+    @_gs1_command(_GS1_MAIN_COMMANDS, "message", "say")
     def _cmd_say(self, name, args, ctx, imgs):
         rt, npc = self.rt, ctx.this_obj
         text = to_str(args[0]) if args else ""
@@ -1163,6 +1169,12 @@ class GS1ClientHost(Host):
             npc["message"] = text
         if rt.on_say:
             rt.on_say(getattr(ctx, "_npc_id", 0), text)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "say2")
+    def _cmd_say2(self, name, args, ctx, imgs):
+        text = to_str(args[0]) if args else ""
+        if self.rt.on_say2:
+            self.rt.on_say2(text)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "play", "play2", "playlooped", "setmusic")
     def _cmd_play(self, name, args, ctx, imgs):
@@ -1970,6 +1982,7 @@ class ClientGS1:
         self.on_play = None
         self.on_stopmusic = None
         self.on_say = None
+        self.on_say2 = None
         self.on_message = None
         self.on_setmap = None
         self.on_movement_changed = None
@@ -2511,6 +2524,8 @@ class ClientGS1:
                     pass
 
     def _run(self, entry, event):
+        if entry.get("inactive"):
+            return
         key = entry.get("_key")
         # Serialize per script: GS1 runs a script's events one at a time. If a
         # previous event is still suspended on a `sleep`, don't start another

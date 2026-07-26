@@ -473,6 +473,9 @@ class SetupMixin:
         def on_say(npc_id, message):
             self.npc_chat_texts[npc_id] = (message, time.time())
 
+        def on_say2(text):
+            self._show_dialogue(text, classic_font=True)
+
         # Show message callback (dialogue box)
         def on_message(text):
             self._show_dialogue(text)
@@ -589,6 +592,7 @@ class SetupMixin:
         self.gs1.on_play = on_play
         self.gs1.on_stopmusic = on_stopmusic
         self.gs1.on_say = on_say
+        self.gs1.on_say2 = on_say2
         self.gs1.on_message = on_message
         self.gs1.on_freezeplayer = on_freezeplayer
         self.gs1.on_toweapons = on_toweapons
