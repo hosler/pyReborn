@@ -44,6 +44,26 @@ TOUCH_OFFSETS = {
     3: [(3.0, 2.5), (3.0, 1.5)],    # right: adjacent column, feet + torso
 }
 
+# A character NPC (`showcharacter`) that never ran setshape/setshape2 still has
+# a box: "a 2x2 square centered on the character's feet" at +(8, 16) pixels
+# from its position (NPC.h:540-552 getCollisionBoundingBox), i.e. +(0.5, 1.0)
+# tiles and 2x2 tiles in size. Same square gs1_client.py's _char_rect() hands
+# to testnpc().
+CHARACTER_TOUCH_DX = 0.5
+CHARACTER_TOUCH_DY = 1.0
+CHARACTER_TOUCH_TILES = 2
+# NPC image of a character NPC: `showcharacter` sets it (NPC.h:484-487
+# isCharacter, and GS1Commands.cpp:3049 which writes the prop). Servers that
+# run the level script themselves stream that image to us; when OUR engine
+# runs the command instead it records the same fact on the NPC dict as
+# 'is_character' (gs1_client.py:1068).
+CHARACTER_IMAGE = '#c#'
+
+
+def _is_character_npc(npc_data: dict) -> bool:
+    return (npc_data.get('image') == CHARACTER_IMAGE
+            or bool(npc_data.get('is_character')))
+
 
 @dataclass
 class NPCShape:
@@ -132,17 +152,32 @@ class NPCHandler:
         Shape geometry is whatever the GS1 engine recorded when the NPC's script
         ran setshape/setshape2 (positioned at the NPC's current x/y); call this
         after triggering playerenters so those shapes exist.
+
+        A CHARACTER NPC with no script shape still gets a touch box, because
+        upstream gives it one implicitly: `isCharacter() && shape is empty` ->
+        a 2x2 square on its feet (NPC.h:540-552). Without that, classic
+        Bomber's tailor NPC Jonah -- who only calls showcharacter, never
+        setshape -- had no entry here at all, so check_touch could never
+        return him and his `playertouchsme` handler never ran. Every other
+        shapeless NPC keeps its zero box (no touch), and this box is TOUCH
+        only: it is not published to gs1's _shape_blocks, so character NPCs
+        stay walk-through as before.
         """
         shapes = getattr(self.gs1, "shapes", {}) if self.gs1 is not None else {}
         for npc_id, npc_data in self.client.npcs.items():
             self.npc_scripts[npc_id] = npc_data.get('script', '')
 
             geom = shapes.get(npc_id)
-            if geom:
-                w, h, flags = geom
+            w, h, flags = geom if geom else (0, 0, ())
+            if w > 0 and h > 0:
                 self.npc_shapes[npc_id] = NPCShape(
                     x=npc_data.get('x', 0), y=npc_data.get('y', 0),
-                    width=w, height=h, solid_flags=list(flags))
+                    width=int(w), height=int(h), solid_flags=list(flags))
+            elif _is_character_npc(npc_data):
+                self.npc_shapes[npc_id] = NPCShape(
+                    x=float(npc_data.get('x', 0) or 0) + CHARACTER_TOUCH_DX,
+                    y=float(npc_data.get('y', 0) or 0) + CHARACTER_TOUCH_DY,
+                    width=CHARACTER_TOUCH_TILES, height=CHARACTER_TOUCH_TILES)
 
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.

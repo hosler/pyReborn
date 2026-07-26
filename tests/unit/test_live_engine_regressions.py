@@ -120,7 +120,7 @@ def test_serverlist_string_globals_answer_as_strings_not_unset():
     `serverstartconnect` was unanswered, so it resolved to the lattice's
     NUMBER 0.0 -- and the official number/string rule is
     compareNumberValues(0.0, strtofloat(s)) (TScriptMachine::compare,
-    Preagonal/FourPlay/quattroplay/src/TScriptMachine.cpp:1458-1461), where
+    Preagonal/FourPlay/quattroplay/src/TScriptMachine.cpp:1463), where
     strtofloat of a non-numeric string is 0.0. So an unset global compared
     EQUAL TO EVERY WORD. initServerlist() hit
     `if (serverstartconnect == "skills")`

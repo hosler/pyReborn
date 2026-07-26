@@ -13,10 +13,14 @@ GMAP vs single-level, which is what keeps it simple.
 Borrowed from the C# client's Camera2D (Camera2D.cs): a center position, a clamped
 zoom, a dirty flag so the transform is only recomputed when something changes,
 and bounds clamping so you can't scroll past the edge of the world.
+
+The transform arithmetic itself lives in ``reborn_protocol.coords``; this class
+owns the cached camera *state* (center, zoom, bounds, dirty flag).
 """
 
-import math
 from typing import Optional, Tuple
+
+from reborn_protocol import coords
 
 
 class Camera2D:
@@ -117,21 +121,22 @@ class Camera2D:
 
     def _recompute(self):
         self._scale = self.tile_size * self._zoom
-        self._ox = self.screen_w * 0.5 - self._cx * self._scale + self._render_offset[0]
-        self._oy = self.screen_h * 0.5 - self._cy * self._scale + self._render_offset[1]
+        self._ox, self._oy = coords.camera_origin(
+            self._cx, self._cy, self.screen_w, self.screen_h, self._scale,
+            *self._render_offset)
         self._dirty = False
 
     def world_to_screen(self, wx: float, wy: float) -> Tuple[float, float]:
         """Render-frame tile coords -> screen pixel coords."""
         if self._dirty:
             self._recompute()
-        return (wx * self._scale + self._ox, wy * self._scale + self._oy)
+        return coords.world_to_screen(wx, wy, (self._ox, self._oy), self._scale)
 
     def screen_to_world(self, sx: float, sy: float) -> Tuple[float, float]:
         """Screen pixel coords -> render-frame tile coords (for mouse picking)."""
         if self._dirty:
             self._recompute()
-        return ((sx - self._ox) / self._scale, (sy - self._oy) / self._scale)
+        return coords.screen_to_world(sx, sy, (self._ox, self._oy), self._scale)
 
     @property
     def scale(self) -> float:
@@ -153,10 +158,10 @@ class Camera2D:
         Lets renderers cull tiles outside the viewport instead of iterating a
         whole 64x64 (or larger GMAP) board every frame.
         """
-        left, top = self.screen_to_world(0, 0)
-        right, bottom = self.screen_to_world(self.screen_w, self.screen_h)
-        return (math.floor(left), math.floor(top),
-                math.ceil(right), math.ceil(bottom))
+        if self._dirty:
+            self._recompute()
+        return coords.visible_tile_range((self._ox, self._oy), self._scale,
+                                         self.screen_w, self.screen_h)
 
     # -- helpers ----------------------------------------------------------
 

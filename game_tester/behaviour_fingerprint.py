@@ -2,20 +2,12 @@
 
 WHY THIS EXISTS
 ---------------
-Every other suite here answers "did anything crash / warn / mis-parse?".  On
-2026-07-24 the Login server was completely dead -- no GUI at all -- while
-reborn-protocol, pyReborn, `python -m game_tester` and `--gs2` were all green.
-The cause was a one-line semantic regression in `gs2_compare`: an object
-compared EQUAL to null, so `findweapon("-Rescripted/Serverlist") == null` was
-true for a weapon that WAS found, so `-Rescripted/IRC/Login3` skipped
-`initServerlist()` and built nothing.  Zero exceptions, zero warnings, a fully
-"successful" run that did none of the work.
-
-A branch flip in real server content is only observable in the *shape of what
-the content built*.  So this module logs in like a real client (a real
-`GameClient`, real GS2 VMs, real GUI manager), pumps frames for a fixed
-budget, and records a structural fingerprint of the result; a checked-in
-baseline says what that shape looked like when we knew the client was good.
+Every other suite answers "did anything crash / warn / mis-parse?".  A script
+that silently takes the wrong branch does none of those things -- see
+tests/test_behaviour_fingerprint_live.py for the outage that proved it.  A
+branch flip is only observable in the SHAPE of what the content built, so
+this module logs in like a real client and fingerprints that shape against a
+checked-in baseline.
 
 DESIGN RULES
 ------------
@@ -75,11 +67,6 @@ REMOTE_SPACING = 3.0
 _WATCHED_LOGGERS = ("pyreborn", "reborn_protocol", "game_tester")
 
 
-# ---------------------------------------------------------------------------
-# Targets
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Target:
     """A server to fingerprint.  `passive` servers are never written to."""
@@ -123,11 +110,6 @@ DEFAULT_TARGETS: Dict[str, Target] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Capture
-# ---------------------------------------------------------------------------
-
-
 class _LogCapture(logging.Handler):
     """Count WARNING+ records from the engine, keyed by format template.
 
@@ -167,7 +149,7 @@ def _control_name(ctrl: Any) -> str:
 #: How far a child may stick out of its parent before it counts as overflow.
 #: Not zero: several Login panels are deliberately placed at y = -22 to draw
 #: under their window's title bar (Serverlist_DescriptionPanel/TablesPanel,
-#: weapon-Rescripted_Serverlist.txt:1993 and :2027), and scroll bars sit a
+#: weapon-Rescripted_Serverlist.txt:2016 and :2047), and scroll bars sit a
 #: pixel or two proud of their frames.
 OVERFLOW_SLOP = 24
 
@@ -614,31 +596,27 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
 
 def capture_target(target: Target, username: str, password: str,
                    verbose: bool = False) -> Dict[str, Any]:
-    """Connect, log in, fingerprint, disconnect.  One connection, no writes."""
-    from pyreborn.client import Client
+    """Connect, log in, fingerprint, disconnect.  One connection, no writes.
 
-    client = Client(target.host, target.port, version=target.version)
-    if not client.connect():
-        raise RuntimeError(f"connect failed: {target.host}:{target.port}")
-    try:
-        if not client.login(username, password, timeout=15.0):
-            reason = getattr(client, "disconnect_reason", "") or "no reason given"
+    No settle poll: capture_from_client() pumps its own paced frames and the
+    fingerprint is meant to include however the login itself unfolded.
+    """
+    from .login import login_session
+
+    with login_session(target.host, target.port, username, password,
+                       version=target.version, timeout=15.0,
+                       settle=False) as session:
+        if not session.connected:
+            raise RuntimeError(f"connect failed: {target.host}:{target.port}")
+        if not session.accepted:
+            reason = session.rejection or "no reason given"
             raise RuntimeError(f"login rejected by {target.name}: {reason}")
-        fingerprint = capture_from_client(client, target.seconds, verbose=verbose,
+        fingerprint = capture_from_client(session.client, target.seconds,
+                                          verbose=verbose,
                                           open_ui=target.open_ui)
         fingerprint["address"] = {"host": target.host, "port": target.port}
         fingerprint["version"] = target.version
         return fingerprint
-    finally:
-        try:
-            client.disconnect()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Invariants
-# ---------------------------------------------------------------------------
 
 
 def _metric(fingerprint: Dict[str, Any], path: str) -> int:
@@ -863,11 +841,8 @@ def compare(observed: Dict[str, Any], entry: Dict[str, Any]) -> List[InvariantRe
         ))
 
     # --- GUI CONTENT: are the controls actually populated? -----------------
-    # `controls_present` above only says the control was BUILT. On 2026-07-25
-    # every control was built and the server list was empty, because an unset
-    # host global compared equal to a string and initServerlist() took the
-    # auto-connect branch instead of sendServerListRequest()
-    # (weapon-Rescripted_Serverlist.txt:85-124). Nothing structural moved.
+    # See the `controls_filled` invariant below.
+    # Nothing structural moved.
     filled = {str(c).lower() for c in observed.get("gui", {}).get("filled_controls", [])}
     want_filled = {str(c).lower() for c in pins.get("required_filled_controls", [])}
     empty = sorted(want_filled - filled)
@@ -989,11 +964,6 @@ def compare(observed: Dict[str, Any], entry: Dict[str, Any]) -> List[InvariantRe
     return [result for result in results if result.name not in ignored]
 
 
-# ---------------------------------------------------------------------------
-# Baseline storage
-# ---------------------------------------------------------------------------
-
-
 def empty_baselines() -> Dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "servers": {}}
 
@@ -1076,11 +1046,6 @@ def target_for(name: str, entry: Optional[Dict[str, Any]] = None,
         passive=(entry or {}).get("passive", default.passive if default else True),
         open_ui=tuple(str(spec) for spec in open_ui),
     )
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
 
 
 def print_report(name: str, results: List[InvariantResult]) -> bool:

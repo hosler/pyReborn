@@ -56,6 +56,9 @@ class GameClient(
     WorldRenderMixin,
     EntityRenderMixin,
     EffectsRenderMixin,
+    # The three render mixins that touch a frame inherit FrameContextMixin
+    # themselves (so a standalone test harness over one of them still has the
+    # lifecycle) — nothing to add here.
     LevelObjectsRenderMixin,
 ):
     """Enhanced pygame game client with animations and sounds."""

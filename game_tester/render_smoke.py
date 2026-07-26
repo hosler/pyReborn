@@ -26,6 +26,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import sys
 import time
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pyreborn import Client
 from pyreborn.pygame_game import GameClient
 from pyreborn.game.constants import TILE_SIZE
+from game_tester.login import level_ready, login_client
 from game_tester.test_scenarios import reset_account_position
 
 HOST = os.environ.get("PYREBORN_TEST_HOST", "localhost")
@@ -76,13 +78,35 @@ def _pump(game, n=8, dt=0.05):
         game._render()
 
 
-def _login_and_settle(client: Client, account: str, password: str = "testpass") -> None:
-    assert client.connect(), f"{account}: connect failed"
-    assert client.login(account, password), f"{account}: login failed"
+def _quiet_disconnect(client: Client) -> None:
+    try:
+        client.disconnect()
+    except Exception:
+        pass
+
+
+def _login_and_settle(stack: ExitStack, account: str,
+                      password: str = "testpass") -> Client:
+    """Log one client in, registering its disconnect on `stack` first.
+
+    Registering the teardown before the login can fail is the point: an
+    assertion while getting the SECOND client in-game used to abandon the
+    first one logged in on the server (main() only disconnected on the
+    success path), so the next run's testbot1 login collided with it.
+
+    Keeps its own settle loop instead of login.wait_for_level(): 30 fixed
+    iterations, not a wall-clock deadline, so a loaded machine still gets the
+    same number of chances at the board.
+    """
+    client = Client(HOST, PORT, version="6.037")
+    stack.callback(_quiet_disconnect, client)
+    outcome = login_client(client, account, password, timeout=5.0, settle=False)
+    assert outcome.connected, f"{account}: connect failed"
+    assert outcome.accepted, f"{account}: login failed"
     for _ in range(30):
         client.update(timeout=0.05)
-        if client._current_level_name and client.tiles:
-            return
+        if level_ready(client):
+            return client
     raise AssertionError(f"{account}: level never loaded")
 
 
@@ -528,8 +552,12 @@ def main() -> int:
     reset_account_position("testbot1", mp=_TESTBOT1_MP)
     reset_account_position("testbot2")
 
-    client1 = Client(HOST, PORT, version="6.037")
-    _login_and_settle(client1, "testbot1")
+    with ExitStack() as stack:
+        return _run_checks(stack)
+
+
+def _run_checks(stack: ExitStack) -> int:
+    client1 = _login_and_settle(stack, "testbot1")
 
     # Environment guard: reset_account_position() above must actually reach
     # THIS server's account store (GSERVER_ACCOUNTS_DIR / PYGSERVER_ACCOUNTS_DIR
@@ -571,8 +599,7 @@ def main() -> int:
     game.roster_ready_time = time.time()
     _pump(game, 10)
 
-    client2 = Client(HOST, PORT, version="6.037")
-    _login_and_settle(client2, "testbot2")
+    client2 = _login_and_settle(stack, "testbot2")
     client2.warp_to_level(client1._current_level_name, client1.x, client1.y)
     for _ in range(10):
         client2.update(timeout=0.05)
@@ -591,15 +618,7 @@ def main() -> int:
             print(f"[FAIL] {name}: unexpected exception")
             traceback.print_exc()
 
-    try:
-        game.client.disconnect()
-    except Exception:
-        pass
-    try:
-        client2.disconnect()
-    except Exception:
-        pass
-
+    # Both clients are disconnected by the ExitStack main() owns.
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

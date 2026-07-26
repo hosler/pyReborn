@@ -12,11 +12,12 @@ pace (bots stay online + pumped between agent tool calls).
        cmds: move&dx&dy | walkto&x&y | say&msg | sword[&dir] | bomb[&power]
              arrow[&dir] | grab | attack&pid | pm&pid&msg
              warp&level&x&y[&force=1] | open_chest[&x&y] | pickup[&x&y]
-       move/walkto/warp accept follow_links=0 to disable auto-warping onto a
+       move/walkto accept follow_links=0 to disable auto-warping onto a
        door mid-move (default is on, matching the real client - see
        GameBot.move()). warp accepts force=1 to warp onto a tile that looks
        blocking anyway (default refuses and returns an error string instead
-       of stranding the bot - see do_act()). open_chest with no x/y
+       of stranding the bot - see GameBot.warp_to_checked()). open_chest
+       with no x/y
        auto-targets the nearest known chest in reach and only reports
        success once the open is actually confirmed - see GameBot.open_chest.
   GET  /log?name=X              recent events (chat/hurt/pm) + detected
@@ -55,7 +56,6 @@ Agent-prompt caveats:
     /act's warp param is also level-local, matching client.warp_to_level().
 """
 import json
-import math
 import os
 import sys
 import threading
@@ -66,7 +66,10 @@ from urllib.parse import urlparse, parse_qs
 from game_tester.game_bot import GameBot
 from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 14990
+# Only read argv when actually run as the daemon: importing this module (the
+# unit tests drive do_act() directly) would otherwise try to parse pytest's
+# own arguments as a port number and fail at import time.
+PORT = int(sys.argv[1]) if __name__ == '__main__' and len(sys.argv) > 1 else 14990
 GAME_HOST = os.environ.get('PYREBORN_TEST_HOST', 'localhost')
 GAME_PORT = int(os.environ.get('PYREBORN_TEST_PORT', 14900))
 
@@ -268,108 +271,20 @@ def bot_log(bot):
     }
 
 
-def _blocking_tile_in_footprint(board, x, y):
-    """Return the first blocking tile id found under the collision-box
-    footprint at local (x, y) on `board` (a 4096-tile level array), or None
-    if clear.
-
-    Same collision-box GameBot._is_position_blocked() checks (a 2x2-tile box
-    centred on x+1.5/y+2.0, spanning x+0.5..x+2.5 by y+1.0..y+3.0, of a
-    3-wide x 3-tall top-left-anchored sprite), not just the single tile under
-    (x, y) - a warp landing with only its top-left corner clear but its feet
-    in a wall still strands the bot.
-    """
-    for ox, oy in ((0.5, 1.0), (1.5, 1.0), (2.5, 1.0),
-                   (0.5, 2.0), (1.5, 2.0), (2.5, 2.0),
-                   (0.5, 3.0), (1.5, 3.0), (2.5, 3.0)):
-        tx, ty = math.floor(x + ox), math.floor(y + oy)
-        if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
-            continue
-        tile = board[ty * 64 + tx]
-        if is_blocking(tile):
-            return tile
-    return None
-
-
-def _validate_warp_dest(level_name, x, y, board_lookup):
-    """Best-effort check that warping to local (x, y) on level_name won't
-    strand the bot on a blocking tile. Returns an error string if it would,
-    None if it looks clear OR the destination level's board isn't cached
-    yet (never having visited it, there's nothing to check against - let
-    the warp through rather than block on it)."""
-    board = board_lookup(level_name)
-    if not board or len(board) < 4096:
-        return None
-    tile = _blocking_tile_in_footprint(board, x, y)
-    if tile is not None:
-        return (f'warp destination ({x},{y}) on {level_name!r} is blocking '
-                f'(tile={tile}); pass force=1 to override')
-    return None
-
-
-def _flag(q, key, default=True):
-    """Parse a query-string boolean flag (follow_links=0/1, force=0/1)."""
-    v = q.get(key, [None])[0]
-    if v is None:
-        return default
-    return v not in ('0', 'false', 'False', '')
-
-
 def do_act(bot, q):
+    """Dispatch /act to GameBot's action registry (GameBot.ACTIONS).
+
+    Transport only: the command names, their parameter coercions and the warp
+    safety policy all live with the bot now (game_bot.py) - this used to be a
+    parallel implementation of the same twelve actions, and the two had
+    already drifted (arrow/grab called client methods directly, bypassing the
+    bot's own logging and guards).
+    """
     cmd = q.get('cmd', [''])[0]
-    g = lambda k, d=None: q.get(k, [d])[0]  # noqa: E731
-    if cmd == 'move':
-        return bot.move(int(g('dx', 0)), int(g('dy', 0)),
-                        follow_links=_flag(q, 'follow_links'))
-    if cmd == 'walkto':
-        return bot.walk_to(float(g('x')), float(g('y')), timeout=8.0,
-                           follow_links=_flag(q, 'follow_links'))
-    if cmd == 'say':
-        return bot.say_and_wait_echo(g('msg', ''))
-    if cmd == 'sword':
-        d = g('dir')
-        return bot.sword_attack(int(d) if d is not None else None)
-    if cmd == 'bomb':
-        return bot.drop_bomb(int(g('power', 1)))
-    if cmd == 'arrow':
-        d = g('dir')
-        return bot.client.shoot_arrow(
-            direction=int(d) if d is not None else None)
-    if cmd == 'grab':
-        return bot.client.set_animation('grab')
-    if cmd == 'attack':
-        return bot.attack_player(int(g('pid')))
-    if cmd == 'pm':
-        return bot.send_pm(int(g('pid')), g('msg', ''))
-    if cmd == 'warp':
-        level, x, y = g('level'), float(g('x', 30)), float(g('y', 30))
-        if not _flag(q, 'force', default=False):
-            # Prefer the live/active board (bot.client.tiles) when warping
-            # within the bot's own current level: client.levels[level] can
-            # hold a WRONG board for a level on a GMAP world - confirmed
-            # live, client.levels['chicken1.nw'] held a neighbouring
-            # segment's tiles while bot.client.tiles (and bot.level, via
-            # GameBot._resolve_level_name) correctly tracked chicken1.nw.
-            # Same root cause as the level-name corruption _resolve_level_name
-            # works around: adjacent-segment board streaming can get
-            # misattributed to the wrong level key. levels[level] is still
-            # the only thing available for a level the bot isn't currently
-            # on, so that's a best-effort fallback with the same caveat.
-            def board_lookup(lvl):
-                if lvl == bot.level:
-                    return bot.client.tiles
-                return bot.client.levels.get(lvl)
-            problem = _validate_warp_dest(level, x, y, board_lookup)
-            if problem:
-                return problem
-        return bot.warp_to(level, x, y)
-    if cmd == 'open_chest':
-        x, y = g('x'), g('y')
-        return bot.open_chest(float(x) if x else None, float(y) if y else None)
-    if cmd == 'pickup':
-        x, y = g('x'), g('y')
-        return bot.pickup_item(float(x) if x else None, float(y) if y else None)
-    return f'unknown cmd {cmd!r}'
+    action = GameBot.ACTIONS.get(cmd)
+    if action is None:
+        return f'unknown cmd {cmd!r}'
+    return action.run(bot, lambda key: q.get(key, [None])[0])
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -402,8 +317,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send('refused: /quit needs ?confirm=shutdown '
                                    '(use /leave to drop just your own bot)', 403)
                         return
-                    for b in bots.values():
-                        b.disconnect()
+                    disconnect_all_bots()
                     running = False
                     self._send('bye')
                     threading.Thread(target=self.server.shutdown).start()
@@ -457,8 +371,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send(f'error: {e}\n{traceback.format_exc()}', 500)
 
 
+def disconnect_all_bots():
+    """Log every bot out. Called on shutdown however the daemon ends."""
+    with lock:
+        for bot in bots.values():
+            try:
+                bot.disconnect()
+            except Exception:
+                pass
+        bots.clear()
+
+
 if __name__ == '__main__':
     threading.Thread(target=pump_loop, daemon=True).start()
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'playtest daemon on 127.0.0.1:{PORT} -> game {GAME_HOST}:{GAME_PORT}')
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Ctrl-C (or any crash out of serve_forever) used to leave every bot
+        # logged in on the game server until it timed them out, so the next
+        # daemon run met its own accounts already online.
+        running = False
+        disconnect_all_bots()

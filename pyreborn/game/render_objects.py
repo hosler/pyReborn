@@ -6,6 +6,8 @@ from typing import Optional
 
 import pygame
 
+from reborn_protocol.coords import segment_origin
+
 from .constants import TILE_SIZE, PLAYER_STAND_X, PLAYER_STAND_Y
 
 
@@ -65,7 +67,7 @@ class LevelObjectsRenderMixin:
             grid = next((cell for cell, name in self.client.gmap_grid.items()
                          if name == level_name), None)
             if grid is not None:
-                return level_name, grid[0] * 64, grid[1] * 64
+                return (level_name, *segment_origin(*grid))
         return level_name, 0, 0
 
     def _current_segment_origin(self):

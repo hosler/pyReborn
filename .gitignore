@@ -200,3 +200,10 @@ quick_test.py
 
 # One-shot playtest run reports (game_tester/playtest_run.py)
 playtest_report_*.md
+
+# Captured third-party server scripts (Bomber). Byte-identical content from
+# someone else than us, so the data stays local; the loaders in tests/unit/
+# skip when it is absent. Re-capture from a live session to run those tests.
+tests/fixtures/bomber_room0/
+tests/fixtures/bomber_lobby_shop/
+tests/fixtures/bomber_lobby_tailor/

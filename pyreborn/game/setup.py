@@ -19,7 +19,10 @@ from pygame.locals import (
 
 from .. import Client
 from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
+from ..sprites import (
+    SpriteManager, TilesetManager, create_placeholder_sprite,
+    create_shadow_sprite, strip_tiledef_image,
+)
 from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
@@ -30,6 +33,12 @@ from .constants import (
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, CHAT_HISTORY_CAP,
     parse_npc_visual_effects,
 )
+
+
+# Downloaded audio handled as one-shot samples (mixer.Sound). The streaming
+# side of the split is SoundManager.MUSIC_EXTS; .ogg deliberately appears only
+# there, so a downloaded track keeps going to mixer.music.
+SAMPLE_EXTS = ('wav', 'aiff', 'aif', 'flac')
 
 
 def append_start_message(chat_messages: list, text: str) -> int:
@@ -105,6 +114,14 @@ class SetupMixin:
         # pygame_game.py, which owns the rest of the render-state init.
         self.other_thrown_objects = []   # PLO_THROWCARRIED arcs (other players)
         self._pushaway_velocity = (0.0, 0.0)   # PLO_PUSHAWAY knockback, tiles/sec
+
+        # Let the sound manager fetch sounds it doesn't have, through the same
+        # one-shot request path images/ganis use (render_entities.py:1077).
+        # Wired here rather than beside the manager's construction because
+        # _request_asset needs _requested_assets, built later in __init__; the
+        # names preload_common_sounds() wrote off before now are re-requested
+        # on their next miss (sounds.py:127-132).
+        self.sound_mgr.file_requester = self._request_asset
 
         send_level_chat = self.client.send_level_chat
         def send_level_chat_with_events(message):
@@ -201,8 +218,8 @@ class SetupMixin:
 
         def on_file(filename: str, data: bytes):
             """Cache a downloaded asset. Images go to the sprite cache, ganis to
-            the gani parser's cache; a music file we were waiting on starts
-            playing once it arrives."""
+            the gani parser's cache, one-shot samples to the sound cache; a
+            music file we were waiting on starts playing once it arrives."""
             ext = filename.lower().rsplit('.', 1)[-1]
             if ext in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
@@ -228,6 +245,15 @@ class SetupMixin:
                 if filename == getattr(self, '_pending_music', None):
                     self._pending_music = None
                     self.sound_mgr.play_music(filename, data=data)
+            elif ext in SAMPLE_EXTS:
+                # A server's custom sounds exist nowhere on disk until asked
+                # for (`file sounds/*.wav` in foldersconfig), so these bytes
+                # are the only copy we will ever get; without this branch they
+                # were discarded and the sound stayed silent for the session.
+                # Ordered AFTER the is_music test on purpose: mixer.Sound can
+                # decode an .ogg too, but a streaming format belongs to
+                # mixer.music (sounds.py:285).
+                self.sound_mgr.load_bytes(filename, data)
 
         # A weapon arrived (gr.addweapon, e.g. -arenaSYS/-arenaGUI on arena
         # entry): load it into the GS1 engine and fire its playerenters so it
@@ -597,9 +623,10 @@ class SetupMixin:
         # needed, so the board renders with the active definitions.
         def on_tiledef(kind, image, levelstart="", x=0, y=0):
             if kind is None:
-                self.tileset_mgr.clear_tiledefs()
-                self.world_surface = None
+                if self.tileset_mgr.clear_tiledefs(image or ""):
+                    self.world_surface = None
                 return
+            image = strip_tiledef_image(image)
             if kind == "full":
                 # addtiledef: whole-tileset replacement sheet
                 self.tileset_mgr.set_full_tiledef(image, levelstart)
@@ -635,10 +662,6 @@ class SetupMixin:
         # Script tile probes (onwall/onwater/tiletype) must read the same
         # board our own collision does. CollisionMixin._get_tile_at resolves
         # a WORLD coordinate through the gmap grid to the owning segment;
-        # the GS1 host's own fallback only knows a single 64x64 level, so on
-        # a gmap (Zelda is one 10x10 gmap) every probe fell off the board and
-        # reported open ground -- the world's movement engine then walked
-        # through walls, water and ledges.
         # (guarded: unit harnesses mix SetupMixin in without CollisionMixin,
         # and the GS1 host's own single-level fallback is right for them.)
         self.gs1.tile_source = getattr(self, "_get_tile_at", None)
@@ -708,7 +731,19 @@ class SetupMixin:
     def _trigger_playerenters(self):
         """Fire `playerenters` once across all loaded NPC scripts (trigger_event
         with no name already runs every program; calling it per-script would run
-        the whole set N times and re-send each triggeraction/shoot)."""
+        the whole set N times and re-send each triggeraction/shoot).
+
+        Held off entirely until the level's board has arrived: a level's entry
+        scripts read `tiles[x,y]` to decide what the room contains, and classic
+        Bomber's room0.nw DELETES catalog entries (writing the result back to
+        `server.room<N>`) for wall furniture whose tile isn't the wall id — so
+        running it against a board that is missing or still the previous
+        level's destroys the player's room. The retry lives in
+        _check_level_change."""
+        if not self.gs1.board_ready():
+            self._gs1_playerenters_pending = True
+            return
+        self._gs1_playerenters_pending = False
         try:
             self.gs1.trigger_event('playerenters')
         except Exception:
@@ -727,6 +762,8 @@ class SetupMixin:
         (":No Players:") before the match could form."""
         if self.client._current_level_name != getattr(self, '_gs1_level', None):
             return
+        if not self.gs1.board_ready():
+            return  # same boardless-playerenters rule as _trigger_playerenters
         new = []
         for npc_id, npc in list(self.client.npcs.items()):
             key = "npc_%s" % npc_id
@@ -817,6 +854,11 @@ class SetupMixin:
             # weapon/NPC playerenters are re-runnable by design).
             self._gs1_level = None
         self._gs1_visual_level_epoch = epoch
+        # A reload that had to skip `playerenters` because the board hadn't
+        # arrived yet (see _trigger_playerenters) owes the level one: replay
+        # the whole reload — it's idempotent by design — now that it has.
+        if getattr(self, '_gs1_playerenters_pending', False) and self.gs1.board_ready():
+            self._gs1_level = None
         if not lvl or lvl == getattr(self, '_gs1_level', None):
             return
         now = time.time()

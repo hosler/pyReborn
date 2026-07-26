@@ -13,9 +13,6 @@ from `zlttp-e5.nw` ended at world x=251.5 — grid column 3, i.e. `zlttp-f5.nw`
 — with the level name unchanged and `levels` still holding only the 9
 segments from login. With the probe wired in, the same walk reports
 `zlttp-e5.nw -> zlttp-f5.nw`, NPCs 4 -> 13 and 12 segments cached.
-
-Third member of the same family as _scripted_movement_touch (NPC touch) and
-_check_scripted_link_warp (door links).
 """
 
 import os

@@ -6,6 +6,8 @@ from typing import List, Tuple
 
 import pygame
 
+from reborn_protocol.coords import LEVEL_SIZE, gmap_extent, local_to_world
+
 
 def aspect_fit(source_size, bounds):
     """Largest size fitting in bounds while preserving source aspect ratio."""
@@ -24,8 +26,8 @@ def map_entity_positions(client):
     the current 64x64 board otherwise.
     """
     is_world = client.gmap_width > 0 and client.gmap_height > 0
-    span_x = client.gmap_width * 64 if is_world else 64
-    span_y = client.gmap_height * 64 if is_world else 64
+    span_x, span_y = (gmap_extent(client.gmap_width, client.gmap_height)
+                      if is_world else (LEVEL_SIZE, LEVEL_SIZE))
     yield (client.x % span_x) / span_x, (client.y % span_y) / span_y, (255, 0, 0)
 
     level_to_grid = {name: cell for cell, name in client.gmap_grid.items()}
@@ -40,8 +42,7 @@ def map_entity_positions(client):
                 grid = level_to_grid.get(pdata.get('level')) or current_grid
                 if grid is None:
                     continue
-                px += grid[0] * 64
-                py += grid[1] * 64
+                px, py = local_to_world(px, py, *grid)
         yield (px % span_x) / span_x, (py % span_y) / span_y, (255, 255, 255)
 
 

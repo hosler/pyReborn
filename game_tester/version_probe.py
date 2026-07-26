@@ -24,7 +24,14 @@ import sys
 import time
 from typing import List, Tuple
 
-from pyreborn.client import Client
+from .login import login_session
+
+
+def _in_game(client) -> bool:
+    """This probe's own readiness rule: it reports player.level, so waiting on
+    client._current_level_name (login.level_ready) could return before that
+    field is set and make an accepted login look like a FAIL."""
+    return bool(client.tiles and client.player.level)
 
 
 def probe_version(version: str, host: str = "localhost", port: int = 14900,
@@ -32,43 +39,39 @@ def probe_version(version: str, host: str = "localhost", port: int = 14900,
                   ) -> Tuple[str, str]:
     """Probe one version. Returns (verdict, details) where verdict is
     PASS / FAIL / SKIP."""
-    c = Client(host, port, version=version)
     try:
-        if not c.connect():
-            return "FAIL", "tcp connect failed"
-        if not c.login(account, password, timeout=8.0):
-            # Most likely the server generation doesn't allow this version.
-            return "SKIP", "login refused/timed out (version not allowed by server generation?)"
+        with login_session(host, port, account, password, version=version,
+                           timeout=8.0, settle_timeout=5.0, poll=0.01,
+                           ready=_in_game) as session:
+            c = session.client
+            if not session.connected:
+                return "FAIL", "tcp connect failed"
+            if not session.accepted:
+                # Most likely the server generation doesn't allow this version.
+                return "SKIP", "login refused/timed out (version not allowed by server generation?)"
 
-        deadline = time.time() + 5.0
-        while time.time() < deadline and not (c.tiles and c.player.level):
-            c.update()
-            time.sleep(0.05)
+            board_ok = bool(c.tiles) and sum(1 for t in c.tiles if t) > 100
+            level_ok = bool(c.player.level)
 
-        board_ok = bool(c.tiles) and sum(1 for t in c.tiles if t) > 100
-        level_ok = bool(c.player.level)
+            start_x = c.player.x
+            for _ in range(4):
+                c.move(1, 0)
+                c.update()
+                time.sleep(0.1)
+            move_ok = c.player.x != start_x
 
-        start_x = c.player.x
-        for _ in range(4):
-            c.move(1, 0)
-            c.update()
-            time.sleep(0.1)
-        move_ok = c.player.x != start_x
+            c.say(f"probe {version}")
+            for _ in range(10):
+                c.update()
+                time.sleep(0.05)
+            chat_ok = c.connected
 
-        c.say(f"probe {version}")
-        for _ in range(10):
-            c.update()
-            time.sleep(0.05)
-        chat_ok = c.connected
-
-        ok = board_ok and level_ok and move_ok and chat_ok
-        details = (f"level={c.player.level!r} board={board_ok} "
-                   f"move={move_ok} chat={chat_ok}")
-        return ("PASS" if ok else "FAIL"), details
+            ok = board_ok and level_ok and move_ok and chat_ok
+            details = (f"level={c.player.level!r} board={board_ok} "
+                       f"move={move_ok} chat={chat_ok}")
+            return ("PASS" if ok else "FAIL"), details
     except Exception as e:  # noqa: BLE001
         return "FAIL", f"exception: {e}"
-    finally:
-        c.disconnect()
 
 
 def run_version_probe(host: str = "localhost", port: int = 14900,

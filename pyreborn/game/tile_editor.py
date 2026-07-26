@@ -59,9 +59,12 @@ class TileEditorMixin:
         mouse_x, mouse_y = self.viewport.window_to_virtual(*event.pos)
         world_tile_x, world_tile_y = self.camera.screen_to_world(mouse_x, mouse_y)
 
-        # Get tile at this position
-        tile_x = int(world_tile_x) % 64
-        tile_y = int(world_tile_y) % 64
+        # Name the tile the SAME way _get_tile_at resolves it (collision.py's
+        # _world_to_level_local: floor, and %64 only on a gmap). An inline
+        # int()%64 truncated toward zero instead, so left of / above the gmap
+        # origin the readout named a different tile than the click edited
+        # (world -1.5 -> 63 reported vs 62 read).
+        tile_x, tile_y = self._world_to_level_local(world_tile_x, world_tile_y)
         tile_id = self._get_tile_at(world_tile_x, world_tile_y)
 
         if tile_id == 0:
@@ -105,8 +108,8 @@ class TileEditorMixin:
         """
         world_tile_x, world_tile_y = self.camera.screen_to_world(screen_x, screen_y)
 
-        tile_x = int(world_tile_x) % 64
-        tile_y = int(world_tile_y) % 64
+        # Same frame as the tile actually read - see _handle_tile_click.
+        tile_x, tile_y = self._world_to_level_local(world_tile_x, world_tile_y)
         tile_id = self._get_tile_at(world_tile_x, world_tile_y)
 
         if tile_id == 0:

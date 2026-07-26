@@ -4,20 +4,39 @@ Split from render.py; methods operate on the GameClient instance."""
 
 import math
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, NamedTuple, Optional, Tuple
 
 import pygame
+
+from reborn_protocol.coords import local_to_world, segment_origin
 
 from ..gani import AnimationState
 from ..player import Player
 from ..sprites import palette_name_to_index
 from .assets import render_outlined_text
+from .frame_context import FrameContext, FrameContextMixin
 from .constants import (
     TILE_SIZE, parse_npc_visual_effects,
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
     PLAYER_STAND_X, PLAYER_STAND_Y,
 )
+
+
+class _Entity(NamedTuple):
+    """One drawable collected by an entity pass, before depth sorting.
+
+    `depth` is the image's bottom edge in world tiles (_depth_sort_key), so a
+    single stable sort across every kind reproduces the old per-kind draw
+    order for ties. `key` is the collection's id -- player id, npc id, baddy
+    id, horse key -- and is None for the local player, which has no entry."""
+
+    kind: str
+    depth: float
+    x: float
+    y: float
+    data: Any
+    key: Any = None
 
 
 def _c255(v: float) -> int:
@@ -37,11 +56,13 @@ def _c255(v: float) -> int:
 #     findimg(2000).alpha = 0;                    // invisible until hurt
 #
 # (Preagonal/graal-lttp weapons/weapon-Player_Movement.txt:155-160, and it
-# ramps .alpha up in onTimeout when the player takes damage). With the
-# channels ignored the quad fell back to "no colors -> opaque white" and
-# painted the entire canvas white every frame — the whole world, HUD and all,
-# vanished behind it on the live Zelda server.
+# ramps .alpha up in onTimeout when the player takes damage).
+# With the channels ignored the quad fell back to opaque white and filled the canvas.
 _LAYER_COLOR_KEYS = ("red", "green", "blue", "alpha")
+
+# ATTRn sprite-layer slots a character gani can address (ATTR1..ATTR5, fed by
+# PLPROP_GATTRIB1..5 / #P1..#P5).
+ATTR_SLOTS = 5
 
 
 def _layer_colors(rec: dict):
@@ -260,7 +281,7 @@ class BaddySheet:
         return self._raw_frame(r, col)
 
 
-class EntityRenderMixin:
+class EntityRenderMixin(FrameContextMixin):
     """Mixin providing the above methods for GameClient."""
 
     @staticmethod
@@ -320,105 +341,151 @@ class EntityRenderMixin:
         extent = self.camera.scale * 4
         return extent, extent
 
-    def _render_entities(self):
-        """Render all entities (players, NPCs) sorted by Y position."""
-        entities = []
-        # Computed once per frame (not per entity - see _entity_on_screen).
-        screen_size = self.screen.get_size()
-        # Nameplates placed this frame, so overlapping players/NPCs standing
-        # on/near the same tile stagger instead of drawing on top of each
-        # other (see _place_nameplate).
-        self._frame_nameplate_rects = []
-        # drawaslight NPCs drawn this frame (eraser mask + screen pos), so
-        # render_effects.py's _render_screen_tint can punch their footprint
-        # out of the ambient darkness/tint overlay after every entity has
-        # drawn (see _render_light_sprite).
-        self._frame_light_sources = []
-        # Additive light draws DEFERRED until after the seteffect/day-night
-        # tint (render.py calls _render_deferred_lights right after
-        # _render_screen_tint). The classic client draws effect-mode-2 /
-        # drawaslight glows over the ambient tint; our old scheme (blit the
-        # glow in the entity pass, then punch a rectangular "eraser" hole in
-        # the tint) exposed the raw — often pitch-black after subtractive
-        # smoke — scene inside the hole, which read as solid black boxes at
-        # every lamp (bomber lobby, live 2026-07-22).
-        self._frame_light_draws = []
+    def _render_entities(self, frame: Optional[FrameContext] = None):
+        """Render all entities (players, NPCs) sorted by Y position.
 
-        # Add local player. Draw it through the camera at its true render-frame
-        # top-left (set by _sync_camera) — same transform every other entity
-        # uses — so it stays correct under zoom and the camera can aim at the
-        # body centre without dragging the sprite off its real position.
-        if not getattr(self.client, '_local_level_transition', ''):
-            player = self.client.player
-            # Depth-sort key must be in the SAME frame as every other entity
-            # (world tiles). visual_y is already world-frame.
-            px, py = self.camera.world_to_screen(*self._player_render_pos)
-            entities.append(('player', self._depth_sort_key(self.visual_y, 3.0),
-                             px, py, player))
+        Three phases: collect a snapshot of what is drawable, with each
+        entity's world position already resolved and interpolated; sort that
+        by depth; dispatch each entry through _ENTITY_RENDERERS. Cross-pass
+        scratch (nameplate rects, deferred light draws) lives on `frame`, not
+        on self, so render_effects.py's consumers take it as an argument
+        instead of depending on this having run first."""
+        frame = self._begin_frame() if frame is None else frame
+        # Resolved when the pass starts rather than at frame start: while
+        # zoomed the scene is drawn into a SMALLER scratch surface
+        # (render.py's _render_scene_zoomed swaps self.screen), and culling
+        # must use that surface's bounds. Hoisted out of the per-entity loop
+        # either way - see _entity_on_screen.
+        frame.screen_size = self.screen.get_size()
+        self._resolve_frame_gmap(frame)
 
-        # Reverse lookup (level_name -> grid pos), built once per frame instead
-        # of rescanning client.gmap_grid for every remote player below (mirrors
-        # the baddy segment-offset hoist further down).
-        level_to_grid = {}
-        if self.client.gmap_grid:
-            for (gx, gy), level_name in self.client.gmap_grid.items():
-                level_to_grid[level_name] = (gx, gy)
+        entities: List[_Entity] = []
+        for _kind, collect, _render in self._ENTITY_PASSES:
+            collect(self, entities, frame)
 
-        # Add other players - convert their local coords to world coords
-        for pid, pdata in self.client.players.items():
-            if 'x' in pdata and 'y' in pdata:
-                ox = pdata.get('x')
-                oy = pdata.get('y')
+        # Every key is the image's bottom edge in the same world-tile frame.
+        # The sort is stable, so equal keys keep _ENTITY_PASSES order.
+        entities.sort(key=lambda e: e.depth)
 
-                if ox is None or oy is None:
-                    continue
+        renderers = self._ENTITY_RENDERERS
+        for ent in entities:
+            renderers[ent.kind](self, ent, frame)
 
-                # Convert to world coords based on their level in GMAP
-                player_level = pdata.get('level', '')
-                world_x, world_y = ox, oy
+        self._render_weapon_layers()
 
-                # Prefer the player's own level; if unset or unknown, assume
-                # the same sub-level as the local player.
-                grid = level_to_grid.get(player_level) if player_level else None
-                if grid is None:
-                    grid = level_to_grid.get(self.client._current_level_name)
-                if grid is not None:
-                    gx, gy = grid
-                    world_x = ox + gx * 64
-                    world_y = oy + gy * 64
+    # -- entity pass: resolve ------------------------------------------------
 
-                # Smooth interpolation for other players
-                if pid in self.other_player_visual:
-                    vx, vy = self.other_player_visual[pid]
-                    # Interpolate toward target position
-                    lerp = min(1.0, self.lerp_speed * self._frame_dt)
-                    vx += (world_x - vx) * lerp
-                    vy += (world_y - vy) * lerp
-                    self.other_player_visual[pid] = (vx, vy)
-                else:
-                    # First time seeing this player, snap to position
-                    vx, vy = world_x, world_y
-                    self.other_player_visual[pid] = (vx, vy)
+    def _resolve_frame_gmap(self, frame: FrameContext) -> None:
+        """Snapshot the gmap lookups the collectors need: level name -> grid
+        cell (which the remote-player loop used to rescan per player), and the
+        current segment's world origin (which local-coord entities fold in).
 
-                opx, opy = self.camera.world_to_screen(vx, vy)
-                if self._entity_on_screen(opx, opy, screen_size=screen_size):
-                    entities.append(('other', self._depth_sort_key(vy, 3.0),
-                                     opx, opy, pdata, pid))
+        The two are derived separately on purpose. If one level name occupies
+        two cells of a gmap grid, the name lookup resolves to the LAST and the
+        segment origin to the FIRST - what the inline code did."""
+        grid = self.client.gmap_grid
+        if not grid:
+            return
+        frame.level_to_grid = {name: cell for cell, name in grid.items()}
+        seg = next((cell for cell, name in grid.items()
+                    if name == self.client._current_level_name), None)
+        if seg:
+            frame.segment_offset = segment_origin(*seg)
 
-        # Add NPCs - use world coords if available (for GMAP), else local.
-        # epoch_seen mirrors npc_visual (same lifetime - both are keyed by
-        # npc_id and only ever need to outlive the NPCs currently known to
-        # the client), but is lazily created rather than added to
-        # pygame_game.py's __init__ since it's purely an implementation
-        # detail of this interpolation loop (see _light_sprite_cache above
-        # for the same local-cache idiom). A stale leftover entry for a
-        # since-removed npc_id is harmless: client.py's epoch counter is
-        # monotonically increasing and never reused, so it can never collide
-        # with a *future* npc_id's real epoch and accidentally suppress a
-        # snap.
+    def _world_pos_for_level(self, local_x: float, local_y: float,
+                             level_name: str, frame: FrameContext):
+        """World position of a wire (level-local) position in `level_name`.
+        Prefer the entity's own level; if that's unset or unknown, assume the
+        same sub-level as the local player. Off a gmap there is no grid and
+        the local coords already are world coords."""
+        grid = frame.level_to_grid.get(level_name) if level_name else None
+        if grid is None:
+            grid = frame.level_to_grid.get(self.client._current_level_name)
+        if grid is None:
+            return local_x, local_y
+        return local_to_world(local_x, local_y, *grid)
+
+    def _lerp_toward(self, previous, target_x: float, target_y: float,
+                     dt: float):
+        """One frame of the shared remote-entity position chase."""
+        vx, vy = previous
+        lerp = min(1.0, self.lerp_speed * dt)
+        return vx + (target_x - vx) * lerp, vy + (target_y - vy) * lerp
+
+    def _interpolate_other_player(self, pid, world_x: float, world_y: float,
+                                  frame: FrameContext):
+        """Smoothed world position of a remote player: chase the authoritative
+        position, or snap the first time this pid is seen."""
+        previous = self.other_player_visual.get(pid)
+        position = (self._lerp_toward(previous, world_x, world_y, frame.dt)
+                    if previous is not None else (world_x, world_y))
+        self.other_player_visual[pid] = position
+        return position
+
+    def _interpolate_npc(self, npc_id, npc: dict, nx: float, ny: float,
+                         frame: FrameContext):
+        """Smoothed world position of an NPC, EXCEPT when client.py just
+        re-stamped its world_x/world_y for a reason other than it actually
+        moving (gmap re-attribution, cache restore on level re-entry, initial
+        stream - see client.py's _mark_npc_pos_snap/_pos_epoch). Lerping
+        across one of those jumps is what made lights visibly "swoop into
+        position" on level entry; snap instead, same as a brand-new npc_id.
+
+        epoch_seen mirrors npc_visual (same lifetime - both keyed by npc_id
+        and only needing to outlive the NPCs the client knows about), but is
+        lazily created rather than added to pygame_game.py's __init__ since
+        it's purely an implementation detail of this interpolation. A stale
+        leftover entry for a since-removed npc_id is harmless: client.py's
+        epoch counter only increases and is never reused, so it can never
+        collide with a future npc_id's real epoch and suppress a snap."""
         epoch_seen = getattr(self, '_npc_visual_epoch', None)
         if epoch_seen is None:
             epoch_seen = self._npc_visual_epoch = {}
+        epoch = npc.get('_pos_epoch')
+        previous = self.npc_visual.get(npc_id)
+        position = (self._lerp_toward(previous, nx, ny, frame.dt)
+                    if previous is not None and epoch == epoch_seen.get(npc_id)
+                    else (nx, ny))
+        self.npc_visual[npc_id] = position
+        epoch_seen[npc_id] = epoch
+        if len(epoch_seen) > 2000:
+            epoch_seen.clear()
+        return position
+
+    # -- entity pass: collect ----------------------------------------------
+
+    def _collect_local_player(self, out: List["_Entity"],
+                              frame: FrameContext) -> None:
+        """The local player, drawn through the camera at its true render-frame
+        top-left (set by _sync_camera) — the same transform every other entity
+        uses — so it stays correct under zoom and the camera can aim at the
+        body centre without dragging the sprite off its real position. Never
+        culled."""
+        if getattr(self.client, '_local_level_transition', ''):
+            return
+        # Depth-sort key must be in the SAME frame as every other entity
+        # (world tiles). visual_y is already world-frame.
+        px, py = self.camera.world_to_screen(*self._player_render_pos)
+        out.append(_Entity('player', self._depth_sort_key(self.visual_y, 3.0),
+                           px, py, self.client.player))
+
+    def _collect_other_players(self, out: List["_Entity"],
+                               frame: FrameContext) -> None:
+        for pid, pdata in self.client.players.items():
+            ox = pdata.get('x')
+            oy = pdata.get('y')
+            if ox is None or oy is None:
+                continue
+            world_x, world_y = self._world_pos_for_level(
+                ox, oy, pdata.get('level', ''), frame)
+            vx, vy = self._interpolate_other_player(pid, world_x, world_y, frame)
+            sx, sy = self.camera.world_to_screen(vx, vy)
+            if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
+                out.append(_Entity('other', self._depth_sort_key(vy, 3.0),
+                                   sx, sy, pdata, pid))
+
+    def _collect_npcs(self, out: List["_Entity"],
+                      frame: FrameContext) -> None:
         for npc_id, npc in self.client.npcs.items():
             npc_level = npc.get('_level')
             if (npc_level and not self.client.in_gmap_segment and
@@ -427,102 +494,106 @@ class EntityRenderMixin:
             # Prefer world coords (converted from local + grid offset)
             nx = npc.get('world_x', npc.get('x'))
             ny = npc.get('world_y', npc.get('y'))
-            if nx is not None and ny is not None:
-                # Interpolate NPC position for smooth movement, UNLESS
-                # client.py just re-stamped this NPC's world_x/world_y for a
-                # reason other than it actually moving (gmap re-attribution,
-                # cache restore on level re-entry, initial stream - see
-                # client.py's _mark_npc_pos_snap/_pos_epoch). Lerping across
-                # one of those jumps is what made lights visibly "swoop into
-                # position" on level entry; snap instead, same as a
-                # brand-new npc_id.
-                epoch = npc.get('_pos_epoch')
-                if npc_id in self.npc_visual and epoch == epoch_seen.get(npc_id):
-                    vx, vy = self.npc_visual[npc_id]
-                    lerp = min(1.0, self.lerp_speed * self._frame_dt)
-                    vx += (nx - vx) * lerp
-                    vy += (ny - vy) * lerp
-                else:
-                    vx, vy = nx, ny
-                self.npc_visual[npc_id] = (vx, vy)
-                epoch_seen[npc_id] = epoch
-                if len(epoch_seen) > 2000:
-                    epoch_seen.clear()
+            if nx is None or ny is None:
+                continue
+            vx, vy = self._interpolate_npc(npc_id, npc, nx, ny, frame)
+            sx, sy = self.camera.world_to_screen(vx, vy)
+            draw_w, draw_h = self._npc_draw_size(npc)
+            if self._entity_on_screen(sx, sy, width=draw_w, height=draw_h,
+                                      screen_size=frame.screen_size):
+                out.append(_Entity('npc', self._depth_sort_key(
+                    vy, self._npc_height_tiles(npc)), sx, sy, npc, npc_id))
+                continue
+            # A culled NPC's own sprite is skipped but its showimg layers are
+            # not: one layer can be far bigger than the sprite and still cover
+            # the screen from an off-screen owner (see _render_npc_layers'
+            # on_screen_only note). Drawn HERE, during collection, so they
+            # land under every depth-sorted entity - where they were before
+            # this pass was split.
+            imgs = npc.get('imgs')
+            if imgs and npc.get('visible') is not False:
+                self._render_npc_layers(imgs, over=False, on_screen_only=True)
+                self._render_npc_layers(imgs, over=True, on_screen_only=True)
 
-                npx, npy = self.camera.world_to_screen(vx, vy)
-                draw_w, draw_h = self._npc_draw_size(npc)
-                if self._entity_on_screen(npx, npy, width=draw_w,
-                                          height=draw_h,
-                                          screen_size=screen_size):
-                    entities.append(('npc', self._depth_sort_key(
-                        vy, self._npc_height_tiles(npc)), npx, npy, npc, npc_id))
-                else:
-                    imgs = npc.get('imgs')
-                    if imgs and npc.get('visible') is not False:
-                        self._render_npc_layers(imgs, over=False,
-                                                on_screen_only=True)
-                        self._render_npc_layers(imgs, over=True,
-                                                on_screen_only=True)
-
-        # Add baddies (enemies). Their x/y are local to the current segment, so
-        # fold in that segment's gmap offset to line them up with the world.
-        seg_off_x = seg_off_y = 0
-        if self.client.gmap_grid:
-            seg = next((g for g, n in self.client.gmap_grid.items()
-                        if n == self.client._current_level_name), None)
-            if seg:
-                seg_off_x, seg_off_y = seg[0] * 64, seg[1] * 64
+    def _collect_baddies(self, out: List["_Entity"],
+                         frame: FrameContext) -> None:
+        """Baddies (enemies). Their x/y are local to the current segment, so
+        fold in that segment's gmap offset to line them up with the world."""
+        off_x, off_y = frame.segment_offset
         for bid, baddy in self.client.baddies.items():
             bx = baddy.get('x')
             by = baddy.get('y')
             if bx is None or by is None:
                 continue
-            wx, wy = bx + seg_off_x, by + seg_off_y
+            wx, wy = bx + off_x, by + off_y
             sx, sy = self.camera.world_to_screen(wx, wy)
-            if self._entity_on_screen(sx, sy, screen_size=screen_size):
-                entities.append(('baddy', self._depth_sort_key(
+            if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
+                out.append(_Entity('baddy', self._depth_sort_key(
                     wy, self._baddy_height_tiles(baddy)), sx, sy, baddy, bid))
 
-        # Add horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
-        # like baddies, so fold in the current segment's gmap offset.
+    def _collect_horses(self, out: List["_Entity"],
+                        frame: FrameContext) -> None:
+        """Horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
+        like baddies, so fold in the current segment's gmap offset."""
+        off_x, off_y = frame.segment_offset
         for hkey, horse in self.client.horses.items():
             hx = horse.get('x')
             hy = horse.get('y')
             if hx is None or hy is None:
                 continue
-            whx, why = hx + seg_off_x, hy + seg_off_y
-            hsx, hsy = self.camera.world_to_screen(whx, why)
-            if self._entity_on_screen(hsx, hsy, screen_size=screen_size):
-                entities.append(('horse', self._depth_sort_key(
-                    why, self._horse_height_tiles(horse)), hsx, hsy, horse, hkey))
+            wx, wy = hx + off_x, hy + off_y
+            sx, sy = self.camera.world_to_screen(wx, wy)
+            if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
+                out.append(_Entity('horse', self._depth_sort_key(
+                    wy, self._horse_height_tiles(horse)), sx, sy, horse, hkey))
 
-        # Every key is the image's bottom edge in the same world-tile frame.
-        entities.sort(key=lambda e: e[1])
+    # -- entity pass: draw --------------------------------------------------
 
-        # Render each entity
-        for entity in entities:
-            if entity[0] == 'player':
-                self._render_player(entity[2], entity[3], entity[4], self.player_anim)
-            elif entity[0] == 'other':
-                self._render_other_player(entity[2], entity[3], entity[4], entity[5])
-            elif entity[0] == 'npc':
-                self._render_npc(entity[2], entity[3], entity[4], entity[5])
-            elif entity[0] == 'baddy':
-                self._render_baddy(entity[2], entity[3], entity[4], entity[5])
-            elif entity[0] == 'horse':
-                self._render_horse(entity[2], entity[3], entity[4], entity[5])
+    def _draw_player_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self._render_player(ent.x, ent.y, ent.data, self.player_anim, frame)
 
-        # Weapon image layers — the arena bombs/vases/explosions (world coords)
-        # and HUD (screen coords) are painted by the arenaGUI/arenaSYS weapons,
-        # which have no NPC/player anchor. Draw the under-player band, then the
-        # over-player band (vis>=2), so the floor/bombs sit below and the HUD on
-        # top. (Depth-sorting world bombs against players is a later refinement.)
+    def _draw_other_player_entity(self, ent: "_Entity",
+                                  frame: FrameContext) -> None:
+        self._render_other_player(ent.x, ent.y, ent.data, ent.key, frame)
+
+    def _draw_npc_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self._render_npc(ent.x, ent.y, ent.data, ent.key, frame)
+
+    def _draw_baddy_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self._render_baddy(ent.x, ent.y, ent.data, ent.key)
+
+    def _draw_horse_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self._render_horse(ent.x, ent.y, ent.data, ent.key)
+
+    # kind -> (collector, renderer) in COLLECTION order, which the stable
+    # depth sort also makes the tie-break between two entities whose image
+    # bottoms land on the same world row. A new entity kind is one row here
+    # plus its two methods, not an edit to _render_entities.
+    _ENTITY_PASSES = (
+        ('player', _collect_local_player, _draw_player_entity),
+        ('other', _collect_other_players, _draw_other_player_entity),
+        ('npc', _collect_npcs, _draw_npc_entity),
+        ('baddy', _collect_baddies, _draw_baddy_entity),
+        ('horse', _collect_horses, _draw_horse_entity),
+    )
+    _ENTITY_RENDERERS = {kind: render
+                         for kind, _collect, render in _ENTITY_PASSES}
+
+    def _render_weapon_layers(self) -> None:
+        """Weapon image layers — the arena bombs/vases/explosions (world
+        coords) and HUD (screen coords) are painted by the arenaGUI/arenaSYS
+        weapons, which have no NPC/player anchor. Draw the under-player band,
+        then the over-player band (vis>=2), so the floor/bombs sit below and
+        the HUD on top. (Depth-sorting world bombs against players is a later
+        refinement.)"""
         wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
-        if wimgs:
-            for store in list(wimgs.values()):
-                self._render_npc_layers(store, over=False)
-            for store in list(wimgs.values()):
-                self._render_npc_layers(store, over=True)
+        if not wimgs:
+            return
+        for store in list(wimgs.values()):
+            self._render_npc_layers(store, over=False)
+        for store in list(wimgs.values()):
+            self._render_npc_layers(store, over=True)
+
     def _render_baddy(self, x: float, y: float, baddy: dict, baddy_id: int):
         """Render a baddy from its own classic sprite sheet (baddygray.png,
         baddyoctopus.png, ...) - see BaddySheet. The server-reported mode
@@ -626,21 +697,40 @@ class EntityRenderMixin:
     # against a fresh real-client reference if the shade looks off.
     _NPC_NICK_COLOR = (0, 0, 255)
 
-    def _render_player(self, x: float, y: float, player: Player, anim: AnimationState):
+    @staticmethod
+    def _attr_equipment(gattribs) -> dict:
+        """attr1_image..attr5_image for a player whose gani attributes we know.
+
+        Always returns all five keys, empty string included: an entity whose
+        attributes are known owns those slots outright, so an unset attribute
+        must draw nothing rather than falling back to the gani's
+        DEFAULTATTRn (see _resolve_gani_layers). A value that names no image
+        - Bomber stores room-editor data in #P1 - resolves to a missing file
+        and draws nothing, which is what the real client does with it.
+        """
+        return {f'attr{i}_image': str((gattribs or {}).get(i) or '')
+                for i in range(1, ATTR_SLOTS + 1)}
+
+    def _render_player(self, x: float, y: float, player: Player,
+                       anim: AnimationState,
+                       frame: Optional[FrameContext] = None):
         """Render the local player with animation."""
+        frame = self._frame_context() if frame is None else frame
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
         base_alpha = 115 if self.client.ghost_mode else 255
         alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
-        self._render_animated_entity(x, y, anim, {
-                'body_image': player.body_image or 'body.png',
-                'head_image': player.head_image or 'head0.png',
-                'sword_image': player.sword_image or 'sword1.png',
-                'shield_image': player.shield_image or 'shield1.png',
-                # Tier 2a: PLPROP_COLORS (prop 13), parsed into player.colors
-                # by packets.py/player.py, drives the body palette-swap in
-                # get_sprite_recolored() (sprites.py).
-                'colors': player.colors,
-            }, alpha=alpha)
+        equip = {
+            'body_image': player.body_image or 'body.png',
+            'head_image': player.head_image or 'head0.png',
+            'sword_image': player.sword_image or 'sword1.png',
+            'shield_image': player.shield_image or 'shield1.png',
+            # Tier 2a: PLPROP_COLORS (prop 13), parsed into player.colors
+            # by packets.py/player.py, drives the body palette-swap in
+            # get_sprite_recolored() (sprites.py).
+            'colors': player.colors,
+        }
+        equip.update(self._attr_equipment(player.gattribs))
+        self._render_animated_entity(x, y, anim, equip, alpha=alpha)
 
         # Render carried object above player's head
         if player.is_carrying():
@@ -659,7 +749,8 @@ class EntityRenderMixin:
             # (24px) — the sprite is 3 tiles wide, top-left anchored at x.
             name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
-            name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
+            name_x, name_y = self._place_nameplate(name_x, name_y,
+                                                   name_surf.get_size(), frame)
             self.screen.blit(name_surf, (name_x, name_y))
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
@@ -770,8 +861,10 @@ class EntityRenderMixin:
                 if self.client.player.chat == chat_text:
                     self.client.player.chat = ""
 
-    def _render_other_player(self, x: float, y: float, pdata: dict, pid: int):
+    def _render_other_player(self, x: float, y: float, pdata: dict, pid: int,
+                             frame: Optional[FrameContext] = None):
         """Render another player."""
+        frame = self._frame_context() if frame is None else frame
         # Get animation name - could be 'ani' or 'animation'. Tier 2d: a
         # `setani ani,param1,param2` server prop keeps its params comma-joined
         # onto the gani name here; split them off so param images can drive
@@ -786,15 +879,19 @@ class EntityRenderMixin:
         # Get or create animation state
         if pid not in self.other_player_anims:
             anim = AnimationState(self.gani_parser)
-            anim.set_animation(player_anim, direction)
+            anim.set_animation(player_anim, direction, params=gani_params)
             self.other_player_anims[pid] = anim
 
         anim = self.other_player_anims[pid]
 
-        # Update animation if changed
+        # Update animation if changed. The params are part of "changed": a
+        # PARAMn PLAYSOUND (`setani sen_piano_note2,<note>.wav`) re-issues the
+        # SAME gani name with a new sound file, and skipping the call here
+        # meant the second note never sounded.
         current_name = anim.gani.name if anim.gani else ''
-        if player_anim != current_name or anim.direction != direction:
-            anim.set_animation(player_anim, direction)
+        if (player_anim != current_name or anim.direction != direction
+                or anim.params != gani_params):
+            anim.set_animation(player_anim, direction, params=gani_params)
 
         equip = {
             'body_image': pdata.get('body_image', 'body.png'),
@@ -804,6 +901,8 @@ class EntityRenderMixin:
             # Tier 2a: PLPROP_COLORS (prop 13), populated by parse_other_player.
             'colors': pdata.get('colors'),
         }
+        equip.update(self._attr_equipment(
+            {i: pdata.get(f'gattrib{i}') for i in range(1, 6)}))
         for i, p in enumerate(gani_params[:5], start=1):
             if p:
                 equip[f'attr{i}_image'] = p
@@ -833,19 +932,20 @@ class EntityRenderMixin:
             # player (see _render_player).
             name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
             name_y = y + 48
-            name_x, name_y = self._place_nameplate(name_x, name_y, name_surf.get_size())
+            name_x, name_y = self._place_nameplate(name_x, name_y,
+                                                   name_surf.get_size(), frame)
             self.screen.blit(name_surf, (name_x, name_y))
     def _place_nameplate(self, name_x: float, name_y: float,
-                          size: Tuple[int, int]) -> Tuple[float, float]:
+                          size: Tuple[int, int],
+                          frame: Optional[FrameContext] = None
+                          ) -> Tuple[float, float]:
         """Stagger a nameplate vertically if it would overlap one already
         placed this frame. Two players (or an NPC and a player) standing on
         or near the same tile otherwise draw their nickname at the same
         y-offset, producing garbled overlapping text; nudge each subsequent
-        overlapper straight down by one box-height until it clears. Reset
-        per-frame by _render_entities via self._frame_nameplate_rects."""
-        rects = getattr(self, '_frame_nameplate_rects', None)
-        if rects is None:
-            rects = self._frame_nameplate_rects = []
+        overlapper straight down by one box-height until it clears. The
+        already-placed rects live on the frame, so they reset with it."""
+        rects = (self._frame_context() if frame is None else frame).nameplate_rects
         w, h = size
         rect = pygame.Rect(int(name_x), int(name_y), int(w), int(h))
         while any(rect.colliderect(r) for r in rects):
@@ -1066,12 +1166,14 @@ class EntityRenderMixin:
             cache[gani_name] = result
         return result
 
-    def _render_npc(self, x: float, y: float, npc: dict, npc_id: int):
+    def _render_npc(self, x: float, y: float, npc: dict, npc_id: int,
+                    frame: Optional[FrameContext] = None):
         """Render an NPC."""
         # destroy / hide make the NPC (and its layers) vanish entirely.
         if npc.get('visible') is False:
             return
 
+        frame = self._frame_context() if frame is None else frame
         nick_anchor = None  # set below when the NPC actually draws a body/sprite
 
         # GS1 showimg/showtext layers this NPC painted (lights, signs, text).
@@ -1123,11 +1225,18 @@ class EntityRenderMixin:
             # Use animation
             if npc_id not in self.npc_anims:
                 anim = AnimationState(self.gani_parser)
-                anim.set_animation(gani_name, npc.get('direction', 2))
+                anim.set_animation(gani_name, npc.get('direction', 2),
+                                   params=gani_params)
                 self.npc_anims[npc_id] = anim
 
             anim = self.npc_anims[npc_id]
-            anim.set_animation(gani_name, npc.get('direction', 2))  # cheap no-op if unchanged
+            # Params go with the name: a gani's PLAYSOUND is routinely a PARAMn
+            # token (`setani sen_piano_note2,<note>.wav`), and the split above
+            # means set_animation can no longer recover them from the name.
+            # Still a cheap no-op when neither name nor params changed
+            # (gani.py:624).
+            anim.set_animation(gani_name, npc.get('direction', 2),
+                               params=gani_params)
             if anim.gani is None:
                 # The gani isn't downloaded yet — ask for it and stay invisible
                 # (like the missing-image path), rather than drawing the magenta
@@ -1201,7 +1310,8 @@ class EntityRenderMixin:
                     sprite = zoomed
                 # Apply visual effects for light NPCs
                 if is_light or coloreffect:
-                    self._render_light_sprite(sprite, x, y, is_light, coloreffect)
+                    self._render_light_sprite(sprite, x, y, is_light,
+                                              coloreffect, frame)
                 else:
                     self.screen.blit(sprite, (x, y))
                 # Label under the drawn extent (x/y/sprite already zoom-adjusted).
@@ -1234,7 +1344,7 @@ class EntityRenderMixin:
                 self.font_small, nickname, self._NPC_NICK_COLOR)
             name_x = nick_anchor[0] - name_surf.get_width() // 2
             name_x, name_y = self._place_nameplate(name_x, nick_anchor[1],
-                                                   name_surf.get_size())
+                                                   name_surf.get_size(), frame)
             self.screen.blit(name_surf, (name_x, name_y))
 
         # Render NPC chat bubble if active (and not timed out)
@@ -1302,7 +1412,14 @@ class EntityRenderMixin:
         and their black drop-shadow copies at vis 5 on HIGHER indices
         (242-246), so the shadows painted over the white text and the HUD
         read as unlit black-on-red (live-verified 2026-07-24; the C# client
-        strata-sorts, same as its world bands)."""
+        strata-sorts, same as its world bands).
+
+        Takes no frame: it carries none of the cross-pass state itself, and
+        the one layer type that does (an additive showimg, deferred past the
+        tint) reads the ambient `_frame_context()` — which is the same object
+        the caller holds. Harnesses stub `_render_showimg_rec` with a bare
+        one-argument recorder (tests/unit/test_showimg_rotation.py), and the
+        per-layer `except Exception` below would swallow the arity error."""
         for idx in sorted(imgs, key=lambda i: (imgs[i].get('vis', 4), i)):
             rec = imgs[idx]
             # findimg(i).visible = false (gs2_client._LayerImage writes the
@@ -1365,12 +1482,12 @@ class EntityRenderMixin:
         mask = pygame.transform.smoothscale(core, (w, h))
         surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
 
-    def _render_deferred_lights(self):
+    def _render_deferred_lights(self, frame: Optional[FrameContext] = None):
         """Flush this frame's additive light draws (queued by
         _render_light_sprite / additive showimg layers) on top of the
         seteffect/day-night tint — the classic client's effect-mode-2 glows
         brighten the tinted scene rather than punching holes in the tint."""
-        draws = getattr(self, '_frame_light_draws', None)
+        draws = (self._frame_context() if frame is None else frame).light_draws
         if not draws:
             return
         for surf, x, y in draws:
@@ -1378,17 +1495,22 @@ class EntityRenderMixin:
                              special_flags=pygame.BLEND_ADD)
         draws.clear()
 
-    def _render_gui_layers(self):
+    def _render_gui_layers(self, frame: Optional[FrameContext] = None):
         """Draw every GUI-band layer (explicit vis>=4 / showimg2-family) from
         current-level NPCs and weapon scripts. Called from the render loop
         AFTER _render_screen_tint so scripted menus, captions and countdowns
         stay visible over a seteffect curtain (the arena's `seteffect 0,0,0,1`
-        + "Joining..." flow), matching the classic client's GUI stratum."""
-        self._in_gui_pass = True
+        + "Joining..." flow), matching the classic client's GUI stratum.
+
+        This band runs past the point where deferred lights were flushed, so
+        it marks the frame: an additive layer drawn here has to blit now
+        (FrameContext.defer_light)."""
+        frame = self._frame_context() if frame is None else frame
+        frame.gui_pass = True
         try:
             self._render_gui_layers_inner()
         finally:
-            self._in_gui_pass = False
+            frame.gui_pass = False
 
     def _render_gui_layers_inner(self):
         client = getattr(self, 'client', None)
@@ -1577,10 +1699,7 @@ class EntityRenderMixin:
             # Additive layers are lights: defer them to after the seteffect
             # tint (same treatment as _render_light_sprite) unless we're
             # already in the post-tint GUI pass or outside the frame loop.
-            draws = getattr(self, '_frame_light_draws', None)
-            if draws is not None and not getattr(self, '_in_gui_pass', False):
-                draws.append((out, sx, sy))
-            else:
+            if not self._frame_context().defer_light(out, sx, sy):
                 self.screen.blit(out, (int(sx), int(sy)),
                                  special_flags=pygame.BLEND_ADD)
             return
@@ -1795,7 +1914,8 @@ class EntityRenderMixin:
     _LIGHT_ADDITIVE_ALPHA_CAP = 140  # out of 255
 
     def _render_light_sprite(self, sprite: pygame.Surface, x: float, y: float,
-                              is_light: bool, coloreffect: Optional[Tuple[float, float, float, float]]):
+                              is_light: bool, coloreffect: Optional[Tuple[float, float, float, float]],
+                              frame: Optional[FrameContext] = None):
         """Render a sprite with light effects (additive blending, alpha).
 
         Args:
@@ -1803,6 +1923,7 @@ class EntityRenderMixin:
             x, y: Position (top-left of NPC tile, like other NPC images)
             is_light: If True, use additive blending
             coloreffect: (r, g, b, a) multipliers - r,g,b typically 1.0, a is alpha (0-1)
+            frame: the frame whose deferred-light queue an additive glow joins
         """
         # copy()+recolor/set_alpha() every frame per light NPC is wasted work
         # since the same (sprite, mult) pair repeats frame to frame - cache
@@ -1830,13 +1951,11 @@ class EntityRenderMixin:
             # effects. The additive blit is DEFERRED to after the seteffect/
             # day-night tint (render.py's _render_deferred_lights) so the
             # glow brightens the tinted scene the way the classic client's
-            # effect-mode-2 lights do — no tint-eraser holes (see the
-            # _frame_light_draws comment in _render_entities). Direct callers
-            # outside the frame loop (render smoke/tests) just blit now.
-            draws = getattr(self, '_frame_light_draws', None)
-            if draws is not None:
-                draws.append((light_sprite, x, y))
-            else:
+            # effect-mode-2 lights do — no tint-eraser holes (see
+            # FrameContext.light_draws). Direct callers outside the frame loop
+            # (render smoke/tests) just blit now.
+            ctx = self._frame_context() if frame is None else frame
+            if not ctx.defer_light(light_sprite, x, y):
                 self.screen.blit(light_sprite, (x, y),
                                  special_flags=pygame.BLEND_ADD)
         else:
@@ -1959,17 +2078,27 @@ class EntityRenderMixin:
             elif layer == "SHIELD":
                 img = equipment.get('shield_image', anim.gani.defaults.get('SHIELD', 'shield1.png'))
             elif layer.startswith("ATTR") and layer[4:].isdigit():
-                # Tier 2b/2d: ATTR1-5 are the gani "PARAM" slots - a hat/prop
-                # image supplied either by a `setani ani,param1,param2` call
-                # (equipment['attrN_image'], plumbed through by callers from
-                # the raw NPC/other-player gani string - see _render_npc /
-                # _render_other_player) or, failing that, the gani's own
-                # DEFAULTATTRn. Per the reference client (the C# client's
-                # Animation.cs), DEFAULTATTRn is purely opt-in per-gani text -
-                # there's no universal "hat0.png" fallback when a gani defines
-                # an ATTR1 sprite layer without a DEFAULTATTR1 line, so render
-                # nothing rather than inventing a hat.
-                img = equipment.get(f'{layer.lower()}_image') or anim.gani.defaults.get(layer, '')
+                # An ATTRn sprite layer draws the WEARER's gani attribute n
+                # (PLPROP_GATTRIB1.. on the wire, #P1.. in script), not the
+                # gani's own text. The reference client resolves the two
+                # separately - `case Attr` indexes the object's attr table and
+                # `case Param` the setani argument list
+                # (Preagonal/FourPlay/quattroplay/src/TGaniObject.cpp:1974-1994)
+                # - and its gani parser has no DEFAULTATTRn directive at all
+                # (same tree, TGraalAni.cpp:425-495: SPRITE / ATTACHSPRITE /
+                # ANI / LOOP / SETBACKTO / DEFAULTHEAD / DEFAULTBODY / ZOOM /
+                # ACTOR / PARAMn / ATTRn, and nothing else).
+                #
+                # So a caller that knows the entity's attributes passes them
+                # (empty string included) and owns the slot; only a caller
+                # that supplies no attrN_image key at all still falls back to
+                # DEFAULTATTRn. Falling back unconditionally drew Bomber's
+                # `DEFAULTATTR1 hat0.png` (cache/bomber_arena/
+                # eye_bomber_idle0.gani) on every player, hat or no hat, while
+                # the real client drew none.
+                img = equipment.get(f'{layer.lower()}_image')
+                if img is None:
+                    img = anim.gani.defaults.get(layer, '')
                 if not img:
                     continue
             elif layer == "SPRITES":

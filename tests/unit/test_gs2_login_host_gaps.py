@@ -46,10 +46,6 @@ def call(rt, name, args=(), obj=None, vm=None):
     return rt.host.call_builtin(vm, name, list(args), obj=obj)
 
 
-# =============================================================================
-# Bare-function builtins
-# =============================================================================
-
 def test_gettextheight_is_positive_and_scales_with_zoom():
     """ServerListScreen sizes labels with
     `extent = { w, gettextheight(scale, "friz", "b") }` -- 732 calls in one
@@ -80,7 +76,6 @@ def test_path_helpers_split_both_separators():
         assert call(rt, "extractfilename", [path]) == "icon.png"
         assert call(rt, "extractfilebase", [path]) == "icon"
         assert call(rt, "extractfileext", [path]) == ".png"
-    # no extension: the base IS the whole leaf, and the ext is empty
     assert call(rt, "extractfilebase", ["readme"]) == "readme"
     assert call(rt, "extractfileext", ["readme"]) == ""
 
@@ -157,10 +152,6 @@ def test_getplatform_answers_a_string_not_the_inert_zero():
         "android", "iphone", "bada", "flash", "linuxstream")
 
 
-# =============================================================================
-# Object-method builtins
-# =============================================================================
-
 def test_string_case_methods_are_answered_by_the_host():
     """`.lower()`/`.upper()` are the string methods the compiler does not
     lower to an opcode (Login's staff sprite editor keys its default
@@ -229,10 +220,6 @@ def test_list_sortascending_and_sortdescending():
     assert call(rt, "sortdescending", obj=values) == ["C", "b", "a"]
 
 
-# =============================================================================
-# scheduleevent / cancelevents
-# =============================================================================
-
 #: every live scheduleevent call site spells it `this.scheduleevent(...)`,
 #: so the host sees it as an object method on the script's own `this`
 _THIS = GS2Object(name="this")
@@ -293,10 +280,6 @@ def test_scheduleevent_queue_is_capped():
     assert len(rt._scheduled) == mod.SCHEDULED_EVENT_CAP
 
 
-# =============================================================================
-# Control methods
-# =============================================================================
-
 def test_isfirstresponder_tracks_keyboard_focus():
     rt = ClientGS2()
     edit = rt.gui.create_control("GuiTextEditCtrl", "edit")
@@ -336,7 +319,6 @@ def test_coordinate_transforms_are_inverses_through_the_parent_chain():
     child.x, child.y = 10.0, 5.0
     assert child.get("localtoglobalcoord")([0, 0]) == [110.0, 45.0]
     assert child.get("globaltolocalcoord")([110, 45]) == [0.0, 0.0]
-    # two-scalar spelling is accepted too
     assert child.get("localtoglobalcoord")(0, 0) == [110.0, 45.0]
 
 
@@ -387,10 +369,6 @@ def test_start_menu_open_anchors_above_the_given_point():
     assert menu.visible and menu.x == 40.0
     assert menu.y == 300.0 - menu.height
 
-
-# =============================================================================
-# Newly recognised control classes
-# =============================================================================
 
 def test_login_corpus_control_classes_resolve_to_real_types():
     for classname, cls in (
@@ -455,10 +433,6 @@ def test_drawing_panel_op_log_is_capped():
     assert len(panel.draw_ops) == GuiDrawingPanel._MAX_OPS
 
 
-# =============================================================================
-# Tree view: per-node profile, depth, node building
-# =============================================================================
-
 def _serverlist_tree(rt):
     tree = rt.gui.create_control("GuiTreeViewCtrl", "Serverlist_ServerList")
     rt.gui.addcontrol(tree)
@@ -517,11 +491,6 @@ def test_unstyled_tree_still_uses_the_control_profile():
     assert tree.node_profile(tree.root_nodes[0], default) is default
 
 
-# =============================================================================
-# Second wave: gaps only the deep crawler's client-install weapon fetch
-# reaches (-Serverlist_Chat, -Serverlist, Login Mobile's gui_* classes)
-# =============================================================================
-
 def test_addtext_appends_and_can_follow_the_tail():
     rt = ClientGS2()
     scroll = rt.gui.create_control("GuiScrollCtrl", "scroll")
@@ -549,7 +518,6 @@ def test_scrolltobottom_walks_up_to_the_enclosing_scroll_view():
     child.height = 200.0
     child.get("scrolltobottom")()
     assert scroll.scroll_y == 170.0
-    # no scroll ancestor: a no-op, never a crash
     assert GuiControl("loose").get("scrolltobottom")() == 0.0
 
 
@@ -584,7 +552,6 @@ def test_setselection_makes_the_next_keystroke_replace_the_text():
     rt.gui.handle_event(pygame.event.Event(
         pygame.KEYDOWN, key=pygame.K_a, unicode="a"))
     assert edit.text == "a"
-    # the selection is consumed, so typing continues normally
     rt.gui.handle_event(pygame.event.Event(
         pygame.KEYDOWN, key=pygame.K_b, unicode="b"))
     assert edit.text == "ab"
@@ -685,10 +652,6 @@ def test_renderer_and_input_platform_toggles_are_inert():
         assert call(rt, name, [1]) == 0.0
     assert call(rt, "getiphonemodel") == ""
 
-
-# =============================================================================
-# Coverage reporting
-# =============================================================================
 
 def test_host_surface_reports_control_subclass_methods():
     """host_surface() used to union GuiControl._METHOD_NAMES only, so every

@@ -17,6 +17,11 @@ from pygame.locals import (
     K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
+from reborn_protocol.coords import (
+    LEVEL_SIZE, gmap_extent, in_level_bounds, level_index, local_coord,
+    segment_at,
+)
+
 from .. import Client
 from ..gani import GaniParser, AnimationState, direction_from_delta
 from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
@@ -33,6 +38,7 @@ from .constants import (
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
     PLAYER_STAND_X, PLAYER_STAND_Y,
+    PLAYER_GROUND_X, PLAYER_GROUND_Y,
 )
 
 
@@ -61,6 +67,27 @@ class CollisionMixin:
         """Check if tile is a chair, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
         return tile_type == TileType.CHAIR
+
+    def _effective_tile_type(self, x: float, y: float) -> int:
+        """Tile TYPE in force at world (x, y): a script NPC's setshape2 overlay
+        first, the board's own type second.
+
+        `TServerLevel::getTileType` (Preagonal/FourPlay/quattroplay/src/
+        TServerLevel.cpp:688-708) asks the level's NPCs before the board and
+        takes any NPC answer above 1. Classic Bomber's player-base rooms are
+        built entirely this way: the room controller paints the whole 64x64
+        room with `setshape2 64,64,obj`, so a placed chair is a type-3 cell in
+        that array and NOTHING on the board says chair. Reading the board
+        alone is why walking onto your own furniture did nothing."""
+        gs1 = getattr(self, 'gs1', None)
+        if gs1 is not None:
+            try:
+                ttype = int(gs1.npc_tile_type(x, y))
+            except Exception:
+                ttype = 0
+            if ttype > 1:
+                return ttype
+        return self._get_corrected_tile_type(self._get_tile_at(x, y))
     def _is_tile_liftable(self, tile_id: int) -> bool:
         """Check if tile is liftable, using corrections."""
         tile_type = self._get_corrected_tile_type(tile_id)
@@ -99,6 +126,18 @@ class CollisionMixin:
         return (self.client.x + self.PLAYER_FEET_DX,
                 self.client.y + self.PLAYER_FEET_DY)
 
+    # The point the official client asks "what am I standing on?" - see
+    # PLAYER_GROUND_X/Y in constants.py for the oracle sites. Half a tile
+    # ABOVE _player_feet, which is the community-described standing point.
+    PLAYER_GROUND_DX = PLAYER_GROUND_X
+    PLAYER_GROUND_DY = PLAYER_GROUND_Y
+
+    def _player_ground(self) -> Tuple[float, float]:
+        """World-tile coordinates the ground TYPE is sampled at (chair, and
+        the water/lava/swamp tests the oracle shares this point with)."""
+        return (self.client.x + self.PLAYER_GROUND_DX,
+                self.client.y + self.PLAYER_GROUND_DY)
+
     # Per-facing interaction offsets — the original Reborn client's Player._touchtestd
     # idea. Each entry lists the (dx, dy) tile offsets from the sprite's TOP-LEFT to
     # the point(s) probed when grabbing / lifting / reading something in that
@@ -133,7 +172,7 @@ class CollisionMixin:
         behavior) made every collision probe near a segment boundary test the
         wrong level's tiles, which is exactly where walls felt flaky."""
         if self.client.in_gmap_segment:
-            grid = (math.floor(x / 64), math.floor(y / 64))
+            grid = segment_at(x, y)
             seg = self.client.gmap_grid.get(grid)
             if seg:
                 return seg, self.client.levels.get(seg)
@@ -146,13 +185,13 @@ class CollisionMixin:
         state (tiles, chests, ...) is keyed by. Only GMAP world coords get
         the %64 localization — on a standalone level an off-board probe must
         read as out-of-world, not wrap to the far column the way
-        floor(-1.5) % 64 == 63 would (edge lifts/touches sampled the
+        floor(-1.5) % 64 == 62 would (edge lifts/touches sampled the
         opposite side of the board)."""
         tx = math.floor(x)
         ty = math.floor(y)
         if self.client.in_gmap_segment:
-            tx %= 64
-            ty %= 64
+            tx = local_coord(tx)
+            ty = local_coord(ty)
         return tx, ty
 
     def _get_tile_at(self, x: float, y: float) -> int:
@@ -170,18 +209,17 @@ class CollisionMixin:
             # blocking it would freeze movement dead at spawn -- stay
             # walkable there.
             if self.client.in_gmap_segment:
-                grid = (math.floor(x / 64), math.floor(y / 64))
-                if grid not in self.client.gmap_grid:
+                if segment_at(x, y) not in self.client.gmap_grid:
                     return -1  # out of world: blocking, not water/liftable
             return 0  # Default to walkable
 
         # Convert to tile indices (floor, not int(): int() truncates toward
         # zero and mis-tiles fractional negatives).
         tx, ty = self._world_to_level_local(x, y)
-        if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
+        if not in_level_bounds(tx, ty):
             return -1  # out of world: blocking, not water/liftable
 
-        tile_idx = ty * 64 + tx
+        tile_idx = level_index(tx, ty)
         if tile_idx >= len(tiles):
             return -1
 
@@ -245,10 +283,10 @@ class CollisionMixin:
         board, or the stitched gmap rectangle when inside a segment. Enforced
         even for the stuck-escape, which bypasses tile blocking."""
         if self.client.in_gmap_segment:
-            max_x = self.client.gmap_width * 64
-            max_y = self.client.gmap_height * 64
+            max_x, max_y = gmap_extent(self.client.gmap_width,
+                                       self.client.gmap_height)
         else:
-            max_x = max_y = 64
+            max_x = max_y = LEVEL_SIZE
         return (x + self._FEET_LEFT < 0 or x + self._FEET_RIGHT > max_x or
                 y + self._FEET_TOP < 0 or y + self._FEET_BOTTOM > max_y)
     def _is_blocked_at(self, x: float, y: float) -> bool:
@@ -267,11 +305,12 @@ class CollisionMixin:
         if self.client.in_gmap_segment:
             # Clamp to the full GMAP world: inner segment boundaries stitch
             # together, but the outer perimeter has no neighbour to walk into.
-            if (x < 0 or x >= self.client.gmap_width * 64 or
-                    y < 0 or y >= self.client.gmap_height * 64):
+            max_x, max_y = gmap_extent(self.client.gmap_width,
+                                       self.client.gmap_height)
+            if x < 0 or x >= max_x or y < 0 or y >= max_y:
                 return True
         else:
-            if x < 0 or x >= 64 or y < 0 or y >= 64:
+            if not in_level_bounds(x, y):
                 return True
 
         if self._chest_blocks(x, y):

@@ -63,6 +63,11 @@ class Player:
     sprite: int = 0  # Sprite frame within animation
     status: int = 0  # Status flags (paused, hidden, etc.)
     chat: str = ""  # Current chat bubble text (CURCHAT)
+    # Gani attributes: index (1..30) -> string, from PLPROP_GATTRIB1.. (#P1..
+    # in script). A gani's ATTRn sprite layer draws gattribs[n] as an image
+    # (hats, capes); servers also use the same slots as a plain data channel,
+    # in which case the value simply names no file and nothing is drawn.
+    gattribs: dict = field(default_factory=dict)
 
     # Hurt state tracking
     hurt_timeout: float = 0.0  # When hurt animation should end
@@ -134,6 +139,9 @@ class Player:
             self.carry_sprite = props['carry_sprite']
         if 'carry_npc' in props:
             self.carry_npc = props['carry_npc']
+        for key, value in props.items():
+            if key.startswith('gattrib') and key[7:].isdigit():
+                self.gattribs[int(key[7:])] = value
 
         # Clamp hearts to valid range after updating both values
         if self.max_hearts > 0:

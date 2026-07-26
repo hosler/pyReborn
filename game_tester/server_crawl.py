@@ -26,14 +26,9 @@ MAX_GS2_FETCHES = 32
 MAX_GS2_FETCH_ROUNDS = 3
 MAX_GS2_FUNCTIONS = 128     # Zelda's gui_builder class alone exports 65
 # Cooperative sleeps to let ONE entry point run before abandoning it. Content
-# main loops are `while (true) { ...; sleep(0.05); }` (Zelda's piano NPC
-# 10003 doplay is the crawl's example): run as a plain call the sleep is
-# inert and the loop burns the whole op budget, so the script reported an
-# uninformative `capped` and its host calls past the first iteration went
-# unrecorded. Driven as the coroutine the live client actually runs, that
-# loop costs ~14 ops per iteration and settles into a repeating cycle almost
-# immediately -- 64 iterations is far more than enough to see everything it
-# touches. Arbitrary; raise it if a script is found that needs more.
+# main loops are `while (true) { ...; sleep(0.05); }`; run as a plain call the
+# sleep is inert and the loop burns the whole op budget. ~14 ops/iteration, so
+# 64 sees the repeating cycle several times over. Arbitrary; raise if needed.
 MAX_GS2_YIELDS = 64
 GS2_FETCH_SECONDS = 3.0
 MAX_VM_WARNINGS = 20

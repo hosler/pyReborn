@@ -10,21 +10,9 @@ Three client gaps kept that from working; all three are covered here with no
 server needed. Source references are to Preagonal/graal-lttp, the world's own
 repository.
 
-1. **Scripted layer colours.** GS2 tints a layer by assigning
-   `findimg(i).red/.green/.blue/.alpha`, not with GS1's packed
-   `changeimgcolors`. -Player/Movement:155-160 parks a FULL-SCREEN hurt-flash
-   polygon at `alpha = 0`; with the per-channel keys ignored it fell back to
-   "no colours -> opaque white" and painted the whole canvas white every
-   frame, hiding the entire world.
-
-2. **Tile probes on a gmap.** Zelda is one 10x10 gmap, so the script's
-   `onwall(player.x+1.5, ...)` / `tiletype(...)` arguments are WORLD tile
-   coordinates (0..640). The GS1 host only knew a single 64x64 board and
-   answered "open ground" for everything outside it, so the world's own
-   collision let the player walk through walls and water.
-
-3. **`tiletype()` itself** was not implemented at all
-   (-Player/Movement:369-370, 451: chairs = 3, beds = 4/5, ledges = 21).
+1. **Scripted layer colours.** GS2 assigns `findimg(i).red/.green/.blue/.alpha`, not GS1's packed `changeimgcolors` (-Player/Movement:155-160).
+2. **Tile probes on a gmap.** Zelda passes world tile coordinates (0..640), while the GS1 host only knew a single 64x64 board.
+3. **`tiletype()` itself** was not implemented (-Player/Movement:369-370, 451).
 """
 
 import os
@@ -43,10 +31,6 @@ from pyreborn.game.render_entities import EntityRenderMixin, _layer_colors
 from pyreborn.gs1_client import ClientGS1
 from pyreborn.tiletypes import TileType
 
-
-# --------------------------------------------------------------------------
-# 1. findimg(i).red/.green/.blue/.alpha
-# --------------------------------------------------------------------------
 
 def test_changeimgcolors_still_wins():
     rec = {'colors': (0.5, 0.5, 0.5, 1.0), 'red': 1.0}
@@ -117,10 +101,6 @@ def test_faded_in_quad_tints_red(canvas):
         _fullscreen_quad(red=1.0, green=0.0, blue=0.0, alpha=1.0))
     assert canvas.get_at((32, 24))[:3] == (255, 0, 0)
 
-
-# --------------------------------------------------------------------------
-# 2/3. gmap-aware tile probes + tiletype()
-# --------------------------------------------------------------------------
 
 WALL_TILE = 511          # in the blocking range of tiletypes.py
 WATER_TILE = 0x400       # deep water

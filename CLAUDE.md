@@ -9,7 +9,14 @@
 ```
 pyreborn/
 ├── __init__.py           # Exports: Client, Player, ListServerClient, RCClient, NCClient
-├── client.py             # Main Client class - game state, packet handling
+├── client.py             # Client facade - session, state components, dispatch
+├── client_state.py       # Client's state components (level/gmap/entities/...)
+├── handlers/             # Packet handlers, one module per domain
+│   ├── registry.py       # @handles(<PLO id>) table; grep it to find a handler
+│   ├── level.py          # level/board/warp        session.py  # handshake/auth
+│   ├── entities.py       # players/NPCs            combat.py   # combat relay
+│   ├── chat.py           # chat/RC                 files.py    # downloads
+│   └── scripts.py        # GS1/GS2 transport
 ├── protocol.py           # Socket connection + encryption
 ├── packets.py            # Packet parsing/building - CRITICAL for debugging
 ├── player.py             # Player dataclass
@@ -37,6 +44,7 @@ pyreborn/
     ├── camera.py         # Camera/viewport tracking
     ├── collision.py      # Tile/entity collision
     ├── constants.py      # Screen/tile size constants
+    ├── frame_context.py  # FrameContext - per-frame state shared across passes
     ├── hud.py            # HUD rendering
     ├── input.py          # Keyboard/input handling
     ├── minimap.py        # GMAP minimap
@@ -53,7 +61,10 @@ pyreborn/
 
 game_tester/              # Automated QA framework
 ├── __init__.py           # Exports all modules
-├── game_bot.py           # Headless bot wrapper for Client
+├── login.py              # login_client/login_session - the ONE connect+login
+│                         #   path, with guaranteed teardown. Use it; don't
+│                         #   hand-roll connect/login (leaked sockets before).
+├── game_bot.py           # Headless bot wrapper for Client (GameBot.ACTIONS)
 ├── bug_detector.py       # Anomaly detection utilities
 ├── multi_bot.py          # Multi-bot coordination (PvP, visibility)
 ├── test_scenarios.py     # Scripted test cases
@@ -140,7 +151,18 @@ fixed window of frames, and asserts ~33 invariants against
   `required_filled_controls` pin. **Structure alone is not enough**: on
   2026-07-25 the Login server list came up completely EMPTY and every
   structural count stayed inside its band, so the harness reported 25/25 over
-  a broken UI. A control that exists is not a control that has anything in it;
+  a broken UI. A control that exists is not a control that has anything in it.
+  Do NOT pin a control whose population depends on which row the listserver
+  happens to return first: `serverlist_description0`, `serverlist_eventnews`
+  and `serverlist_tablestab` were removed from Login/Login DEV on 2026-07-26
+  for that reason. They belong to the Account Info pane, which
+  `Rescripted_Serverlist`'s `showLoginInfo()` only builds when the first listed
+  server is a `"P "`/`"3 "` entry — a `"U "` server first yields a blank-named
+  root folder whose unset `id` fails `node.id >= 0`, so the pane never builds.
+  Faithfully emulated, verified against baseline-era code on the same server
+  (identical fingerprints), and flipped 33/33 by reordering only the server's
+  own payload. `serverlist_serverlist` is the real list-is-populated signal;
+  keep that one;
 - **geometry** — `within_parent`, `nonzero_area`, `window_layout`. These catch
   a layout that collapses without changing any count: an unimplemented
   `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults
@@ -297,8 +319,8 @@ PLPROP_ARROWSCOUNT   = 4   # 1 byte
 PLPROP_BOMBSCOUNT    = 5   # 1 byte
 PLPROP_GLOVEPOWER    = 6   # 1 byte
 PLPROP_BOMBPOWER     = 7   # 1 byte
-PLPROP_SWORDPOWER    = 8   # 1 byte, or 1 + string if > 4
-PLPROP_SHIELDPOWER   = 9   # 1 byte, or 1 + string if > 3
+PLPROP_SWORDPOWER    = 8   # 1 byte, or 1 + string if raw >= 30  (see below)
+PLPROP_SHIELDPOWER   = 9   # 1 byte, or 1 + string if raw >= 10  (see below)
 PLPROP_GANI          = 10  # STRING: 1 byte len + chars
 PLPROP_HEADIMAGE     = 11  # STRING: 1 byte len + chars
 PLPROP_BODYIMAGE     = 13  # STRING: 1 byte len + chars
@@ -318,9 +340,45 @@ PLPROP_X2            = 78  # 2 bytes (gShort, pixels/16 = tiles)
 PLPROP_Y2            = 79  # 2 bytes (gShort, pixels/16 = tiles)
 PLPROP_Z2            = 80  # 2 bytes (gShort)
 
-# GATTRIBs (46-74) are all strings
-PLPROP_GATTRIB1-30   = 36-74  # STRING: 1 byte len + chars
+# GATTRIBs are strings -- but the block is NOT contiguous. Ids 42-45 and
+# 50-53 sit inside the apparent range and are NOT gattribs (ATTACHNPC,
+# GMAPLEVELX, GMAPLEVELY, Z, ...). A naive `GATTRIB1 <= id <= GATTRIB30`
+# range test reads those as length-prefixed strings and corrupts the rest
+# of the packet -- that was a live pygserver bug, fixed 2026-07-25. Derive
+# the real ids from reborn_protocol.props.PLAYER_PROPS, never from a range.
+PLPROP_GATTRIB1-30            # STRING: 1 byte len + chars
 ```
+
+### Sword/shield power: the bias forms
+
+Oracle: `GServer-v2/server/src/utilities/PropertySerializers.cpp`
+(`PropertySwordPower::serialize` / `::deserialize`, and the shield pair).
+
+```
+sword:  power 0             -> single byte 0
+        power 1..4, no image -> bare byte = power
+        otherwise            -> byte = power + 30, then a length-prefixed image
+shield: same, with bias 10 and bare range 1..3
+```
+
+Receiving: `raw < bias` is a bare power; `raw >= bias` means `power = raw - bias`
+followed by the image. **Branching on `power > 4` instead reads an image string
+that is not on the wire and desyncs every following property in the packet.**
+Bare powers 1..4 get a synthesised default name (`sword{N}.png`, `.gif` on
+classic servers).
+
+Don't hand-roll any of this -- `reborn_protocol.props` owns the descriptor
+tables (`PLAYER_PROPS`, `NPC_PROPS`, `BADDY_PROPS`) plus `decode_value`,
+`encode_value` and `parse_prop_stream`. It replaced six independent parsers
+across this client and pygserver, which is what let them drift apart.
+
+Two more traps from the same fix:
+- `PLPROP_COLORS` is 5 bytes on classic and 8 on v6 new-world, and the server
+  picks the width from a server-wide mode, NOT from the client version -- so it
+  cannot be derived from the handshake.
+- Property streams are emitted in ASCENDING id order. A strict parser STOPS at
+  the first descending id rather than erroring, so an out-of-order writer makes
+  entities silently arrive half-populated.
 
 ### X2/Y2 Decoding (High Precision Position)
 
@@ -380,22 +438,31 @@ self.screen.blit(sprite, (x - w//2, y - h//2))  # NO!
 
 ## GMAP Coordinate System
 
+**Do not re-derive this math inline.** `reborn_protocol.coords` owns it for both
+this client and pygserver, because independently-written copies are what caused
+the repeated coordinate-frame bugs (props frame, door frame, edge-warp frame,
+gani anchor, cross-seam collision).
+
 ```python
-# Local coords: 0-63 within a level segment
-# World coords: local + (grid_position * 64)
-
-# Convert local to world (for GMAP)
-world_x = local_x + grid_x * 64
-world_y = local_y + grid_y * 64
-
-# Find grid position
-grid_x = math.floor(world_x / 64)
-grid_y = math.floor(world_y / 64)
-
-# Get local from world
-local_x = world_x % 64
-local_y = world_y % 64
+from reborn_protocol.coords import (
+    segment_index, segment_at, world_to_local, local_to_world,
+    segment_origin, level_index, in_level_bounds,
+    camera_origin, world_to_screen, screen_to_world, visible_tile_range,
+)
 ```
+
+Local coords are 0-63 within a segment; `world = local + grid * 64`.
+
+**Segment selection must use `math.floor(world / 64)`.** `int(world / 64)`
+truncates toward zero and disagrees for negative coordinates: world `-1.5` is
+segment -1 / local 62 under floor, but segment 0 / local 63 under `int()`. That
+exact mismatch made the debug tile-editor's hover readout name a different tile
+than the one it edited (fixed 2026-07-25).
+
+Known limitation, deliberately not "fixed": for a negative magnitude below one
+ULP of 64 (e.g. `-1e-16`), `world % 64` returns exactly `64.0` rather than
+staying in `[0, 64)`. Unreachable for real coordinates, which are all multiples
+of 1/16 tile.
 
 ## Key Packet IDs
 
@@ -463,6 +530,26 @@ result = BugDetector.check_tiles_valid(client)
 - **Account:** Use your server account credentials
 - **Version:** 6.037 (or 2.22 for older protocol)
 
+## Running the tests
+
+Use **`/usr/bin/python3.13`**. The system `python3` is 3.14 and lacks
+`hypothesis`, so `reborn-protocol`'s property suite silently fails to *collect*
+under it and you get a false green.
+
+Do **not** pass `-q`: `pyproject.toml`'s addopts already includes it, and a
+second `-q` (`-qq`) suppresses the pass/fail summary line entirely.
+
+```bash
+/usr/bin/python3.13 -m pytest                          # unit + integration
+/usr/bin/python3.13 -m game_tester                     # live bot QA (16/16)
+SDL_VIDEODRIVER=dummy /usr/bin/python3.13 -m game_tester.render_smoke
+```
+
+**`pytest` does not cover the render loop.** On 2026-07-25 the pygame client
+crashed on its first rendered frame while all 1295 unit tests and the 16/16 bot
+QA passed — nothing in either drives `_render()`. After touching anything under
+`pyreborn/game/`, run `render_smoke` or you have not tested your change.
+
 ## Common Pitfalls
 
 1. **Props 75/76 are NOT position** - They're OSTYPE (string) and TEXTCODEPAGE (3 bytes)
@@ -471,3 +558,6 @@ result = BugDetector.check_tiles_valid(client)
 4. **PLO_TOALL for movement** - Use PLO_OTHERPLPROPS instead
 5. **Boundary check failures** - Must still advance pos or break to avoid infinite loops
 6. **Not running QA tests** - Always run `python -m game_tester` after changes
+7. **Green pytest != working client** - see "Running the tests" above
+8. **Hand-rolling prop or coordinate math** - use `reborn_protocol.props` and
+   `reborn_protocol.coords`; duplicating either is how they drifted before

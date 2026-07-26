@@ -5,9 +5,10 @@ Handles loading, caching, and playing sound effects.
 Works with pygame.mixer.
 """
 
+import io
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # Pygame import is optional - only needed when actually used
 try:
@@ -49,8 +50,21 @@ class SoundManager:
 
         # Names that failed to resolve/load, so play() doesn't re-walk every
         # search path on each call (e.g. a missing footstep sound fired once
-        # per step). Mirrors _music_failed above.
+        # per step). Mirrors _music_failed above. load_bytes() clears a name
+        # from here, so a sound that arrives from the server later is not
+        # permanently written off by the miss that requested it.
         self._sound_failed = set()
+
+        # Optional "fetch this from the server" hook, called at most once per
+        # missing name (see load). Servers publish their sound folder as
+        # downloadable files (`file sounds/*.wav` in foldersconfig), and a
+        # server's custom sounds exist nowhere on disk until asked for, so
+        # without this every NPC/weapon sound outside the bundled set is
+        # silent forever. Wire it to the same one-shot request path the
+        # renderer uses for images/ganis; the bytes come back through
+        # load_bytes().
+        self.file_requester: Optional[Callable[[str], object]] = None
+        self._requested = set()
 
         # Subdirectories to search
         self.subdirs = ['', 'sounds', 'sfx', 'audio']
@@ -111,6 +125,10 @@ class SoundManager:
             return None
 
         if name in self._sound_failed:
+            # Still worth one request: preload_common_sounds() runs before the
+            # game client can wire file_requester, so the names it wrote off
+            # would otherwise never be fetched.
+            self._request(name)
             return None
 
         self.initialize()
@@ -122,6 +140,7 @@ class SoundManager:
         # Find file
         file_path = self.find_file(name)
         if not file_path:
+            self._request(name)
             self._sound_failed.add(name)
             return None
 
@@ -134,6 +153,38 @@ class SoundManager:
             print(f"Error loading sound {name}: {e}")
             self._sound_failed.add(name)
             return None
+
+    def _request(self, name: str):
+        """Ask the server for a sound we don't have, once per name."""
+        if self.file_requester is None or name in self._requested:
+            return
+        self._requested.add(name)
+        try:
+            self.file_requester(name)
+        except Exception:
+            pass
+
+    def load_bytes(self, name: str, data: bytes) -> Optional["pygame.mixer.Sound"]:
+        """Cache a sound that arrived from the server as bytes.
+
+        Mirrors SpriteManager.load_bytes for images. Clears any earlier
+        failed-lookup record for the name, which is what the request that
+        fetched these bytes left behind.
+        """
+        if not self.enabled or not data:
+            return None
+        self.initialize()
+        if not self._initialized:
+            return None
+        try:
+            sound = pygame.mixer.Sound(io.BytesIO(data))
+        except Exception as e:
+            print(f"Error loading sound {name}: {e}")
+            self._sound_failed.add(name)
+            return None
+        self._sound_failed.discard(name)
+        self.sound_cache[name] = sound
+        return sound
 
     def play(self, name: str, volume: float = 1.0, pitch: float = 1.0) -> bool:
         """
@@ -167,17 +218,15 @@ class SoundManager:
             return False
 
     def play_from_gani(self, sound_info: Tuple[str, float, float]) -> bool:
-        """
-        Play a sound from gani animation data.
+        """Play a gani sound emitted by the LOCAL player.
 
-        Args:
-            sound_info: Tuple of (filename, volume, pitch) from GaniFrame
-
-        Returns:
-            True if sound was played
+        sound_info is (filename, x_offset, y_offset) in tiles — see GaniFrame.
+        The listener is the local player, so the piece's own offset is the
+        whole listener-relative displacement; routing it through
+        play_positional keeps one interpretation of the tuple for every
+        emitter, and the sub-sprite distances involved barely attenuate.
         """
-        filename, volume, pitch = sound_info
-        return self.play(filename, volume, pitch)
+        return self.play_positional(sound_info, 0.0, 0.0)
 
     # Tiles from the listener at which a positional sound fades to silence.
     # The viewport shows ~40x30 tiles (half-width 20, half-height 15), so the
@@ -191,17 +240,21 @@ class SoundManager:
         """Play a gani sound attenuated and panned by a listener-relative offset.
 
         Args:
-            sound_info: (filename, volume, pitch) from a GaniFrame.
-            dx, dy: entity position minus the local player, in tiles.
+            sound_info: (filename, x_offset, y_offset) from a GaniFrame — the
+                piece's offset in tiles from its emitter's origin.
+            dx, dy: emitter position minus the local player, in tiles.
 
-        Volume falls off linearly with distance and the sound pans left/right
-        with dx, so other players' and NPCs' sounds feel located in the world
-        instead of all firing at full volume in the centre.
+        Volume falls off linearly with distance and the sound pans left/right,
+        so other players' and NPCs' sounds feel located in the world instead
+        of all firing at full volume in the centre.
         """
         if not self.enabled:
             return False
 
-        filename, volume, pitch = sound_info
+        filename, off_x, off_y = sound_info
+        # The piece's own offset rides on top of the emitter's displacement.
+        dx += off_x
+        dy += off_y
         dist = math.hypot(dx, dy)
         atten = 1.0 - dist / self.POSITIONAL_FALLOFF
         if atten <= 0.0:
@@ -212,7 +265,9 @@ class SoundManager:
             return False
 
         try:
-            effective = min(1.0, self.volume * volume) * atten
+            # A gani sound piece carries no per-sound volume (the two numbers
+            # are its position), so distance is the only attenuation.
+            effective = min(1.0, self.volume) * atten
             sound.set_volume(effective)
             channel = sound.play()
             # Stereo pan: full left at -falloff, full right at +falloff.

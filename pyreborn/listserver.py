@@ -1,15 +1,27 @@
 """
 pyreborn - ListServer Client
 Handles authentication and server list retrieval from listserver.
+
+Wire handling (encryption, compression, framing, G-types) comes from
+reborn_protocol; this module only adds the list-server session's own policies:
+its GEN_5 compression policy (LIST_SERVER_COMPRESSION - never bz2) and its
+cp1252 text codepage.
 """
 
 import sys
-import struct
-import zlib
 import random
-import json
+import zlib
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+
+from reborn_protocol.codec import Gen2Codec, Gen5Codec, PacketBuffer
+from reborn_protocol.codec import PacketReader as _SharedPacketReader
+from reborn_protocol.encryption import (
+    LIST_SERVER_COMPRESSION,
+    CompressionType,
+    RebornEncryption,  # noqa: F401 - re-exported; this module used to define it
+    decompress_data,
+)
 
 # Browser detection
 IS_BROWSER = sys.platform == "emscripten"
@@ -39,157 +51,6 @@ class LSPacketID:
     PLO_SITEURL = 3
     PLO_ERROR = 4
     PLO_UPGURL = 5
-
-
-# =============================================================================
-# Compression Types (same as game client)
-# =============================================================================
-
-class CompressionType:
-    UNCOMPRESSED = 0x02
-    ZLIB = 0x04
-    BZ2 = 0x06
-
-
-# =============================================================================
-# Encryption (ENCRYPT_GEN_5)
-# =============================================================================
-#
-# NOTE: this module keeps its own copies of RebornEncryption/Gen5Codec/
-# PacketReader instead of importing reborn_protocol's (used by protocol.py).
-# RebornEncryption's algorithm here is byte-for-byte identical to
-# reborn_protocol.encryption.RebornEncryption (same LCG constants/limits), so
-# that part would be a safe dedup. reborn_protocol's Gen5Codec.send_packet
-# picks compression via compress_data() (adds a bz2 branch above 8192 bytes)
-# where this module's send_packet only ever chooses UNCOMPRESSED/ZLIB -
-# irrelevant for the tiny login/serverlist-request packets this client sends,
-# but it's a real behavioral difference, and this is the account-login path
-# against real production listservers (listserver.graal.in), not just the
-# local pygserver used for QA. Swapping it without a way to verify against a
-# real listserver risked breaking live login for a refactor with no user-
-# facing benefit, so this dedup was left as a follow-up rather than done here.
-
-class RebornEncryption:
-    """ENCRYPT_GEN_5 implementation."""
-
-    def __init__(self, key: int = 0):
-        self.key = key
-        self.iterator = 0x4A80B38
-        self.limit = -1
-        self.multiplier = 0x8088405
-
-    def reset(self, key: int):
-        self.key = key
-        self.iterator = 0x4A80B38
-        self.limit = -1
-
-    def limit_from_type(self, compression_type: int):
-        if compression_type == CompressionType.UNCOMPRESSED:
-            self.limit = 0x0C
-        elif compression_type == CompressionType.ZLIB:
-            self.limit = 0x04
-        elif compression_type == CompressionType.BZ2:
-            self.limit = 0x04
-
-    def encrypt(self, data: bytes) -> bytes:
-        result = bytearray(data)
-
-        if self.limit < 0:
-            bytes_to_encrypt = len(data)
-        elif self.limit == 0:
-            return bytes(result)
-        else:
-            bytes_to_encrypt = min(len(data), self.limit * 4)
-
-        for i in range(bytes_to_encrypt):
-            if i % 4 == 0:
-                if self.limit == 0:
-                    break
-                self.iterator = (self.iterator * self.multiplier + self.key) & 0xFFFFFFFF
-                if self.limit > 0:
-                    self.limit -= 1
-
-            iterator_bytes = struct.pack('<I', self.iterator)
-            result[i] ^= iterator_bytes[i % 4]
-
-        return bytes(result)
-
-    def decrypt(self, data: bytes) -> bytes:
-        return self.encrypt(data)
-
-
-# =============================================================================
-# Gen5 Codec for Listserver
-# =============================================================================
-
-class Gen5Codec:
-    """ENCRYPT_GEN_5: Partial encryption, dynamic compression."""
-
-    def __init__(self, encryption_key: int = 0):
-        self.encryption_key = encryption_key
-        self.in_codec = RebornEncryption(encryption_key)
-        self.out_codec = RebornEncryption(encryption_key)
-
-    def send_packet(self, data: bytes) -> bytes:
-        """Encode packet for sending (returns with length prefix)."""
-        # Choose compression based on size
-        if len(data) <= 55:
-            compression_type = CompressionType.UNCOMPRESSED
-            compressed_data = data
-        else:
-            compression_type = CompressionType.ZLIB
-            compressed_data = zlib.compress(data)
-
-        # Encrypt
-        packet_codec = RebornEncryption(self.encryption_key)
-        packet_codec.iterator = self.out_codec.iterator
-        packet_codec.limit_from_type(compression_type)
-        encrypted = packet_codec.encrypt(compressed_data)
-        self.out_codec.iterator = packet_codec.iterator
-
-        # Build packet with compression type
-        packet = bytes([compression_type]) + encrypted
-        return struct.pack('>H', len(packet)) + packet
-
-    def recv_packet(self, data: bytes) -> Optional[bytes]:
-        """Decode received packet."""
-        if not data or len(data) == 0:
-            return None
-
-        compression_type = data[0]
-
-        # Check for plain zlib (first response from server)
-        if compression_type == 0x78:
-            try:
-                return zlib.decompress(data)
-            except:
-                return None
-
-        encrypted_data = data[1:]
-
-        if compression_type not in [CompressionType.UNCOMPRESSED,
-                                   CompressionType.ZLIB,
-                                   CompressionType.BZ2]:
-            return None
-
-        # Decrypt
-        packet_codec = RebornEncryption(self.encryption_key)
-        packet_codec.iterator = self.in_codec.iterator
-        packet_codec.limit_from_type(compression_type)
-        decrypted = packet_codec.decrypt(encrypted_data)
-        self.in_codec.iterator = packet_codec.iterator
-
-        # Decompress
-        try:
-            if compression_type == CompressionType.ZLIB:
-                return zlib.decompress(decrypted)
-            elif compression_type == CompressionType.BZ2:
-                import bz2
-                return bz2.decompress(decrypted)
-            else:  # UNCOMPRESSED
-                return decrypted
-        except:
-            return None
 
 
 # =============================================================================
@@ -241,43 +102,270 @@ class ListServerResponse:
 # =============================================================================
 
 class PacketReader:
-    """Helper for reading packet data."""
+    """
+    Reader for list-server fields: GUChar-prefixed cp1252 strings.
+
+    Adapter over reborn_protocol.codec.PacketReader so the byte-level G-type
+    logic lives in one place, with this module's legacy method names kept for
+    callers. The codepage is a real difference from the game-server session's
+    latin-1: listserver text is cp1252, where 0x92 is a right single quote.
+    """
 
     def __init__(self, data: bytes):
-        self.data = data
-        self.pos = 0
+        self._reader = _SharedPacketReader(data, encoding='cp1252')
+
+    @property
+    def data(self) -> bytes:
+        return self._reader.data
+
+    @property
+    def pos(self) -> int:
+        return self._reader.pos
 
     def read_guchar(self) -> int:
         """Read GUChar (byte - 32)."""
-        if self.pos >= len(self.data):
-            return 0
-        val = self.data[self.pos] - 32
-        self.pos += 1
-        return val
+        return self._reader.read_gchar()
 
     def read_gchar(self) -> int:
         """Read GChar (signed byte - 32)."""
-        val = self.read_guchar()
-        if val >= 128:
-            val -= 256
-        return val
+        value = self.read_guchar()
+        return value - 256 if value >= 128 else value
 
     def read_chars(self, length: int) -> str:
         """Read N bytes as string."""
-        if self.pos + length > len(self.data):
-            length = len(self.data) - self.pos
-        result = self.data[self.pos:self.pos + length].decode('cp1252', errors='replace')
-        self.pos += length
-        return result
+        return self._reader.read_string(length)
 
     def read_string(self) -> str:
         """Read length-prefixed string (GUChar length + chars)."""
-        length = self.read_guchar()
-        return self.read_chars(length)
+        return self._reader.read_gstring()
 
     def bytes_left(self) -> int:
         """Remaining bytes to read."""
-        return len(self.data) - self.pos
+        return len(self._reader.data) - self._reader.pos
+
+
+# =============================================================================
+# Transport-neutral parsing
+# =============================================================================
+
+def parse_server_list(data: bytes, auto_host: str) -> List[ServerEntry]:
+    """
+    Parse PLO_SVRLIST packet data.
+
+    Args:
+        data: Packet body (server count followed by per-server field groups)
+        auto_host: Host to substitute for servers advertising AUTO/$AUTO
+    """
+    servers = []
+    reader = PacketReader(data)
+
+    # First byte is server count
+    server_count = reader.read_guchar()
+
+    for _ in range(server_count):
+        if reader.bytes_left() < 2:
+            break
+
+        # Read field count marker (should be 8)
+        _ = reader.read_guchar()  # Field count
+
+        # Server name (with type prefix)
+        full_name = reader.read_string()
+
+        # Extract type prefix (e.g., "H ", "P ", "3 ", "U ")
+        type_prefix = ""
+        name = full_name
+        if len(full_name) >= 2 and full_name[1] == ' ' and full_name[0] in "PHU3":
+            type_prefix = full_name[:2]
+            name = full_name[2:]
+
+        language = reader.read_string()
+        description = reader.read_string()
+        url = reader.read_string()
+        version = reader.read_string()
+        player_count_str = reader.read_string()
+        ip = reader.read_string()
+        auto_address_substituted = ip in {"AUTO", "$AUTO"}
+        if auto_address_substituted:
+            ip = auto_host
+        port_str = reader.read_string()
+
+        # Parse numeric values
+        try:
+            player_count = int(player_count_str) if player_count_str else 0
+        except ValueError:
+            player_count = 0
+
+        try:
+            port = int(port_str) if port_str else 14900
+        except ValueError:
+            port = 14900
+
+        server = ServerEntry(
+            name=name,
+            type_prefix=type_prefix,
+            language=language,
+            description=description,
+            url=url,
+            version=version,
+            player_count=player_count,
+            ip=ip,
+            port=port,
+            auto_address_substituted=auto_address_substituted,
+        )
+        servers.append(server)
+
+    return servers
+
+
+def build_response(packets: List[Tuple[int, bytes]],
+                   auto_host: str) -> ListServerResponse:
+    """Fold received (packet_id, body) pairs into a ListServerResponse."""
+    response = ListServerResponse(success=False)
+
+    for packet_id, data in packets:
+        if packet_id == LSPacketID.PLO_SVRLIST:
+            response.servers = parse_server_list(data, auto_host)
+            response.success = True
+
+        # These four bodies are unprefixed list-server text, so they take the
+        # same cp1252 codepage PacketReader uses for the length-prefixed
+        # fields -- decoding them as latin-1 rendered 0x92 as U+0092 instead
+        # of a right single quote.
+        elif packet_id == LSPacketID.PLO_STATUS:
+            response.status = data.decode('cp1252', errors='replace')
+
+        elif packet_id == LSPacketID.PLO_SITEURL:
+            response.site_url = data.decode('cp1252', errors='replace')
+
+        elif packet_id == LSPacketID.PLO_UPGURL:
+            response.donate_url = data.decode('cp1252', errors='replace')
+
+        elif packet_id == LSPacketID.PLO_ERROR:
+            response.error = data.decode('cp1252', errors='replace')
+            response.success = False
+
+    return response
+
+
+# =============================================================================
+# Transport-neutral session
+# =============================================================================
+
+class ListServerSession:
+    """
+    Client side of a list-server session, with no transport of its own.
+
+    Owns the encryption key, the GEN_5 codec, the receive buffer and all
+    framing; the socket and WebSocket clients below only move bytes.
+    """
+
+    def __init__(self, version: str = "G3D0311C",
+                 client_type: str = "pyreborn",
+                 encryption_key: Optional[int] = None):
+        self.version = version
+        self.client_type = client_type
+        self.encryption_key = (random.randint(0, 127) if encryption_key is None
+                               else encryption_key)
+        # Never bz2 - see LIST_SERVER_COMPRESSION.
+        self.codec = Gen5Codec(self.encryption_key, LIST_SERVER_COMPRESSION)
+        self._buffer = PacketBuffer()
+        self._first_packet = True
+
+    def build_init_packet(self) -> bytes:
+        """
+        Build the framed PLI_V2ENCRYPTKEYCL packet that switches the session
+        to GEN_5. Sent Gen2-style (plain zlib, no compression-type byte)
+        because the server's own codec is still ENCRYPT_GEN_2 at this point
+        (graal-serverlist PlayerConnection.cpp:42-43).
+
+        CLIENTTYPE FILTERING (audited against the reference listserver impl in
+        this repo, the C++ serverlist server's PlayerConnection.cpp +
+        ServerConnection.cpp): the `version` string we send is parsed and
+        stored (PlayerConnection.cpp:315) but is NEVER read again anywhere in
+        the codebase -- it has zero effect on which servers come back. The
+        `clienttype` string, however, does (PlayerConnection.cpp:319):
+
+            _clientType = (clientType == "newmain" ? ClientType::Version3
+                                                   : ClientType::AllServers);
+
+        sendServerList() then calls conn->canAcceptClient(_clientType) per
+        server, and canAcceptClient() short-circuits `true` for every server
+        UNLESS the client is bucketed as Version3 (i.e. clienttype ==
+        "newmain" exactly), in which case it's masked against that game
+        server's own `_allowedVersionsMask` (server-admin configurable via
+        "Listserver,settings,allowedversions"). "newmain" also causes servers
+        literally named "offline" to be dropped from the list.
+
+        Verified live against listserver.graal.in:14922 (account hosler):
+        clienttype="newmain" returned 10/11 servers; clienttype="pyreborn"
+        (anything != "newmain") returned 17/18 servers -- 7 extra entries
+        (some behind allowedversions restrictions, one "offline"-named).
+        We are not the reference "newmain" client, so identifying honestly
+        as our own client type both is more truthful AND happens to land in
+        the unfiltered ClientType::AllServers bucket, guaranteeing the
+        complete list regardless of any server's allowedversions config.
+        """
+        packet = bytearray()
+        packet.append(LSPacketID.PLI_V2ENCRYPTKEYCL + 32)  # Packet ID
+        packet.append((self.encryption_key + 32) & 0xFF)  # Key
+        packet.extend(self.version[:8].ljust(8).encode('ascii'))  # 8 bytes
+        packet.extend(self.client_type.encode('ascii'))
+        packet.append(ord('\n'))
+        return Gen2Codec().send_packet(bytes(packet))
+
+    def build_login_packet(self, username: str, password: str) -> bytes:
+        """Build the framed PLI_SERVERLIST packet carrying credentials."""
+        packet = bytearray()
+        packet.append(LSPacketID.PLI_SERVERLIST + 32)  # Packet ID
+        packet.append((len(username) + 32) & 0xFF)  # Account length
+        packet.extend(username.encode('ascii'))
+        packet.append((len(password) + 32) & 0xFF)  # Password length
+        packet.extend(password.encode('ascii'))
+        packet.append(ord('\n'))
+        return self.codec.send_packet(bytes(packet))
+
+    def feed(self, data: bytes) -> List[Tuple[int, bytes]]:
+        """
+        Add received bytes and return the (packet_id, body) pairs they
+        complete. A partial frame stays buffered for the next call.
+        """
+        packets = []
+        self._buffer.add_data(data)
+
+        for frame in self._buffer.get_packets():
+            bundle = self._decode_bundle(frame)
+            if not bundle:
+                continue
+
+            pos = 0
+            while pos < len(bundle):
+                newline = bundle.find(b'\n', pos)
+                if newline == -1:
+                    break
+                line = bundle[pos:newline]
+                pos = newline + 1
+                if line:
+                    packets.append((line[0] - 32, line[1:]))
+
+        return packets
+
+    def _decode_bundle(self, frame: bytes) -> Optional[bytes]:
+        """Decode one framed bundle."""
+        # The server's out codec is still ENCRYPT_GEN_2 until it reads our init
+        # packet, so the first bundle can arrive as plain zlib with no
+        # compression-type byte. `_first_packet` is cleared unconditionally
+        # (even when zlib fails and we fall back) - otherwise a GEN_5 first
+        # bundle, which is what live listservers actually send, would make
+        # every later bundle pay a failed decompress. Same fix as protocol.py's
+        # Protocol.recv_packets.
+        if self._first_packet:
+            self._first_packet = False
+            try:
+                return decompress_data(frame, CompressionType.ZLIB)
+            except (zlib.error, OSError):
+                pass
+        return self.codec.recv_packet(frame)
 
 
 # =============================================================================
@@ -317,10 +405,7 @@ class ListServerClient:
 
         self._socket: Optional[socket.socket] = None
         self._connected = False
-        self._encryption_key = random.randint(0, 127)
-        self._codec = Gen5Codec(self._encryption_key)
-        self._first_packet = True
-        self._recv_buffer = b""
+        self._session = ListServerSession(version)
 
     @property
     def connected(self) -> bool:
@@ -350,78 +435,25 @@ class ListServerClient:
                 pass
             self._socket = None
 
-    def _send_init_packet(self) -> bool:
-        """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
-        if not self._socket:
+    def _send(self, frame: bytes, what: str) -> bool:
+        """Send one already-framed packet."""
+        if not self._socket or not frame:
             return False
-
         try:
-            # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + clienttype
-            #
-            # CLIENTTYPE FILTERING (audited against the reference listserver impl in
-            # this repo, the C++ serverlist server's PlayerConnection.cpp +
-            # ServerConnection.cpp): the `version` string we send is parsed and
-            # stored (PlayerConnection::msgPLI_V2ENCRYPTKEYCL) but is NEVER read
-            # again anywhere in the codebase -- it has zero effect on which
-            # servers come back. The `clienttype` string, however, does:
-            #
-            #   _clientType = (clienttype == "newmain" ? ClientType::Version3
-            #                                          : ClientType::AllServers);
-            #
-            # sendServerList() then calls conn->canAcceptClient(_clientType) per
-            # server, and canAcceptClient() short-circuits `true` for every server
-            # UNLESS the client is bucketed as Version3 (i.e. clienttype ==
-            # "newmain" exactly), in which case it's masked against that game
-            # server's own `_allowedVersionsMask` (server-admin configurable via
-            # "Listserver,settings,allowedversions"). "newmain" also causes
-            # servers literally named "offline" to be dropped from the list.
-            #
-            # Verified live against listserver.graal.in:14922 (account hosler):
-            # clienttype="newmain" returned 10/11 servers; clienttype="pyreborn"
-            # (anything != "newmain") returned 17/18 servers -- 7 extra entries
-            # (some behind allowedversions restrictions, one "offline"-named).
-            # We are not the reference "newmain" client, so identifying honestly
-            # as our own client type both is more truthful AND happens to land in
-            # the unfiltered ClientType::AllServers bucket, guaranteeing the
-            # complete list regardless of any server's allowedversions config.
-            packet = bytearray()
-            packet.append(LSPacketID.PLI_V2ENCRYPTKEYCL + 32)  # Packet ID
-            packet.append((self._encryption_key + 32) & 0xFF)  # Key
-            packet.extend(self.version[:8].ljust(8).encode('ascii'))  # Version (8 bytes)
-            packet.extend(b'pyreborn')  # Client type (see filtering note above)
-            packet.append(ord('\n'))
-
-            # Compress and send (Gen2 style - just zlib)
-            compressed = zlib.compress(bytes(packet))
-            length = struct.pack('>H', len(compressed))
-            self._socket.sendall(length + compressed)
+            self._socket.sendall(frame)
             return True
         except Exception as e:
-            print(f"Failed to send init packet: {e}")
+            print(f"Failed to send {what}: {e}")
             return False
+
+    def _send_init_packet(self) -> bool:
+        """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
+        return self._send(self._session.build_init_packet(), "init packet")
 
     def _send_login_packet(self, username: str, password: str) -> bool:
         """Send PLI_SERVERLIST with credentials."""
-        if not self._socket:
-            return False
-
-        try:
-            # Build packet: PLI_SERVERLIST + account_len + account + password_len + password
-            packet = bytearray()
-            packet.append(LSPacketID.PLI_SERVERLIST + 32)  # Packet ID
-            packet.append((len(username) + 32) & 0xFF)  # Account length
-            packet.extend(username.encode('ascii'))
-            packet.append((len(password) + 32) & 0xFF)  # Password length
-            packet.extend(password.encode('ascii'))
-            packet.append(ord('\n'))
-
-            # Send using Gen5 codec
-            encrypted = self._codec.send_packet(bytes(packet))
-            self._socket.sendall(encrypted)
-            return True
-        except Exception as e:
-            print(f"Failed to send login packet: {e}")
-            return False
+        return self._send(self._session.build_login_packet(username, password),
+                          "login packet")
 
     def _recv_packets(self, timeout: float = 5.0) -> List[Tuple[int, bytes]]:
         """Receive packets from listserver."""
@@ -450,54 +482,12 @@ class ListServerClient:
                     if not chunk:
                         self._connected = False
                         break
-                    self._recv_buffer += chunk
                 except socket.timeout:
                     break
                 except BlockingIOError:
                     break
 
-                # Process complete packets
-                while len(self._recv_buffer) >= 2:
-                    length = struct.unpack('>H', self._recv_buffer[:2])[0]
-
-                    if len(self._recv_buffer) < 2 + length:
-                        break  # Incomplete packet
-
-                    packet_data = self._recv_buffer[2:2 + length]
-                    self._recv_buffer = self._recv_buffer[2 + length:]
-
-                    # Decrypt/decompress. first_packet is cleared
-                    # unconditionally after this first attempt (even if zlib
-                    # fails and we fall back to the codec) - otherwise a
-                    # non-zlib first bundle would make every later packet pay
-                    # a zlib.decompress exception (see protocol.py's
-                    # Protocol.recv_packets for the same fix).
-                    if self._first_packet:
-                        self._first_packet = False
-                        try:
-                            decrypted = zlib.decompress(packet_data)
-                        except Exception:
-                            decrypted = self._codec.recv_packet(packet_data)
-                    else:
-                        decrypted = self._codec.recv_packet(packet_data)
-
-                    if not decrypted:
-                        continue
-
-                    # Parse packets from decompressed data
-                    pos = 0
-                    while pos < len(decrypted):
-                        newline = decrypted.find(b'\n', pos)
-                        if newline == -1:
-                            break
-
-                        packet_bytes = decrypted[pos:newline]
-                        pos = newline + 1
-
-                        if packet_bytes and len(packet_bytes) >= 1:
-                            packet_id = packet_bytes[0] - 32
-                            packet_body = packet_bytes[1:] if len(packet_bytes) > 1 else b""
-                            packets.append((packet_id, packet_body))
+                packets.extend(self._session.feed(chunk))
 
         except Exception as e:
             print(f"Recv error: {e}")
@@ -506,66 +496,7 @@ class ListServerClient:
 
     def _parse_server_list(self, data: bytes) -> List[ServerEntry]:
         """Parse PLO_SVRLIST packet data."""
-        servers = []
-        reader = PacketReader(data)
-
-        # First byte is server count
-        server_count = reader.read_guchar()
-
-        for _ in range(server_count):
-            if reader.bytes_left() < 2:
-                break
-
-            # Read field count marker (should be 8)
-            _ = reader.read_guchar()  # Field count
-
-            # Server name (with type prefix)
-            full_name = reader.read_string()
-
-            # Extract type prefix (e.g., "H ", "P ", "3 ", "U ")
-            type_prefix = ""
-            name = full_name
-            if len(full_name) >= 2 and full_name[1] == ' ' and full_name[0] in "PHU3":
-                type_prefix = full_name[:2]
-                name = full_name[2:]
-
-            language = reader.read_string()
-            description = reader.read_string()
-            url = reader.read_string()
-            version = reader.read_string()
-            player_count_str = reader.read_string()
-            ip = reader.read_string()
-            auto_address_substituted = ip in {"AUTO", "$AUTO"}
-            if auto_address_substituted:
-                ip = self.host
-            port_str = reader.read_string()
-
-            # Parse numeric values
-            try:
-                player_count = int(player_count_str) if player_count_str else 0
-            except ValueError:
-                player_count = 0
-
-            try:
-                port = int(port_str) if port_str else 14900
-            except ValueError:
-                port = 14900
-
-            server = ServerEntry(
-                name=name,
-                type_prefix=type_prefix,
-                language=language,
-                description=description,
-                url=url,
-                version=version,
-                player_count=player_count,
-                ip=ip,
-                port=port,
-                auto_address_substituted=auto_address_substituted,
-            )
-            servers.append(server)
-
-        return servers
+        return parse_server_list(data, self.host)
 
     def login(self, username: str, password: str, timeout: float = 10.0) -> ListServerResponse:
         """
@@ -595,29 +526,7 @@ class ListServerClient:
             return ListServerResponse(success=False, error="Failed to send login packet")
 
         # Receive response packets
-        packets = self._recv_packets(timeout)
-
-        response = ListServerResponse(success=False)
-
-        for packet_id, data in packets:
-            if packet_id == LSPacketID.PLO_SVRLIST:
-                response.servers = self._parse_server_list(data)
-                response.success = True
-
-            elif packet_id == LSPacketID.PLO_STATUS:
-                response.status = data.decode('latin-1', errors='replace')
-
-            elif packet_id == LSPacketID.PLO_SITEURL:
-                response.site_url = data.decode('latin-1', errors='replace')
-
-            elif packet_id == LSPacketID.PLO_UPGURL:
-                response.donate_url = data.decode('latin-1', errors='replace')
-
-            elif packet_id == LSPacketID.PLO_ERROR:
-                response.error = data.decode('latin-1', errors='replace')
-                response.success = False
-
-        return response
+        return build_response(self._recv_packets(timeout), self.host)
 
     def __enter__(self):
         self.connect()
@@ -665,10 +574,7 @@ if IS_BROWSER:
             self._ws = None
             self._connected = False
             self._tcp_connected = False
-            self._encryption_key = random.randint(0, 127)
-            self._codec = Gen5Codec(self._encryption_key)
-            self._first_packet = True
-            self._recv_buffer = b""
+            self._session = ListServerSession(version)
             self._received_packets = []
 
         @property
@@ -703,9 +609,8 @@ if IS_BROWSER:
                         if hasattr(event.data, 'byteLength'):
                             # Binary data from server
                             arr = window.Uint8Array.new(event.data)
-                            data = bytes(arr)
-                            self._recv_buffer += data
-                            self._process_recv_buffer()
+                            self._received_packets.extend(
+                                self._session.feed(bytes(arr)))
                         else:
                             # Text message (proxy status)
                             msg = str(event.data)
@@ -755,7 +660,7 @@ if IS_BROWSER:
 
         def _send_raw(self, data: bytes) -> bool:
             """Send raw bytes over WebSocket."""
-            if not self._ws or not self._tcp_connected:
+            if not self._ws or not self._tcp_connected or not data:
                 return False
             try:
                 arr = window.Uint8Array.new(len(data))
@@ -770,21 +675,7 @@ if IS_BROWSER:
         def _send_init_packet(self) -> bool:
             """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
             try:
-                # Build packet: PLI_V2ENCRYPTKEYCL + key + version (8 chars) + clienttype.
-                # clienttype != "newmain" -> ClientType::AllServers server-side ->
-                # unfiltered server list. See the detailed comment on the non-browser
-                # ListServerClient._send_init_packet above for the full audit.
-                packet = bytearray()
-                packet.append(LSPacketID.PLI_V2ENCRYPTKEYCL + 32)
-                packet.append((self._encryption_key + 32) & 0xFF)
-                packet.extend(self.version[:8].ljust(8).encode('ascii'))
-                packet.extend(b'pyreborn')
-                packet.append(ord('\n'))
-
-                # Compress and send (Gen2 style - just zlib)
-                compressed = zlib.compress(bytes(packet))
-                length = struct.pack('>H', len(compressed))
-                return self._send_raw(length + compressed)
+                return self._send_raw(self._session.build_init_packet())
             except Exception as e:
                 print(f"Failed to send init packet: {e}")
                 return False
@@ -792,123 +683,15 @@ if IS_BROWSER:
         def _send_login_packet(self, username: str, password: str) -> bool:
             """Send PLI_SERVERLIST with credentials."""
             try:
-                # Build packet: PLI_SERVERLIST + account_len + account + password_len + password
-                packet = bytearray()
-                packet.append(LSPacketID.PLI_SERVERLIST + 32)
-                packet.append((len(username) + 32) & 0xFF)
-                packet.extend(username.encode('ascii'))
-                packet.append((len(password) + 32) & 0xFF)
-                packet.extend(password.encode('ascii'))
-                packet.append(ord('\n'))
-
-                # Send using Gen5 codec
-                encrypted = self._codec.send_packet(bytes(packet))
-                return self._send_raw(encrypted)
+                return self._send_raw(
+                    self._session.build_login_packet(username, password))
             except Exception as e:
                 print(f"Failed to send login packet: {e}")
                 return False
 
-        def _process_recv_buffer(self):
-            """Process received data and extract packets."""
-            while len(self._recv_buffer) >= 2:
-                length = struct.unpack('>H', self._recv_buffer[:2])[0]
-
-                if len(self._recv_buffer) < 2 + length:
-                    break  # Incomplete packet
-
-                packet_data = self._recv_buffer[2:2 + length]
-                self._recv_buffer = self._recv_buffer[2 + length:]
-
-                # Decrypt/decompress. first_packet cleared unconditionally -
-                # see ListServerClient._recv_packets for why.
-                if self._first_packet:
-                    self._first_packet = False
-                    try:
-                        decrypted = zlib.decompress(packet_data)
-                    except Exception:
-                        decrypted = self._codec.recv_packet(packet_data)
-                else:
-                    decrypted = self._codec.recv_packet(packet_data)
-
-                if not decrypted:
-                    continue
-
-                # Parse packets from decompressed data
-                pos = 0
-                while pos < len(decrypted):
-                    newline = decrypted.find(b'\n', pos)
-                    if newline == -1:
-                        break
-
-                    packet_bytes = decrypted[pos:newline]
-                    pos = newline + 1
-
-                    if packet_bytes and len(packet_bytes) >= 1:
-                        packet_id = packet_bytes[0] - 32
-                        packet_body = packet_bytes[1:] if len(packet_bytes) > 1 else b""
-                        self._received_packets.append((packet_id, packet_body))
-
         def _parse_server_list(self, data: bytes) -> List[ServerEntry]:
             """Parse PLO_SVRLIST packet data."""
-            servers = []
-            reader = PacketReader(data)
-
-            # First byte is server count
-            server_count = reader.read_guchar()
-
-            for _ in range(server_count):
-                if reader.bytes_left() < 2:
-                    break
-
-                # Read field count marker (should be 8)
-                _ = reader.read_guchar()
-
-                # Server name (with type prefix)
-                full_name = reader.read_string()
-
-                # Extract type prefix
-                type_prefix = ""
-                name = full_name
-                if len(full_name) >= 2 and full_name[1] == ' ' and full_name[0] in "PHU3":
-                    type_prefix = full_name[:2]
-                    name = full_name[2:]
-
-                language = reader.read_string()
-                description = reader.read_string()
-                url = reader.read_string()
-                version = reader.read_string()
-                player_count_str = reader.read_string()
-                ip = reader.read_string()
-                auto_address_substituted = ip in {"AUTO", "$AUTO"}
-                if auto_address_substituted:
-                    ip = self.host
-                port_str = reader.read_string()
-
-                try:
-                    player_count = int(player_count_str) if player_count_str else 0
-                except ValueError:
-                    player_count = 0
-
-                try:
-                    port = int(port_str) if port_str else 14900
-                except ValueError:
-                    port = 14900
-
-                server = ServerEntry(
-                    name=name,
-                    type_prefix=type_prefix,
-                    language=language,
-                    description=description,
-                    url=url,
-                    version=version,
-                    player_count=player_count,
-                    ip=ip,
-                    port=port,
-                    auto_address_substituted=auto_address_substituted,
-                )
-                servers.append(server)
-
-            return servers
+            return parse_server_list(data, self.host)
 
         def get_received_packets(self) -> List[Tuple[int, bytes]]:
             """Get and clear received packets."""

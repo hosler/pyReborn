@@ -14,14 +14,17 @@ same ``scripts`` dict, ``load_script`` / ``trigger_event`` methods, and
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import traceback
 
 from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
-from reborn_protocol.gs1.parser import parse
-from reborn_protocol.gs1.values import to_num, to_str
+from reborn_protocol.gs1.lexer import tokenize
+from reborn_protocol.gs1.parser import Parser
+from reborn_protocol.gs1.values import gs1_int, to_num, to_str
+from .sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
 from .tiletypes import get_tile_type, is_blocking, is_water
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,19 @@ def _report_gs1_error(where: str, exc: Exception):
     print(f"[GS1] {where}: {type(exc).__name__}: {exc}", file=sys.stderr)
     if _GS1_DEBUG:
         traceback.print_exc()
+
+
+class GS1NoBoard(Exception):
+    """`tiles[x,y]` was read while the current level's board is not in hand.
+
+    There is no honest answer: GS1 has no "unknown tile" value, so any number
+    we invent is indistinguishable from a real tile id. Answering 0.0 (the old
+    behaviour) reads as "empty floor", and classic Bomber's room0.nw furniture
+    catalog deletes every wall-mounted object whose tile is not the wall id
+    0x278 -- writing the truncated object list straight back to `server.room<N>`
+    (ResetObj/Delete, room0.nw:1006/1052). Aborting the script instead leaves
+    the furniture alone; the event re-runs once the board has arrived.
+    """
 
 # player-prefixed builtin -> attribute on the pyReborn Player
 PLAYER_ATTR = {
@@ -78,13 +94,21 @@ _CHARPROP_NPC = {
     "#C6": "color6", "#C7": "color7",
 }
 
+# The same appearance codes read off the LOCAL PLAYER, for a script with no NPC
+# source (a weapon). Colours are not here: they live in Player.colors as
+# palette indices, keyed by the code's slot number (see _color_code_slot).
+_CHARPROP_PLAYER = {
+    "#1": "sword_image", "#2": "shield_image",
+    "#3": "head_image", "#8": "body_image",
+}
+
 # Commands that just toggle/ignore for client rendering (input/feature state we
 # don't model, or world side-effects irrelevant to drawing the lobby). Swallowed
 # silently so a script full of them still runs its visible commands.
 _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "noplayerkilling",
-    "setcursor", "sleep", "callweapon", "callnpc",
+    "setcursor", "sleep",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
@@ -98,6 +122,65 @@ _NOOP = frozenset({
 _ONWALL2_EDGE_TOL = 0.25
 
 
+# ---------------------------------------------------------------------------
+# GS1 client-host dispatch registries.
+#
+# GS1ClientHost.get_builtin and ._dispatch consult these tables in a fixed
+# stage order (documented on each method). They are EXPLICIT registries, not
+# auto-discovery: every name a script can use appears literally in a
+# @_gs1_builtin / @_gs1_command decorator, so grep finds its handler.
+# ---------------------------------------------------------------------------
+
+#: A handler returns this to mean "my guard did not hold, keep walking the
+#: stages" -- the flat if/elif chain's fall-through, made explicit. Returning
+#: None means handled.
+_FALL_THROUGH = object()
+
+#: get_builtin stages. Each has a gate; the two shared data tables
+#: (PLAYER_ATTR / NPC_ATTR) are consulted right after their stage's handlers.
+_GS1_PLAYER_BUILTINS: dict = {}     # gate: a local player exists
+_GS1_NPC_BUILTINS: dict = {}        # gate: ctx.this_obj is an NPC dict
+_GS1_BUILTINS: dict = {}            # no gate
+
+#: _dispatch stages, in dispatch order.
+_GS1_PRE_COMMANDS: dict = {}        # before the layer store is resolved
+_GS1_LAYER_COMMANDS: dict = {}      # gate: a layer store exists
+_GS1_NPC_COMMANDS: dict = {}        # gate: ctx.this_obj is an NPC dict
+_GS1_MAIN_COMMANDS: dict = {}       # no gate
+_GS1_NPC_TAIL_COMMANDS: dict = {}   # gate: NPC dict; last stage
+
+
+def _gs1_builtin(table, *names):
+    """Register a get_builtin handler in `table` under each of `names`.
+    Handlers take (self, name, indices, ctx) and may return UNSET.
+
+    A name must not also be in the data table that shares the stage's gate
+    (PLAYER_ATTR / NPC_ATTR), because those are read AFTER the handlers and the
+    duplicate would be unreachable.
+    """
+    shadowed = {id(_GS1_PLAYER_BUILTINS): PLAYER_ATTR,
+                id(_GS1_NPC_BUILTINS): NPC_ATTR}.get(id(table), ())
+
+    def register(fn):
+        for entry in names:
+            if entry in table or entry in shadowed:
+                raise AssertionError(f"duplicate GS1 builtin {entry!r}")
+            table[entry] = fn
+        return fn
+    return register
+
+
+def _gs1_command(table, *names):
+    """Register a _dispatch handler in `table` under each of `names`.
+    Handlers take (self, name, args, ctx, imgs) and return None (handled) or
+    _FALL_THROUGH."""
+    def register(fn):
+        for entry in names:
+            if entry in table:
+                raise AssertionError(f"duplicate GS1 command {entry!r}")
+            table[entry] = fn
+        return fn
+    return register
 class GS1ClientHost(Host):
     """Host bridging GS1 to the live pyReborn client (local player + NPC dict).
 
@@ -141,145 +224,305 @@ class GS1ClientHost(Host):
 
     # -- built-in attribute access ----------------------------------------
     def get_builtin(self, name, indices, ctx):
+        """Read a GS1 built-in variable. Registry-driven: three stages, each a
+        @_gs1_builtin table plus the data table that shares its gate.
+
+        Returning UNSET means "not a built-in here" and sends the interpreter
+        on to the ordinary flag/var lookup -- `statsoff` uses that
+        deliberately, so a handler may return it too.
+        """
         player = self._player
         npc = ctx.this_obj
         if player is not None:
-            # World-frame like upstream: Character.h getTilePosition() binds
-            # mapX*64 + local into playerx/playery (same source GS2's player.x
-            # uses). On non-gmap levels world == local, so classic servers
-            # (e.g. Bomber Arena) are unaffected.
-            if name == "playerx":
-                return float(getattr(self.rt.client, "x", 0))
-            if name == "playery":
-                return float(getattr(self.rt.client, "y", 0))
+            handler = _GS1_PLAYER_BUILTINS.get(name)
+            if handler is not None:
+                return handler(self, name, indices, ctx)
+            # ...and the plain attribute table (disjoint from the handlers
+            # above; _GS1_BUILTIN_TABLES asserts it).
             if name in PLAYER_ATTR:
                 return _num_or_str(getattr(player, PLAYER_ATTR[name], 0))
-            if name == "playerglovepower":
-                # Player script values use 1/2/3 (none/glove1/glove2), while
-                # NPC glovepower and the wire-backed Player field use 0/1/2.
-                return float(getattr(player, "glove_power", 0) + 1)
-            # Boolean-natured builtins must return real Python bools: under the
-            # oracle-verified truthiness model (gs1_truthy, values.py) numbers
-            # are NEVER truthy in conditions, so a 1.0 here would make
-            # `if (isweapon)` etc. silently false. Upstream models these as
-            # bool flags/GameValues, not doubles.
-            if name == "playeronline":
-                return True
-            # playerswimming: no dedicated swim-state on the core Client (that
-            # lives on GameClient, which this host can't see) — approximate it
-            # with the same tile-water check onwater()/is_wall() already use.
-            if name == "playerswimming":
-                px = float(getattr(self.rt.client, "x", 0)) % 64
-                py = float(getattr(self.rt.client, "y", 0)) % 64
-                return bool(self.rt.is_water_at(px, py))
-            # playeronhorse: PLPROP_HORSEGIF (21) is only non-empty while
-            # mounted (mount_horse/dismount are player-props round trips).
-            if name == "playeronhorse":
-                return bool(getattr(player, "horse_image", ""))
-            # playerfreezetime: seconds left on the last `freezeplayer` call
-            # (rt._freeze_until is armed in _dispatch, same duration the input
-            # layer locks movement for).
-            if name == "playerfreezetime":
-                import time as _t
-                remaining = self.rt._freeze_until - _t.monotonic()
-                return remaining if remaining > 0 else -1.0
-            # carry* flags: pyReborn only models bush/rock/pot lift objects
-            # (game/collision.py _get_liftable_name); "rock"/"pot" are the
-            # same objects Reborn's docs call "stone"/"vase". The remaining
-            # carry flags are defined for script compatibility, but nothing in
-            # this client can currently lift those object types.
-            if name == "carrying":
-                return bool(player.is_carrying())
-            if name == "carriesbush":
-                return player.carried_object_type == "bush"
-            if name == "carriesstone":
-                return player.carried_object_type == "rock"
-            if name == "carriesvase":
-                return player.carried_object_type == "pot"
-            if name in ("carriessign", "carriesblackstone", "carriesnpc"):
-                return False
-        if isinstance(npc, dict) and name in NPC_ATTR:
-            return _num_or_str(npc.get(NPC_ATTR[name], 0))
-        # visible: True unless `hide`/`destroy` cleared it (npc dict has no
-        # key until then, so a never-hidden NPC must default true).
-        if isinstance(npc, dict) and name == "visible":
-            return bool(npc.get("visible", True))
-        if name == "isweapon":
-            return bool(getattr(ctx, "_is_weapon", False))
-        if name == "statsoff":
-            # `showstats 0` hides the whole stats bar; the classic client then
-            # reports statsoff true, and HUD scripts skip drawing (GTA's
-            # splashscreen relies on this to keep the clock/counter overlays
-            # off the loading screen). Scripts can also set/unset the flag
-            # themselves, so only claim the name while the mask says hidden —
-            # otherwise fall through to the plain flag lookup.
-            if self.rt.stats_mask == 0:
-                return True
-            return UNSET
-        if name == "weaponscount":
-            return float(len(getattr(self.rt.client, "weapons", {}) or {}))
-        if name == "weaponsenabled":
-            return bool(self.rt.weapons_enabled)
-        if name == "playerscount":
-            return float(len(self._player_list()))
-        if name == "tokenscount":   # number of tokens from the last `tokenize`
-            return float(len(getattr(ctx, "tokenize_tokens", []) or []))
-        if name == "timevar":
-            # Reborn server clock (GServer-v2 Server::calculateNWTime): integer
-            # ticks of 5 seconds since 2001-02-01 17:33:34 UTC. The bomber room
-            # timers (server.bombrm_NN) are in this scale; raw unix seconds were
-            # out of scale + decimal, which broke the room-timer comparisons.
-            import time as _t
-            return float(int((_t.time() - 981048814) / 5))
-        if name == "timevar2":
-            import time as _t
-            return float(_t.monotonic() * 1000.0)
-        # arena GUI/screen + game-role builtins (read-only)
-        if name == "allstats":
-            # sum of every showstats bit (see the showstats handler in
-            # _dispatch): 1+2+4+...+1024
-            return 2047.0
-        if name == "screenwidth":
-            return float(self.rt.screen_w)
-        if name == "screenheight":
-            return float(self.rt.screen_h)
-        if name == "mousescreenx":
-            return float(self.rt.mouse_x)
-        if name == "mousescreeny":
-            return float(self.rt.mouse_y)
-        if name == "leftmousebutton":
-            return bool(self.rt.mouse_left)
-        if name == "isleader":
-            # Standard Reborn: true on the first/authority player in the level.
-            # Forced override wins (tests); otherwise we're leader iff no other
-            # player shares our level.
-            if self.rt.is_leader is not None:
-                return bool(self.rt.is_leader)
-            cl = self.rt.client
-            lvl = to_str(getattr(cl, "level", "")) if cl else ""
-            for op in (getattr(cl, "players", {}) or {}).values():
-                if isinstance(op, dict) and to_str(op.get("level", lvl)) == lvl:
-                    return False
-            return True
-        # tiles[x,y] — the level board tile id at (x,y); read-only. The room
-        # editor reads this for wall detection (tiles[x,y] in {0x278,0x939}).
-        if name == "tiles":
-            tiles = getattr(self.rt.client, "tiles", None) if self.rt.client else None
-            if tiles and len(indices) >= 2:
-                x, y = int(indices[0]), int(indices[1])
-                if 0 <= x < 64 and 0 <= y < 64 and y * 64 + x < len(tiles):
-                    return float(tiles[y * 64 + x])
-            return 0.0
+        if isinstance(npc, dict):
+            handler = _GS1_NPC_BUILTINS.get(name)
+            if handler is not None:
+                return handler(self, name, indices, ctx)
+            if name in NPC_ATTR:
+                return _num_or_str(npc.get(NPC_ATTR[name], 0))
+        handler = _GS1_BUILTINS.get(name)
+        if handler is not None:
+            return handler(self, name, indices, ctx)
         # players[i].x / players[i].y / players[i].account -> the i-th player.
         if name.startswith("players."):
             attr = name.split(".", 1)[1]
             pl = self._player_list()
             i = int(indices[0]) if indices else 0
             return _num_or_str(pl[i].get(attr, 0)) if 0 <= i < len(pl) else 0.0
+        # npcs[i].x / npcs[i].save[j] / ... -> the i-th NPC in the level.
+        if name.startswith("npcs."):
+            return self._npc_array_attr(name.split(".", 1)[1], indices)
         return UNSET
+
+    def _npc_ids(self):
+        """Level NPC ids in `npcs[]` index order.
+
+        GS1's npcs[] is a level-order array; client.npcs is keyed by the
+        server's NPC id. The server allocates those ids in level order, so
+        sorting them reproduces the array's ordering."""
+        cl = self.rt.client
+        if cl is None:
+            return []
+        return sorted(getattr(cl, "npcs", {}) or {})
+
+    def _npc_array_attr(self, attr, indices):
+        """npcs[i].<attr>. `indices` is [i] plus, for `save`, the slot index:
+        the interpreter forwards every index across the whole reference, so
+        `npcs[3].save[1]` arrives as [3, 1]."""
+        ids = self._npc_ids()
+        i = int(indices[0]) if indices else 0
+        if not 0 <= i < len(ids):
+            return 0.0
+        if attr == "save":
+            slots = self.rt.npc_save_slots(ids[i]) or []
+            j = int(indices[1]) if len(indices) > 1 else 0
+            return float(slots[j]) if 0 <= j < len(slots) else 0.0
+        npc = self.rt.client.npcs.get(ids[i])
+        if isinstance(npc, dict) and attr in NPC_ATTR:
+            return _num_or_str(npc.get(NPC_ATTR[attr], 0))
+        return 0.0
+
+    # -- _GS1_PLAYER_BUILTINS (gate: the client has a local player) ---------
+    #
+    # Boolean-natured builtins must return real Python bools: under the
+    # oracle-verified truthiness model (gs1_truthy, values.py) numbers are
+    # NEVER truthy in conditions, so a 1.0 would make `if (isweapon)` etc.
+    # silently false. Upstream models these as bool flags/GameValues, not
+    # doubles. The same rule applies to the predicate handlers further down.
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playerx", "playery")
+    def _pb_position(self, name, indices, ctx):
+        # World-frame like upstream: Character.h getTilePosition() binds
+        # mapX*64 + local into playerx/playery (same source GS2's player.x
+        # uses). On non-gmap levels world == local, so classic servers
+        # (e.g. Bomber Arena) are unaffected.
+        return float(getattr(self.rt.client, "x" if name == "playerx" else "y", 0))
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playerglovepower")
+    def _pb_glovepower(self, name, indices, ctx):
+        # Player script values use 1/2/3 (none/glove1/glove2), while
+        # NPC glovepower and the wire-backed Player field use 0/1/2.
+        return float(getattr(self._player, "glove_power", 0) + 1)
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playeronline")
+    def _pb_online(self, name, indices, ctx):
+        return True
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playerswimming")
+    def _pb_swimming(self, name, indices, ctx):
+        # no dedicated swim-state on the core Client (that lives on
+        # GameClient, which this host can't see) -- approximate it with the
+        # same tile-water check onwater()/is_wall() already use.
+        px = float(getattr(self.rt.client, "x", 0)) % 64
+        py = float(getattr(self.rt.client, "y", 0)) % 64
+        return bool(self.rt.is_water_at(px, py))
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playeronhorse")
+    def _pb_onhorse(self, name, indices, ctx):
+        # PLPROP_HORSEGIF (21) is only non-empty while mounted
+        # (mount_horse/dismount are player-props round trips).
+        return bool(getattr(self._player, "horse_image", ""))
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playerfreezetime")
+    def _pb_freezetime(self, name, indices, ctx):
+        # seconds left on the last `freezeplayer` call (rt._freeze_until is
+        # armed in _dispatch, same duration the input layer locks movement for)
+        import time as _t
+        remaining = self.rt._freeze_until - _t.monotonic()
+        return remaining if remaining > 0 else -1.0
+
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "carrying", "carriesbush",
+                  "carriesstone", "carriesvase", "carriessign",
+                  "carriesblackstone", "carriesnpc")
+    def _pb_carrying(self, name, indices, ctx):
+        # pyReborn only models bush/rock/pot lift objects
+        # (game/collision.py _get_liftable_name); "rock"/"pot" are the
+        # same objects Reborn's docs call "stone"/"vase". The remaining
+        # carry flags are defined for script compatibility, but nothing in
+        # this client can currently lift those object types.
+        player = self._player
+        if name == "carrying":
+            return bool(player.is_carrying())
+        wanted = {"carriesbush": "bush", "carriesstone": "rock",
+                  "carriesvase": "pot"}.get(name)
+        if wanted is None:
+            return False
+        return player.carried_object_type == wanted
+
+    # -- _GS1_NPC_BUILTINS (gate: the script has an NPC dict) ---------------
+
+    @_gs1_builtin(_GS1_NPC_BUILTINS, "visible")
+    def _nb_visible(self, name, indices, ctx):
+        # True unless `hide`/`destroy` cleared it (npc dict has no key until
+        # then, so a never-hidden NPC must default true).
+        return bool(ctx.this_obj.get("visible", True))
+
+    # -- _GS1_BUILTINS (no gate) -------------------------------------------
+
+    @_gs1_builtin(_GS1_BUILTINS, "isweapon")
+    def _gb_isweapon(self, name, indices, ctx):
+        return bool(getattr(ctx, "_is_weapon", False))
+
+    @_gs1_builtin(_GS1_BUILTINS, "statsoff")
+    def _gb_statsoff(self, name, indices, ctx):
+        # `showstats 0` hides the whole stats bar; the classic client then
+        # reports statsoff true, and HUD scripts skip drawing (GTA's
+        # splashscreen relies on this to keep the clock/counter overlays
+        # off the loading screen). Scripts can also set/unset the flag
+        # themselves, so only claim the name while the mask says hidden —
+        # otherwise fall through to the plain flag lookup.
+        if self.rt.stats_mask == 0:
+            return True
+        return UNSET
+
+    @_gs1_builtin(_GS1_BUILTINS, "weaponscount")
+    def _gb_weaponscount(self, name, indices, ctx):
+        return float(len(getattr(self.rt.client, "weapons", {}) or {}))
+
+    @_gs1_builtin(_GS1_BUILTINS, "weaponsenabled")
+    def _gb_weaponsenabled(self, name, indices, ctx):
+        return bool(self.rt.weapons_enabled)
+
+    @_gs1_builtin(_GS1_BUILTINS, "playerscount")
+    def _gb_playerscount(self, name, indices, ctx):
+        return float(len(self._player_list()))
+
+    @_gs1_builtin(_GS1_BUILTINS, "npcscount")
+    def _gb_npcscount(self, name, indices, ctx):
+        return float(len(self._npc_ids()))
+
+    @_gs1_builtin(_GS1_BUILTINS, "save")
+    def _gb_save(self, name, indices, ctx):
+        # Bare save[i]: the RUNNING NPC's persistent slots, the same storage
+        # `this.save[i]` uses (the interpreter special-cases that spelling into
+        # a 10-slot list on the this-scope, interp.py:832). Weapons have no
+        # NPC and therefore no save[] -- fall through to the plain var lookup.
+        slots = self.rt.npc_save_slots(getattr(ctx, "_npc_id", None))
+        if slots is None:
+            return UNSET
+        i = int(indices[0]) if indices else 0
+        return float(slots[i]) if 0 <= i < len(slots) else 0.0
+
+    @_gs1_builtin(_GS1_BUILTINS, "tokenscount")
+    def _gb_tokenscount(self, name, indices, ctx):
+        # number of tokens from the last `tokenize`
+        return float(len(getattr(ctx, "tokenize_tokens", []) or []))
+
+    @_gs1_builtin(_GS1_BUILTINS, "timevar")
+    def _gb_timevar(self, name, indices, ctx):
+        # Reborn server clock (GServer-v2 Server::calculateNWTime): integer
+        # ticks of 5 seconds since 2001-02-01 17:33:34 UTC. The bomber room
+        # timers (server.bombrm_NN) are in this scale; raw unix seconds were
+        # out of scale + decimal, which broke the room-timer comparisons.
+        import time as _t
+        return float(int((_t.time() - 981048814) / 5))
+
+    @_gs1_builtin(_GS1_BUILTINS, "timevar2")
+    def _gb_timevar2(self, name, indices, ctx):
+        import time as _t
+        return float(_t.monotonic() * 1000.0)
+
+    # arena GUI/screen + game-role builtins (read-only)
+
+    @_gs1_builtin(_GS1_BUILTINS, "allstats")
+    def _gb_allstats(self, name, indices, ctx):
+        # sum of every showstats bit (see the showstats handler in
+        # _dispatch): 1+2+4+...+1024
+        return 2047.0
+
+    @_gs1_builtin(_GS1_BUILTINS, "screenwidth", "screenheight")
+    def _gb_screensize(self, name, indices, ctx):
+        return float(self.rt.screen_w if name == "screenwidth"
+                     else self.rt.screen_h)
+
+    @_gs1_builtin(_GS1_BUILTINS, "graalversion")
+    def _gb_client_version(self, name, indices, ctx):
+        # "The current version of the game client" as a NUMBER
+        # (scripting-gs1-variables.md:56) — the version we negotiated at
+        # login, so a script's version gate picks the layout a real client of
+        # that version would get. Classic Bomber's tailor branches on
+        # `(graalversion < 2.211)` and drew its whole GUI in the pre-2.211
+        # layout (shifted -31x/+64y, character preview skipped) while the name
+        # was unimplemented and read 0.
+        return _version_number(getattr(self.rt.client, "version", None))
+
+    @_gs1_builtin(_GS1_BUILTINS, "mousescreenx", "mousescreeny")
+    def _gb_mousepos(self, name, indices, ctx):
+        return float(self.rt.mouse_x if name == "mousescreenx"
+                     else self.rt.mouse_y)
+
+    @_gs1_builtin(_GS1_BUILTINS, "mousex", "mousey")
+    def _gb_mouseworld(self, name, indices, ctx):
+        # The SAME cursor as mousescreenx/y, in level/world TILE units:
+        # `mousex` is getMouseLevelX() (Preagonal/FourPlay/quattroplay/src/
+        # TInitStatics.cpp:2505), i.e. screenToWorldX(cursor.x - the level
+        # view's offset) (TPlayer.cpp:1465), against mousescreenx's raw cursor
+        # pixel (TInitStatics.cpp:2570). Scripts use the pair to convert
+        # between the two frames: the bomber shop anchors its panel on the
+        # PLAYER'S SCREEN PIXEL with `mousescreenx - (mousex - playerx) * 16`
+        # (Preagonal/graal-bomber-gs1/world/bomblobby.nw:584) — with an
+        # unimplemented mousex==0 that degenerates to cursor + playerx*16,
+        # which threw the whole shop panel off the canvas.
+        x, y = self.rt.mouse_world()
+        return float(x if name == "mousex" else y)
+
+    @_gs1_builtin(_GS1_BUILTINS, "leftmousebutton")
+    def _gb_leftmousebutton(self, name, indices, ctx):
+        return bool(self.rt.mouse_left)
+
+    @_gs1_builtin(_GS1_BUILTINS, "isleader")
+    def _gb_isleader(self, name, indices, ctx):
+        # Standard Reborn: true on the first/authority player in the level.
+        # Forced override wins (tests); otherwise we're leader iff no other
+        # player shares our level.
+        if self.rt.is_leader is not None:
+            return bool(self.rt.is_leader)
+        cl = self.rt.client
+        lvl = to_str(getattr(cl, "level", "")) if cl else ""
+        for op in (getattr(cl, "players", {}) or {}).values():
+            if isinstance(op, dict) and to_str(op.get("level", lvl)) == lvl:
+                return False
+        return True
+
+    @_gs1_builtin(_GS1_BUILTINS, "tiles")
+    def _gb_tiles(self, name, indices, ctx):
+        # tiles[x,y] — the level board tile id at (x,y); read-only. The room
+        # editor reads this for wall detection (tiles[x,y] in {0x278,0x939}).
+        # Off-board indices answer 0 (a real "nothing there"); a MISSING or
+        # stale board refuses to answer at all — see GS1NoBoard.
+        if not self.rt.board_ready():
+            raise GS1NoBoard("tiles[] read before the level board arrived")
+        tiles = self.rt.client.tiles
+        if len(indices) >= 2:
+            x, y = int(indices[0]), int(indices[1])
+            if 0 <= x < 64 and 0 <= y < 64 and y * 64 + x < len(tiles):
+                return float(tiles[y * 64 + x])
+        return 0.0
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
         npc = ctx.this_obj
+        # Bare `save[i] = n` — the running NPC's persistent slots. Without this
+        # the write reached VarStore.set(None, "save", ...), which drops an
+        # indexed write into a non-existent array (runtime.py:199-201), so
+        # every classic Bomber room NPC advertised save[1]=0 and the room
+        # controller's `npcs[n].save[1]==13` scan found nobody to refresh.
+        # Same clamp the interpreter applies to `this.save[i]` (interp.py:836).
+        if name == "save" and indices:
+            slots = self.rt.npc_save_slots(getattr(ctx, "_npc_id", None),
+                                           create=True)
+            if slots is None:
+                return False
+            i = int(indices[0])
+            if 0 <= i < len(slots):
+                slots[i] = float(min(220, max(0, int(to_num(value)))))
+            return True
         # `timeout = N` schedules the NPC's `timeout` event N seconds out. Most
         # bomber NPCs drive their logic this way (proximity checks, the room-join
         # processing, animations); the game loop fires it via process_timeouts.
@@ -350,11 +593,58 @@ class GS1ClientHost(Host):
         return None
 
     def _dispatch(self, name, args, ctx):
-        rt, npc = self.rt, ctx.this_obj
-        npc_id = getattr(ctx, "_npc_id", 0)
+        """Run one GS1 command.
 
-        if name in _NOOP:
+        Registry-driven, in the stage order the flat if/elif chain used: the
+        first stage whose gate holds and whose handler does not return
+        _FALL_THROUGH wins. Order matters -- `destroy`, `showimg`, `hideimg`,
+        `setcharprop` and `setplayerprop` each appear in TWO stages with
+        different behaviour. Anything no stage claims is silently ignored
+        (client visuals we don't render).
+        """
+        handler = _GS1_PRE_COMMANDS.get(name)
+        # `imgs` is deliberately still unresolved here: _layer_store() CREATES
+        # the layer table as a side effect, and the pre-layer commands must not
+        # cause that.
+        if handler is not None and handler(self, name, args, ctx, None) is not _FALL_THROUGH:
             return
+        # showimg/showani/changeimg*/showtext/showpoly/hideimg layer system.
+        # NPCs paint floating images (lights, signs, furniture) addressed by a
+        # numeric index and store them on npc['imgs']; weapons (no NPC obj --
+        # e.g. arenaGUI's bombs, vases and explosions) store them in
+        # _weapon_imgs. The renderer draws both. _layer_store resolves to the
+        # right table for the running script, or None when there is nowhere to
+        # store.
+        imgs = self._layer_store(ctx)
+        if imgs is not None:
+            handler = _GS1_LAYER_COMMANDS.get(name)
+            if handler is not None and handler(self, name, args, ctx, imgs) is not _FALL_THROUGH:
+                return
+        if isinstance(ctx.this_obj, dict):
+            handler = _GS1_NPC_COMMANDS.get(name)
+            if handler is not None and handler(self, name, args, ctx, imgs) is not _FALL_THROUGH:
+                return
+        handler = _GS1_MAIN_COMMANDS.get(name)
+        if handler is not None and handler(self, name, args, ctx, imgs) is not _FALL_THROUGH:
+            return
+        if isinstance(ctx.this_obj, dict):
+            handler = _GS1_NPC_TAIL_COMMANDS.get(name)
+            if handler is not None:
+                handler(self, name, args, ctx, imgs)
+
+    # -- _GS1_PRE_COMMANDS: before the layer store is resolved --------------
+
+    @_gs1_command(_GS1_PRE_COMMANDS, *_NOOP)
+    def _cmd_noop(self, name, args, ctx, imgs):
+        # Commands that just toggle/ignore for client rendering (input/feature
+        # state we don't model, or world side-effects irrelevant to drawing the
+        # lobby). Swallowed silently so a script full of them still runs its
+        # visible commands. Membership is the _NOOP set, which other modules
+        # read.
+        return None
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "showstats")
+    def _cmd_showstats(self, name, args, ctx, imgs):
         # showstats bitflag — select which default-HUD elements the client
         # draws (1 ASD, 2 icons, 4 gralats, 8 bombs, 16 arrows, 32 hearts,
         # 64 AP, 128 MP, 256 minimap, 512 inventory, 1024 players; allstats
@@ -363,365 +653,452 @@ class GS1ClientHost(Host):
         # rt.stats_mask each frame; None = never called = show everything.
         # State persists across level changes like the real client (levels
         # that care re-issue it on playerenters).
-        if name == "showstats":
-            rt.stats_mask = int(to_num(args[0])) if args else None
-            return
+        self.rt.stats_mask = int(to_num(args[0])) if args else None
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "disabledefmovement", "enabledefmovement")
+    def _cmd_defmovement(self, name, args, ctx, imgs):
         # disable/enable the engine's built-in WASD/arrow movement. The arena
         # weapons (arenaSYS) disable it and move the player themselves via
         # keydown()+playerx; the input layer checks rt.default_movement.
-        if name == "disabledefmovement":
-            rt.default_movement = False
-            return
-        if name == "enabledefmovement":
-            rt.default_movement = True
-            return
-        # enableweapons/disableweapons: real client-side state (backs the
-        # `weaponsenabled` flag), not just a swallowed no-op.
-        if name == "enableweapons":
-            rt.weapons_enabled = True
-            return
-        if name == "disableweapons":
-            rt.weapons_enabled = False
-            return
+        self.rt.default_movement = name == "enabledefmovement"
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "enableweapons", "disableweapons")
+    def _cmd_weapons_enabled(self, name, args, ctx, imgs):
+        # real client-side state (backs the `weaponsenabled` flag), not just a
+        # swallowed no-op
+        self.rt.weapons_enabled = name == "enableweapons"
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "addtiledef2")
+    def _cmd_addtiledef2(self, name, args, ctx, imgs):
         # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — paste an image
         # onto the active tileset sheet at the given pixel offset.
-        # removetiledefs reverts to the default tileset.
-        if name == "addtiledef2":
-            if len(args) >= 3 and rt.on_tiledef:
-                image = to_str(args[0])
-                levelstart = to_str(args[1]) if len(args) >= 2 else ""
-                x = int(to_num(args[2]))
-                y = int(to_num(args[3])) if len(args) >= 4 else 0
-                rt.on_tiledef("paste", image, levelstart, x, y)
-            return
+        rt = self.rt
+        if len(args) >= 3 and rt.on_tiledef:
+            image = to_str(args[0])
+            levelstart = to_str(args[1]) if len(args) >= 2 else ""
+            x = int(to_num(args[2]))
+            y = int(to_num(args[3])) if len(args) >= 4 else 0
+            rt.on_tiledef("paste", image, levelstart, x, y)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "addtiledef")
+    def _cmd_addtiledef(self, name, args, ctx, imgs):
         # addtiledef <image>[, <levelstart>[, <type>]] — replace the WHOLE
         # tileset (the image is a full 2048x512 sheet; Bomber v6's
         # bmb_pics1.png).
-        if name == "addtiledef":
-            if args and rt.on_tiledef:
-                image = to_str(args[0])
-                levelstart = to_str(args[1]) if len(args) >= 2 else ""
-                rt.on_tiledef("full", image, levelstart)
-            return
-        if name == "removetiledefs":
-            if rt.on_tiledef:
-                rt.on_tiledef(None, None)
-            return
+        rt = self.rt
+        if args and rt.on_tiledef:
+            image = to_str(args[0])
+            levelstart = to_str(args[1]) if len(args) >= 2 else ""
+            rt.on_tiledef("full", image, levelstart)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "removetiledefs")
+    def _cmd_removetiledefs(self, name, args, ctx, imgs):
+        # revert to the default tileset
+        if self.rt.on_tiledef:
+            prefix = to_str(args[0]).lower() if args else ""
+            self.rt.on_tiledef(None, prefix)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "seteffect")
+    def _cmd_seteffect(self, name, args, ctx, imgs):
         # seteffect r,g,b,a — fullscreen colour tint (Tier 3d). 0..1 floats.
-        if name == "seteffect" and rt.on_seteffect and len(args) >= 4:
-            rt.on_seteffect(to_num(args[0]), to_num(args[1]),
-                            to_num(args[2]), to_num(args[3]))
-            return
+        rt = self.rt
+        if not (rt.on_seteffect and len(args) >= 4):
+            return _FALL_THROUGH
+        rt.on_seteffect(to_num(args[0]), to_num(args[1]),
+                        to_num(args[2]), to_num(args[3]))
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setcharprop", "setplayerprop")
+    def _cmd_player_gattrib(self, name, args, ctx, imgs):
         # #P1..#P30 player gattribs (room slot lists). setcharprop/setplayerprop
         # on a #P code targets the PLAYER, not the NPC — store it so the script
-        # can read it back via #P1(-1) etc.
-        if name in ("setcharprop", "setplayerprop") and len(args) >= 2:
-            pk = _pcode(to_str(args[0]))
-            if pk is not None:
-                val = to_str(args[1])
-                rt._player_props[pk] = val
-                # sync our gattrib to the server so other players see it (the
-                # bomber room queue shares slot lists this way)
-                try:
-                    if rt.client is not None:
-                        rt.client.set_gattrib(int(pk[1:]), val)
-                except Exception:
-                    pass
-                return
+        # can read it back via #P1(-1) etc. Any other code falls through to the
+        # NPC-dict setcharprop / the on_setplayerprop callback below.
+        rt = self.rt
+        if len(args) < 2:
+            return _FALL_THROUGH
+        pk = _pcode(to_str(args[0]))
+        if pk is None:
+            return _FALL_THROUGH
+        val = to_str(args[1])
+        rt._player_props[pk] = val
+        # sync our gattrib to the server so other players see it (the
+        # bomber room queue shares slot lists this way)
+        try:
+            if rt.client is not None:
+                rt.client.set_gattrib(int(pk[1:]), val)
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "replaceani")
+    def _cmd_replaceani(self, name, args, ctx, imgs):
         # replaceani orig,new — swap a default player ani for a level-supplied
         # one (visuals via the game client's resolver AND #m, which scripts
         # test — e.g. the bomber stairs NPC's walk check). One arg restores
         # the default.
-        if name == "replaceani" and args:
-            orig = to_str(args[0])
-            if len(args) >= 2 and to_str(args[1]):
-                new = to_str(args[1])
-                rt.ani_replacements[orig] = new
-                # The replacement gani only reaches the parser cache via a
-                # server download (setup.py on_file) — fetch it once, or the
-                # player's anim silently keeps the old gani.
-                if new not in rt._requested_anis:
-                    rt._requested_anis.add(new)
-                    try:
-                        rt.client.request_file(new + ".gani")
-                    except Exception:
-                        pass
-            else:
-                rt.ani_replacements.pop(orig, None)
-            return
-        if name in _NPC_WRITE and args:
-            if isinstance(npc, dict):
-                npc[_NPC_WRITE[name]] = to_str(args[0])
-            return
+        rt = self.rt
+        if not args:
+            return _FALL_THROUGH
+        orig = to_str(args[0])
+        if len(args) >= 2 and to_str(args[1]):
+            new = to_str(args[1])
+            rt.ani_replacements[orig] = new
+            # The replacement gani only reaches the parser cache via a
+            # server download (setup.py on_file) — fetch it once, or the
+            # player's anim silently keeps the old gani.
+            if new not in rt._requested_anis:
+                rt._requested_anis.add(new)
+                try:
+                    rt.client.request_file(new + ".gani")
+                except Exception:
+                    pass
+        else:
+            rt.ani_replacements.pop(orig, None)
 
-        # -- player / game commands (work for weapon scripts too, where there
-        # is no NPC object) -------------------------------------------------
-        if name in ("setlevel2", "setlevel") and rt.on_warp and args:
-            x = to_num(args[1]) if len(args) > 1 else None
-            y = to_num(args[2]) if len(args) > 2 else None
-            rt.on_warp(to_str(args[0]), x, y)
-            return
-        if name == "freezeplayer":
-            secs = to_num(args[0]) if args else 0.5
-            if rt.on_freezeplayer:
-                rt.on_freezeplayer(secs)
-            import time as _t
-            rt._freeze_until = _t.monotonic() + max(0.0, secs)
-            return
+    @_gs1_command(_GS1_PRE_COMMANDS, *_NPC_WRITE)
+    def _cmd_npc_write(self, name, args, ctx, imgs):
+        # command -> NPC dict key it writes, so the renderer reflects the
+        # change (the _NPC_WRITE table).
+        if not args:
+            return _FALL_THROUGH
+        npc = ctx.this_obj
+        if isinstance(npc, dict):
+            npc[_NPC_WRITE[name]] = to_str(args[0])
+
+    # -- player / game commands (work for weapon scripts too, where there
+    # is no NPC object) -----------------------------------------------------
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setlevel2", "setlevel")
+    def _cmd_setlevel(self, name, args, ctx, imgs):
+        rt = self.rt
+        if not (rt.on_warp and args):
+            return _FALL_THROUGH
+        x = to_num(args[1]) if len(args) > 1 else None
+        y = to_num(args[2]) if len(args) > 2 else None
+        rt.on_warp(to_str(args[0]), x, y)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "freezeplayer")
+    def _cmd_freezeplayer(self, name, args, ctx, imgs):
+        rt = self.rt
+        secs = to_num(args[0]) if args else 0.5
+        if rt.on_freezeplayer:
+            rt.on_freezeplayer(secs)
+        import time as _t
+        rt._freeze_until = _t.monotonic() + max(0.0, secs)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "hitobjects")
+    def _cmd_hitobjects(self, name, args, ctx, imgs):
         # hitobjects power,x,y — client-side sword-hit emulation (see
         # npcserver.md "Emulating sword hits"): fire `washit` on NPCs and hurt
         # baddies at that (level-local) point, same effects as a real sword
         # swing (client.py _sword_hit_npcs/_sword_hit_baddies).
-        if name == "hitobjects" and len(args) >= 3:
-            rt.hit_objects_at(to_num(args[1]), to_num(args[2]), to_num(args[0]))
-            return
-        if name == "setminimap" and rt.on_setminimap:
-            rt.on_setminimap([to_str(a) for a in args])
-            return
+        if len(args) < 3:
+            return _FALL_THROUGH
+        self.rt.hit_objects_at(to_num(args[1]), to_num(args[2]), to_num(args[0]))
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setminimap")
+    def _cmd_setminimap(self, name, args, ctx, imgs):
+        if not self.rt.on_setminimap:
+            return _FALL_THROUGH
+        self.rt.on_setminimap([to_str(a) for a in args])
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setfocus")
+    def _cmd_setfocus(self, name, args, ctx, imgs):
         # setfocus x,y — camera looks at a level position instead of the
         # player (GTA's splashscreen/cutscenes); resetfocus returns it.
-        if name == "setfocus" and rt.on_setfocus and len(args) >= 2:
-            rt.on_setfocus(to_num(args[0]), to_num(args[1]))
-            return
-        if name == "resetfocus":
-            if rt.on_setfocus:
-                rt.on_setfocus(None, None)
-            return
-        if name == "toweapons" and rt.on_toweapons and args:
-            weapon_name = to_str(args[0])
-            if getattr(ctx, "_is_weapon", False):
-                rt.on_toweapons(weapon_name)
-                return
-            script = npc.get("script", "") if isinstance(npc, dict) else ""
-            image = npc.get("image", "") if isinstance(npc, dict) else ""
-            if isinstance(script, bytes):
-                script = script.decode("latin-1")
-            try:
-                rt.on_toweapons(weapon_name, npc_id, script, image)
-            except TypeError:
-                # Some headless integrations still expose the original callback.
-                rt.on_toweapons(weapon_name)
-            return
+        if not (self.rt.on_setfocus and len(args) >= 2):
+            return _FALL_THROUGH
+        self.rt.on_setfocus(to_num(args[0]), to_num(args[1]))
 
-        # -- showimg / changeimg* layer system -----------------------------
-        # NPCs paint floating images (lights, signs, furniture) addressed by a
-        # numeric index; changeimg* then mutate that record. The renderer reads
-        # npc['imgs'] each frame. Coords are level tiles (showimg) for index < ...
-        # showimg/showani/changeimg*/showtext/showpoly/hideimg layer system. NPCs store
-        # layers on npc['imgs']; weapons (no NPC obj — e.g. arenaGUI's bombs,
-        # vases and explosions) store them in _weapon_imgs. The renderer draws
-        # both. _layer_store resolves to the right table for the running script.
-        imgs = self._layer_store(ctx)
-        if imgs is not None:
-            if name in ("showimg", "showimg2") and len(args) >= 2:
-                idx = int(to_num(args[0]))
-                rec = imgs.setdefault(idx, {})
-                src = to_str(args[1])
-                if src.startswith("@"):
-                    # Classic text form: showimg idx,@font@text,x,y (font may
-                    # be empty). GTA's splashscreen menu is drawn entirely
-                    # this way (@b@Start / @Wingdings@è); treating it as an
-                    # image filename rendered nothing.
-                    parts = src.split("@", 2)
-                    rec.pop("image", None)
-                    rec["font"] = parts[1] if len(parts) > 1 else ""
-                    rec["style"] = ""
-                    rec["text"] = parts[2] if len(parts) > 2 else ""
-                    rec["text_is"] = True
-                else:
-                    rec["image"] = src
-                    rec.pop("text", None)
-                    rec.pop("text_is", None)
-                if len(args) >= 4:
-                    rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
-                rec["screen"] = (name == "showimg2")
-                rec.setdefault("vis", 4)
-                return
-            if name in ("showani", "showani2") and len(args) >= 3:
-                # showani index,x,y,dir,gani,param1,... / showani2
-                # index,x,y,z,dir,gani,param1,... (reference lexer: EEEDS vs
-                # EEEEDS — showani2 only ADDS a z coordinate; BOTH are
-                # level-tile draws, unlike showimg2/showtext2 which are the
-                # screen-space variants. Bomber's PetSys pet and the emotes
-                # bubble are showani2-at-player-coords: flagging them
-                # screen-space painted them at pixel (playerx,playery), i.e.
-                # the screen's top-left corner, instead of on the player).
-                # Record gani + position so the renderer can animate
-                # furniture/effects. Pull the first string arg after the
-                # coords as the gani name (best-effort), then keep everything
-                # after it as params: the classic GANI "PARAMn" frame-token
-                # substitution (Bomber Arena's DrawBomb() picks the bomb's
-                # body/decal sprite and decal image this way, see
-                # _render_animated_entity).
-                idx = int(to_num(args[0]))
-                rec = imgs.setdefault(idx, {})
-                rec["x"], rec["y"] = to_num(args[1]), to_num(args[2])
-                if name == "showani2" and len(args) >= 4:
-                    rec["z"] = to_num(args[3])
-                name_idx = next((i for i in range(3, len(args))
-                                  if isinstance(args[i], str) and args[i]), None)
-                if name_idx is not None:
-                    # The lexer delivers the trailing S arg as ONE comma-joined
-                    # string ("eye_bomber_expl,2,7"): the first token is the
-                    # gani, the rest are its PARAMn values. Keeping only the
-                    # name and dropping the tail left params empty — and the
-                    # scripted-gani explosion fallback keys on params[0], so
-                    # explosions drew nothing.
-                    _parts = [p.strip() for p in to_str(args[name_idx]).split(",")]
-                    gani = _parts[0]
-                    # Classic `ani[frame]` notation: the bracket picks a frame
-                    # of that gani, it is NOT part of the filename. PetSys
-                    # hand-animates the squirrel/kitty walk this way
-                    # (pet-eye-squirrelwalk1[0..1] each 0.05s tick); keeping
-                    # the bracket in the name made the file unresolvable, so
-                    # the pet only drew via its plain idle ani — i.e. it was
-                    # invisible while following and "teleported" on stop.
-                    # Strip to the base name (the renderer then simply PLAYS
-                    # the gani, which cycles the same frames) and record the
-                    # requested frame for renderers that want exactness.
-                    if gani.endswith("]") and "[" in gani:
-                        base, _, fidx = gani[:-1].partition("[")
-                        gani = base
-                        try:
-                            rec["gani_frame"] = int(float(fidx))
-                        except (TypeError, ValueError):
-                            rec.pop("gani_frame", None)
-                    else:
-                        rec.pop("gani_frame", None)
-                    if gani != rec.get("gani"):
-                        rec["gani"] = gani
-                        rec.pop("_anim", None)   # gani changed -> rebuild animation
-                    rec["params"] = _parts[1:] + list(args[name_idx + 1:])
-                    rec.pop("_fx_t", None)   # a re-shown effect restarts its burst clock
-                    # The arg just before the gani name is the direction
-                    # (present in both forms once enough args are given).
-                    if name_idx >= 4:
-                        try:
-                            rec["dir"] = int(to_num(args[name_idx - 1])) & 3
-                        except (TypeError, ValueError):
-                            pass
-                rec["screen"] = False
-                rec.setdefault("vis", 4)
-                return
-            if name == "changeimgpart" and len(args) >= 5:
-                rec = imgs.get(int(to_num(args[0])))
-                if rec is not None:
-                    rec["part"] = (int(to_num(args[1])), int(to_num(args[2])),
-                                   int(to_num(args[3])), int(to_num(args[4])))
-                return
-            if name == "changeimgcolors" and len(args) >= 5:
-                rec = imgs.get(int(to_num(args[0])))
-                if rec is not None:
-                    rec["colors"] = tuple(to_num(a) for a in args[1:5])
-                return
-            if name == "changeimgzoom" and len(args) >= 2:
-                rec = imgs.get(int(to_num(args[0])))
-                if rec is not None:
-                    rec["zoom"] = to_num(args[1])
-                return
-            if name == "changeimgvis" and len(args) >= 2:
-                rec = imgs.get(int(to_num(args[0])))
-                if rec is not None:
-                    rec["vis"] = int(to_num(args[1]))
-                    # An EXPLICIT vis matters to the renderer: scripts that set
-                    # vis>=4 opt the layer into the GUI band (screen-pixel
-                    # coords, drawn above the seteffect tint — the classic
-                    # layer table: 0 under players, 1 with players, 2-3 over
-                    # players, 4+ GUI). Layers that never call changeimgvis
-                    # keep the default band AND world-tile coords.
-                    rec["vis_set"] = True
-                return
-            if name == "changeimgmode" and len(args) >= 2:
-                rec = imgs.get(int(to_num(args[0])))
-                if rec is not None:
-                    rec["mode"] = int(to_num(args[1]))
-                return
-            if name == "showtext" and len(args) >= 6:
-                idx = int(to_num(args[0]))
-                imgs[idx] = {
-                    "x": to_num(args[1]), "y": to_num(args[2]),
-                    "font": to_str(args[3]), "style": to_str(args[4]),
-                    "text": to_str(args[5]), "text_is": True, "vis": 4,
-                    "screen": False,
-                }
-                return
-            if name == "showtext2" and len(args) >= 7:
-                # showtext2 index,x,y,zoom,font,style,text (lexer 'EEEESSS' —
-                # one more arg than showtext's 'EEESSS', an extra leading
-                # zoom float before font/style/text).
-                idx = int(to_num(args[0]))
-                imgs[idx] = {
-                    "x": to_num(args[1]), "y": to_num(args[2]),
-                    "zoom": to_num(args[3]),
-                    "font": to_str(args[4]), "style": to_str(args[5]),
-                    "text": to_str(args[6]), "text_is": True, "vis": 4,
-                    "screen": True,
-                }
-                return
-            if name == "changeimgcolors":  # too few args: ignore
-                return
-            if name in ("hideimg", "hidetext") and args:
-                imgs.pop(int(to_num(args[0])), None)
-                return
-            if name == "hideimgs":
-                # hideimgs start,end — clear layers in [start, end] (the bomber
-                # uses this form, e.g. `hideimgs 300,304`). hideimgs start — from
-                # start onward. hideimgs — all.
-                start = int(to_num(args[0])) if args else None
-                end = int(to_num(args[1])) if len(args) >= 2 else None
-                for k in [k for k in imgs
-                          if (start is None or k >= start)
-                          and (end is None or k <= end)]:
-                    imgs.pop(k, None)
-                return
-            if name in ("showpoly", "showpoly2") and len(args) >= 2:
-                # showpoly index,{x1,y1,x2,y2,...} (2D) / showpoly2
-                # index,{x1,y1,z1,x2,y2,z2,...} (3D — a height/z per vertex,
-                # e.g. eye_furniture_*.gani's pupil poly). The second arg is a
-                # GS1 array literal, which the interpreter already evaluates to
-                # a flat Python list — a prior version stored `args[1:]` (the
-                # *tuple of remaining args*, i.e. a 1-element list wrapping
-                # that list) which silently failed to render since it isn't a
-                # flat number list. Stored as a regular layer record (like
-                # showimg/showani/showtext) so changeimgvis/changeimgcolors and
-                # the vis>=2 over-player ordering apply to it the same way.
-                idx = int(to_num(args[0]))
-                rec = imgs.setdefault(idx, {})
-                rec["poly"] = [float(to_num(v)) for v in args[1]]
-                rec["poly_dim"] = 3 if name == "showpoly2" else 2
-                rec.setdefault("vis", 4)
-                return
-        if isinstance(npc, dict):
-            if name == "setzoomeffect" and args:
-                npc["zoom_effect"] = to_num(args[0])
-                return
-            if name == "seteffectmode" and args:
-                npc["effect_mode"] = int(to_num(args[0]))
-                return
-            if name == "setcoloreffect" and len(args) >= 4:
-                npc["coloreffect"] = tuple(to_num(v) for v in args[:4])
-                return
-            if name == "showcharacter":
-                npc["is_character"] = True
-                return
-            if name == "setcharprop" and len(args) >= 2:
-                code = to_str(args[0])
-                key = _CHARPROP_NPC.get(code)
-                if key is not None:
-                    npc[key] = to_str(args[1])
-                return
-            if name in ("drawoverplayer", "drawunderplayer"):
-                npc["draw_layer"] = "over" if name == "drawoverplayer" else "under"
-                return
-            if name == "dontblock":
-                npc["dontblock"] = True
-                rt.shapes.pop(npc_id, None)
-                rt._update_shape_blocks(npc_id, npc, 0, 0, [])
-                return
-            if name == "destroy":
-                npc["visible"] = False
-                npc.pop("imgs", None)
-                return
+    @_gs1_command(_GS1_PRE_COMMANDS, "resetfocus")
+    def _cmd_resetfocus(self, name, args, ctx, imgs):
+        if self.rt.on_setfocus:
+            self.rt.on_setfocus(None, None)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "toweapons")
+    def _cmd_toweapons(self, name, args, ctx, imgs):
+        rt, npc = self.rt, ctx.this_obj
+        if not (rt.on_toweapons and args):
+            return _FALL_THROUGH
+        weapon_name = to_str(args[0])
+        if getattr(ctx, "_is_weapon", False):
+            rt.on_toweapons(weapon_name)
+            return
+        script = npc.get("script", "") if isinstance(npc, dict) else ""
+        image = npc.get("image", "") if isinstance(npc, dict) else ""
+        if isinstance(script, bytes):
+            script = script.decode("latin-1")
+        try:
+            rt.on_toweapons(weapon_name, getattr(ctx, "_npc_id", 0), script, image)
+        except TypeError:
+            # Some headless integrations still expose the original callback.
+            rt.on_toweapons(weapon_name)
+
+    # -- _GS1_LAYER_COMMANDS (gate: the script has a layer store) -----------
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "showimg", "showimg2")
+    def _cmd_showimg_layer(self, name, args, ctx, imgs):
+        if len(args) < 2:
+            return _FALL_THROUGH
+        idx = int(to_num(args[0]))
+        rec = imgs.setdefault(idx, {})
+        src = to_str(args[1])
+        if src.startswith("@"):
+            # Classic text form: showimg idx,@font@text,x,y (font may
+            # be empty). GTA's splashscreen menu is drawn entirely
+            # this way (@b@Start / @Wingdings@è); treating it as an
+            # image filename rendered nothing.
+            parts = src.split("@", 2)
+            rec.pop("image", None)
+            rec["font"] = parts[1] if len(parts) > 1 else ""
+            rec["style"] = ""
+            rec["text"] = parts[2] if len(parts) > 2 else ""
+            rec["text_is"] = True
+        else:
+            rec["image"] = src
+            rec.pop("text", None)
+            rec.pop("text_is", None)
+        if len(args) >= 4:
+            rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
+        rec["screen"] = (name == "showimg2")
+        rec.setdefault("vis", 4)
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "showani", "showani2")
+    def _cmd_showani(self, name, args, ctx, imgs):
+        # showani index,x,y,dir,gani,param1,... / showani2
+        # index,x,y,z,dir,gani,param1,... (reference lexer: EEEDS vs
+        # EEEEDS — showani2 only ADDS a z coordinate; BOTH are
+        # level-tile draws, unlike showimg2/showtext2 which are the
+        # screen-space variants. Bomber's PetSys pet and the emotes
+        # bubble are showani2-at-player-coords: flagging them
+        # screen-space painted them at pixel (playerx,playery), i.e.
+        # the screen's top-left corner, instead of on the player).
+        # Record gani + position so the renderer can animate
+        # furniture/effects. Pull the first string arg after the
+        # coords as the gani name (best-effort), then keep everything
+        # after it as params: the classic GANI "PARAMn" frame-token
+        # substitution (Bomber Arena's DrawBomb() picks the bomb's
+        # body/decal sprite and decal image this way, see
+        # _render_animated_entity).
+        if len(args) < 3:
+            return _FALL_THROUGH
+        idx = int(to_num(args[0]))
+        rec = imgs.setdefault(idx, {})
+        rec["x"], rec["y"] = to_num(args[1]), to_num(args[2])
+        if name == "showani2" and len(args) >= 4:
+            rec["z"] = to_num(args[3])
+        name_idx = next((i for i in range(3, len(args))
+                          if isinstance(args[i], str) and args[i]), None)
+        if name_idx is not None:
+            # The lexer delivers the trailing S arg as ONE comma-joined
+            # string ("eye_bomber_expl,2,7"): the first token is the
+            # gani, the rest are its PARAMn values. Keeping only the
+            # name and dropping the tail left params empty — and the
+            # scripted-gani explosion fallback keys on params[0], so
+            # explosions drew nothing.
+            _parts = [p.strip() for p in to_str(args[name_idx]).split(",")]
+            gani = _parts[0]
+            # Classic `ani[frame]` notation: the bracket picks a frame
+            # of that gani, it is NOT part of the filename. PetSys
+            # hand-animates the squirrel/kitty walk this way
+            # (pet-eye-squirrelwalk1[0..1] each 0.05s tick); keeping
+            # the bracket in the name made the file unresolvable, so
+            # the pet only drew via its plain idle ani — i.e. it was
+            # invisible while following and "teleported" on stop.
+            # Strip to the base name (the renderer then simply PLAYS
+            # the gani, which cycles the same frames) and record the
+            # requested frame for renderers that want exactness.
+            if gani.endswith("]") and "[" in gani:
+                base, _, fidx = gani[:-1].partition("[")
+                gani = base
+                try:
+                    rec["gani_frame"] = int(float(fidx))
+                except (TypeError, ValueError):
+                    rec.pop("gani_frame", None)
+            else:
+                rec.pop("gani_frame", None)
+            if gani != rec.get("gani"):
+                rec["gani"] = gani
+                rec.pop("_anim", None)   # gani changed -> rebuild animation
+            rec["params"] = _parts[1:] + list(args[name_idx + 1:])
+            rec.pop("_fx_t", None)   # a re-shown effect restarts its burst clock
+            # The arg just before the gani name is the direction
+            # (present in both forms once enough args are given).
+            if name_idx >= 4:
+                try:
+                    rec["dir"] = int(to_num(args[name_idx - 1])) & 3
+                except (TypeError, ValueError):
+                    pass
+        rec["screen"] = False
+        rec.setdefault("vis", 4)
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "changeimgpart")
+    def _cmd_changeimgpart(self, name, args, ctx, imgs):
+        if len(args) < 5:
+            return _FALL_THROUGH
+        rec = imgs.get(int(to_num(args[0])))
+        if rec is not None:
+            rec["part"] = (int(to_num(args[1])), int(to_num(args[2])),
+                           int(to_num(args[3])), int(to_num(args[4])))
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "changeimgcolors")
+    def _cmd_changeimgcolors(self, name, args, ctx, imgs):
+        # too few args: ignore (do NOT fall through -- the flat chain had a
+        # second, bodyless `changeimgcolors` arm for exactly this)
+        if len(args) >= 5:
+            rec = imgs.get(int(to_num(args[0])))
+            if rec is not None:
+                rec["colors"] = tuple(to_num(a) for a in args[1:5])
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "changeimgzoom")
+    def _cmd_changeimgzoom(self, name, args, ctx, imgs):
+        if len(args) < 2:
+            return _FALL_THROUGH
+        rec = imgs.get(int(to_num(args[0])))
+        if rec is not None:
+            rec["zoom"] = to_num(args[1])
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "changeimgvis")
+    def _cmd_changeimgvis(self, name, args, ctx, imgs):
+        if len(args) < 2:
+            return _FALL_THROUGH
+        rec = imgs.get(int(to_num(args[0])))
+        if rec is not None:
+            rec["vis"] = int(to_num(args[1]))
+            # An EXPLICIT vis matters to the renderer: scripts that set
+            # vis>=4 opt the layer into the GUI band (screen-pixel
+            # coords, drawn above the seteffect tint — the classic
+            # layer table: 0 under players, 1 with players, 2-3 over
+            # players, 4+ GUI). Layers that never call changeimgvis
+            # keep the default band AND world-tile coords.
+            rec["vis_set"] = True
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "changeimgmode")
+    def _cmd_changeimgmode(self, name, args, ctx, imgs):
+        if len(args) < 2:
+            return _FALL_THROUGH
+        rec = imgs.get(int(to_num(args[0])))
+        if rec is not None:
+            rec["mode"] = int(to_num(args[1]))
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "showtext")
+    def _cmd_showtext(self, name, args, ctx, imgs):
+        if len(args) < 6:
+            return _FALL_THROUGH
+        imgs[int(to_num(args[0]))] = {
+            "x": to_num(args[1]), "y": to_num(args[2]),
+            "font": to_str(args[3]), "style": to_str(args[4]),
+            "text": to_str(args[5]), "text_is": True, "vis": 4,
+            "screen": False,
+        }
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "showtext2")
+    def _cmd_showtext2(self, name, args, ctx, imgs):
+        # showtext2 index,x,y,zoom,font,style,text (lexer 'EEEESSS' —
+        # one more arg than showtext's 'EEESSS', an extra leading
+        # zoom float before font/style/text).
+        if len(args) < 7:
+            return _FALL_THROUGH
+        imgs[int(to_num(args[0]))] = {
+            "x": to_num(args[1]), "y": to_num(args[2]),
+            "zoom": to_num(args[3]),
+            "font": to_str(args[4]), "style": to_str(args[5]),
+            "text": to_str(args[6]), "text_is": True, "vis": 4,
+            "screen": True,
+        }
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "hideimg", "hidetext")
+    def _cmd_hideimg_layer(self, name, args, ctx, imgs):
+        if not args:
+            return _FALL_THROUGH
+        imgs.pop(int(to_num(args[0])), None)
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "hideimgs")
+    def _cmd_hideimgs(self, name, args, ctx, imgs):
+        # hideimgs start,end — clear layers in [start, end] (the bomber
+        # uses this form, e.g. `hideimgs 300,304`). hideimgs start — from
+        # start onward. hideimgs — all.
+        start = int(to_num(args[0])) if args else None
+        end = int(to_num(args[1])) if len(args) >= 2 else None
+        for k in [k for k in imgs
+                  if (start is None or k >= start)
+                  and (end is None or k <= end)]:
+            imgs.pop(k, None)
+
+    @_gs1_command(_GS1_LAYER_COMMANDS, "showpoly", "showpoly2")
+    def _cmd_showpoly(self, name, args, ctx, imgs):
+        # showpoly index,{x1,y1,x2,y2,...} (2D) / showpoly2
+        # index,{x1,y1,z1,x2,y2,z2,...} (3D — a height/z per vertex,
+        # e.g. eye_furniture_*.gani's pupil poly). The second arg is a
+        # GS1 array literal, which the interpreter already evaluates to
+        # a flat Python list — a prior version stored `args[1:]` (the
+        # *tuple of remaining args*, i.e. a 1-element list wrapping
+        # that list) which silently failed to render since it isn't a
+        # flat number list. Stored as a regular layer record (like
+        # showimg/showani/showtext) so changeimgvis/changeimgcolors and
+        # the vis>=2 over-player ordering apply to it the same way.
+        if len(args) < 2:
+            return _FALL_THROUGH
+        rec = imgs.setdefault(int(to_num(args[0])), {})
+        rec["poly"] = [float(to_num(v)) for v in args[1]]
+        rec["poly_dim"] = 3 if name == "showpoly2" else 2
+        rec.setdefault("vis", 4)
+
+    # -- _GS1_NPC_COMMANDS (gate: the script has an NPC dict) ---------------
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "setzoomeffect")
+    def _cmd_setzoomeffect(self, name, args, ctx, imgs):
+        if not args:
+            return _FALL_THROUGH
+        ctx.this_obj["zoom_effect"] = to_num(args[0])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "seteffectmode")
+    def _cmd_seteffectmode(self, name, args, ctx, imgs):
+        if not args:
+            return _FALL_THROUGH
+        ctx.this_obj["effect_mode"] = int(to_num(args[0]))
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "setcoloreffect")
+    def _cmd_setcoloreffect(self, name, args, ctx, imgs):
+        if len(args) < 4:
+            return _FALL_THROUGH
+        ctx.this_obj["coloreffect"] = tuple(to_num(v) for v in args[:4])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "showcharacter")
+    def _cmd_showcharacter(self, name, args, ctx, imgs):
+        ctx.this_obj["is_character"] = True
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "setcharprop")
+    def _cmd_setcharprop_npc(self, name, args, ctx, imgs):
+        # a non-#P code: mirror a Reborn player's appearance slots
+        # (_CHARPROP_NPC) onto the NPC so showcharacter composites it
+        if len(args) < 2:
+            return _FALL_THROUGH
+        key = _CHARPROP_NPC.get(to_str(args[0]))
+        if key is not None:
+            ctx.this_obj[key] = to_str(args[1])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "drawoverplayer", "drawunderplayer")
+    def _cmd_draw_layer(self, name, args, ctx, imgs):
+        ctx.this_obj["draw_layer"] = ("over" if name == "drawoverplayer"
+                                      else "under")
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "dontblock")
+    def _cmd_dontblock(self, name, args, ctx, imgs):
+        npc = ctx.this_obj
+        npc_id = getattr(ctx, "_npc_id", 0)
+        npc["dontblock"] = True
+        self.rt.shapes.pop(npc_id, None)
+        self.rt._update_shape_blocks(npc_id, npc, 0, 0, [])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "destroy")
+    def _cmd_destroy_npc(self, name, args, ctx, imgs):
+        ctx.this_obj["visible"] = False
+        ctx.this_obj.pop("imgs", None)
+
+    # -- _GS1_MAIN_COMMANDS -------------------------------------------------
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "destroy")
+    def _cmd_destroy_weapon(self, name, args, ctx, imgs):
         # A weapon's destroy removes the weapon client-side like the real
         # client: drop its layers AND its program + registry entry, so a later
         # level's playerenters can't resurrect it (_load_weapon_scripts
@@ -733,116 +1110,211 @@ class GS1ClientHost(Host):
         # (lobby NPC 59, arena NPC 160), which re-streams the script fresh.
         # The currently-running event keeps executing (references are held);
         # only future loads/events stop.
-        if name == "destroy" and imgs is not None:
-            imgs.clear()
-            key = getattr(ctx, "_prog_key", None)
-            if key is not None and str(key).startswith("weapon_"):
-                rt._progs.pop(key, None)
-                rt.scripts.pop(key, None)
-                rt._weapon_timeouts.pop(key, None)
-                rt._weapon_imgs.pop(key, None)
-                wname = str(key)[len("weapon_"):]
-                try:
-                    if rt.client is not None:
-                        # delete_weapon drops the local registry entry AND
-                        # tells the server (PLI_NPCWEAPONDEL) — otherwise the
-                        # account keeps the weapon and re-streams it at next
-                        # login, re-firing this whole lifecycle.
-                        rt.client.delete_weapon(wname)
-                except Exception:
-                    pass
-            return
+        rt = self.rt
+        if imgs is None:
+            return _FALL_THROUGH
+        imgs.clear()
+        key = getattr(ctx, "_prog_key", None)
+        if key is not None and str(key).startswith("weapon_"):
+            rt._progs.pop(key, None)
+            rt.scripts.pop(key, None)
+            rt._weapon_timeouts.pop(key, None)
+            rt._weapon_imgs.pop(key, None)
+            wname = str(key)[len("weapon_"):]
+            try:
+                if rt.client is not None:
+                    # delete_weapon drops the local registry entry AND
+                    # tells the server (PLI_NPCWEAPONDEL) — otherwise the
+                    # account keeps the weapon and re-streams it at next
+                    # login, re-firing this whole lifecycle.
+                    rt.client.delete_weapon(wname)
+            except Exception:
+                pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setimgpart")
+    def _cmd_setimgpart(self, name, args, ctx, imgs):
         # setimgpart name,x,y,w,h — show only a sub-rect of the sheet. Without
         # the rect the renderer blits the entire sheet (e.g. all of pics1.png).
-        if name == "setimgpart" and isinstance(npc, dict) and len(args) >= 5:
-            npc["image"] = to_str(args[0])
-            npc["imagepart"] = (int(to_num(args[1])), int(to_num(args[2])),
-                                int(to_num(args[3])), int(to_num(args[4])))
+        npc = ctx.this_obj
+        if not (isinstance(npc, dict) and len(args) >= 5):
+            return _FALL_THROUGH
+        npc["image"] = to_str(args[0])
+        npc["imagepart"] = (int(to_num(args[1])), int(to_num(args[2])),
+                            int(to_num(args[3])), int(to_num(args[4])))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setimg", "setgif")
+    def _cmd_setimg(self, name, args, ctx, imgs):
+        # set the whole image; clear any prior sub-rect
+        npc = ctx.this_obj
+        if not (isinstance(npc, dict) and args):
+            return _FALL_THROUGH
+        npc["image"] = to_str(args[0])
+        npc.pop("imagepart", None)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "message", "say2", "say")
+    def _cmd_say(self, name, args, ctx, imgs):
+        rt, npc = self.rt, ctx.this_obj
+        text = to_str(args[0]) if args else ""
+        if isinstance(npc, dict):
+            npc["message"] = text
+        if rt.on_say:
+            rt.on_say(getattr(ctx, "_npc_id", 0), text)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "play", "play2", "playlooped", "setmusic")
+    def _cmd_play(self, name, args, ctx, imgs):
+        if not (args and self.rt.on_play):
+            return _FALL_THROUGH
+        self.rt.on_play(to_str(args[0]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "stopmidi", "stopsong")
+    def _cmd_stopmusic(self, name, args, ctx, imgs):
+        if not self.rt.on_stopmusic:
+            return _FALL_THROUGH
+        self.rt.on_stopmusic()
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "showimg", "showimg2")
+    def _cmd_showimg_callback(self, name, args, ctx, imgs):
+        # no layer store (see _layer_store): hand the draw to the embedder
+        if not (self.rt.on_showimg and len(args) >= 4):
+            return _FALL_THROUGH
+        self.rt.on_showimg(int(to_num(args[0])), to_str(args[1]),
+                           to_num(args[2]), to_num(args[3]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hideimg")
+    def _cmd_hideimg_callback(self, name, args, ctx, imgs):
+        if not (self.rt.on_hideimg and args):
+            return _FALL_THROUGH
+        self.rt.on_hideimg(int(to_num(args[0])))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "callnpc")
+    def _cmd_callnpc(self, name, args, ctx, imgs):
+        # callnpc <npcs[] index>,<event>[,<param>...] — run another level NPC's
+        # handler for `event`. The lexer types the command 'ES' (_tables.py),
+        # so everything after the index arrives as ONE string: the event name
+        # then its params, which bind to #p(0).. exactly like a projectile's
+        # (classic Bomber room0.nw: the arcade cabinets are activated with
+        # `callnpc this.n,BOUT`, the room controller refreshes furniture NPCs
+        # with the 3-arg `callnpc this.n,timeout,2`).
+        if len(args) < 2:
+            return _FALL_THROUGH
+        ids = self._npc_ids()
+        i = int(to_num(args[0]))
+        if not 0 <= i < len(ids):
             return
-        # setimg/setgif set the whole image; clear any prior sub-rect.
-        if name in ("setimg", "setgif") and isinstance(npc, dict) and args:
-            npc["image"] = to_str(args[0])
-            npc.pop("imagepart", None)
+        parts = to_str(args[1]).split(",")
+        event = parts[0].strip()
+        if not event:
             return
-        if name in ("message", "say2", "say"):
-            text = to_str(args[0]) if args else ""
-            if isinstance(npc, dict):
-                npc["message"] = text
-            if rt.on_say:
-                rt.on_say(npc_id, text)
+        self.rt.call_npc(ids[i], event, parts[1:])
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "callweapon")
+    def _cmd_callweapon(self, name, args, ctx, imgs):
+        # callweapon <weaponscount index>,<event>[,<param>...] — run a handler
+        # in one of the player's WEAPON scripts; clientside only, and the
+        # params bind to #p(n) (scripting-gs1-commands.md:153-168). The lexer
+        # types the command 'ESS' (reborn_protocol/gs1/_tables.py:16), so the
+        # event name and the whole param list arrive as two separate strings:
+        # classic Bomber's tailor NPC issues `callweapon this.i,TailorSystem,
+        # true,#v(x+1.5),#v(y-2.5)` -> ['3.0', 'TailorSystem', 'true,18,9.5'].
+        # The index is into the same weapon ordering `weaponscount` and #w(i)
+        # use (_gb_weaponscount / weapon_message_code), which is how the
+        # calling script found it.
+        if len(args) < 2:
+            return _FALL_THROUGH
+        weapons = list(getattr(self.rt.client, "weapons", {}) or {})
+        i = int(to_num(args[0]))
+        if not 0 <= i < len(weapons):
             return
-        if name in ("play", "play2", "playlooped", "setmusic") and args and rt.on_play:
-            rt.on_play(to_str(args[0]))
+        event = to_str(args[1]).strip()
+        if not event:
             return
-        if name in ("stopmidi", "stopsong") and rt.on_stopmusic:
-            rt.on_stopmusic()
-            return
-        if name in ("showimg", "showimg2") and rt.on_showimg and len(args) >= 4:
-            rt.on_showimg(int(to_num(args[0])), to_str(args[1]),
-                          to_num(args[2]), to_num(args[3]))
-            return
-        if name == "hideimg" and rt.on_hideimg and args:
-            rt.on_hideimg(int(to_num(args[0])))
-            return
-        if name == "setplayerprop" and rt.on_setplayerprop and len(args) >= 2:
-            rt.on_setplayerprop(to_str(args[0]), to_str(args[1]))
-            return
-        if name == "setmap" and rt.on_setmap and args:
-            rt.on_setmap(to_str(args[0]), "", 0, 0)
-            return
-        if name == "triggeraction" and rt.on_triggeraction and len(args) >= 3:
-            # The action is everything after x,y joined with commas, e.g.
-            # `triggeraction 0,0,gr.addweapon,-arenaSYS,-arenaGUI` -> the server
-            # action "gr.addweapon,-arenaSYS,-arenaGUI". Dropping the tail would
-            # break gr.addweapon (the arena gameplay weapons never get added).
-            action = ",".join(to_str(a) for a in args[2:])
-            rt.on_triggeraction(to_num(args[0]), to_num(args[1]), action, npc_id)
-            return
+        params = to_str(args[2]).split(",") if len(args) > 2 else []
+        self.rt.call_weapon(weapons[i], event, params)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setplayerprop")
+    def _cmd_setplayerprop(self, name, args, ctx, imgs):
+        if not (self.rt.on_setplayerprop and len(args) >= 2):
+            return _FALL_THROUGH
+        self.rt.on_setplayerprop(to_str(args[0]), to_str(args[1]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setmap")
+    def _cmd_setmap(self, name, args, ctx, imgs):
+        if not (self.rt.on_setmap and args):
+            return _FALL_THROUGH
+        self.rt.on_setmap(to_str(args[0]), "", 0, 0)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "triggeraction")
+    def _cmd_triggeraction(self, name, args, ctx, imgs):
+        # The action is everything after x,y joined with commas, e.g.
+        # `triggeraction 0,0,gr.addweapon,-arenaSYS,-arenaGUI` -> the server
+        # action "gr.addweapon,-arenaSYS,-arenaGUI". Dropping the tail would
+        # break gr.addweapon (the arena gameplay weapons never get added).
+        if not (self.rt.on_triggeraction and len(args) >= 3):
+            return _FALL_THROUGH
+        action = ",".join(to_str(a) for a in args[2:])
+        self.rt.on_triggeraction(to_num(args[0]), to_num(args[1]), action,
+                                 getattr(ctx, "_npc_id", 0))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setshootparams")
+    def _cmd_setshootparams(self, name, args, ctx, imgs):
         # setshootparams <name>,<p0>,<p1>,... — params the next `shoot` carries.
         # Bomber's room system uses this as a player-to-player message bus.
-        if name == "setshootparams":
-            rt._shoot_params = [to_str(a) for a in args]
-            return
-        if name in ("shoot", "shootarrow", "shootball", "shootfireball"):
-            if rt.on_shoot:
-                # Pass the gani (penultimate-ish arg) and the queued shoot params.
-                rt.on_shoot(name, [to_str(a) for a in args], list(rt._shoot_params))
-            rt._shoot_params = []
-            return
+        self.rt._shoot_params = [to_str(a) for a in args]
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "shoot", "shootarrow", "shootball",
+                  "shootfireball")
+    def _cmd_shoot(self, name, args, ctx, imgs):
+        rt = self.rt
+        if rt.on_shoot:
+            # Pass the gani (penultimate-ish arg) and the queued shoot params.
+            rt.on_shoot(name, [to_str(a) for a in args], list(rt._shoot_params))
+        rt._shoot_params = []
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setshape2")
+    def _cmd_setshape2(self, name, args, ctx, imgs):
         # Collision shape: record geometry keyed by NPC so the touch handler
         # reads it from here instead of regex-parsing the script. Both forms
         # store (width, height, per-tile flags) — 22 == solid/touchable.
-        if name == "setshape2" and len(args) >= 3:
-            w, h = int(to_num(args[0])), int(to_num(args[1]))
-            flags = ([int(to_num(f)) for f in args[2]]
-                     if isinstance(args[2], (list, tuple)) else [])
-            rt.shapes[npc_id] = (w, h, flags)
-            rt._update_shape_blocks(npc_id, npc, w, h, flags)
-            return
-        if name == "setshape" and len(args) >= 3:
-            # setshape type,width,height — type 1 is a fully-solid box.
-            # width/height are in PIXELS (16 per tile, upstream setShape):
-            # the Bomber-v6 lobby signs' setshape(1,32,32) is a 2x2-TILE box.
-            # Treating pixels as tiles gave each sign a 32x32-tile block that
-            # blanketed the whole level in shape blocks — every onwall2()
-            # probe hit one, so the GS2 movement script saw walls everywhere
-            # and the player couldn't move at all.
-            stype = int(to_num(args[0]))
-            w = max(1, (int(to_num(args[1])) + 15) // 16)
-            h = max(1, (int(to_num(args[2])) + 15) // 16)
-            flags = [22] * (w * h) if stype == 1 else []
-            rt.shapes[npc_id] = (w, h, flags)
-            rt._update_shape_blocks(npc_id, npc, w, h, flags)
-            return
+        if len(args) < 3:
+            return _FALL_THROUGH
+        npc_id = getattr(ctx, "_npc_id", 0)
+        w, h = int(to_num(args[0])), int(to_num(args[1]))
+        flags = ([int(to_num(f)) for f in args[2]]
+                 if isinstance(args[2], (list, tuple)) else [])
+        self.rt.shapes[npc_id] = (w, h, flags)
+        self.rt._update_shape_blocks(npc_id, ctx.this_obj, w, h, flags)
 
-        if name == "hide" and isinstance(npc, dict):
-            npc["visible"] = False
-        elif name == "show" and isinstance(npc, dict):
-            npc["visible"] = True
-        elif name == "move" and isinstance(npc, dict) and len(args) >= 2:
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setshape")
+    def _cmd_setshape(self, name, args, ctx, imgs):
+        # setshape type,width,height — type 1 is a fully-solid box.
+        # width/height are in PIXELS (16 per tile, upstream setShape):
+        # the Bomber-v6 lobby signs' setshape(1,32,32) is a 2x2-TILE box.
+        # Treating pixels as tiles gave each sign a 32x32-tile block that
+        # blanketed the whole level in shape blocks — every onwall2()
+        # probe hit one, so the GS2 movement script saw walls everywhere
+        # and the player couldn't move at all.
+        if len(args) < 3:
+            return _FALL_THROUGH
+        npc_id = getattr(ctx, "_npc_id", 0)
+        stype = int(to_num(args[0]))
+        w = max(1, (int(to_num(args[1])) + 15) // 16)
+        h = max(1, (int(to_num(args[2])) + 15) // 16)
+        flags = [22] * (w * h) if stype == 1 else []
+        self.rt.shapes[npc_id] = (w, h, flags)
+        self.rt._update_shape_blocks(npc_id, ctx.this_obj, w, h, flags)
+
+    # -- _GS1_NPC_TAIL_COMMANDS (gate: an NPC dict; last stage) -------------
+
+    @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "hide", "show")
+    def _cmd_visible(self, name, args, ctx, imgs):
+        ctx.this_obj["visible"] = name == "show"
+
+    @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "move")
+    def _cmd_move(self, name, args, ctx, imgs):
+        npc = ctx.this_obj
+        if len(args) >= 2:
             npc["x"] = to_num(npc.get("x", 0)) + to_num(args[0])
             npc["y"] = to_num(npc.get("y", 0)) + to_num(args[1])
-        # other commands (client visuals not yet rendered) are ignored
 
     # -- functions / message codes ----------------------------------------
     def call_function(self, name, args, ctx):
@@ -931,11 +1403,81 @@ class GS1ClientHost(Host):
             wname = to_str(args[0]).lower() if args else ""
             weapons = getattr(self.rt.client, "weapons", {}) or {}
             return any(str(w).lower() == wname for w in weapons)
+        if name == "testnpc":
+            return self._test_at(args, players=False)
+        if name == "testplayer":
+            return self._test_at(args, players=True)
         if name == "playersays":
             return self._playersays(args, contains=False)
         if name == "playersays2":
             return self._playersays(args, contains=True)
         return UNSET
+
+    def _test_at(self, args, players):
+        """testnpc(x, y) / testplayer(x, y) — the npcs[] / players[] INDEX of
+        the object whose collision rect covers the TILE coordinate (x, y),
+        or -1 / -2 on a miss.
+
+        The index is the whole point: classic Bomber's shop counter reaches
+        its item catalogue with `callnpc testnpc(56,26),GrabItemList,...`
+        (Preagonal/graal-bomber-gs1/world/bomblobby.nw:792), so this must
+        agree with _cmd_callnpc's ordering — both walk _npc_ids(). Falling
+        through to UNSET (0.0) sent every such call to npcs[0] instead, which
+        is why the shop's clientr.Shop_* lists stayed empty.
+
+        Hit-test semantics mirror the server host (pygserver gs1_host.py:515
+        _test_at, :542 _collision_rect) so the two engines answer the same
+        question — see _npc_rect. Units: the probe arrives in TILES and the
+        comparison runs in PIXELS, both rect edges inclusive.
+
+        Miss values are the server host's. The reference client's own
+        testplayer answers -1 for both cases
+        (Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:3880), but real
+        content only ever tests `< 0` (`if(testnpc(19,17.5)<0) putnpc ...`),
+        so agreeing with the server host costs nothing.
+        """
+        miss = -2.0 if players else -1.0
+        if len(args) < 2:
+            return miss
+        px = math.floor(to_num(args[0]) * 16)
+        py = math.floor(to_num(args[1]) * 16)
+        if players:
+            rects = [self._char_rect(p.get("x", 0), p.get("y", 0))
+                     for p in self._player_list()]
+        else:
+            npcs = getattr(self.rt.client, "npcs", {}) or {}
+            rects = [self._npc_rect(npc_id, npcs.get(npc_id))
+                     for npc_id in self._npc_ids()]
+        for index, rect in enumerate(rects):
+            if rect is None:
+                continue
+            x, y, width, height = rect
+            if x <= px <= x + width and y <= py <= y + height:
+                return float(index)
+        return miss
+
+    @staticmethod
+    def _char_rect(x, y):
+        """The feet-centred 2x2-tile collision square, in pixels."""
+        return to_num(x) * 16 + 8, to_num(y) * 16 + 16, 32, 32
+
+    def _npc_rect(self, npc_id, npc):
+        """An NPC's collision rect in pixels for _test_at: its setshape/
+        setshape2 box if it set one, else the character square, else None —
+        a plain image NPC that never called setshape cannot be hit at all.
+
+        rt.shapes holds the box in TILES (_cmd_setshape divides the command's
+        PIXEL width/height by 16), so a `setshape 1,96,16` counter is 6x1
+        tiles and scales back to 96x16 px here."""
+        if not isinstance(npc, dict):
+            return None
+        x, y = to_num(npc.get("x", 0)) * 16, to_num(npc.get("y", 0)) * 16
+        shape = self.rt.shapes.get(npc_id)
+        if shape and len(shape) >= 2:
+            return x, y, to_num(shape[0]) * 16, to_num(shape[1]) * 16
+        if npc.get("gani") or npc.get("body_image") or npc.get("head_image"):
+            return self._char_rect(npc.get("x", 0), npc.get("y", 0))
+        return None
 
     def _playersays(self, args, contains):
         # playersays(text) / playersays(index,text) — GS1Functions.cpp:963/995.
@@ -1035,7 +1577,27 @@ class GS1ClientHost(Host):
             # character-appearance codes read back what setcharprop stored
             key = _CHARPROP_NPC.get(code)
             if key is not None:
-                return to_str(npc.get(key, ""))
+                value = npc.get(key, "")
+                return (_color_name(value) if _is_color_code(code)
+                        else to_str(value))
+        elif player is not None:
+            # No NPC source, i.e. a WEAPON script: the appearance codes
+            # resolve against the PLAYER. "No index means we try to get the
+            # character from the current source, biasing to the initiator"
+            # (GS1MessageCodes.cpp:281-287) — for a weapon the initiator is
+            # its owner. Answering "" here is what made classic Bomber's
+            # tailor snapshot blanks in grab_Old(), so its Cancel() reset the
+            # player's head, body and all five colours to white.
+            index = int(to_num(args[0])) if args else 0
+            if index < 0:
+                return ""      # -1 asks for the source NPC; a weapon has none
+            key = _CHARPROP_PLAYER.get(code)
+            if key is not None:
+                return to_str(getattr(player, key, "") or "")
+            slot = _color_code_slot(code)
+            if slot is not None:
+                colors = list(getattr(player, "colors", None) or [])
+                return _color_name(colors[slot]) if slot < len(colors) else ""
         return ""
 
     def weapon_message_code(self, code, index, ctx) -> str:
@@ -1110,12 +1672,28 @@ class _PlayerFlagScope(dict):
     which the classic client echoes back as PLI_FLAGSET so the selection
     sticks on the account. Bomber's PetSys keys the pet sprite off
     #s(client.pet) — before this scope existed those login flags were dumped
-    into the SERVER scope, so every pet rendered as the default squirrel."""
+    into the SERVER scope, so every pet rendered as the default squirrel.
+
+    Only `client.` writes go on the wire. `clientr.` shares this storage (GS1's
+    NAMESPACES folds the two spellings together) but is a plain local variable
+    upstream: the reference client binds `client` to a self-sending
+    TGraalClientVar and `clientr` to an ordinary TGraalVar
+    (Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:642,649), and
+    TClient::sendFlag drops any name that does not start with "client."
+    (TClient.cpp:895). set_local() is that non-sending write; the spelling the
+    script used reaches it via _ClientScopeVarStore. Before this, opening
+    classic Bomber's shop pushed its three `clientr.Shop_*` scratch strings
+    onto the live account."""
 
     def __init__(self, rt):
         super().__init__()
         self._rt = rt
         self._sent = {}
+
+    def set_local(self, k, v):
+        """Store without transmitting — the `clientr.` write path. Mirrors GS2's
+        read-only flag views (gs2_client.py _FlagScopeObject local_writes)."""
+        dict.__setitem__(self, k, v)
 
     def __setitem__(self, k, v):
         super().__setitem__(k, v)
@@ -1157,6 +1735,52 @@ class _PlayerFlagScope(dict):
         self._sent.pop(k, None)
 
 
+class _ClientScopeVarStore(VarStore):
+    """VarStore that keeps `client.` and `clientr.` writes apart.
+
+    The shared runtime folds both spellings into the one "client" scope
+    (NAMESPACES, reborn_protocol/gs1/runtime.py:25) and _PlayerFlagScope holds
+    the merged storage, which is right for reads — but only `client.` writes
+    are transmitted (see _PlayerFlagScope). `_ref_namespace` is the spelling of
+    the reference currently being resolved, published by
+    _RefNamespaceInterpreter; it is trustworthy here because every scoped write
+    is `_resolve(ref)` immediately followed by this `set()`, with nothing
+    resolvable in between (interp.py:832-842 set_ref, :863-865 _store_set).
+    """
+
+    #: spelling of the reference being written; "client" unless a
+    #: `clientr.`-spelled reference was the last thing resolved.
+    _ref_namespace = "client"
+
+    def set(self, scope, key, value, index=None):
+        if scope == "client" and index is None and self._ref_namespace != "client":
+            table = self.scopes.get("client")
+            if isinstance(table, _PlayerFlagScope):
+                table.set_local(key, value)
+                return
+        super().set(scope, key, value, index)
+
+
+class _RefNamespaceInterpreter(Interpreter):
+    """Interpreter that tells the VarStore which spelling a player-flag
+    reference used, since _resolve is the last place it still exists.
+
+    Tagging AFTER super()._resolve() matters: a nested reference (a `clientr.`
+    read in the write's value or index expression) is resolved first, so the
+    outer reference — resolved last, right before the store — is the spelling
+    that decides.
+    """
+
+    def _resolve(self, ref):
+        resolved = super()._resolve(ref)
+        scope, _key, _indices, names = resolved
+        if scope == "client":
+            store = self.ctx.vars
+            if isinstance(store, _ClientScopeVarStore):
+                store._ref_namespace = names[0] if names else "client"
+        return resolved
+
+
 def _pcode(code):
     """#P1..#P30 player-gattrib code -> store key 'P1'..; else None."""
     if code and code.startswith("#P") and code[2:].isdigit():
@@ -1171,6 +1795,64 @@ def _num_or_str(v):
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _version_number(version) -> float:
+    """A negotiated client-version string as the number the client-version
+    builtin reports (see _gb_client_version).
+
+    Takes the leading numeric run, so the build-suffixed spellings in
+    protocol.VERSIONS ("6.037_linux") answer the same as their base version.
+    Anything with no leading number answers 0.0.
+    """
+    text = str(version or "").strip()
+    end = 0
+    while end < len(text) and (text[end].isdigit() or text[end] == "."):
+        end += 1
+    try:
+        return float(text[:end])
+    except ValueError:
+        return 0.0
+
+
+def _color_code_slot(code):
+    """`#C0`..`#C7` -> its COLORS slot number; anything else -> None."""
+    if code and code.startswith("#C") and code[2:].isdigit():
+        return int(code[2:])
+    return None
+
+
+def _is_color_code(code) -> bool:
+    return _color_code_slot(code) is not None
+
+
+def _color_name(value) -> str:
+    """A COLORS slot as the palette NAME a `#Cn` read reports.
+
+    Slots reach us as palette INDICES (PLPROP_COLORS, Player.colors) but
+    scripts also write names (`setcharprop #C0,orange`), so accept either and
+    always answer the name — see the `#Cn` handling in message_code for why
+    that direction is the one the content needs. An unset/out-of-range slot is
+    "" (no answer), not a colour: white is a real value a script may act on.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        text = REBORN_PALETTE_ALIASES.get(text, text)
+        if text in REBORN_PALETTE:
+            return text
+        try:
+            value = float(text)
+        except ValueError:
+            return ""      # neither a palette name nor an index: no answer
+    try:
+        index = int(to_num(value))
+    except (TypeError, ValueError):
+        return ""
+    if 0 <= index < len(REBORN_PALETTE):
+        return REBORN_PALETTE[index]
+    return ""
 
 
 class ClientGS1:
@@ -1216,6 +1898,7 @@ class ClientGS1:
         self._flag_tokens = float(self._FLAG_SEND_BURST)
         self._flag_last_refill = 0.0
         self._proj_params: list = []   # #p(n) during actionprojectile2/keypressed
+        self._callnpc_depth = 0        # nesting guard, see _CALLNPC_MAX_DEPTH
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
         # Input / screen / game-role state the arena weapons read via builtins.
         # The pygame input layer populates these each frame; headless tests set
@@ -1251,16 +1934,17 @@ class ClientGS1:
         # name ("walk"/"idle"/...); the pygame client wires this to its
         # animation state, headless tests can leave it unset.
         self.player_ani_source = None
-        # optional callable (x, y) -> tile id for WORLD coordinates, wired by
-        # the pygame client to its gmap-aware CollisionMixin._get_tile_at.
-        # Without it the tile probes below fall back to the current level's
-        # own 64x64 board, which is right for a standalone level and WRONG
-        # inside a gmap: script coords there run 0..gmap_width*64, so every
-        # probe landed outside 0..63 and answered "not a wall, not water".
-        # Zelda's whole movement engine is such probes (its CheckTiles /
-        # CheckSqrTiles / CheckJump call onwall/tiletype with player.x+1.5),
-        # so on that world the player walked through walls, water and cliffs.
+        # optional (x, y) -> tile id for WORLD coords, wired to the pygame
+        # client's gmap-aware CollisionMixin._get_tile_at. The fallback below
+        # only knows one 64x64 level, so inside a gmap every probe lands
+        # outside 0..63 and answers "not a wall".
         self.tile_source = None
+        # optional () -> (x, y) giving the mouse cursor in WORLD TILE coords,
+        # wired to the pygame client's camera (game/input.py). Unset (headless
+        # harnesses) answers the player's own position, which makes
+        # `mousescreenx - (mousex - playerx) * 16` collapse to the cursor
+        # pixel rather than to garbage — see mouse_world().
+        self.mouse_world_source = None
         self._freeze_until = 0.0       # monotonic deadline used by `playerfreezetime`
         self.selected_weapon_index = lambda: 0
         self.keys_dir: set = set()
@@ -1268,6 +1952,10 @@ class ClientGS1:
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
         self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
         self._shape_block_owners: dict = {}  # npc_id -> set of (tx,ty) it contributed
+        # (tx,ty) -> tile TYPE published by a setshape2 array (see
+        # _update_shape_blocks / npc_tile_type).
+        self._shape_types: dict = {}
+        self._shape_type_owners: dict = {}   # npc_id -> {(tx,ty): type}
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
         self._weapon_imgs: dict = {}      # prog-key -> showimg/showani layer table
         self._coros: list = []            # suspended script coroutines (sleep)
@@ -1297,6 +1985,28 @@ class ClientGS1:
         self.on_tiledef = None
         self.on_seteffect = None
 
+    def board_ready(self) -> bool:
+        """Is the CURRENT level's board in hand?
+
+        `client.tiles` is the active render/collision board and lags the
+        optimistic `_current_level_name` flip a warp performs — on a
+        first-visit level it still holds the PREVIOUS level's tiles until
+        PLO_BOARDPACKET lands (handlers/level.py:238-240 re-points both
+        together). Scripts must not run against either state: a missing board
+        and another room's board are equally wrong answers, and classic
+        Bomber's room0.nw deletes furniture on the strength of them (see
+        GS1NoBoard). Gates `tiles[x,y]` and the playerenters fire in
+        game/setup.py.
+        """
+        cl = self.client
+        if cl is None:
+            return False
+        lvl = getattr(cl, "_current_level_name", "")
+        tiles = getattr(cl, "tiles", None)
+        if not lvl or not tiles or len(tiles) < 64 * 64:
+            return False
+        return getattr(cl, "_tiles_level_name", "") == lvl
+
     def _parse_cached(self, name, code):
         """Parse `code`, memoized on the source text. A level re-entry reloads
         every NPC/weapon script from scratch (clear() drops the progs), and
@@ -1304,14 +2014,28 @@ class ClientGS1:
         ~800ms single-frame re-entry stall. Programs are immutable once built
         (the interpreter never mutates AST nodes; entries already reuse one
         prog across runs), so sharing them by source is safe. Parse failures
-        are cached as None too, so a broken script isn't re-parsed each visit."""
+        are cached as None too, so a broken script isn't re-parsed each visit.
+
+        Both failure modes are reported at WARNING, because both used to be
+        invisible: a LexError killed an NPC outright behind a debug-level log,
+        and the parser's panic-mode recovery dropped statements with no signal
+        at all — which is how a lookahead bug silently truncated classic
+        Bomber's furniture catalog to its first entry for as long as we had
+        the level."""
         cache = self._parse_cache
         if code in cache:
             return cache[code]
         try:
-            prog = parse(code)
-        except Exception:
-            logger.debug("failed to parse client GS1 script %s", name, exc_info=True)
+            parser = Parser(tokenize(code))
+            prog = parser.parse_program()
+            if parser.errors:
+                logger.warning(
+                    "client GS1 script %s: %d statement(s) dropped by parse "
+                    "recovery; first: %s", name, len(parser.errors),
+                    parser.errors[0])
+        except Exception as exc:
+            logger.warning("failed to parse client GS1 script %s: %s", name, exc,
+                           exc_info=logger.isEnabledFor(logging.DEBUG))
             prog = None
         if len(cache) >= self._PARSE_CACHE_MAX:
             cache.clear()               # simple bound; re-parses warm it again
@@ -1391,6 +2115,8 @@ class ClientGS1:
         self.shapes.clear()
         self._shape_blocks.clear()
         self._shape_block_owners.clear()
+        self._shape_types.clear()
+        self._shape_type_owners.clear()
         self.drop_level_weapon_layers()  # GS1 weapon layers are re-drawn per level
         self._coros.clear()             # abandon suspended scripts from old level
         self._active_coro_keys.clear()
@@ -1432,6 +2158,7 @@ class ClientGS1:
         cells = self._shape_block_owners.pop(npc_id, None)
         if cells:
             self._shape_blocks -= cells
+        self._forget_shape_types(npc_id)
 
     def trigger_event(self, event, name=None):
         names = [name] if name is not None else list(self._progs)
@@ -1446,29 +2173,144 @@ class ClientGS1:
             if entry["npc_id"] == npc_id and entry["prog"] is not None:
                 self._run(entry, event)
 
+    #: callnpc/callweapon nesting cap, one shared counter (an NPC and a weapon
+    #: that call each other cycle just as happily as two NPCs). Two scripts
+    #: calling each other would otherwise recurse until Python's own stack
+    #: limit, since each hop builds a fresh Context with a fresh step budget.
+    #: Server scripts are untrusted (same reasoning as the outbound-flag token
+    #: bucket above); nothing legitimate chains this deep -- Bomber's room
+    #: controller is one hop, and so is its tailor NPC -> -tailor weapon.
+    _CALLNPC_MAX_DEPTH = 8
+
+    def call_npc(self, npc_id, event, params=()):
+        """`callnpc`: run another NPC's `event` with `params` bound to #p(n).
+
+        Shares _proj_params with actionprojectile2/keypressed, but unlike
+        those this fires from INSIDE a running script, so the previous
+        binding is restored rather than cleared — a keypressed handler that
+        calls an NPC must still see its own #p() afterwards."""
+        if self._callnpc_depth >= self._CALLNPC_MAX_DEPTH:
+            logger.warning("callnpc nesting limit reached at npc %s/%s",
+                           npc_id, event)
+            return
+        prev = self._proj_params
+        self._proj_params = list(params)
+        self._callnpc_depth += 1
+        try:
+            self.trigger_npc_event(npc_id, event)
+        finally:
+            self._callnpc_depth -= 1
+            self._proj_params = prev
+
+    def call_weapon(self, weapon_name, event, params=()):
+        """`callweapon`: run a weapon script's `event` with `params` bound to
+        #p(n). Same #p() save/restore and the same nesting guard as call_npc:
+        this also fires from INSIDE a running script, and a weapon that calls
+        back into the NPC that called it is a cycle nothing else bounds."""
+        if self._callnpc_depth >= self._CALLNPC_MAX_DEPTH:
+            logger.warning("callweapon nesting limit reached at %s/%s",
+                           weapon_name, event)
+            return
+        prev = self._proj_params
+        self._proj_params = list(params)
+        self._callnpc_depth += 1
+        try:
+            self.trigger_event(event, name=f"weapon_{weapon_name}")
+        finally:
+            self._callnpc_depth -= 1
+            self._proj_params = prev
+
+    def npc_save_slots(self, npc_id, create=False):
+        """The `save[0..9]` slots of the NPC with `npc_id`: a list (empty until
+        it first writes one, unless `create`), or None when no such NPC script
+        is loaded — "this NPC has written no slots" and "there is no such NPC"
+        are different answers and callers act on the difference.
+
+        GS1 keeps save[] on the NPC itself; our engine keeps it in that NPC's
+        script scope, because that is where the interpreter's `this.save[i]`
+        special case (interp.py:832) puts it — the two spellings are the same
+        storage, and `npcs[i].save[j]` has to read it from outside."""
+        for entry in self._progs.values():
+            if entry.get("npc_id") == npc_id and not entry.get("is_weapon"):
+                this = entry["scopes"]["this"]
+                if create:
+                    return this.setdefault("save", [0.0] * 10)
+                return this.get("save") or []
+        return None
+
     def _update_shape_blocks(self, npc_id, npc, w, h, flags):
-        """Translate an NPC's setshape/setshape2 geometry into world-tile
-        blocking cells for onwall()/onwall2(), anchored at the NPC's current
-        (x, y) — same convention npc_handler.NPCHandler uses for touch shapes.
-        Re-derives this NPC's contribution to `_shape_blocks` from scratch each
-        call so re-running setshape2 (e.g. NPC 161's per-frame falling choc
-        blocks during the arena's sudden-death `hurryup`) keeps it in sync,
-        without disturbing other NPCs' contributions."""
+        """Translate an NPC's setshape/setshape2 geometry into world-tile state,
+        anchored at the NPC's current (x, y) — same convention
+        npc_handler.NPCHandler uses for touch shapes.
+
+        A setshape2 array is a per-cell TILE TYPE table, not a blocking mask:
+        `TServerNPC::getTileType` (Preagonal/FourPlay/quattroplay/src/
+        TServerNPC.cpp:2016-2040) indexes the array by the offset from the
+        NPC's origin and returns the cell verbatim, and
+        `TServerLevel::getTileType` (TServerLevel.cpp:688-708) lets any NPC
+        answer above 1 OVERRIDE the board's own type. Recording only the
+        blocking value 22 (the arena's falling choc blocks, the only one we
+        had a use for) silently discarded every other type: classic Bomber's
+        room controller publishes 32 cells of type 3 (CHAIR) over the whole
+        64x64 room via `setshape2 64,64,obj`, and dropping them is why the
+        furniture chairs never seated anyone. `npc_tile_type` is the reader.
+
+        Re-derives this NPC's contribution from scratch each call so re-running
+        setshape2 (e.g. NPC 161's per-frame falling choc blocks during the
+        arena's sudden-death `hurryup`) keeps it in sync, without disturbing
+        other NPCs' contributions."""
         old = self._shape_block_owners.pop(npc_id, None)
         if old:
             self._shape_blocks -= old
+        self._forget_shape_types(npc_id)
         if not flags or w <= 0 or h <= 0:
             return
         ax = int(to_num(npc.get('x', 0))) if isinstance(npc, dict) else 0
         ay = int(to_num(npc.get('y', 0))) if isinstance(npc, dict) else 0
         mine = set()
+        types = {}
         for i, flag in enumerate(flags):
-            if int(to_num(flag)) == 22:
-                col, row = i % w, i // w
-                mine.add((ax + col, ay + row))
+            ttype = int(to_num(flag))
+            # Only >1 overrides the board (TServerLevel.cpp:694-696). Below
+            # that the array is saying "nothing here", and the room controller
+            # also parks its own private markers (-1..-9) in the same cells.
+            if ttype <= 1:
+                continue
+            col, row = i % w, i // w
+            cell = (ax + col, ay + row)
+            types[cell] = ttype
+            if ttype == 22:
+                mine.add(cell)
         if mine:
             self._shape_blocks |= mine
             self._shape_block_owners[npc_id] = mine
+        if types:
+            self._shape_types.update(types)
+            self._shape_type_owners[npc_id] = types
+
+    def _forget_shape_types(self, npc_id):
+        """Drop one NPC's tile-type cells, restoring any cell another NPC also
+        publishes (two shape NPCs blanket the same 64x64 room in Bomber, so
+        cells genuinely overlap)."""
+        mine = self._shape_type_owners.pop(npc_id, None)
+        if not mine:
+            return
+        for cell in mine:
+            self._shape_types.pop(cell, None)
+        for other in self._shape_type_owners.values():
+            for cell, ttype in other.items():
+                if cell in mine:
+                    self._shape_types[cell] = ttype
+
+    def npc_tile_type(self, x, y) -> int:
+        """Tile TYPE an NPC's setshape2 array publishes at world tile (x, y),
+        or 0 when no NPC covers it.
+
+        The client-side half of `TServerLevel::getNPCTileType`
+        (Preagonal/FourPlay/quattroplay/src/TServerLevel.cpp:536-561): the
+        level's NPCs are asked before the board, and the first non-zero answer
+        wins. Callers apply the board fallback for anything <= 1."""
+        return self._shape_types.get((int(math.floor(x)), int(math.floor(y))), 0)
 
     def tile_at(self, x, y):
         """Tile id under world coordinate (x, y), or None when no board
@@ -1534,6 +2376,26 @@ class ClientGS1:
             return float(int(get_tile_type(tile)))
         except (TypeError, ValueError):
             return 0.0
+
+    def mouse_world(self):
+        """`mousex`/`mousey`: the mouse cursor in WORLD TILE coords.
+
+        Prefers `mouse_world_source` (the pygame client's camera-aware
+        unproject). With no hook, answer the player's own position — the same
+        world frame `playerx`/`playery` report — so a script converting
+        between the screen and world frames (bomber's shop panel anchor,
+        bomblobby.nw:584) gets the cursor pixel back instead of an offset
+        computed against a bogus 0."""
+        if self.mouse_world_source is not None:
+            try:
+                x, y = self.mouse_world_source()
+                return float(x), float(y)
+            except Exception:
+                logger.debug("mouse_world_source failed", exc_info=True)
+        cl = self.client
+        if cl is None:
+            return 0.0, 0.0
+        return float(getattr(cl, "x", 0.0)), float(getattr(cl, "y", 0.0))
 
     def resolve_ani(self, name):
         """Apply any `replaceani` mapping to a logical player ani name."""
@@ -1668,13 +2530,13 @@ class ClientGS1:
             # without an NPC dict (npc_bound False) keep running as before.
             if npc is None and entry.get("npc_bound"):
                 return
-        vs = VarStore(scopes=scopes, player_flags=self._flags)
+        vs = _ClientScopeVarStore(scopes=scopes, player_flags=self._flags)
         player = getattr(self.client, "player", None) if self.client else None
         ctx = Context(self._host, vs, this_obj=npc, player=player)
         ctx._npc_id = entry["npc_id"]
         ctx._is_weapon = is_weapon
         ctx._prog_key = key
-        interp = Interpreter(ctx)
+        interp = _RefNamespaceInterpreter(ctx)
         interp._coro = True                # `sleep` suspends; we pump it below
         gen = interp.iter_event(entry["prog"], event)
         self._drive(gen, ctx, key, entry, event)

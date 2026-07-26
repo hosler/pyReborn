@@ -75,6 +75,15 @@ BODY_COLOR_MARKERS: Tuple[Tuple[int, int, int], ...] = (
 )
 
 
+def strip_tiledef_image(name: str) -> str:
+    """Return the lowercase basename stored for a tile definition; the reference
+    uses the last file separator (TFiles.cpp:392-404,610-620).
+    """
+    if not name:
+        return ""
+    return name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
 def palette_index_to_rgb(index) -> Tuple[int, int, int]:
     """Resolve a PLPROP_COLORS palette index (0-19) to an RGB triple."""
     try:
@@ -447,8 +456,8 @@ class TilesetManager:
         # Partial-sheet pastes (addtiledef2), in script order. Later entries
         # are blitted last and therefore win where images overlap.
         self.tiledefs: List[Tuple[str, str, int, int]] = []
-        # Whole-tileset replacements (addtiledef): the image IS a full
-        # 2048x512 tileset. Later defs win; first match by prefix.
+        # Base definitions use the longest matching prefix; ties keep the
+        # earlier definition (TTiles.cpp:567-630).
         self.full_tiledefs: List[Tuple[str, str]] = []
         # Player's current level, lowercased -- selects which defs apply.
         self.current_level = ""
@@ -469,24 +478,56 @@ class TilesetManager:
     def set_tiledef(self, image: str, levelstart: str, x: int, y: int):
         """addtiledef2: paste `image` at sheet pixel (`x`, `y`) in levels
         starting with `levelstart`."""
-        self.tiledefs.append(
-            (image, (levelstart or "").lower(), int(x), int(y)))
+        entry = (strip_tiledef_image(image), (levelstart or "").lower(),
+                 int(x), int(y))
+        if entry in self.tiledefs:
+            return
+        _, prefix, paste_x, paste_y = entry
+        self.tiledefs = [
+            existing for existing in self.tiledefs
+            if not (existing[1] == prefix
+                    and existing[2] == paste_x
+                    and existing[3] == paste_y)
+        ]
+        self.tiledefs.append(entry)
         self.clear_cache()
 
     def set_full_tiledef(self, image: str, levelstart: str = ""):
         """addtiledef: replace the whole default tileset with `image` in
         levels starting with `levelstart`."""
-        entry = (image, (levelstart or "").lower())
-        if entry not in self.full_tiledefs:
-            self.full_tiledefs.append(entry)
-            self.clear_cache()
+        entry = (strip_tiledef_image(image), (levelstart or "").lower())
+        if entry in self.full_tiledefs:
+            return
+        prefix = entry[1]
+        self.full_tiledefs = [
+            existing for existing in self.full_tiledefs
+            if existing[1] != prefix
+        ]
+        self.tiledefs = [
+            existing for existing in self.tiledefs
+            if existing[1] != prefix
+        ]
+        self.full_tiledefs.append(entry)
+        self.clear_cache()
 
-    def clear_tiledefs(self):
-        """removetiledefs: revert to the default tileset."""
-        if self.tiledefs or self.full_tiledefs:
-            self.tiledefs.clear()
-            self.full_tiledefs.clear()
+    def clear_tiledefs(self, prefix: str = "") -> bool:
+        """Remove definitions whose stored prefix starts with `prefix`."""
+        prefix = (prefix or "").lower()
+        tiledefs = [
+            entry for entry in self.tiledefs
+            if not entry[1].startswith(prefix)
+        ]
+        full_tiledefs = [
+            entry for entry in self.full_tiledefs
+            if not entry[1].startswith(prefix)
+        ]
+        changed = (tiledefs != self.tiledefs
+                   or full_tiledefs != self.full_tiledefs)
+        if changed:
+            self.tiledefs = tiledefs
+            self.full_tiledefs = full_tiledefs
             self.clear_cache()
+        return changed
 
     def _get_composed_sheet(self) -> Optional[pygame.Surface]:
         """Build the active sheet from its base and applicable pastes."""
@@ -494,10 +535,13 @@ class TilesetManager:
             return self._composed_sheet
 
         base_name = self.default_tileset
-        for image, prefix in reversed(self.full_tiledefs):
-            if self._applies(prefix) and self.sprite_mgr.has_sheet(image):
+        best_prefix_length = -1
+        for image, prefix in self.full_tiledefs:
+            if (self._applies(prefix)
+                    and len(prefix) > best_prefix_length
+                    and self.sprite_mgr.has_sheet(image)):
                 base_name = image
-                break
+                best_prefix_length = len(prefix)
 
         base = self.sprite_mgr.load_sheet(base_name)
         if base is None:
@@ -546,14 +590,14 @@ class TilesetManager:
                     tile = sheet.subsurface(rect).copy()
                     self.tile_cache[cache_key] = tile
                     return tile
-            # Whole-tileset replacement (addtiledef): same layout as the
-            # default tileset, just a different sheet. Latest applicable wins;
-            # fall back to the default until the image has downloaded.
-            for image, prefix in reversed(self.full_tiledefs):
-                if self._applies(prefix) and self.sprite_mgr.has_sheet(image):
+            best_prefix_length = -1
+            for image, prefix in self.full_tiledefs:
+                if (self._applies(prefix)
+                        and len(prefix) > best_prefix_length
+                        and self.sprite_mgr.has_sheet(image)):
                     tileset = image
-                    break
-            else:
+                    best_prefix_length = len(prefix)
+            if best_prefix_length < 0:
                 tileset = self.default_tileset
 
         cache_key = (tileset, tile_id)

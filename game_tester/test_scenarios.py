@@ -5,8 +5,10 @@ Collection of automated test scenarios for various game features.
 """
 
 import os
+import sys
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .game_bot import GameBot, Issue
@@ -14,11 +16,33 @@ from .bug_detector import BugDetector
 from .reporter import TestResult
 
 
-# Default location of the local GServer-v2 account files. Override with the
-# GSERVER_ACCOUNTS_DIR env var to point the chest-reset helper elsewhere.
-_DEFAULT_ACCOUNTS_DIR = (
-    "/home/hosler/Projects/opengraal2/GServer-v2/bin/servers/default/accounts"
-)
+# Sibling server checkouts, derived from THIS checkout rather than one
+# developer's absolute paths: game_tester/ -> pyReborn/ -> opengraal2/.
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_ACCOUNTS_DIR = (_CHECKOUT_ROOT / "GServer-v2" / "bin" / "servers" /
+                         "default" / "accounts")
+# pygserver's JSON account store. Override with PYGSERVER_ACCOUNTS_DIR.
+_DEFAULT_PYGSERVER_ACCOUNTS_DIR = _CHECKOUT_ROOT / "pygserver" / "accounts"
+
+
+def _resolve_accounts_dir(env_var: str, default: Path) -> Optional[str]:
+    """Resolve an account-store directory, or None to skip the fixture.
+
+    The helpers below REWRITE persisted account files, so a path that isn't
+    an account store must make them no-op rather than guess: returns None when
+    the resolved directory doesn't exist. An explicit override that points
+    nowhere is a misconfiguration worth saying out loud - it silently produced
+    "the fixture didn't take" runs whose failures then looked like renderer or
+    protocol regressions (see render_smoke's [ENV WARNING] block).
+    """
+    override = os.environ.get(env_var)
+    if override:
+        if not os.path.isdir(override):
+            print(f"[QA WARNING] {env_var}={override!r} is not a directory; "
+                  f"account fixture skipped", file=sys.stderr)
+            return None
+        return override
+    return str(default) if default.is_dir() else None
 
 
 def reset_account_chests(account_name: str) -> bool:
@@ -27,7 +51,10 @@ def reset_account_chests(account_name: str) -> bool:
     account file can't be found (e.g. testing a remote server). The caller must
     be logged out when this runs, otherwise the server re-saves the looted state.
     """
-    accounts_dir = os.environ.get("GSERVER_ACCOUNTS_DIR", _DEFAULT_ACCOUNTS_DIR)
+    accounts_dir = _resolve_accounts_dir("GSERVER_ACCOUNTS_DIR",
+                                         _DEFAULT_ACCOUNTS_DIR)
+    if accounts_dir is None:
+        return False
     path = os.path.join(accounts_dir, f"{account_name}.txt")
     try:
         with open(path) as f:
@@ -41,19 +68,12 @@ def reset_account_chests(account_name: str) -> bool:
         return False
 
 
-# pygserver's JSON account store (sibling repo). Override with
-# PYGSERVER_ACCOUNTS_DIR; the helper no-ops if the dir doesn't exist.
-_DEFAULT_PYGSERVER_ACCOUNTS_DIR = (
-    "/home/hosler/Projects/opengraal2/pygserver/accounts"
-)
-
-
 def _reset_pygserver_account(account_name: str, level: str,
                              x: float, y: float, mp: "int | None") -> bool:
     import json
-    accounts_dir = os.environ.get("PYGSERVER_ACCOUNTS_DIR",
-                                  _DEFAULT_PYGSERVER_ACCOUNTS_DIR)
-    if not os.path.isdir(accounts_dir):
+    accounts_dir = _resolve_accounts_dir("PYGSERVER_ACCOUNTS_DIR",
+                                         _DEFAULT_PYGSERVER_ACCOUNTS_DIR)
+    if accounts_dir is None:
         return False
     path = os.path.join(accounts_dir, f"{account_name}.json")
     try:
@@ -63,6 +83,15 @@ def _reset_pygserver_account(account_name: str, level: str,
         # Missing keys fall back to Account dataclass defaults on load.
         data = {"account_name": account_name}
     data.update({"level_name": level, "x": x, "y": y})
+    # Restock ammo. The server DEDUCTS on fire and persists the result, so a
+    # suite that shoots leaves the account at 0 and the next run's projectile
+    # checks fail with no PLO_ARROWADD ever sent -- looking exactly like a
+    # renderer regression. Values are the Account dataclass defaults
+    # (pygserver/pygserver/account.py:63), i.e. GServer's own starting stock.
+    data.setdefault("arrows", 5)
+    data.setdefault("bombs", 10)
+    data["arrows"] = max(int(data.get("arrows") or 0), 5)
+    data["bombs"] = max(int(data.get("bombs") or 0), 10)
     if mp is not None:
         data["mp"] = mp
     try:
@@ -95,7 +124,10 @@ def reset_account_position(account_name: str,
     # JSON twin so the same fixture pins work against either server.
     _reset_pygserver_account(account_name, level, x, y, mp)
 
-    accounts_dir = os.environ.get("GSERVER_ACCOUNTS_DIR", _DEFAULT_ACCOUNTS_DIR)
+    accounts_dir = _resolve_accounts_dir("GSERVER_ACCOUNTS_DIR",
+                                         _DEFAULT_ACCOUNTS_DIR)
+    if accounts_dir is None:
+        return False
     path = os.path.join(accounts_dir, f"{account_name}.txt")
     # NICK must equal the account name or the multi-bot visibility test can't
     # identify players; the scripted gmap world (setnick/setcharprop NPCs) can
@@ -129,6 +161,42 @@ def reset_account_position(account_name: str,
         return False
 
 
+#: (order, function) pairs filled in by @single_bot_scenario. THE single
+#: source for which scenarios make up the single-bot suite: both
+#: run_all_single_bot_tests() below and tests/test_qa_pytest.py read it, where
+#: each used to keep its own hand-written copy of the list - a scenario added
+#: to one and forgotten in the other silently lost that coverage.
+_SINGLE_BOT_REGISTRY: List[Tuple[int, Callable]] = []
+
+
+def single_bot_scenario(order: int) -> Callable[[Callable], Callable]:
+    """Register a scenario in the single-bot suite at position `order`.
+
+    Apply it BELOW @staticmethod so it registers the plain function (that is
+    also what `TestScenarios.<name>` hands back, so registry entries and
+    attribute access are the same object).
+
+    Position is explicit rather than definition order: the suite deliberately
+    interleaves categories (level_data runs 2nd but is defined down in the
+    data-integrity section), and the run order is what `python -m game_tester`
+    reports. Gaps of 10 leave room to insert.
+    """
+    def register(fn: Callable) -> Callable:
+        clash = next((f for taken, f in _SINGLE_BOT_REGISTRY if taken == order),
+                     None)
+        if clash is not None:
+            raise ValueError(f"single-bot scenario order {order} is already "
+                             f"used by {clash.__name__}")
+        _SINGLE_BOT_REGISTRY.append((order, fn))
+        return fn
+    return register
+
+
+def single_bot_scenarios() -> List[Callable]:
+    """The registered single-bot scenarios, in suite order."""
+    return [fn for _, fn in sorted(_SINGLE_BOT_REGISTRY, key=lambda e: e[0])]
+
+
 class TestScenarios:
     """
     Collection of automated test scenarios.
@@ -145,6 +213,7 @@ class TestScenarios:
     # ========== Connection Tests ==========
 
     @staticmethod
+    @single_bot_scenario(10)
     def test_connection(bot: GameBot, duration: float = 5.0) -> TestResult:
         """Test connection stability for duration seconds."""
         start = time.time()
@@ -174,6 +243,7 @@ class TestScenarios:
     # ========== Movement Tests ==========
 
     @staticmethod
+    @single_bot_scenario(30)
     def test_movement_all_directions(bot: GameBot) -> TestResult:
         """Test movement in all 4 directions.
 
@@ -213,6 +283,7 @@ class TestScenarios:
         )
 
     @staticmethod
+    @single_bot_scenario(60)
     def test_walk_to_target(bot: GameBot, target_x: float = 35.0,
                             target_y: float = 35.0) -> TestResult:
         """Test walk_to pathfinding.
@@ -250,6 +321,7 @@ class TestScenarios:
         )
 
     @staticmethod
+    @single_bot_scenario(40)
     def test_collision_detection(bot: GameBot) -> TestResult:
         """Test that collision detection works (parity with pygame client).
 
@@ -316,6 +388,7 @@ class TestScenarios:
         )
 
     @staticmethod
+    @single_bot_scenario(50)
     def test_swimming_detection(bot: GameBot) -> TestResult:
         """Test that swimming/water detection works (parity with pygame client).
 
@@ -347,6 +420,7 @@ class TestScenarios:
     # ========== Combat Tests ==========
 
     @staticmethod
+    @single_bot_scenario(80)
     def test_sword_attack(bot: GameBot) -> TestResult:
         """Test sword attack in all directions."""
         start = time.time()
@@ -406,6 +480,7 @@ class TestScenarios:
     # ========== Chat Tests ==========
 
     @staticmethod
+    @single_bot_scenario(70)
     def test_chat_roundtrip(bot: GameBot) -> TestResult:
         """Test that a chat message actually reaches the server and gets relayed.
 
@@ -456,6 +531,7 @@ class TestScenarios:
     # ========== Item Tests ==========
 
     @staticmethod
+    @single_bot_scenario(90)
     def test_item_detection(bot: GameBot) -> TestResult:
         """Test that items on ground are detected."""
         start = time.time()
@@ -536,6 +612,7 @@ class TestScenarios:
     # ========== NPC Tests ==========
 
     @staticmethod
+    @single_bot_scenario(100)
     def test_npc_visibility(bot: GameBot) -> TestResult:
         """Check if NPCs are visible in level (informational - 0 NPCs is valid)."""
         start = time.time()
@@ -555,6 +632,7 @@ class TestScenarios:
     # ========== Data Integrity Tests ==========
 
     @staticmethod
+    @single_bot_scenario(20)
     def test_level_data(bot: GameBot) -> TestResult:
         """Test that level data is properly loaded."""
         start = time.time()
@@ -578,6 +656,7 @@ class TestScenarios:
     # ========== File / Chest / Level Parsing Tests ==========
 
     @staticmethod
+    @single_bot_scenario(110)
     def test_file_download(bot: GameBot) -> TestResult:
         """Request a known file from the server and verify it downloads intact.
 
@@ -615,6 +694,7 @@ class TestScenarios:
                           duration=time.time() - start, details=details, issues=issues)
 
     @staticmethod
+    @single_bot_scenario(120)
     def test_chest_interaction(bot: GameBot) -> TestResult:
         """Open a chest and verify the item is delivered.
 
@@ -697,6 +777,7 @@ class TestScenarios:
                           duration=time.time() - start, details=details, issues=issues)
 
     @staticmethod
+    @single_bot_scenario(130)
     def test_level_parsing(bot: GameBot) -> TestResult:
         """Warp to the QA fixture level and verify sign/link/baddy/chest parsing.
 
@@ -756,25 +837,9 @@ class TestScenarios:
 
     @staticmethod
     def run_all_single_bot_tests(bot: GameBot) -> list:
-        """Run all single-bot tests."""
-        tests = [
-            TestScenarios.test_connection,
-            TestScenarios.test_level_data,
-            TestScenarios.test_movement_all_directions,
-            TestScenarios.test_collision_detection,
-            TestScenarios.test_swimming_detection,
-            TestScenarios.test_walk_to_target,
-            TestScenarios.test_chat_roundtrip,
-            TestScenarios.test_sword_attack,
-            TestScenarios.test_item_detection,
-            TestScenarios.test_npc_visibility,
-            TestScenarios.test_file_download,
-            TestScenarios.test_chest_interaction,
-            TestScenarios.test_level_parsing,
-        ]
-
+        """Run all single-bot tests, in registry order."""
         results = []
-        for test in tests:
+        for test in single_bot_scenarios():
             try:
                 result = test(bot)
                 results.append(result)

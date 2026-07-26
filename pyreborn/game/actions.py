@@ -16,6 +16,8 @@ from pygame.locals import (
     K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
+from reborn_protocol.coords import level_index, segment_at, world_to_local
+
 from .. import Client
 from ..gani import GaniParser, AnimationState, direction_from_delta
 from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
@@ -261,28 +263,15 @@ class ActionsMixin:
     def _check_scripted_gmap_segment(self) -> bool:
         """Announce a GMAP segment crossing made by scripted movement.
 
-        Third gap of the same family as the two probes above. Client.move_to()
-        notices when a step carries the player into a different gmap cell and
-        tells the server (props in the new segment's local frame, then
-        PLI_LEVELWARP). A script that writes `player.x` / `playerx` from the
-        VM never goes through move_to, so on a fully script-driven world the
-        server was never told we had left the spawn segment: it kept us in
-        that level, so it never streamed the segments we walked into, never
-        sent their NPCs/signs/links, and our own `_current_level_name` stayed
-        pinned to the spawn level while the camera scrolled across the map.
-
-        Live on Zelda (one 10x10 gmap, `-Player/Movement` calls
-        disabledefmovement and drives everything itself): a 54-tile walk west
-        crossed two cell boundaries with `_current_level_name` never leaving
-        `zlttp-e5.nw` and `levels` stuck at the 9 segments from login.
-
-        Uses the same wire sequence as move_to so there is one definition of
-        "we crossed a seam" on the wire.
+        move_to() tells the server when a step changes gmap cell; a script that
+        writes `player.x` from the VM never calls move_to, so the server kept us
+        in the spawn segment and never streamed the ones we walked into.
+        Reuses move_to's wire sequence so "we crossed a seam" has one definition.
         """
         client = self.client
         if not getattr(client, 'is_gmap', False) or not client.gmap_grid:
             return False
-        grid = (math.floor(client.x / 64), math.floor(client.y / 64))
+        grid = segment_at(client.x, client.y)
         if grid == getattr(self, '_scripted_gmap_cell', None):
             return False
         level = client.gmap_grid.get(grid)
@@ -292,7 +281,7 @@ class ActionsMixin:
         if not level or level == client._current_level_name:
             return False
         client.send_position()
-        return client.enter_gmap_segment(level, client.x % 64, client.y % 64)
+        return client.enter_gmap_segment(level, *world_to_local(client.x, client.y))
 
     def _update_push_hold(self, dx: int, dy: int):
         """Track how long the currently-pressed direction has been held
@@ -600,7 +589,12 @@ class ActionsMixin:
         Checks if the clicked tile is part of a 2x2 group of the same type.
         Returns (origin_x, origin_y) or None if not found.
         """
-        tx, ty = int(x), int(y)
+        # floor, not int(): the same truncation-vs-floor split collision.py's
+        # _world_to_level_local documents. Equivalent for every reachable
+        # probe (a negative world coord only arrives here from an off-board
+        # touch point, whose tile is -1 and so never liftable), but the two
+        # spellings must not disagree on the frame this returns origins in.
+        tx, ty = math.floor(x), math.floor(y)
         tile_id = self._get_tile_at(tx, ty)
         if not self._is_tile_liftable(tile_id):
             return None
@@ -668,8 +662,8 @@ class ActionsMixin:
             level_name, tiles = self._level_tiles_at(wx, wy)
             if not level_name or not tiles:
                 continue
-            lx, ly = wx % 64, wy % 64
-            tiles[ly * 64 + lx] = self.grass_tile_id
+            lx, ly = world_to_local(wx, wy)
+            tiles[level_index(lx, ly)] = self.grass_tile_id
     def _throw_object(self):
         """Throw the carried object: it flies ahead in an arc and breaks on
         landing (or on the first wall it hits), classic style. It does NOT
@@ -729,10 +723,22 @@ class ActionsMixin:
         chair tile — riding across a run of chairs keeps the sit ani at
         normal movement speed, same as walking. Movement is completely
         normal — walking onto, across, and off a chair is just walking;
-        only the ani differs. Only leaving chair tiles stands you up."""
+        only the ani differs. Only leaving chair tiles stands you up.
+
+        The chair may be an NPC's rather than the board's: classic Bomber's
+        player-base furniture publishes its chair cells through `setshape2`,
+        so ask _effective_tile_type instead of the board alone.
+
+        Sampled at _player_ground (x+1.5, y+2.0), the single point
+        `TPlayer::testSittingSleeping` uses (Preagonal/FourPlay/quattroplay/
+        src/TPlayer.cpp:5925-5927) - NOT _player_feet (y+2.5). Half a tile
+        matters here: Bomber's furniture chairs are two tiles tall, and
+        sampling low shifted the seatable band up the screen, which is why
+        only the upper part of a chair ever sat you down."""
         player = self.client.player
         on_chair = (not player.is_carrying() and not self.is_swimming
-                    and self._is_tile_chair(self._get_tile_at(*self._player_feet())))
+                    and self._effective_tile_type(*self._player_ground())
+                    == TileType.CHAIR)
         if on_chair and not player.is_sitting:
             if player.sit_down(player.direction):
                 self.client.set_animation("sit")

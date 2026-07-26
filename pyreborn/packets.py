@@ -5,10 +5,19 @@ Essential packet handlers for basic gameplay.
 Uses the shared reborn_protocol library for core protocol components.
 """
 
+import math
 from typing import Dict, Any, Optional
 
 # Import shared protocol components
 from reborn_protocol import PacketReader, PacketBuilder, PLI, PLO, PLPROP, BDPROP
+from reborn_protocol.props import (
+    BADDY_PROPS,
+    COLORS_CLASSIC,
+    NPC_PROPS,
+    PLAYER_PROPS,
+    StreamPolicy,
+    parse_prop_stream,
+)
 
 
 # =============================================================================
@@ -40,39 +49,12 @@ PacketID.PLO_SHOWIMGNPC = 166
 # =============================================================================
 # Player property parsing helpers
 #
-# Player-property payload widths are authoritative per GServer-v2:
-#   server/include/object/Player.h           (prop -> serializer X-macro)
-#   server/include/utilities/PropertySerializers.{h,cpp}  (serializer widths)
-#   dependencies/gs2lib/src/CString.cpp       (readGChar/Short/Int = 1/2/3 bytes)
+# Payload widths and encodings live in reborn_protocol.props (one descriptor
+# table per property enum, sourced from GServer-v2's X-macros + serializers).
 # Getting any width wrong misaligns the rest of the props packet (the classic
-# "Y position suddenly jumps" symptom), so all skipping goes through one table.
+# "Y position suddenly jumps" symptom), so nothing here re-derives one.
 # pyReborn targets v6.037 (MODERN / new-world mode => COLORS is 8 bytes).
 # =============================================================================
-
-# Fixed-size numeric props: prop_id -> payload byte count.
-_PROP_FIXED_BYTES = {
-    1: 1, 2: 1, 3: 3, 4: 1, 5: 1, 6: 1, 7: 1,   # power/rupees/arrows/bombs/gloves
-    # 13 (COLORS) is version-dependent (classic v2/v5 = 5 bytes, v6 extended = 8)
-    # so it's handled via the colors_len arg in _prop_payload_len, not here.
-    14: 2,                                        # ID (gshort)
-    15: 1, 16: 1, 17: 1, 18: 1, 19: 1,           # X / Y / SPRITE / STATUS / CARRYSPRITE
-    22: 1, 24: 3, 25: 2, 26: 1, 27: 3, 28: 3,    # horsebushes/carrynpc/apcounter/mp/kills/deaths
-    29: 3, 30: 5, 31: 3, 32: 1, 33: 1,           # onlinesecs/ip/udpport/alignment/additflags
-    36: 3,                                        # RATING (PropertyEloRating, readGInt = 3)
-    42: 4,                                        # ATTACHNPC (1-byte type + readGInt 3)
-    43: 1, 44: 1, 45: 1,                         # GMAPLEVELX / GMAPLEVELY / Z
-    50: 1, 51: 0, 53: 1,                         # JOINLEAVELVL / DISCONNECT(void) / PLAYERLISTSTATUS
-    76: 3, 77: 5, 78: 2, 79: 2, 80: 2, 81: 1,    # codepage/onlinesecs2/X2/Y2/Z2/listcategory
-    83: 5,                                        # UNKNOWN83 (v6 reads a GBYTE5)
-}
-
-# Length-prefixed string props (1-byte length + chars).
-_PROP_STRING_IDS = (
-    {0, 10, 12, 20, 21, 34, 35, 52, 75, 82}
-    | {37, 38, 39, 40, 41}        # GATTRIB1-5
-    | {46, 47, 48, 49}            # GATTRIB6-9
-    | set(range(54, 75))          # GATTRIB10-30
-)
 
 # GATTRIB prop_id -> attribute index (1..30), in protocol order.
 _GATTRIB_IDS = {
@@ -94,6 +76,49 @@ def build_player_gattrib(index: int, value: str) -> bytes:
         return b""
     vb = value.encode('latin-1', errors='replace')[:223]
     return bytes([pid + 32, len(vb) + 32]) + vb
+
+
+def _set(key):
+    """Handler that stores a decoded prop value under `key` verbatim."""
+    return lambda props, value: props.__setitem__(key, value)
+
+
+def _set_scaled(key, scale):
+    return lambda props, value: props.__setitem__(key, value * scale)
+
+
+def _set_sprite(props, value):
+    props['sprite'] = value
+    props['direction'] = value & 0x03
+
+
+def _set_power_image(power_key, image_key):
+    """SWORDPOWER/SHIELDPOWER: always record the power, the image only when one
+    was actually on the wire (a bare preset power carries none, and the client
+    keeps its own default sprite rather than GServer's synthesised name)."""
+    def handler(props, value):
+        power, image = value
+        props[power_key] = power
+        if image is not None:
+            props[image_key] = image
+    return handler
+
+
+def _set_head_image(props, value):
+    # HEADGIF is a preset id below 100, else a filename (props.py's Wire.HEADGIF
+    # decodes to int or str respectively). Both forms name an image: the
+    # reference client turns the preset id N into "head{N}.png" (decompiled
+    # client, Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:1659-1666).
+    # Dropping the int form left the avatar wearing whatever head it had before
+    # -- head0.png for a fresh player -- while everyone else saw the real one.
+    if isinstance(value, str):
+        props['head_image'] = value
+    elif isinstance(value, int):
+        props['head_image'] = f'head{value}.png'
+
+
+def _gattrib_handlers():
+    return {pid: _set(f'gattrib{idx}') for pid, idx in _GATTRIB_IDS.items()}
 
 
 def _read_string(data: bytes, pos: int):
@@ -120,84 +145,6 @@ def _read_gbyte(data: bytes, pos: int, count: int):
     for i in range(count):
         value = (value << 7) | ((data[pos + i] - 32) & 0x7F)
     return value, pos + count
-
-
-def _read_pixel(data: bytes, pos: int):
-    """Read a 2-byte high-precision pixel coordinate (PropertyPixelCoordinate).
-    Returns (tiles_float_or_None, new_pos)."""
-    if pos + 2 > len(data):
-        return None, len(data)
-    value = ((data[pos] - 32) << 7) | (data[pos + 1] - 32)
-    pixels = value >> 1
-    if value & 0x0001:
-        pixels = -pixels
-    return pixels / 16.0, pos + 2
-
-
-def _read_sword(data: bytes, pos: int, threshold: int):
-    """Read a SWORDPOWER/SHIELDPOWER prop. `threshold` is 30 (sword) or 10 (shield):
-    a raw value below it is a preset power with no image; at/above it the power is
-    (raw - threshold) followed by a length-prefixed image. Returns (power, image_or_None, new_pos)."""
-    if pos >= len(data):
-        return 0, None, pos
-    raw = data[pos] - 32
-    pos += 1
-    if raw < threshold:
-        return raw, None, pos
-    image, pos = _read_string(data, pos)
-    return raw - threshold, image, pos
-
-
-def _read_headgif(data: bytes, pos: int):
-    """Read a HEADGIF prop. Length < 100 is a preset id (int); otherwise a custom
-    image string of (length - 100) chars. Returns (value_or_None, new_pos)."""
-    n = len(data)
-    if pos >= n:
-        return None, pos
-    length = data[pos] - 32
-    pos += 1
-    if length < 100:
-        return length, pos
-    end = pos + (length - 100)
-    if end > n:
-        return None, n
-    return data[pos:end].decode('latin-1', errors='replace'), end
-
-
-def _prop_payload_len(prop_id: int, data: bytes, pos: int, colors_len: int = 5) -> int:
-    """Number of payload bytes a player-prop occupies (prop-id byte already consumed).
-    Used to keep the stream aligned for props the caller does not decode itself.
-
-    colors_len is the width of PLPROP_COLORS (13): 5 for classic/v2.22 clients, 8
-    for v6 clients with extended body colors. Getting this wrong misaligns every
-    prop after COLORS (garbled level name, lost X/Y), so it must match the version.
-    """
-    if prop_id == 13:       # COLORS
-        return colors_len
-    fixed = _PROP_FIXED_BYTES.get(prop_id)
-    if fixed is not None:
-        return fixed
-    if prop_id in _PROP_STRING_IDS:
-        return 1 + (data[pos] - 32) if pos < len(data) else 0
-    if prop_id == 8:        # SWORDPOWER
-        if pos >= len(data):
-            return 0
-        return 1 + (1 + (data[pos + 1] - 32) if (data[pos] - 32) >= 30 and pos + 1 < len(data) else 0)
-    if prop_id == 9:        # SHIELDPOWER
-        if pos >= len(data):
-            return 0
-        return 1 + (1 + (data[pos + 1] - 32) if (data[pos] - 32) >= 10 and pos + 1 < len(data) else 0)
-    if prop_id == 11:       # HEADGIF
-        if pos >= len(data):
-            return 0
-        length = data[pos] - 32
-        return 1 + ((length - 100) if length >= 100 else 0)
-    if prop_id == 23:       # EFFECTCOLORS: 1 byte if first is 0, else 5
-        if pos >= len(data):
-            return 0
-        return 1 if (data[pos] - 32) == 0 else 5
-    # Unknown: advance a single byte so the loop makes progress.
-    return 1
 
 
 def _parse_with_colors_retry(run_once, colors_len: int,
@@ -468,37 +415,50 @@ def parse_board_layer(data: bytes) -> dict:
     }
 
 
-# NPCProp string props: serialized as [gchar len][raw bytes].
-# (PropertyString in GServer-v2 NPC.h FOR_LIST_OF_NPC_PROPS.)
-_NPC_STRING_PROPS = frozenset({
-    0,                       # IMAGE
-    15,                      # MESSAGE (chat)
-    20,                      # NICKNAME
-    21,                      # HORSEIMAGE
-    35,                      # BODYIMAGE
-    49, 50, 51, 52,          # SCRIPTER, NAME, TYPE, CURLEVEL (NC-only, normally not sent)
-    # GATTRIBs are NOT contiguous here: NPC.h interleaves GMAPLEVELX(41),
-    # GMAPLEVELY(42) and Z(43) - all 1-byte numerics - between GATTRIB5(40)
-    # and GATTRIB6(44). Treating 41-43 as strings misaligned the parser on
-    # every gmap-level NPC gs2emu sends (their gchar values became bogus
-    # string lengths that swallowed the rest of the packet, losing X2/Y2 and
-    # filling 'script' with raw prop bytes).
-    *range(36, 41),          # GATTRIB1-5   (36-40)
-    *range(44, 48),          # GATTRIB6-9   (44-47)
-    *range(53, 74),          # GATTRIB10-30 (53-73)
-})
-# NPCProp single-byte numeric props (PropertyNumeric<GBYTE1> / flags / Z-tile).
-_NPC_BYTE_PROPS = frozenset({
-    4,                       # POWER
-    6, 7, 8, 9,              # ARROWS, BOMBS, GLOVEPOWER, BOMBPOWER
-    13, 14,                  # VISFLAGS, BLOCKFLAGS
-    *range(23, 34),          # SAVE0-9 (23-32), ALIGNMENT (33)
-    41, 42,                  # GMAPLEVELX, GMAPLEVELY
-    43,                      # Z (TileCoordinateZ, 1 byte)
-})
-# Friendly names for the props we surface as dict keys.
-_NPC_STRING_KEYS = {0: 'image', 15: 'message', 20: 'nickname',
-                    21: 'horseimage', 35: 'bodyimage', 52: 'curlevel'}
+# NPCProp streams are ascending and self-delimiting like PlayerProp ones, but
+# over a different enum: NPC.h interleaves GMAPLEVELX/GMAPLEVELY/Z (41-43)
+# between GATTRIB5 and GATTRIB6, and 75-77 are X2/Y2/Z2 rather than
+# OSTYPE/TEXTCODEPAGE/ONLINESECS2. See reborn_protocol.props.NPC_PROPS.
+#
+# NPC strings are surfaced even when empty: clearing an NPC's message or image
+# is a real update, unlike a missing prop (hence handle_empty below).
+_NPC_TEXT_KEYS = {0: 'image', 1: 'script', 12: 'gani', 15: 'message',
+                  20: 'nickname', 21: 'horseimage', 35: 'bodyimage',
+                  52: 'curlevel'}
+
+_NPC_STREAM = StreamPolicy(
+    table=NPC_PROPS, max_prop_id=77, require_ascending=True,
+    check_alignment=True, require_full_consume=True,
+    handle_empty=frozenset(_NPC_TEXT_KEYS))
+
+
+def _set_text(key):
+    return lambda props, value: props.__setitem__(key, value or '')
+
+
+_NPC_PROP_HANDLERS = {
+    2: _set('x'),
+    3: _set('y'),
+    13: _set('visflags'),
+    18: _set_sprite,
+    19: _set('colors'),
+    # A preset head id is meaningful to the renderer here (unlike the player
+    # case), so the int is surfaced alongside custom image names.
+    22: _set('headimage'),
+    # PropertyImagePart: classic "object" NPCs point image at a tilesheet (e.g.
+    # pics1.png) and use this rect to pick the sub-region; without it the
+    # renderer blits the whole sheet.
+    34: _set('imagepart'),
+    # On a gmap, gs2emu streams ALL the map's NPCs under one
+    # PLO_SETACTIVELEVEL <map>.gmap, so this pair is the ONLY segment
+    # attribution the client gets - see client.py's PLO_NPCPROPS handler.
+    41: _set('gmaplevelx'),
+    42: _set('gmaplevely'),
+    75: _set('x'),
+    76: _set('y'),
+    77: _set('z'),
+    **{pid: _set_text(key) for pid, key in _NPC_TEXT_KEYS.items()},
+}
 
 
 def _parse_npc_props_once(data: bytes, colors_len: int) -> tuple:
@@ -506,166 +466,17 @@ def _parse_npc_props_once(data: bytes, colors_len: int) -> tuple:
     Parse PLO_NPCPROPS (packet 3) -> NPC info dict.
 
     Format: GInt3(npc_id) followed by [gchar prop_id][value...] pairs.
-    Widths/encodings come straight from GServer-v2 NPC.h FOR_LIST_OF_NPC_PROPS
-    + PropertySerializers.cpp (modern / new-world generation). Prop ids are the
-    NPCProp enum, which differs from PlayerProp (e.g. 75/76/77 are X2/Y2/Z2,
-    NOT OSTYPE/codepage).
     """
     if len(data) < 3:
         return {}, False
 
-    n = len(data)
-    pos = 3  # GInt3 npc id
-    props = {'id': ((data[0] - 32) << 14) + ((data[1] - 32) << 7) + (data[2] - 32)}
-    clean = True
-    last_prop_id = -1
-
-    def read_gstr():
-        """[gchar len][raw len bytes] -> str (advances pos)."""
-        nonlocal pos
-        if pos >= n:
-            return None
-        slen = data[pos] - 32
-        pos += 1
-        if slen < 0:
-            slen = 0
-        s = data[pos:pos + slen].decode('latin-1', errors='replace')
-        pos += slen
-        return s
-
-    while pos < n:
-        prop_id = data[pos] - 32
-        pos += 1
-        if prop_id < 0 or prop_id >= 78 or prop_id <= last_prop_id:
-            clean = False
-            break
-        last_prop_id = prop_id
-
-        if prop_id in _NPC_STRING_PROPS:
-            s = read_gstr()
-            key = _NPC_STRING_KEYS.get(prop_id)
-            if key:
-                props[key] = s
-
-        elif prop_id == 1:  # SCRIPT - PropertyGS1Script: gshort len + raw
-            if pos + 1 >= n:
-                clean = False
-                break
-            slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
-            pos += 2
-            props['script'] = data[pos:pos + slen].decode('latin-1', errors='replace')
-            pos += slen
-
-        elif prop_id == 2 or prop_id == 3:  # X / Y tile coordinate (1 byte)
-            v = data[pos] - 32
-            pos += 1
-            if v >= 216:        # negative tile coordinate (signed)
-                v -= 256
-            props['x' if prop_id == 2 else 'y'] = v / 2.0
-
-        elif prop_id in (75, 76, 77):  # X2 / Y2 / Z2 - PixelCoordinate (gshort)
-            if pos + 1 >= n:
-                clean = False
-                break
-            value = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
-            pos += 2
-            pixels = value >> 1
-            if value & 1:
-                pixels = -pixels
-            key = {75: 'x', 76: 'y', 77: 'z'}[prop_id]
-            props[key] = pixels / 16.0
-
-        elif prop_id in _NPC_BYTE_PROPS:
-            v = data[pos] - 32
-            pos += 1
-            if prop_id == 13:
-                props['visflags'] = v
-            elif prop_id == 41:
-                # GMAPLEVELX: grid column of the segment this NPC lives in.
-                # On a gmap, gs2emu streams ALL the map's NPCs under
-                # PLO_SETACTIVELEVEL <map>.gmap (the whole gmap is one level
-                # server-side), so this pair is the ONLY segment attribution
-                # the client gets - see client.py's PLO_NPCPROPS handler.
-                props['gmaplevelx'] = v
-            elif prop_id == 42:
-                props['gmaplevely'] = v
-
-        elif prop_id == 5:  # RUPEES - GBYTE3 (also covers 17 ID below)
-            pos += 3
-
-        elif prop_id == 17:  # ID - GBYTE3
-            pos += 3
-
-        elif prop_id == 18:  # SPRITE: (sprite<<2)|direction, 1 byte
-            v = data[pos] - 32
-            pos += 1
-            props['sprite'] = v
-            props['direction'] = v & 3
-
-        elif prop_id == 12:  # GANI (modern: gchar len + raw)
-            props['gani'] = read_gstr()
-
-        elif prop_id == 22:  # HEADIMAGE - PropertyHeadGif
-            marker = data[pos] - 32
-            pos += 1
-            if marker >= 100:
-                props['headimage'] = data[pos:pos + (marker - 100)].decode('latin-1', errors='replace')
-                pos += marker - 100
-            else:
-                props['headimage'] = marker  # preset id
-
-        elif prop_id == 10:  # SWORDIMAGE - PropertySwordPower
-            v = data[pos] - 32
-            pos += 1
-            if v >= 30:
-                read_gstr()  # custom image name
-
-        elif prop_id == 11:  # SHIELDIMAGE - PropertyShieldPower
-            v = data[pos] - 32
-            pos += 1
-            if v >= 10:
-                read_gstr()
-
-        elif prop_id == 19:  # COLORS
-            if pos + colors_len > n:
-                clean = False
-            props['colors'] = [
-                data[i] - 32 for i in range(pos, min(pos + colors_len, n))]
-            pos += colors_len
-
-        elif prop_id == 16:  # HURTDXDY - 2 bytes
-            pos += 2
-
-        elif prop_id == 34:  # IMAGEPART - PropertyImagePart: gushort x, gushort
-            # y, gchar w, gchar h (6 bytes). Classic "object" NPCs set image to a
-            # tilesheet (e.g. pics1.png) and use this rect to pick the sub-region
-            # to draw; without it the renderer blits the whole sheet.
-            if pos + 5 < n:
-                px = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
-                py = ((data[pos + 2] - 32) << 7) + (data[pos + 3] - 32)
-                pw = data[pos + 4] - 32
-                ph = data[pos + 5] - 32
-                props['imagepart'] = (px, py, pw, ph)
-            pos += 6
-
-        elif prop_id == 74:  # CLASS - PropertyLongString: gshort len + raw
-            if pos + 1 >= n:
-                clean = False
-                break
-            slen = ((data[pos] - 32) << 7) + (data[pos + 1] - 32)
-            pos += 2
-            pos += slen
-
-        elif prop_id == 48:  # UNKNOWN48 - PropertyVoid (0 bytes)
-            pass
-
-        else:
-            # Unknown id within range: assume single byte (best-effort).
-            pos += 1
-
-        if pos > n:
-            clean = False
-    return props, clean and pos == n
+    npc_id = ((data[0] - 32) << 14) + ((data[1] - 32) << 7) + (data[2] - 32)
+    props, clean, _ = parse_prop_stream(
+        data, 3,
+        _NPC_STREAM.with_colors_len(colors_len),
+        _NPC_PROP_HANDLERS,
+        out={'id': npc_id})
+    return props, clean
 
 
 def parse_npc_props(data: bytes, colors_len: int = 5,
@@ -847,7 +658,58 @@ def parse_rawdata(data: bytes) -> int:
     return reader.read_gint3()
 
 
-def parse_other_player(data: bytes, colors_len: int = 5,
+# GServer-v2 emits props in strictly ascending id order (PlayerProps.cpp
+# getPropsPacketFromList / getModifiedPropsPacket) with no padding, except that
+# OTHERPLPROPS join/leave notifications prepend a standalone JOINLEAVELVL(50)
+# header before the (also ascending) blob. A wrong COLORS width desyncs that
+# ordering almost immediately, which is what lets _parse_with_colors_retry tell
+# a correct parse from a corrupted one.
+_PLAYER_STREAM = StreamPolicy(
+    table=PLAYER_PROPS, max_prop_id=83, require_ascending=True,
+    ascending_exempt=frozenset({50}), check_alignment=True)
+
+# Same wire contract, but an empty CURCHAT still reaches its handler here so the
+# chat bubble can be cleared (see StreamPolicy.handle_empty).
+_OTHER_STREAM = StreamPolicy(
+    table=PLAYER_PROPS, max_prop_id=83, require_ascending=True,
+    ascending_exempt=frozenset({50}), check_alignment=True,
+    handle_empty=frozenset({12}))
+
+# Props another player's PLO_OTHERPLPROPS surfaces. Deliberately not the same
+# set or the same keys as _SELF_PROP_HANDLERS below: this describes somebody
+# else's avatar (no inventory/stats, no ID - the packet's own leading gshort is
+# authoritative), an empty CURCHAT clears their chat bubble, and a later
+# ACCOUNTNAME wins because the server re-sends it on rename.
+_OTHER_PROP_HANDLERS = {
+    0: _set('nickname'),
+    8: _set_power_image('sword_power', 'sword_image'),
+    9: _set_power_image('shield_power', 'shield_image'),
+    10: _set('ani'),
+    11: _set_head_image,
+    12: lambda props, value: props.__setitem__('chat', value or ''),
+    13: _set('colors'),
+    15: _set('x'),
+    16: _set('y'),
+    17: _set_sprite,
+    18: _set('status'),
+    20: _set('level'),
+    26: _set('mp'),
+    32: _set('ap'),
+    34: _set('account'),
+    35: _set('body_image'),
+    # The server's level-leave notification IS this prop with value 0 (pygserver
+    # build_player_left; GServer-v2 sends the same shape). Without capturing it,
+    # departed players linger forever in the level roster as ghosts.
+    50: _set('joinleave'),
+    75: _set('os_type'),
+    76: _set('codepage'),
+    78: _set('x'),
+    79: _set('y'),
+    **_gattrib_handlers(),
+}
+
+
+def parse_other_player(data: bytes, colors_len: int = COLORS_CLASSIC,
                        diagnostics: Optional[Dict[str, int]] = None) -> dict:
     """
     Parse PLO_OTHERPLPROPS (8).
@@ -865,138 +727,12 @@ def parse_other_player(data: bytes, colors_len: int = 5,
     player_id = reader.read_gshort()
     start_pos = reader.pos
 
-    def _run(colors_len):
-        props = {'id': player_id}
-        pos = start_pos
-        clean = True
-        last_prop_id = -1
-
-        while pos < len(data):
-            prop_id = data[pos] - 32
-            pos += 1
-            if prop_id < 0 or prop_id > 83:
-                clean = False
-                break
-            if pos + _prop_payload_len(prop_id, data, pos, colors_len) > len(data):
-                clean = False
-            # Every PlayerProp stream GServer-v2 emits (getPropsPacketFromList/
-            # getModifiedPropsPacket, server/src/player/PlayerProps.cpp) writes
-            # prop ids in strictly ascending order, except that OTHERPLPROPS
-            # join/leave notifications prepend a standalone JOINLEAVELVL(50)
-            # header before the (also ascending) props blob - so a JOINLEAVELVL
-            # header resets the ascending-order tracker instead of breaking it.
-            # A wrong colors_len (COLORS' width is a server-wide mode, not
-            # something derivable from the client's protocol version - see
-            # reborn-protocol-docs/docs/protocol/version-gated-behavior.md)
-            # desyncs this ordering almost immediately, which is what lets
-            # _parse_with_colors_retry tell a correct parse from a corrupted one.
-            if prop_id <= last_prop_id and last_prop_id != 50:
-                clean = False
-                break
-            last_prop_id = prop_id
-
-            if prop_id == 0:          # NICKNAME
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['nickname'] = val
-            elif prop_id == 8:        # SWORDPOWER
-                power, image, pos = _read_sword(data, pos, 30)
-                props['sword_power'] = power
-                if image is not None:
-                    props['sword_image'] = image
-            elif prop_id == 9:        # SHIELDPOWER
-                power, image, pos = _read_sword(data, pos, 10)
-                props['shield_power'] = power
-                if image is not None:
-                    props['shield_image'] = image
-            elif prop_id == 10:       # GANI
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['ani'] = val
-            elif prop_id == 11:       # HEADGIF
-                val, pos = _read_headgif(data, pos)
-                if isinstance(val, str):
-                    props['head_image'] = val
-            elif prop_id == 12:       # CURCHAT (chat bubble above the player)
-                val, pos = _read_string(data, pos)
-                # An empty CURCHAT clears the bubble; surface '' too so callers
-                # can distinguish "no chat prop" (key absent) from "chat cleared".
-                props['chat'] = val if val is not None else ''
-            elif prop_id == 13:       # COLORS (colors_len gchar color indices)
-                end = min(pos + colors_len, len(data))
-                props['colors'] = [max(0, data[i] - 32) for i in range(pos, end)]
-                pos = end
-            elif prop_id == 15:       # X (half-tiles)
-                if pos < len(data):
-                    props['x'] = float(data[pos] - 32) / 2.0
-                    pos += 1
-            elif prop_id == 16:       # Y (half-tiles)
-                if pos < len(data):
-                    props['y'] = float(data[pos] - 32) / 2.0
-                    pos += 1
-            elif prop_id == 17:       # SPRITE (direction in lower 2 bits)
-                if pos < len(data):
-                    sprite = data[pos] - 32
-                    props['sprite'] = sprite
-                    props['direction'] = sprite & 0x03
-                    pos += 1
-            elif prop_id == 18:       # STATUS
-                if pos < len(data):
-                    props['status'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 20:       # CURLEVEL
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['level'] = val
-            elif prop_id == 26:       # MAGICPOINTS (mp, 1 gchar)
-                if pos < len(data):
-                    props['mp'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 32:       # ALIGNMENT (ap, 1 gchar)
-                if pos < len(data):
-                    props['ap'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 34:       # ACCOUNTNAME
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['account'] = val
-            elif prop_id == 50:       # JOINLEAVELVL (1=joined level, 0=left)
-                # The server's level-leave notification IS this prop with
-                # value 0 (pygserver build_player_left; GServer-v2 sends the
-                # same shape). Without capturing it, departed players linger
-                # forever in the client's level roster as ghosts.
-                if pos < len(data):
-                    props['joinleave'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 35:       # BODYIMG
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['body_image'] = val
-            elif prop_id in _GATTRIB_IDS:
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props[f'gattrib{_GATTRIB_IDS[prop_id]}'] = val
-            elif prop_id == 75:       # OSTYPE
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['os_type'] = val
-            elif prop_id == 76:       # TEXTCODEPAGE (gbyte3)
-                val, pos = _read_gbyte(data, pos, 3)
-                if val is not None:
-                    props['codepage'] = val
-            elif prop_id == 78:       # X2 (high-precision X)
-                val, pos = _read_pixel(data, pos)
-                if val is not None:
-                    props['x'] = val
-            elif prop_id == 79:       # Y2 (high-precision Y)
-                val, pos = _read_pixel(data, pos)
-                if val is not None:
-                    props['y'] = val
-            else:
-                # Everything else (incl. COLORS/EFFECTCOLORS/CARRYNPC/numeric stats):
-                # consume the correct number of bytes to keep the stream aligned.
-                pos += _prop_payload_len(prop_id, data, pos, colors_len)
-
+    def _run(width):
+        props, clean, _ = parse_prop_stream(
+            data, start_pos,
+            _OTHER_STREAM.with_colors_len(width),
+            _OTHER_PROP_HANDLERS,
+            out={'id': player_id})
         return props, clean
 
     return _parse_with_colors_retry(_run, colors_len, diagnostics)
@@ -1287,186 +1023,65 @@ def _parse_weapon_add_text(data: bytes) -> dict:
         return {}
 
 
-def parse_player_props(data: bytes, colors_len: int = 5,
+# Props our OWN PLO_PLAYERPROPS surfaces. Deliberately a different set and
+# different keys from _OTHER_PROP_HANDLERS: this is the local player, so
+# inventory/stats/horse/carry state and the assigned player ID matter, an empty
+# CURCHAT is nothing to act on, and the FIRST ACCOUNTNAME wins (the login flow
+# can repeat the prop, and the first one is the account we authenticated as).
+_SELF_PROP_HANDLERS = {
+    0: _set('nickname'),
+    # MAXPOWER is whole hearts while CURPOWER is halves: GServer-v2
+    # PlayerProps.cpp:171-186 stores MAXPOWER straight into account.maxHitpoints
+    # (hitpointsInHalves = value * 2), and LevelItem.cpp:148-151 sends a
+    # fullheart pickup as `>> MAXPOWER >> heartMax >> CURPOWER >> heartMax * 2`.
+    1: lambda props, value: props.__setitem__('max_hearts', float(value)),
+    2: _set_scaled('hearts', 0.5),
+    3: _set('rupees'),
+    4: _set('arrows'),
+    5: _set('bombs'),
+    6: _set('glove_power'),
+    7: _set('bomb_power'),
+    8: _set_power_image('sword_power', 'sword_image'),
+    9: _set_power_image('shield_power', 'shield_image'),
+    10: _set('animation'),
+    11: _set_head_image,
+    12: _set('chat'),
+    13: _set('colors'),
+    14: _set('id'),
+    15: _set('x'),
+    16: _set('y'),
+    17: _set_sprite,
+    18: _set('status'),
+    19: _set('carry_sprite'),
+    20: _set('level'),
+    21: _set('horse_image'),
+    22: _set('horse_bushes'),
+    24: _set('carry_npc'),
+    26: _set('mp'),
+    32: _set('ap'),
+    34: lambda props, value: props.setdefault('account', value),
+    35: _set('body_image'),
+    78: _set('x'),
+    79: _set('y'),
+    **_gattrib_handlers(),
+}
+
+
+def parse_player_props(data: bytes, colors_len: int = COLORS_CLASSIC,
                        diagnostics: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """
     Parse PLO_PLAYERPROPS (packet 9) - returns dict of properties.
-    Simplified parser that extracts essential properties only.
 
     colors_len: preferred byte width of PLPROP_COLORS (5 classic / 8 v6
     extended) to try first. Wrong value misaligns everything after COLORS,
     so if this guess doesn't let the rest of the packet parse cleanly, the
     other known width is tried instead (see _parse_with_colors_retry).
     """
-    def _run(colors_len):
-        props = {}
-        pos = 0
-        clean = True
-        last_prop_id = -1
-
-        while pos < len(data):
-            prop_id = data[pos] - 32
-            pos += 1
-            if prop_id < 0 or prop_id > 83:
-                clean = False
-                break
-            if pos + _prop_payload_len(prop_id, data, pos, colors_len) > len(data):
-                clean = False
-            # See the matching comment in parse_other_player: GServer-v2 always
-            # emits prop ids in ascending order, so this catches the desync a
-            # wrong colors_len guess causes and lets _parse_with_colors_retry
-            # self-correct. Self-props packets have no JOINLEAVELVL header, but
-            # the same exemption is harmless here (id 50 never legitimately
-            # repeats within a single PLO_PLAYERPROPS packet).
-            if prop_id <= last_prop_id and last_prop_id != 50:
-                clean = False
-                break
-            last_prop_id = prop_id
-
-            if prop_id == 0:          # NICKNAME
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['nickname'] = val
-            elif prop_id == 1:        # MAXPOWER (FULL hearts, not halves!)
-                # Unlike CURPOWER, MAXPOWER is sent in whole hearts:
-                # GServer-v2 PlayerProps.cpp:171-186 stores it straight into
-                # account.maxHitpoints (hitpointsInHalves = value * 2), and
-                # LevelItem.cpp:148-151 sends a fullheart pickup as
-                # `>> MAXPOWER >> heartMax >> CURPOWER >> (heartMax * 2)`.
-                # Decoding /2.0 here halved max hearts against the real server
-                # (account MAXHP 6 rendered as 3.0).
-                if pos < len(data):
-                    props['max_hearts'] = float(data[pos] - 32)
-                    pos += 1
-            elif prop_id == 2:        # CURPOWER (halves)
-                if pos < len(data):
-                    props['hearts'] = (data[pos] - 32) / 2.0
-                    pos += 1
-            elif prop_id == 3:        # RUPEESCOUNT (gbyte3)
-                val, pos = _read_gbyte(data, pos, 3)
-                if val is not None:
-                    props['rupees'] = val
-            elif prop_id == 4:        # ARROWSCOUNT
-                if pos < len(data):
-                    props['arrows'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 5:        # BOMBSCOUNT
-                if pos < len(data):
-                    props['bombs'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 6:        # GLOVEPOWER
-                if pos < len(data):
-                    props['glove_power'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 7:        # BOMBPOWER
-                if pos < len(data):
-                    props['bomb_power'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 8:        # SWORDPOWER
-                power, image, pos = _read_sword(data, pos, 30)
-                props['sword_power'] = power
-                if image is not None:
-                    props['sword_image'] = image
-            elif prop_id == 9:        # SHIELDPOWER
-                power, image, pos = _read_sword(data, pos, 10)
-                props['shield_power'] = power
-                if image is not None:
-                    props['shield_image'] = image
-            elif prop_id == 10:       # GANI
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['animation'] = val
-            elif prop_id == 11:       # HEADGIF
-                val, pos = _read_headgif(data, pos)
-                if isinstance(val, str):
-                    props['head_image'] = val
-            elif prop_id == 12:       # CURCHAT
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['chat'] = val
-            elif prop_id == 13:       # COLORS (colors_len gchar color indices)
-                if pos + colors_len > len(data):
-                    clean = False
-                end = min(pos + colors_len, len(data))
-                props['colors'] = [max(0, data[i] - 32) for i in range(pos, end)]
-                pos = end
-            elif prop_id == 14:       # ID
-                val, pos = _read_gbyte(data, pos, 2)
-                if val is not None:
-                    props['id'] = val
-            elif prop_id == 15:       # X (half-tiles)
-                if pos < len(data):
-                    props['x'] = (data[pos] - 32) / 2.0
-                    pos += 1
-            elif prop_id == 16:       # Y (half-tiles)
-                if pos < len(data):
-                    props['y'] = (data[pos] - 32) / 2.0
-                    pos += 1
-            elif prop_id == 17:       # SPRITE (direction in lower 2 bits)
-                if pos < len(data):
-                    sprite = data[pos] - 32
-                    props['sprite'] = sprite
-                    props['direction'] = sprite & 0x03
-                    pos += 1
-            elif prop_id == 18:       # STATUS
-                if pos < len(data):
-                    props['status'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 19:       # CARRYSPRITE
-                if pos < len(data):
-                    props['carry_sprite'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 20:       # CURLEVEL
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['level'] = val
-            elif prop_id == 21:       # HORSEGIF
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['horse_image'] = val
-            elif prop_id == 22:       # HORSEBUSHES
-                if pos < len(data):
-                    props['horse_bushes'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 24:       # CARRYNPC (gbyte3)
-                val, pos = _read_gbyte(data, pos, 3)
-                if val is not None:
-                    props['carry_npc'] = val
-            elif prop_id == 26:       # MAGICPOINTS (mp, 1 gchar)
-                if pos < len(data):
-                    props['mp'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 32:       # ALIGNMENT (ap, 1 gchar)
-                if pos < len(data):
-                    props['ap'] = data[pos] - 32
-                    pos += 1
-            elif prop_id == 34:       # ACCOUNTNAME
-                val, pos = _read_string(data, pos)
-                if val is not None and 'account' not in props:
-                    props['account'] = val
-            elif prop_id == 35:       # BODYIMG
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props['body_image'] = val
-            elif prop_id in _GATTRIB_IDS:
-                val, pos = _read_string(data, pos)
-                if val is not None:
-                    props[f'gattrib{_GATTRIB_IDS[prop_id]}'] = val
-            elif prop_id == 78:       # X2 (high-precision X)
-                val, pos = _read_pixel(data, pos)
-                if val is not None:
-                    props['x'] = val
-            elif prop_id == 79:       # Y2 (high-precision Y)
-                val, pos = _read_pixel(data, pos)
-                if val is not None:
-                    props['y'] = val
-            else:
-                # Everything else (COLORS/EFFECTCOLORS/numeric stats/OSTYPE/etc.):
-                # consume the correct number of bytes to keep the stream aligned.
-                pos += _prop_payload_len(prop_id, data, pos, colors_len)
-
-        if pos > len(data):
-            clean = False
+    def _run(width):
+        props, clean, _ = parse_prop_stream(
+            data, 0,
+            _PLAYER_STREAM.with_colors_len(width),
+            _SELF_PROP_HANDLERS)
         return props, clean
 
     return _parse_with_colors_retry(_run, colors_len, diagnostics)
@@ -1527,6 +1142,23 @@ def build_player_chat(message: str) -> bytes:
     return bytes(packet)
 
 
+def _round_position(value: float, units_per_tile: int) -> int:
+    """Quantize a tile coordinate to the wire's sub-tile unit the way the real
+    client does: ROUND to nearest, not truncate.
+
+    The reference client encodes every position property as
+    ``floorToInt(tiles * units + 0.5)`` -- half-tiles for the classic
+    PLPROP_X/Y and pixels for PLPROP_X2/Y2 (decompiled client,
+    Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:3213-3216 and 3336-3339).
+    Truncating instead (the old ``int(x * 2)``) biases every reported position
+    toward the origin by up to one unit -- half a tile on a classic server --
+    so we consistently reported ourselves above/left of where we actually
+    stood. Bomber Arena's own scripts round the same way
+    (weapon-gr_movement: ``int((playerx+0.25)*2)/2``).
+    """
+    return math.floor(value * units_per_tile + 0.5)
+
+
 def build_movement(x: float, y: float, direction: int = 2,
                    level_name: Optional[str] = None,
                    use_new_format: bool = False) -> bytes:
@@ -1546,8 +1178,8 @@ def build_movement(x: float, y: float, direction: int = 2,
     if use_new_format:
         # For v2.30+ clients: use PLPROP_X2 (78) and PLPROP_Y2 (79)
         # Position is in pixels (tiles * 16), encoded as GUShort with sign bit
-        pixel_x = int(x * 16)
-        pixel_y = int(y * 16)
+        pixel_x = _round_position(x, 16)
+        pixel_y = _round_position(y, 16)
 
         # PixelX (prop 78) - 2-byte encoding
         packet.append(78 + 32)
@@ -1571,8 +1203,8 @@ def build_movement(x: float, y: float, direction: int = 2,
         # Position is in half-tiles: x_byte = x * 2 (GUChar format)
         # Server reads: x = pPacket.readGUChar() / 2.0f
         # So we send: (x * 2) + 32
-        x_byte = int(x * 2)
-        y_byte = int(y * 2)
+        x_byte = _round_position(x, 2)
+        y_byte = _round_position(y, 2)
 
         # Clamp to valid range (0-223 after +32 = 32-255)
         x_byte = max(0, min(223, x_byte))
@@ -1817,7 +1449,8 @@ def build_bomb_count(count: int) -> bytes:
 
 
 def build_hurt_response(hearts: float, x: float, y: float, direction: int,
-                        gani_name: str = "hurt") -> bytes:
+                        gani_name: str = "hurt",
+                        use_new_format: bool = True) -> bytes:
     """
     Build PLI_PLAYERPROPS packet for hurt response.
     Sends updated health and hurt animation together.
@@ -1828,6 +1461,11 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
         y: Y position in tiles
         direction: 0=up, 1=left, 2=down, 3=right
         gani_name: Hurt animation name (default "hurt")
+        use_new_format: as in build_movement -- PLPROP_X2/Y2 (78/79) for
+            v2.30+/v6, PLPROP_X/Y (15/16) for classic. This used to be hard
+            wired to the X2/Y2 pair, so on a classic (2.22) session every
+            hurt response re-announced our position in a prop pair the rest
+            of that session never uses.
     """
     packet = bytearray()
 
@@ -1846,8 +1484,16 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
     packet.append(17 + 32)
     packet.append(direction + 32)
 
+    if not use_new_format:
+        # Classic PLPROP_X (15) / PLPROP_Y (16), half-tiles.
+        packet.append(15 + 32)
+        packet.append(max(0, min(223, _round_position(x, 2))) + 32)
+        packet.append(16 + 32)
+        packet.append(max(0, min(223, _round_position(y, 2))) + 32)
+        return bytes(packet)
+
     # PLPROP_X2 (78) - pixel X position
-    pixel_x = int(x * 16)
+    pixel_x = _round_position(x, 16)
     packet.append(78 + 32)
     if pixel_x < 0:
         value = ((-pixel_x) << 1) | 1
@@ -1857,7 +1503,7 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
     packet.append((value & 0x7F) + 32)
 
     # PLPROP_Y2 (79) - pixel Y position
-    pixel_y = int(y * 16)
+    pixel_y = _round_position(y, 16)
     packet.append(79 + 32)
     if pixel_y < 0:
         value = ((-pixel_y) << 1) | 1
@@ -2346,6 +1992,26 @@ def build_baddy_hurt(baddy_id: int, damage: float,
     return bytes(packet)
 
 
+# BaddyProp ids over their own small enum (GServer-v2
+# server/src/level/LevelBaddy.cpp:124 LevelBaddy::getProp). Only ever
+# serialized by the reference server, so X/Y are the plain unsigned
+# `position / 8` half-tiles it writes.
+_BADDY_STREAM = StreamPolicy(table=BADDY_PROPS, max_prop_id=100)
+
+_BADDY_PROP_HANDLERS = {
+    1: _set('x'),
+    2: _set('y'),
+    3: _set('type'),
+    4: _set_power_image('power', 'image'),
+    5: _set('mode'),
+    6: _set('animation'),
+    7: lambda props, value: props.__setitem__('direction', value & 0x03),
+    8: _set('verse_sight'),
+    9: _set('verse_hurt'),
+    10: _set('verse_attack'),
+}
+
+
 def parse_baddy_props(data: bytes) -> dict:
     """
     Parse PLO_BADDYPROPS (packet 2) - baddy/enemy properties.
@@ -2358,84 +2024,9 @@ def parse_baddy_props(data: bytes) -> dict:
 
     reader = PacketReader(data)
     baddy_id = reader.read_gchar()
-
-    props = {'id': baddy_id}
-    pos = reader.pos
-
-    while pos < len(data):
-        if pos >= len(data):
-            break
-
-        prop_id = data[pos] - 32
-        pos += 1
-
-        if prop_id < 0 or prop_id > 100:
-            break
-
-        # BDPROP_X (1) - X position
-        if prop_id == 1:
-            if pos < len(data):
-                props['x'] = (data[pos] - 32) / 2.0
-                pos += 1
-
-        # BDPROP_Y (2) - Y position
-        elif prop_id == 2:
-            if pos < len(data):
-                props['y'] = (data[pos] - 32) / 2.0
-                pos += 1
-
-        # BDPROP_TYPE (3) - Baddy type
-        elif prop_id == 3:
-            if pos < len(data):
-                props['type'] = data[pos] - 32
-                pos += 1
-
-        # BDPROP_POWERIMAGE (4) - power byte + length-prefixed image string
-        # (GServer-v2 BaddyProp::POWERIMAGE getProp).
-        elif prop_id == 4:
-            if pos < len(data):
-                props['power'] = data[pos] - 32
-                pos += 1
-                if pos < len(data):
-                    str_len = data[pos] - 32
-                    pos += 1
-                    if str_len > 0 and pos + str_len <= len(data):
-                        props['image'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += max(0, str_len)
-
-        # BDPROP_MODE (5) - 1 byte
-        elif prop_id == 5:
-            if pos < len(data):
-                props['mode'] = data[pos] - 32
-                pos += 1
-
-        # BDPROP_ANI (6) - 1 byte animation index
-        elif prop_id == 6:
-            if pos < len(data):
-                props['animation'] = data[pos] - 32
-                pos += 1
-
-        # BDPROP_DIR (7) - 1 byte (headDir << 2 | direction)
-        elif prop_id == 7:
-            if pos < len(data):
-                props['direction'] = (data[pos] - 32) & 0x03
-                pos += 1
-
-        # BDPROP_VERSESIGHT/HURT/ATTACK (8/9/10) - length-prefixed strings
-        elif prop_id in (8, 9, 10):
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    key = {8: 'verse_sight', 9: 'verse_hurt', 10: 'verse_attack'}[prop_id]
-                    props[key] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                pos += max(0, str_len)
-
-        # Default: single byte
-        else:
-            if pos < len(data):
-                pos += 1
-
+    props, _clean, _pos = parse_prop_stream(
+        data, reader.pos, _BADDY_STREAM, _BADDY_PROP_HANDLERS,
+        out={'id': baddy_id})
     return props
 
 

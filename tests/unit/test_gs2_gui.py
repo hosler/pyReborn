@@ -235,6 +235,59 @@ class TestEventDispatch:
         assert fired == [True]
 
 
+class TestWindowTitleButtons:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.window = GuiWindowCtrl("window")
+        self.window.x, self.window.y = 20, 30
+        self.window.width, self.window.height = 350, 160
+        self.gui.addcontrol(self.window)
+
+    def test_button_geometry(self):
+        close, minimize, maximize = self.window.button_rects()
+        assert close == pygame.Rect(332, 3, 16, 16)
+        assert maximize == pygame.Rect(314, 3, 16, 16)
+        assert minimize == pygame.Rect(296, 3, 16, 16)
+
+        self.window.set("canmaximize", False)
+        close, minimize, maximize = self.window.button_rects()
+        assert close == pygame.Rect(332, 3, 16, 16)
+        assert minimize == pygame.Rect(314, 3, 16, 16)
+        assert maximize == pygame.Rect(0, 0, 0, 0)
+
+    def test_close_query_dispatches_and_stays_visible(self):
+        calls = []
+        self.window.set("closequery", True)
+        self.window.set("onclosequery", lambda: calls.append("close"))
+        pos = (self.window.x + 336, self.window.y + 7)
+        self.gui.handle_event(_mousedown(pos))
+        self.gui.handle_event(_mouseup(pos))
+        assert calls == ["close"]
+        assert self.window.visible is True
+
+    @pytest.mark.parametrize("destroy_on_hide", [False, True])
+    def test_close_hides_and_optionally_destroys(self, destroy_on_hide):
+        self.window.set("destroyonhide", destroy_on_hide)
+        pos = (self.window.x + 336, self.window.y + 7)
+        self.gui.handle_event(_mousedown(pos))
+        self.gui.handle_event(_mouseup(pos))
+        assert self.window.visible is False
+        assert (self.window not in self.gui.roots) is destroy_on_hide
+
+    def test_release_outside_close_does_nothing(self):
+        pos = (self.window.x + 336, self.window.y + 7)
+        self.gui.handle_event(_mousedown(pos))
+        self.gui.handle_event(_mouseup((self.window.x + 200, self.window.y + 10)))
+        assert self.window.visible is True
+
+    def test_close_press_does_not_start_drag(self):
+        pos = (self.window.x + 336, self.window.y + 7)
+        assert self.gui.handle_event(_mousedown(pos)) is True
+        assert self.window.close_button_pressed is True
+        assert self.gui._drag is None
+
+
 class TestZOrder:
     """Two overlapping windows: the topmost (last shown / brought-to-front)
     must receive the click, not the one drawn under it."""
@@ -1200,7 +1253,7 @@ class TestLoginVisualFidelity:
     def test_frame_set_lays_children_out_in_row_major_cells(self):
         """Global Chat's splitter: one row, two columns, divider at x=150 in
         a 600x400 client area (Preagonal/gbf/bytecode/login/
-        _Serverlist_Chat.gs2bc.gs2:570-616). Unimplemented, both cells kept
+        _Serverlist_Chat.gs2bc.gs2:566,570-616). Unimplemented, both cells kept
         their constructor defaults stacked at (0,0), which squashed the chat
         pane into a ~150px strip."""
         frames = self.gui.create_control("GuiFrameSetCtrl", "GlobalChat_Frames")
@@ -1306,12 +1359,7 @@ class TestLoginVisualFidelity:
         just records the mode (propfun_guicontrol_horizsizing_w, FourPlay
         quattroplay/src/gui/GuiControlProperties.cpp:342-352) and neither
         GuiControl::addObject nor showtop() repositions anything
-        (GuiControl.cpp:2244-2274 and :2224-2232).
-
-        So a Global Chat window sitting over the Account Info pane is a
-        correctly CENTRED floating window, not a layout fault -- the report
-        that it "should not be sitting there" was really about its collapsed
-        contents (see the frame-set tests above).
+        (GuiControl.cpp:2244-2276 and :2224-2233).
         """
         gui = self.gui
         gui.canvas_size = (800, 600)

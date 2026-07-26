@@ -85,6 +85,15 @@ class _FakeUI:
     visible = False
 
 
+class _FakeViewport:
+    """Native (canvas == window) viewport: _feed_gs1_input maps the mouse
+    through window_to_virtual before handing it to the GS1 engine."""
+
+    @staticmethod
+    def window_to_virtual(wx, wy):
+        return (float(wx), float(wy))
+
+
 class _InputHarness(InputMixin):
     """Minimal GameClient stand-in driving the REAL _handle_input through its
     scripted-movement branch, with spies on the two dispatch targets."""
@@ -93,6 +102,7 @@ class _InputHarness(InputMixin):
         self.client = _FakeClient()
         self.gs1 = _FakeGS1()
         self.screen = pygame.Surface((640, 480))
+        self.viewport = _FakeViewport()
         self.typing = False
         self.dialogue_text = None
         self.inventory_ui = _FakeUI()

@@ -5,7 +5,9 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 
-from pyreborn.sprites import SpriteManager, TilesetManager
+from pyreborn.sprites import (
+    SpriteManager, TilesetManager, strip_tiledef_image,
+)
 
 
 def _sheet(color):
@@ -21,6 +23,57 @@ def _tile_id_at(tx, ty):
 
 def _pixel(manager, tx, ty):
     return manager.get_tile(_tile_id_at(tx, ty)).get_at((0, 0))
+
+
+def test_tiledef_image_is_lowercase_basename():
+    assert strip_tiledef_image(r"Levels/Tiles/CUSTOM.PNG") == "custom.png"
+
+    manager = TilesetManager(SpriteManager([]))
+    manager.set_full_tiledef("Levels/Tiles/CUSTOM.PNG", "")
+
+    assert manager.full_tiledefs == [("custom.png", "")]
+
+
+def test_duplicate_paste_definition_is_ignored():
+    manager = TilesetManager(SpriteManager([]))
+
+    manager.set_tiledef("CUSTOM.PNG", "Level", 16, 32)
+    manager.set_tiledef("custom.png", "level", 16, 32)
+
+    assert manager.tiledefs == [("custom.png", "level", 16, 32)]
+
+
+def test_full_definition_replaces_same_prefix_paste():
+    manager = TilesetManager(SpriteManager([]))
+    manager.set_tiledef("paste.png", "level", 16, 32)
+
+    manager.set_full_tiledef("full.png", "level")
+
+    assert manager.tiledefs == []
+    assert manager.full_tiledefs == [("full.png", "level")]
+
+
+def test_longest_prefix_selects_base_sheet():
+    sprites = SpriteManager([])
+    sprites.sheet_cache["default.png"] = _sheet((10, 20, 30, 255))
+    sprites.sheet_cache["specific.png"] = _sheet((40, 50, 60, 255))
+    manager = TilesetManager(sprites)
+    manager.set_full_tiledef("default.png", "")
+    manager.set_full_tiledef("specific.png", "zlttp")
+    manager.set_current_level("zlttp_overworld.nw")
+
+    assert _pixel(manager, 0, 0) == (40, 50, 60, 255)
+
+
+def test_remove_prefix_keeps_unrelated_definition():
+    manager = TilesetManager(SpriteManager([]))
+    manager.set_full_tiledef("world.png", "zlttp")
+    manager.set_tiledef("castle.png", "zlttp_castle", 0, 0)
+    manager.set_full_tiledef("church.png", "church")
+
+    assert manager.clear_tiledefs("zlttp") is True
+    assert manager.tiledefs == []
+    assert manager.full_tiledefs == [("church.png", "church")]
 
 
 def test_non_aligned_pastes_use_sheet_pixel_offsets_and_level_prefix():
@@ -51,7 +104,7 @@ def test_non_aligned_pastes_use_sheet_pixel_offsets_and_level_prefix():
     assert _pixel(manager, 96, 5) == (10, 20, 30, 255)
 
 
-def test_later_paste_wins_and_alpha_blends_over_base():
+def test_same_position_paste_replaces_and_alpha_blends_over_base():
     sprites = SpriteManager([])
     sprites.sheet_cache["dustynewpics1.png"] = _sheet((0, 0, 100, 255))
 
@@ -69,7 +122,7 @@ def test_later_paste_wins_and_alpha_blends_over_base():
     pixel = _pixel(manager, 0, 0)
     assert pixel.r < 110
     assert pixel.g >= 99
-    assert pixel.b == 0
+    assert pixel.b == 50
 
 
 def test_aligned_column_pastes_preserve_legacy_layout():

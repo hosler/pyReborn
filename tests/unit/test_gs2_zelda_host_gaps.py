@@ -326,3 +326,85 @@ def test_guild_is_derived_from_the_nickname_for_local_and_remote_players():
     rt = ClientGS2(client)
     assert rt.player_object.get("guild") == "Events Team"
     assert call(rt, "findplayer", ["near"]).get("guild") == ""
+
+
+# -- bare `weapons` / player.weapons ---------------------------------------
+
+def _weapon_client():
+    local = SimpleNamespace(x=30.0, y=30.0, account="me", nickname="Me", id=1,
+                            direction=2)
+    weapons = {
+        "*System": {"image": ""},
+        "-Player/Movement": {"image": ""},
+        "Hammer": {"image": "zlttp_hammer.png"},
+        "Bomb": {"image": "bcbomb.png"},
+    }
+    return SimpleNamespace(player=local, players={}, x=30.0, y=30.0,
+                           weapons=weapons)
+
+
+def test_bare_weapons_global_is_the_players_weapon_list():
+    """`weapons` is a read-only global on the client function table returning
+    activeplayer->weapons (TInitStatics.cpp:2700-2703, bound at :2784), so a
+    bare reference must resolve without a `player.` qualifier. Zelda's
+    secondary fire is the only path to a weapon's onWeaponFired:
+    `findweapon(weapons[selectedweapon].name).trigger("onweaponfired", null)`
+    (Preagonal/graal-lttp/weapons/weapon-Player_Movement.txt:473)."""
+    rt = ClientGS2(_weapon_client())
+    bare = rt.host.get_object("weapons")
+    assert [w.get("name") for w in bare] == [
+        "*System", "-Player/Movement", "Hammer", "Bomb"]
+    assert bare[2].get("image") == "zlttp_hammer.png"
+    assert [w.get("name") for w in rt.player_object.get("weapons")] == \
+        [w.get("name") for w in bare]
+
+
+def test_findweapon_on_a_bare_weapons_entry_reaches_the_weapon_vm():
+    """The chain the D key walks: weapons[i].name -> findweapon -> the
+    weapon's this-object, which is what `.trigger()` needs. An unresolved
+    `weapons` made findweapon("") return 0.0, and the trigger then landed on
+    a number -- reported as "unknown method trigger()"."""
+    rt = ClientGS2(_weapon_client())
+    vm = _weapon_vm(rt, "hammer")
+    name = rt.host.get_object("weapons")[2].get("name")
+    assert call(rt, "findweapon", [name]) is vm.this
+    assert call(rt, "findweapon", [""]) == 0.0
+
+
+# -- tiletype: both spellings, gmap-aware ----------------------------------
+
+def _tile_probe_rt(tile_source):
+    from pyreborn.gs1_client import ClientGS1
+    client = _weapon_client()
+    client.tiles = None
+    client.npcs, client.level_links = {}, {}
+    gs1 = ClientGS1(client)
+    gs1.tile_source = tile_source
+    return ClientGS2(client, gs1)
+
+
+def test_tiletype_resolves_gmap_world_coordinates():
+    """It must answer from the GS1 host, whose tile_at prefers the client's
+    gmap-aware segment lookup. A host-local `0 <= x < 64` version answers 0
+    for every coordinate on Zelda's 10x10 gmap, silently telling the movement
+    engine that no chair, bed or ledge exists anywhere."""
+    from pyreborn.tiletypes import get_tile_type
+    chair = next(t for t in range(4096) if get_tile_type(t) == 3)
+    rt = _tile_probe_rt(lambda x, y: chair if (int(x), int(y)) == (297, 355)
+                        else 0)
+    assert call(rt, "tiletype", [297, 355]) == 3.0
+    assert call(rt, "tiletype", [298, 355]) == 0.0
+
+
+def test_level_tiletype_member_form_routes_like_the_bare_call():
+    """`level.tiletype(x, y)` is the member spelling of the same TServerLevel
+    probe (weapon-Player_Movement.txt:369-370; the bare form is at :451).
+    The obj-method block exits NOT_HANDLED, so without an explicit route the
+    member form was 198 "unknown method" misses per second of live play."""
+    from pyreborn.tiletypes import get_tile_type
+    chair = next(t for t in range(4096) if get_tile_type(t) == 3)
+    rt = _tile_probe_rt(lambda x, y: chair if (int(x), int(y)) == (297, 355)
+                        else 0)
+    level = rt.player_object.get("level")
+    assert call(rt, "tiletype", [297, 355], obj=level) == 3.0
+    assert call(rt, "onwater", [297, 355], obj=level) is False

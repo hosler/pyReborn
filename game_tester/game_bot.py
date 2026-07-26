@@ -29,6 +29,8 @@ from pyreborn.tiletypes import (
     TileType, get_tile_type, is_blocking, is_swimming_water,
 )
 
+from .login import login_client
+
 
 @dataclass
 class ActionLog:
@@ -49,6 +51,126 @@ class Issue:
     description: str
     context: Dict[str, Any] = field(default_factory=dict)
     screenshot: Optional[bytes] = None
+
+
+# ---------------------------------------------------------------------------
+# Declarative action registry (see GameBot.ACTIONS)
+#
+# The playtest daemon carried its own dispatch for the same twelve actions -
+# which method each command means plus how its query parameters coerce - and
+# the two had drifted: `arrow` and `grab` called client methods directly,
+# skipping the bot's action log (so those actions were invisible in /log) and
+# any guard the bot method adds. The registry lives with the bot; a transport
+# only hands over each parameter's raw string (playtest_daemon.do_act()).
+# ---------------------------------------------------------------------------
+
+def _as_int(default: Any) -> Callable[[Optional[str]], int]:
+    """Absent -> `default` (pass None for "required": int(None) raises)."""
+    return lambda raw: int(default if raw is None else raw)
+
+
+def _as_float(default: Any) -> Callable[[Optional[str]], float]:
+    return lambda raw: float(default if raw is None else raw)
+
+
+def _as_str(default: Optional[str]) -> Callable[[Optional[str]], Optional[str]]:
+    return lambda raw: default if raw is None else raw
+
+
+def _as_opt_int(raw: Optional[str]) -> Optional[int]:
+    """Absent -> None, i.e. "let the bot pick" (e.g. sword direction)."""
+    return None if raw is None else int(raw)
+
+
+def _as_opt_coord(raw: Optional[str]) -> Optional[float]:
+    """Absent (or blank) -> None, i.e. "auto-target the nearest one".
+
+    Keeps the daemon's original `float(x) if x else None`: `x=0` is the string
+    "0", which is truthy, so it still means the coordinate 0.
+    """
+    return float(raw) if raw else None
+
+
+def _as_flag(default: bool) -> Callable[[Optional[str]], bool]:
+    return lambda raw: default if raw is None else raw not in ('0', 'false',
+                                                               'False', '')
+
+
+@dataclass(frozen=True)
+class ActionParam:
+    """One parameter of a declared action.
+
+    `name` is the transport-facing name; `arg` the bot method's keyword (they
+    differ where the wire name is shorter, e.g. dir -> direction).
+    """
+    name: str
+    coerce: Callable[[Optional[str]], Any]
+    arg: str = ""
+
+    @property
+    def keyword(self) -> str:
+        return self.arg or self.name
+
+
+@dataclass(frozen=True)
+class BotAction:
+    """A bot method reachable by name, with its parameter coercions."""
+    name: str
+    method: str
+    params: Tuple[ActionParam, ...] = ()
+    #: Arguments fixed by the registry rather than the caller.
+    fixed: Tuple[Tuple[str, Any], ...] = ()
+
+    def bind(self, raw: Callable[[str], Optional[str]]) -> Dict[str, Any]:
+        """Coerce this action's parameters from a raw name -> string lookup."""
+        kwargs = {param.keyword: param.coerce(raw(param.name))
+                  for param in self.params}
+        kwargs.update(self.fixed)
+        return kwargs
+
+    def run(self, bot: "GameBot", raw: Callable[[str], Optional[str]]) -> Any:
+        return getattr(bot, self.method)(**self.bind(raw))
+
+
+def _blocking_tile_in_footprint(board: List[int], x: float,
+                                y: float) -> Optional[int]:
+    """Return the first blocking tile id found under the collision-box
+    footprint at local (x, y) on `board` (a 4096-tile level array), or None
+    if clear.
+
+    Same collision box GameBot._is_position_blocked() checks (a 2x2-tile box
+    centred on x+1.5/y+2.0, spanning x+0.5..x+2.5 by y+1.0..y+3.0, of a
+    3-wide x 3-tall top-left-anchored sprite), not just the single tile under
+    (x, y) - a warp landing with only its top-left corner clear but its feet
+    in a wall still strands the bot.
+    """
+    for ox, oy in ((0.5, 1.0), (1.5, 1.0), (2.5, 1.0),
+                   (0.5, 2.0), (1.5, 2.0), (2.5, 2.0),
+                   (0.5, 3.0), (1.5, 3.0), (2.5, 3.0)):
+        tx, ty = math.floor(x + ox), math.floor(y + oy)
+        if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
+            continue
+        tile = board[ty * 64 + tx]
+        if is_blocking(tile):
+            return tile
+    return None
+
+
+def _validate_warp_dest(level_name: str, x: float, y: float,
+                        board_lookup: Callable[[str], Any]) -> Optional[str]:
+    """Best-effort check that warping to local (x, y) on level_name won't
+    strand the bot on a blocking tile. Returns an error string if it would,
+    None if it looks clear OR the destination level's board isn't cached
+    yet (never having visited it, there's nothing to check against - let
+    the warp through rather than block on it)."""
+    board = board_lookup(level_name)
+    if not board or len(board) < 4096:
+        return None
+    tile = _blocking_tile_in_footprint(board, x, y)
+    if tile is not None:
+        return (f'warp destination ({x},{y}) on {level_name!r} is blocking '
+                f'(tile={tile}); pass force=1 to override')
+    return None
 
 
 class GameBot:
@@ -168,32 +290,47 @@ class GameBot:
     # ========== Connection ==========
 
     def connect(self, timeout: float = 10.0) -> bool:
-        """Connect and login to server."""
+        """Connect and login to server.
+
+        Every failure path closes the socket before returning: a bot that got
+        as far as the TCP connect (or all the way to a refused login) used to
+        be left holding an open connection, and since most callers only check
+        the bool they never cleaned it up - leaked sockets plus an account the
+        server still considers logged in, which then poisons the next run.
+        """
         start = time.time()
         try:
-            self.client.connect()
-            if not self.client.login(self.name, self.password, timeout=timeout):
-                self._add_issue("HIGH", "connect", f"Login failed for {self.name}")
-                return False
-
-            # Poll until we get level data
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                self.client.update(timeout=0.1)
-                if self.client._current_level_name and len(self.client.tiles) > 0:
-                    break
-                time.sleep(0.05)
-
-            self._connected = True
-            self._last_x = self.client.x
-            self._last_y = self.client.y
-            self._log_action("connect", {"name": self.name}, True, start)
-            return True
-
+            outcome = login_client(self.client, self.name, self.password,
+                                   timeout=timeout)
         except Exception as e:
+            self._abandon_connection()
             self._add_issue("HIGH", "connect", f"Connection error: {e}")
             self._log_action("connect", {"name": self.name}, False, start)
             return False
+
+        if not outcome.ok:
+            self._abandon_connection()
+            # The server's own reason (version mismatch, staff-only, bad
+            # password) is otherwise invisible to callers that only print
+            # get_issues() - see conftest.py's bots fixture.
+            detail = f": {outcome.rejection}" if outcome.rejection else ""
+            self._add_issue("HIGH", "connect",
+                            f"Login failed for {self.name}{detail}")
+            return False
+
+        self._connected = True
+        self._last_x = self.client.x
+        self._last_y = self.client.y
+        self._log_action("connect", {"name": self.name}, True, start)
+        return True
+
+    def _abandon_connection(self):
+        """Close a connection that never made it in-game (see connect())."""
+        self._connected = False
+        try:
+            self.client.disconnect()
+        except Exception:
+            pass
 
     def disconnect(self):
         """Disconnect from server."""
@@ -685,11 +822,32 @@ class GameBot:
         return result
 
     def shoot(self, direction: Optional[int] = None) -> bool:
-        """Shoot arrow."""
+        """Shoot a projectile (PLI_SHOOT, no ammo cost)."""
         start = time.time()
         result = self.client.shoot(direction)
         self.update(0.2)
         self._log_action("shoot", {"direction": direction}, result, start)
+        return result
+
+    def shoot_arrow(self, direction: Optional[int] = None) -> bool:
+        """Fire an actual arrow (PLI_ARROWADD, consumes ammo).
+
+        Distinct packet from shoot(): client.shoot() sends PLI_SHOOT (a
+        generic projectile, no ammo), client.shoot_arrow() sends PLI_ARROWADD
+        and refuses at 0 arrows (pyreborn/client.py:1913).
+        """
+        start = time.time()
+        result = self.client.shoot_arrow(direction=direction)
+        self.update(0.2)
+        self._log_action("shoot_arrow", {"direction": direction}, result, start)
+        return result
+
+    def grab(self) -> bool:
+        """Play the grab animation (bush/sign/pot pickup)."""
+        start = time.time()
+        result = self.client.set_animation('grab')
+        self.update(0.1)
+        self._log_action("grab", {}, result, start)
         return result
 
     def drop_bomb(self, power: int = 1) -> bool:
@@ -874,6 +1032,38 @@ class GameBot:
         self._log_action("warp_to", {"level": level_name, "x": x, "y": y}, success, start)
         return success
 
+    def warp_to_checked(self, level_name: str, x: float = 30.0, y: float = 30.0,
+                        force: bool = False) -> Any:
+        """warp_to() that refuses a destination which looks blocking.
+
+        Returns the refusal as a string instead of stranding the bot on a wall
+        (an LLM playtest agent then has something actionable instead of a bot
+        that can no longer move); force=True skips the check.
+        """
+        if not force:
+            # Prefer the live/active board (client.tiles) when warping within
+            # the bot's own current level: client.levels[level] can hold a
+            # WRONG board for a level on a GMAP world - confirmed live,
+            # client.levels['chicken1.nw'] held a neighbouring segment's tiles
+            # while client.tiles (and self.level, via _resolve_level_name)
+            # correctly tracked chicken1.nw. Same root cause as the level-name
+            # corruption _resolve_level_name works around. levels[level] is
+            # still the only thing available for a level the bot isn't
+            # currently on, so that's a best-effort fallback with the same
+            # caveat.
+            def board_lookup(lvl):
+                if lvl == self.level:
+                    return self.client.tiles
+                return self.client.levels.get(lvl)
+
+            problem = _validate_warp_dest(level_name, x, y, board_lookup)
+            if problem:
+                self._log_action("warp_to_checked",
+                                 {"level": level_name, "x": x, "y": y},
+                                 problem, time.time())
+                return problem
+        return self.warp_to(level_name, x, y)
+
     def use_nearest_door(self) -> bool:
         """Use the nearest door link."""
         start = time.time()
@@ -1001,3 +1191,49 @@ class GameBot:
         self.chat_received.clear()
         self.hurt_received.clear()
         self.pm_received.clear()
+
+    # ========== Action Registry ==========
+
+    #: Named actions a transport (playtest_daemon's /act) can drive, with the
+    #: coercion for each parameter. Keys and parameter names are the daemon's
+    #: HTTP command/query names, which LLM playtest agents' prompts are
+    #: written against - see PLAYTEST_BRIEF.md; changing one is a breaking
+    #: change for them.
+    ACTIONS: Dict[str, BotAction] = {
+        action.name: action for action in (
+            BotAction('move', 'move', (
+                ActionParam('dx', _as_int(0)),
+                ActionParam('dy', _as_int(0)),
+                ActionParam('follow_links', _as_flag(True)))),
+            BotAction('walkto', 'walk_to', (
+                ActionParam('x', _as_float(None), 'target_x'),
+                ActionParam('y', _as_float(None), 'target_y'),
+                ActionParam('follow_links', _as_flag(True))),
+                fixed=(('timeout', 8.0),)),
+            BotAction('say', 'say_and_wait_echo', (
+                ActionParam('msg', _as_str(''), 'message'),)),
+            BotAction('sword', 'sword_attack', (
+                ActionParam('dir', _as_opt_int, 'direction'),)),
+            BotAction('bomb', 'drop_bomb', (
+                ActionParam('power', _as_int(1)),)),
+            BotAction('arrow', 'shoot_arrow', (
+                ActionParam('dir', _as_opt_int, 'direction'),)),
+            BotAction('grab', 'grab'),
+            BotAction('attack', 'attack_player', (
+                ActionParam('pid', _as_int(None), 'player_id'),)),
+            BotAction('pm', 'send_pm', (
+                ActionParam('pid', _as_int(None), 'player_id'),
+                ActionParam('msg', _as_str(''), 'message'))),
+            BotAction('warp', 'warp_to_checked', (
+                ActionParam('level', _as_str(None), 'level_name'),
+                ActionParam('x', _as_float(30)),
+                ActionParam('y', _as_float(30)),
+                ActionParam('force', _as_flag(False)))),
+            BotAction('open_chest', 'open_chest', (
+                ActionParam('x', _as_opt_coord),
+                ActionParam('y', _as_opt_coord))),
+            BotAction('pickup', 'pickup_item', (
+                ActionParam('x', _as_opt_coord),
+                ActionParam('y', _as_opt_coord))),
+        )
+    }

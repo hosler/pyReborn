@@ -424,6 +424,12 @@ class InputMixin:
                     self._vk_cache[pygame_key] = vk
                 gs1.fire_keypress(vk, ch)
 
+    def _gs1_mouse_world(self):
+        """The mouse cursor in world tile coords, for GS1's `mousex`/`mousey`
+        (ClientGS1.mouse_world_source)."""
+        return self.camera.screen_to_world(
+            *self.viewport.window_to_virtual(*pygame.mouse.get_pos()))
+
     def _feed_gs1_input(self, keys):
         """Mirror pygame keyboard/mouse + screen size into the GS1 engine so
         weapon scripts (arenaSYS reads keydown()/playerx, arenaGUI reads the
@@ -436,8 +442,17 @@ class InputMixin:
             return
         gs1.screen_w = self.screen.get_width()
         gs1.screen_h = self.screen.get_height()
-        mx, my = pygame.mouse.get_pos()
-        gs1.mouse_x, gs1.mouse_y = float(mx), float(my)
+        # Virtual-canvas pixels, not raw window pixels: screen_w/h above are the
+        # canvas, so a letterboxed viewport (native=False) would otherwise hand
+        # scripts a cursor in a different frame from the screen size they scale
+        # their menus by.
+        gs1.mouse_x, gs1.mouse_y = self.viewport.window_to_virtual(
+            *pygame.mouse.get_pos())
+        # `mousex`/`mousey` are the same cursor in world TILE coords; hand the
+        # engine a hook rather than values so it unprojects against the camera
+        # as of the moment a script reads it (the camera is synced later in the
+        # frame, game/render.py:274 _sync_camera).
+        gs1.mouse_world_source = self._gs1_mouse_world
         gs1.mouse_left = bool(pygame.mouse.get_pressed()[0])
         d = set()
         if keys[K_UP]:

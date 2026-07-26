@@ -18,6 +18,8 @@ from pygame.locals import (
     K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
+from reborn_protocol.coords import in_level_bounds
+
 from .. import Client
 from ..gani import GaniParser, AnimationState, direction_from_delta
 from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
@@ -31,6 +33,7 @@ from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
 )
+from .frame_context import FrameContext, FrameContextMixin
 
 
 def day_night_tint(minute_of_day):
@@ -61,7 +64,7 @@ def day_night_tint(minute_of_day):
     return None
 
 
-class EffectsRenderMixin:
+class EffectsRenderMixin(FrameContextMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _combat_surface(self, name, flags=pygame.SRCALPHA):
@@ -493,7 +496,7 @@ class EffectsRenderMixin:
             lead_x = obj['x'] + 1.0 + obj['dx']
             lead_y = obj['y'] + 1.0 + obj['dy']
             off_level = (not self.client.in_gmap_segment and
-                         not (0 <= lead_x < 64 and 0 <= lead_y < 64))
+                         not in_level_bounds(lead_x, lead_y))
             if obj['dist'] >= obj['range'] or off_level or \
                     self._is_tile_blocking(self._get_tile_at(lead_x, lead_y)):
                 self._spawn_break_effect(obj)
@@ -531,7 +534,7 @@ class EffectsRenderMixin:
             lead_x = obj['x'] + 1.0 + obj['dx']
             lead_y = obj['y'] + 1.0 + obj['dy']
             off_level = (not self.client.in_gmap_segment and
-                         not (0 <= lead_x < 64 and 0 <= lead_y < 64))
+                         not in_level_bounds(lead_x, lead_y))
             if obj['dist'] >= obj['range'] or off_level or \
                     self._is_tile_blocking(self._get_tile_at(lead_x, lead_y)):
                 self.break_effects.append({
@@ -739,11 +742,12 @@ class EffectsRenderMixin:
         the look of the local arrow projectile path in _use_weapon."""
         return None
 
-    def _render_screen_tint(self):
+    def _render_screen_tint(self, frame: Optional[FrameContext] = None):
         """Draw ambient and script-driven fullscreen tints under the HUD.
 
         Overlay surfaces are cached by size and tint so steady colors do not
         allocate or refill a full-screen surface every frame."""
+        frame = self._frame_context() if frame is None else frame
         size = self.screen.get_size()
         if not hasattr(self, '_day_night_enabled'):
             self._day_night_enabled = Prefs.load().day_night
@@ -762,7 +766,8 @@ class EffectsRenderMixin:
                         overlay = self._day_night_overlay_surface = pygame.Surface(
                             size, pygame.SRCALPHA)
                     overlay.fill(color)
-                self._blit_tint_overlay(self._day_night_overlay_surface, size)
+                self._blit_tint_overlay(self._day_night_overlay_surface, size,
+                                        frame)
 
         tint = self.screen_tint
         if not tint:
@@ -778,13 +783,14 @@ class EffectsRenderMixin:
             if overlay is None or overlay.get_size() != size:
                 overlay = self._tint_overlay_surface = pygame.Surface(size, pygame.SRCALPHA)
             overlay.fill(color)
-        self._blit_tint_overlay(self._tint_overlay_surface, size)
+        self._blit_tint_overlay(self._tint_overlay_surface, size, frame)
 
-    def _blit_tint_overlay(self, overlay: pygame.Surface, size: Tuple[int, int]):
+    def _blit_tint_overlay(self, overlay: pygame.Surface, size: Tuple[int, int],
+                           frame: Optional[FrameContext] = None):
         """Blit a cached darkness/tint overlay to the screen, first punching
-        this frame's drawaslight NPC footprints out of it (queued by
-        render_entities.py's _render_light_sprite/_light_tint_eraser, reset
-        each frame in _render_entities) so a light source genuinely
+        this frame's drawaslight NPC footprints out of it (FrameContext's
+        light_sources, filled by render_entities.py's
+        _render_light_sprite/_light_tint_eraser) so a light source genuinely
         brightens that spot instead of just glowing additively on top of
         otherwise-unchanged darkness.
 
@@ -794,7 +800,7 @@ class EffectsRenderMixin:
         visible lights at all) never leaves a stale hole behind. Degrades to
         the old direct blit whenever there's nothing to punch (the common
         case: daytime, or a tinted scene with no light NPCs on screen)."""
-        lights = getattr(self, '_frame_light_sources', None)
+        lights = (self._frame_context() if frame is None else frame).light_sources
         if not lights:
             self.screen.blit(overlay, (0, 0))
             return

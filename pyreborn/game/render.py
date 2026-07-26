@@ -17,6 +17,10 @@ from pygame.locals import (
     K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
+from reborn_protocol.coords import (
+    LEVEL_SIZE, gmap_extent, segment_origin, world_to_local,
+)
+
 from .. import Client
 from .camera import Camera2D
 from ..gani import GaniParser, AnimationState, direction_from_delta
@@ -31,9 +35,10 @@ from .constants import (
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
     PLAYER_STAND_X, PLAYER_STAND_Y,
 )
+from .frame_context import FrameContextMixin
 
 
-class RenderMixin:
+class RenderMixin(FrameContextMixin):
     """Frame orchestration, camera sync, the main _render loop, and debug overlays.
 
     Entity/world/effects/level-object drawing live in the render_* sibling mixins."""
@@ -159,33 +164,52 @@ class RenderMixin:
             self._play_entity_sounds(anim.update(dt), self.npc_visual.get(npc_id))
 
         # Baddy anims were created on first draw but never advanced, leaving
-        # them frozen on frame 0. Advance them here too. (Baddies aren't tracked
-        # in a visual dict, so their sounds aren't positioned — they sit in the
-        # local player's segment anyway.)
+        # them frozen on frame 0. Advance them here too.
+        #
+        # Baddies and horses aren't tracked in a visual dict, so their
+        # positions come straight off client.baddies/client.horses — LEVEL-local
+        # coords, unlike the world-frame positions the two dicts above hold
+        # (same assumption _collect_baddies makes). Comparing those against the
+        # world-frame listener is what the discarded-return-value here used to
+        # avoid; take the difference in the local frame instead, which is equal
+        # to the world-frame difference because a baddy is always in the local
+        # player's own segment.
         for bid, anim in list(self.baddy_anims.items()):
-            if bid not in self.client.baddies:
+            baddy = self.client.baddies.get(bid)
+            if baddy is None:
                 del self.baddy_anims[bid]
                 continue
-            anim.update(dt)
+            self._play_entity_sounds(anim.update(dt),
+                                     (baddy.get('x'), baddy.get('y')),
+                                     local_frame=True)
 
         # Same bug class as baddies above: horse_anims entries (keyed by the
         # horse's (x, y), like client.horses) were created on first draw but
         # never advanced, so mounts sat frozen on frame 0.
         for hkey, anim in list(self.horse_anims.items()):
-            if hkey not in self.client.horses:
+            horse = self.client.horses.get(hkey)
+            if horse is None:
                 del self.horse_anims[hkey]
                 continue
-            anim.update(dt)
+            self._play_entity_sounds(anim.update(dt),
+                                     (horse.get('x'), horse.get('y')),
+                                     local_frame=True)
 
-    def _play_entity_sounds(self, sounds, world_pos):
+    def _play_entity_sounds(self, sounds, world_pos, local_frame: bool = False):
         """Play an entity's gani sounds attenuated/panned by its distance from
         the local player. world_pos is the entity's (x, y) in world tiles, or
         None if its on-screen position isn't known yet (skip — sound on the
-        very first frame an entity appears is imperceptible)."""
-        if not sounds or world_pos is None:
+        very first frame an entity appears is imperceptible).
+
+        `local_frame` says world_pos is LEVEL-local rather than world, so the
+        listener is folded into the same frame (see the baddy/horse loops)."""
+        if not sounds or world_pos is None or world_pos[0] is None or world_pos[1] is None:
             return
-        dx = world_pos[0] - self.visual_x
-        dy = world_pos[1] - self.visual_y
+        lx, ly = self.visual_x, self.visual_y
+        if local_frame:
+            lx, ly = world_to_local(lx, ly)
+        dx = world_pos[0] - lx
+        dy = world_pos[1] - ly
         for sound in sounds:
             self.sound_mgr.play_positional(sound, dx, dy)
     def _update_visual_position(self, dt: float):
@@ -253,8 +277,10 @@ class RenderMixin:
         Every render method used to recompute this offset inline; now it's set
         once per frame and all world->screen mapping goes through self.camera.
         """
-        gmap_visual_x = self.visual_x - self.client._gmap_offset_x * 64
-        gmap_visual_y = self.visual_y - self.client._gmap_offset_y * 64
+        frame_ox, frame_oy = segment_origin(self.client._gmap_offset_x,
+                                           self.client._gmap_offset_y)
+        gmap_visual_x = self.visual_x - frame_ox
+        gmap_visual_y = self.visual_y - frame_oy
         # Remember the sprite's top-left (render frame) so _render_entities can
         # draw the local player through the camera like every other entity,
         # rather than pinning it to the camera centre (which is now the body).
@@ -273,10 +299,10 @@ class RenderMixin:
         if bounds_key != self._camera_bounds_key:
             self._camera_bounds_key = bounds_key
             if self.client.in_gmap_segment:
-                self.camera.set_bounds(0, 0, self.client.gmap_width * 64,
-                                       self.client.gmap_height * 64)
+                self.camera.set_bounds(0, 0, *gmap_extent(
+                    self.client.gmap_width, self.client.gmap_height))
             else:
-                self.camera.set_bounds(0, 0, 64, 64)
+                self.camera.set_bounds(0, 0, LEVEL_SIZE, LEVEL_SIZE)
 
         focus = getattr(self, '_camera_focus', None)
         if focus is not None:
@@ -441,14 +467,19 @@ class RenderMixin:
         self.viewport.present()
 
     def _render_scene(self):
-        """Draw all world-space layers to self.screen via self.camera."""
+        """Draw all world-space layers to self.screen via self.camera.
+
+        Opens the frame the passes below hand each other (see
+        frame_context.py). _render_gui_band, which runs after this returns and
+        after any zoom scale, joins the same frame via _frame_context()."""
+        frame = self._begin_frame()
         self._render_world()
         self._render_animated_tiles()                # Tier 4a: water/lava shimmer
         if self.debug_mode:
             self._render_debug_overlay()
         self._render_chests()                       # ground, behind entities
         self._render_items()                         # ground items, behind entities
-        self._render_entities()                     # depth-sorted by Y (incl. horses)
+        self._render_entities(frame)                # depth-sorted by Y (incl. horses)
         self._render_damage_numbers()
         self._render_bombs()
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
@@ -458,8 +489,8 @@ class RenderMixin:
         self._render_water_ripples()
         self._render_chest_reveals()
         self._render_server_explosions()
-        self._render_screen_tint()                   # seteffect overlay, under HUD
-        self._render_deferred_lights()               # additive glows, above tint
+        self._render_screen_tint(frame)              # seteffect overlay, under HUD
+        self._render_deferred_lights(frame)          # additive glows, above tint
 
     def _render_gui_band(self):
         """Draw the vis>=4 GUI band (scripted HUDs, captions) in TRUE screen
@@ -631,8 +662,7 @@ class RenderMixin:
 
         # Left-column readouts
         ui_y = 64
-        local_x = self.client.x % 64
-        local_y = self.client.y % 64
+        local_x, local_y = world_to_local(self.client.x, self.client.y)
         link_count = sum(len(l) for l in self.client.links.values())
         for line in (
             f"{self.client._current_level_name}  ({local_x:.1f}, {local_y:.1f})",

@@ -8,6 +8,7 @@ Usage:
 """
 
 from .game_bot import GameBot
+from .login import LoginOutcome, login_client, login_session
 from .bug_detector import BugDetector
 from .multi_bot import MultiBotTest
 from .reporter import TestReporter
@@ -20,7 +21,8 @@ from .behaviour_fingerprint import (capture_from_client, capture_target,
                                     compare as compare_fingerprint,
                                     run_behaviour_checks)
 
-__all__ = ['GameBot', 'BugDetector', 'MultiBotTest', 'TestReporter', 'ExplorerBot',
+__all__ = ['GameBot', 'LoginOutcome', 'login_client', 'login_session',
+           'BugDetector', 'MultiBotTest', 'TestReporter', 'ExplorerBot',
            'ScreenshotCapture', 'run_coverage', 'run_coverage_rc', 'CoverageReport',
            'PacketTrace', 'run_exercise_battery', 'run_rc_battery',
            'run_behaviour_checks', 'capture_target', 'capture_from_client',

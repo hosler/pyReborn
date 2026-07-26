@@ -24,23 +24,11 @@ from game_tester import test_scenarios
 pytestmark = pytest.mark.integration
 
 
-# Mirrors TestScenarios.run_all_single_bot_tests() (game_tester/test_scenarios.py),
-# i.e. the "[SINGLE BOT TESTS]" section of `python -m game_tester`.
-SINGLE_BOT_SCENARIOS = [
-    test_scenarios.TestScenarios.test_connection,
-    test_scenarios.TestScenarios.test_level_data,
-    test_scenarios.TestScenarios.test_movement_all_directions,
-    test_scenarios.TestScenarios.test_collision_detection,
-    test_scenarios.TestScenarios.test_swimming_detection,
-    test_scenarios.TestScenarios.test_walk_to_target,
-    test_scenarios.TestScenarios.test_chat_roundtrip,
-    test_scenarios.TestScenarios.test_sword_attack,
-    test_scenarios.TestScenarios.test_item_detection,
-    test_scenarios.TestScenarios.test_npc_visibility,
-    test_scenarios.TestScenarios.test_file_download,
-    test_scenarios.TestScenarios.test_chest_interaction,
-    test_scenarios.TestScenarios.test_level_parsing,
-]
+# The suite registry itself (game_tester/test_scenarios.py's
+# @single_bot_scenario), so this covers exactly the "[SINGLE BOT TESTS]"
+# section of `python -m game_tester` - in the same order - instead of a
+# hand-maintained copy of that list that could silently fall behind it.
+SINGLE_BOT_SCENARIOS = test_scenarios.single_bot_scenarios()
 
 
 @pytest.mark.parametrize("scenario", SINGLE_BOT_SCENARIOS,

@@ -33,11 +33,23 @@ class GaniSprite:
 
 @dataclass
 class GaniFrame:
-    """A single animation frame with sprite placements and optional sound."""
+    """A single animation frame with sprite placements and optional sounds."""
     # [(sprite_id, offset_x, offset_y), ...]. sprite_id is normally an int,
     # but may be a "PARAM1".."PARAM5" string token (see _parse_frame_line).
     sprites: List[Tuple[Union[int, str], int, int]]
-    sound: Optional[Tuple[str, float, float]] = None  # (filename, volume, pitch)
+    # (filename, x_offset, y_offset) per PLAYSOUND -- the offsets are the sound
+    # piece's position in TILES relative to the gani's own origin, not
+    # volume/pitch: the editor writes them as `xoffset / 16.0`
+    # (Preagonal/TilesEditor/src/AniEditor/Ani.cpp:911) and reads them back as
+    # `* 16` (:717-718). They are routinely negative, which is why reading them
+    # as a volume silenced the sound outright. A frame may carry more than one
+    # (the editor's own model is a list: Ani.cpp:721 `frame->sounds.push_back`).
+    sounds: List[Tuple[str, float, float]] = field(default_factory=list)
+
+    @property
+    def sound(self) -> Optional[Tuple[str, float, float]]:
+        """The frame's first sound, or None."""
+        return self.sounds[0] if self.sounds else None
 
 
 @dataclass
@@ -176,11 +188,18 @@ class GaniParser:
         """
         Parse gani content from a string.
 
-        GANI format notes:
-        - In the ANI section, lines are grouped by direction (4 lines = 4 directions)
-        - Each group of 4 lines represents all directions for one frame
-        - Blank lines separate frame groups
-        - PLAYSOUND applies to the NEXT frame group
+        GANI format notes (ANI section grammar, per two independent oracles:
+        Preagonal/TilesEditor/src/AniEditor/Ani.cpp:600-730 and the C# client's
+        Preagonal.Common/.../Animations/Animation.cs:76-160):
+        - One frame is N sprite-placement lines, one per direction: 4 normally,
+          but exactly 1 when the file declares SINGLEDIRECTION.
+        - Those lines are followed by a TRAILER of command lines -- PLAYSOUND
+          and WAIT -- that belong to the frame just read, not to the next one
+          (Animation.cs:142 assigns `newFrame.PlaySound` to the frame it has
+          already built; Ani.cpp:721 pushes onto that same `frame->sounds`).
+        - The trailer ends at a blank line, at ANIEND, or at the next
+          sprite-placement line (Animation.cs:145-159 keeps consuming only
+          blank/WAIT/PLAYSOUND lines), so blank separators are optional.
         """
         gani = Gani(name=name)
         lines = content.split('\n')
@@ -189,33 +208,37 @@ class GaniParser:
         in_script = False
         in_movie = False
         movie_actor: Optional[MovieActor] = None
-        frame_lines: List[str] = []  # Collect lines for current frame group
-        pending_sound: Optional[Tuple[str, float, float]] = None
+        frame_lines: List[str] = []  # Sprite lines of the frame being collected
+        # PLAYSOUNDs of the frame being collected (its trailer).
+        frame_sounds: List[Tuple[str, float, float]] = []
 
         # We'll collect frames per direction
         direction_frames: Dict[int, List[GaniFrame]] = {0: [], 1: [], 2: [], 3: []}
 
+        def dirs_per_frame() -> int:
+            return 1 if gani.single_dir else 4
+
         def process_frame_group():
-            """Process collected frame lines as one frame for each direction."""
-            nonlocal frame_lines, pending_sound
+            """Emit the collected frame: one GaniFrame per direction line."""
+            nonlocal frame_lines, frame_sounds
 
             if not frame_lines:
+                # A stray trailer with no sprite line of its own (e.g. a
+                # PLAYSOUND before the first frame). Hold it for the frame
+                # that does arrive rather than discarding it.
                 return
 
-            # Each line in the group is one direction (0, 1, 2, 3)
-            for dir_idx, line in enumerate(frame_lines[:4]):  # Max 4 directions
+            for dir_idx, line in enumerate(frame_lines[:dirs_per_frame()]):
                 frame = self._parse_frame_line(line)
                 if frame:
-                    # PLAYSOUND applies to this whole frame group. Since a gani
-                    # only ever plays one direction at a time, attach the sound
-                    # to every direction's frame so it fires no matter which way
-                    # the player is facing (not just direction 0 / up).
-                    if pending_sound:
-                        frame.sound = pending_sound
+                    # A gani only ever plays one direction at a time, so give
+                    # every direction's frame the same sounds -- they fire no
+                    # matter which way the emitter is facing.
+                    frame.sounds = list(frame_sounds)
                     direction_frames[dir_idx].append(frame)
 
             frame_lines = []
-            pending_sound = None
+            frame_sounds = []
 
         for line in lines:
             line = line.strip()
@@ -295,6 +318,13 @@ class GaniParser:
             if line == 'CONTINUOUS':
                 gani.continuous = True
                 continue
+            if line == 'SINGLEDIRECTION':
+                # One sprite line per frame instead of four (Ani.cpp:684's
+                # `if (ani->m_singleDir) break;`). Was unhandled, so every
+                # single-direction gani (the majority of real content) had its
+                # consecutive FRAMES read as the four DIRECTIONS of one frame.
+                gani.single_dir = True
+                continue
             if line.startswith('SETBACKTO'):
                 parts = line.split(None, 1)
                 if len(parts) > 1:
@@ -319,34 +349,40 @@ class GaniParser:
 
             # Parse content inside ANI section
             if in_ani:
-                # Sound effect - applies to next frame group
-                if line.startswith('PLAYSOUND'):
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        try:
-                            sound_file = parts[1]
-                            volume = float(parts[2])
-                            pitch = float(parts[3])
-                            pending_sound = (sound_file, volume, pitch)
-                        except (ValueError, IndexError):
-                            pass
+                # Sound effect - part of the CURRENT frame's trailer.
+                if line.upper().startswith('PLAYSOUND'):
+                    sound = self._parse_playsound_line(line)
+                    if sound is not None:
+                        frame_sounds.append(sound)
                     continue
 
-                # Blank line = frame group separator
+                # WAIT <n> holds the current frame for n extra ticks. We don't
+                # model per-frame duration yet, but it MUST NOT fall through to
+                # the sprite-line branch below: doing so consumed a direction
+                # slot and (worse) flushed the frame group, discarding the
+                # PLAYSOUND that shares the trailer with it. That silenced 728
+                # of the ~1500 PLAYSOUNDs in the reference content.
+                if line.upper().startswith('WAIT'):
+                    continue
+
+                # Blank line = end of this frame (sprite lines + trailer).
                 if not line:
                     process_frame_group()
                     continue
 
-                # Collect frame line
+                # A sprite-placement line. Reaching one when the frame already
+                # has its full set of directions means the next frame started
+                # without a blank separator, so close the current one first --
+                # after its trailer has been collected, not before.
+                if len(frame_lines) >= dirs_per_frame():
+                    process_frame_group()
                 frame_lines.append(line)
 
-                # If we have 4 lines, process them as a complete frame group
-                if len(frame_lines) == 4:
-                    process_frame_group()
-
-        # Check if all directions have same frame count
+        # Check if all directions have same frame count. A file that declared
+        # SINGLEDIRECTION keeps that flag even if its ANI section was empty.
         frame_counts = [len(direction_frames[i]) for i in range(4)]
-        gani.single_dir = all(c == 0 for c in frame_counts[1:]) and frame_counts[0] > 0
+        gani.single_dir = gani.single_dir or (
+            all(c == 0 for c in frame_counts[1:]) and frame_counts[0] > 0)
 
         # An embedded SCRIPT usually means the ANI section is a near-blank
         # placeholder and the script paints the real visual via showimg (we
@@ -401,6 +437,31 @@ class GaniParser:
                 else:
                     values[key] = value
         return MovieKeyframe(tick=tick, values=values)
+
+    @staticmethod
+    def _parse_playsound_line(line: str) -> Optional[Tuple[str, float, float]]:
+        """``PLAYSOUND <file> [<x> <y>]`` -> (file, x, y) offsets in tiles.
+
+        Both numbers are optional in the wild -- weapon/NPC ganis write a bare
+        ``PLAYSOUND PARAM1`` -- and some content (written by a locale where the
+        decimal separator is a comma) writes them as ``1,5 2``. Neither may
+        cost us the sound: the filename is the part that matters, so an
+        unparseable offset falls back to the gani's origin rather than
+        discarding the line.
+        """
+        parts = line.split()
+        if len(parts) < 2:
+            return None
+
+        def offset(index: int) -> float:
+            if len(parts) <= index:
+                return 0.0
+            try:
+                return float(parts[index].replace(',', '.'))
+            except ValueError:
+                return 0.0
+
+        return (parts[1], offset(2), offset(3))
 
     def _parse_sprite_line(self, line: str) -> Optional[GaniSprite]:
         """Parse a SPRITE definition line."""
@@ -486,14 +547,63 @@ class AnimationState:
         # eye_bomber_walk0 etc.); NPC/other-player states leave it None.
         self.name_resolver = None
         self.movie: Optional["MoviePlaybackState"] = None
+        # The setani/setcharani call's trailing params (`setani ani,p1,p2`),
+        # 0-based, so PARAM1 is params[0]. A gani's PLAYSOUND filename is
+        # routinely a PARAMn token rather than a literal (`PLAYSOUND PARAM1`
+        # with `DEFAULTPARAM1 sword.wav`), which is the whole point of the
+        # stock "play a sound" ganis — see _resolve_sound.
+        self.params: List[str] = []
 
-    def set_animation(self, name: str, direction: Optional[int] = None, force: bool = False):
-        """Set the current animation by name."""
+    _PARAM_TOKEN = re.compile(r'^PARAM(\d+)$', re.IGNORECASE)
+
+    def _resolve_sound(self, sound: Tuple[str, float, float]
+                       ) -> Optional[Tuple[str, float, float]]:
+        """Substitute a PARAMn sound filename for the real one.
+
+        A PARAMn token resolves against this call's params, falling back to the
+        gani's own DEFAULTPARAMn (parsed into Gani.defaults) — the same
+        precedence the sprite-layer path uses for PARAMn frame tokens
+        (game/render_entities.py's _resolve_gani_layers). An unresolved token
+        yields None: passing "PARAM1" to the sound manager as a filename is a
+        guaranteed miss that also poisons its failed-name cache.
+        """
+        match = self._PARAM_TOKEN.match(sound[0])
+        if match is None:
+            return sound
+        index = int(match.group(1))
+        value = None
+        if 1 <= index <= len(self.params):
+            value = self.params[index - 1]
+        if not value and self.gani is not None:
+            value = self.gani.defaults.get(f'PARAM{index}')
+        if not value:
+            return None
+        return (value, sound[1], sound[2])
+
+    def set_animation(self, name: str, direction: Optional[int] = None,
+                      force: bool = False, params: Optional[List[str]] = None):
+        """Set the current animation by name.
+
+        `name` may be the raw comma-joined `ani,param1,param2` form; the params
+        are split off (and override `params`) so PARAMn sound/sprite tokens
+        resolve. They are refreshed on EVERY call, including the
+        same-animation early return below, because a script re-issues the same
+        gani with different params (a piano key's note, a weapon's sound).
+        """
         if self.name_resolver is not None:
             try:
                 name = self.name_resolver(name) or name
             except Exception:
                 pass
+        if ',' in name:
+            parts = [p.strip() for p in name.split(',')]
+            name = parts[0]
+            params = parts[1:]
+        params_changed = False
+        if params is not None:
+            params = list(params)
+            params_changed = params != self.params
+            self.params = params
         # GS1 scripts set `dir` as a float (e.g. `dir = 2` -> 2.0); the frame
         # tables are indexed by int, so coerce here for every caller.
         if direction is not None:
@@ -506,8 +616,12 @@ class AnimationState:
         # hide the entity instead of drawing a placeholder (GTA's cutscene
         # `setani hiddenstill,` drew a magenta box until the file arrived).
         self.requested_name = name
-        # Don't restart same animation unless forced
-        if not force and self.gani and self.gani.name == name:
+        # Don't restart the same animation unless forced -- the render path
+        # re-asserts an entity's current gani every frame, so restarting on a
+        # repeat would freeze it on frame 0. New PARAMS with the same name are
+        # a genuinely new call though (`setani sen_piano_note2,<note>.wav` per
+        # key pressed), and must restart or the second note never sounds.
+        if not force and self.gani and self.gani.name == name and not params_changed:
             if direction is not None and direction != self.direction:
                 self.direction = direction
             return
@@ -539,9 +653,16 @@ class AnimationState:
             # Check for sound on first frame (only for a fresh start - a
             # resumed continuous gani shouldn't replay its intro sound).
             if not resumed:
-                frame_data = self.gani.get_frame(self.direction, 0)
-                if frame_data and frame_data.sound:
-                    self._pending_sounds.append(frame_data.sound)
+                self._queue_frame_sounds(self.gani.get_frame(self.direction, 0))
+
+    def _queue_frame_sounds(self, frame_data: Optional[GaniFrame]):
+        """Queue a frame's resolved sounds for the next update() to hand out."""
+        if frame_data is None:
+            return
+        for sound in frame_data.sounds:
+            resolved = self._resolve_sound(sound)
+            if resolved is not None:
+                self._pending_sounds.append(resolved)
 
     def set_direction(self, direction: int):
         """Set the facing direction (0=up, 1=left, 2=down, 3=right)."""
@@ -556,7 +677,9 @@ class AnimationState:
             dt: Delta time in seconds
 
         Returns:
-            List of (sound_file, volume, pitch) tuples
+            List of (filename, x_offset, y_offset) tuples -- the offsets are the
+            sound's position in tiles relative to the emitter (see GaniFrame),
+            and any PARAMn filename has already been substituted.
         """
         sounds = list(self._pending_sounds)
         self._pending_sounds.clear()
@@ -596,9 +719,10 @@ class AnimationState:
 
             # Get sound for new frame
             if self.frame != old_frame:
-                frame_data = self.gani.get_frame(self.direction, self.frame)
-                if frame_data and frame_data.sound:
-                    sounds.append(frame_data.sound)
+                self._queue_frame_sounds(
+                    self.gani.get_frame(self.direction, self.frame))
+                sounds.extend(self._pending_sounds)
+                self._pending_sounds.clear()
 
         return sounds
 

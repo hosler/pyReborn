@@ -32,6 +32,26 @@ PLAYER_BODY_CENTER_Y = (PLAYER_COLLISION_TOP + PLAYER_COLLISION_BOTTOM) / 2
 PLAYER_STAND_X = 1.5
 PLAYER_STAND_Y = 2.5
 
+# Ground sampling ("what am I standing on") uses ONE point, and the official
+# client puts it at (x+1.5, y+2.0) - the collision box's centre, half a tile
+# ABOVE PLAYER_STAND_Y. Every ground test in the decompiled client shares the
+# pair DOUBLE_00402400 / DOUBLE_00402408 (= 1.5 / 2.0,
+# Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1277-1278):
+#   TPlayer.cpp:5925-5927   testSittingSleeping - the chair test
+#   TPlayer.cpp:5997-5999   testForWater
+#   TPlayer.cpp:5897-5899   the lava/damage-tile test
+#   TServerPlayer.cpp:614-615   footstep sound position
+#   TServerPlayer.cpp:1252-1253 SwampIndex
+# Live server content agrees: across the Bomber/LTTP/GTA GS1 corpora the
+# player's reference point is written `playerx+1.5` / `playery+2` (165/171
+# occurrences of those two offsets), never `playery+2.5`.
+# PLAYER_STAND_Y (2.5) came from a community description of the standing point
+# and is half a tile too low for ground sampling: it shifted the chair-sit
+# region half a tile up the screen, so live Bomber furniture only seated you
+# on the upper part of the chair.
+PLAYER_GROUND_X = 1.5
+PLAYER_GROUND_Y = 2.0
+
 # Scrollback cap for chat_messages (game/hud.py's PageUp/PageDown scrollback,
 # game/input.py's chat/PM append sites, game/setup.py's server/roster/PM
 # append sites). Was 10 (no scrollback existed); raised so PageUp actually has

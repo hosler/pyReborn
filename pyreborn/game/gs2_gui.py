@@ -52,9 +52,7 @@ the ground-truth toolchain our disassembler/VM corpus is checked against.
    a `GS2ScriptFunction` bound to the owning VM, so the assignment stores a
    real callable in the control's `onaction` slot and `fire_event`'s
    `handler = self.get(event); if callable(handler)` path picks it up with
-   no host involvement. (An earlier round emulated this at the host layer,
-   here and in gs2_client.py's `_ThisObject`; both emulations were removed
-   once the VM took the resolution over.)
+   no host involvement.
    `GS2VM.script_function(name)` is the explicit lookup if a handler ever
    needs resolving by name instead of by slot; it recurses into joined
    classes, so a handler defined inside a joined class's own `new ... {}`
@@ -850,7 +848,8 @@ class GuiControl(GS2Object):
     _TORQUE_PROPS = frozenset({
         "position", "extent", "minextent", "clientrelative", "clientextent",
         "horizsizing", "vertsizing", "docking", "style", "active", "modal",
-        "helptag", "tooltip", "canmove", "canresize", "destroyonhide",
+        "helptag", "tooltip", "canmove", "canresize", "closequery",
+        "destroyonhide",
         "isexternal", "bordercolor", "columncount", "sortorder", "sortmode",
         "groupsortorder", "textprofile", "hscrollbar", "vscrollbar",
         "willfirstrespond", "historysize", "tabcomplete",
@@ -867,21 +866,16 @@ class GuiControl(GS2Object):
         "seticonsize", "clearrows", "addrow", "sort", "setcolumnoffset",
         "setrowoffset",
         "pushtoback", "clearcontrols", "isactuallyvisible",
-        # 2026-07-24 live Login corpus (weapon-*.gs2 under the GS2 compiler's
-        # loginserver test scripts): these were the with-scope/method calls
-        # the host answered with "unknown method".
         "isfirstresponder", "bringtofront", "settext", "gettext",
         "setlines", "getlines", "clearall",
         "globaltolocalcoord", "localtoglobalcoord",
-        # second wave: the deep crawler's client-install weapon fetch
-        # (-Serverlist_Chat's log/chat panes, -Serverlist's chat bar)
         "addtext", "scrolltobottom", "openatmouse",
-        # third wave (2026-07-24 static census): isEmpty() has no entry in
+        # isEmpty() has no entry in
         # the reference client's binding tables (FourPlay quattroplay/src/gui
         # has none) -- it is a Torque control method the live Login corpus
         # calls on its password field, `if (!PassEdit.isEmpty()) doLogin();`
-        # (graal-loginserver weapon-Rescripted_IRC_Login2001.txt:65,
-        # weapon-LoginScreen.txt:78). Answering it as "the edit buffer is
+        # (graal-loginserver weapon-Rescripted_IRC_Login2001.txt:64,
+        # weapon-LoginScreen.txt:77). Answering it as "the edit buffer is
         # empty" is both the plain reading and the only one consistent with
         # this client's credential policy: pyReborn never lets a script fill
         # or read a password field, so the field IS empty and the
@@ -980,9 +974,6 @@ class GuiControl(GS2Object):
             # renderer can show it (same recorder tree nodes use)
             v = self._members[k] = _TreeNodeIcon(self)
             return v
-        # `onAction = function(){...}` stores a VM-bound GS2ScriptFunction in
-        # the slot (see module docstring point 2), so a plain member read is
-        # all fire_event needs.
         return super().get(k)
 
     # -- script-callable methods -----------------------------------------
@@ -1039,7 +1030,6 @@ class GuiControl(GS2Object):
         return self.text
 
     def _m_setlines(self, *args) -> float:
-        """setLines(array): replace the text with one line per element."""
         lines = args[0] if args else []
         if not isinstance(lines, (list, tuple)):
             lines = [lines]
@@ -1109,7 +1099,6 @@ class GuiControl(GS2Object):
 
     @staticmethod
     def _coord_arg(args) -> Tuple[float, float]:
-        """A coordinate argument, as either one {x, y} array or two scalars."""
         if len(args) >= 2:
             return to_num(args[0]), to_num(args[1])
         pair = GuiControl._num_pair(args[0]) if args else None
@@ -1142,7 +1131,7 @@ class GuiControl(GS2Object):
     def _m_setrowoffset(self, *args) -> float:
         """setRowOffset(index, offset): the y of row divider `index`.
         Same convention as setColumnOffset; Login's Playerlist splits its PM
-        window with `setrowoffset(1, 140)` over a 280-tall two-row frameset
+        window with `setrowoffset(1, 140)` over a 280-tall 1- or 2-row frameset
         (Preagonal/gbf/bytecode/login/_Playerlist.gs2bc.gs2:2517-2519)."""
         offsets = self._members.setdefault("_row_offsets", {})
         if len(args) >= 2:
@@ -1261,16 +1250,6 @@ class GuiControl(GS2Object):
             # quattroplay/src/gui/GuiControlProperties.cpp:115-133). On a
             # plain GuiControl the chrome is 0 and this is a plain extent
             # write; on a GuiWindowCtrl it is the title bar.
-            #
-            # We used to store the value and treat it AS the outer extent,
-            # so `clientextent = {600, 400}` on Global Chat's window
-            # (Preagonal/gbf/bytecode/login/_Serverlist_Chat.gs2bc.gs2:566)
-            # gave a 600x400 outer window with a 600x378 client area, while
-            # the frame set inside it was built 400 tall from the stored
-            # value -- its bottom row (chat field + smilie buttons) hung 22px
-            # out through the bottom of the window. Nothing is stored now:
-            # the reader above recomputes from the live bounds, exactly as
-            # propfun_guicontrol_clientextent_r returns m_size.
             pair = self._num_pair(value)
             if k == "clientwidth":
                 pair = (to_num(value), self.client_height())
@@ -1448,6 +1427,96 @@ class GuiWindowCtrl(GuiControl):
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 240.0, 160.0
+        self.canclose = True
+        self.canminimize = True
+        self.canmaximize = True
+        self.canmove = True
+        self.closequery = False
+        self.destroyonhide = False
+        self.close_button_pressed = False
+        self.minimize_button_pressed = False
+        self.maximize_button_pressed = False
+        self.minimized = False
+        self.maximized = False
+        self.standard_bounds = pygame.Rect(0, 0, 100, 200)
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k in ("canclose", "canminimize", "canmaximize", "canmove",
+                 "closequery", "destroyonhide"):
+            return 1.0 if getattr(self, k) else 0.0
+        return super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k in ("canclose", "canminimize", "canmaximize", "canmove",
+                 "closequery", "destroyonhide"):
+            setattr(self, k, to_bool(value))
+            return
+        super().set(k, value)
+
+    def button_rects(self) -> Tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
+        x = int(self.width) - 18
+        close = pygame.Rect(x, 3, 16, 16) if self.canclose else pygame.Rect(0, 0, 0, 0)
+        if self.canclose:
+            x -= 18
+        maximize = (pygame.Rect(x, 3, 16, 16) if self.canmaximize
+                    else pygame.Rect(0, 0, 0, 0))
+        if self.canmaximize:
+            x -= 18
+        minimize = (pygame.Rect(x, 3, 16, 16) if self.canminimize
+                    else pygame.Rect(0, 0, 0, 0))
+        return close, minimize, maximize
+
+    def _screen_button_rects(self) -> Tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
+        r = self.rect()
+        return tuple(button.move(r.x, r.y) for button in self.button_rects())
+
+    def close_window(self) -> None:
+        if self.closequery:
+            self.fire_event("onclosequery")
+            return
+        if self._manager is not None:
+            self._manager.hide(self)
+            if self.destroyonhide:
+                self._manager.destroy(self)
+        else:
+            self.visible = False
+
+    def minimize_window(self) -> None:
+        if self.minimized:
+            self.restore_window()
+            return
+        self.standard_bounds = pygame.Rect(
+            int(self.x), int(self.y), int(self.width), int(self.height))
+        self.minimized = True
+        self.height = float(self.TITLE_H)
+        self.fire_event("onminimize")
+
+    def maximize_window(self) -> None:
+        if self.maximized:
+            self.restore_window()
+            return
+        self.standard_bounds = pygame.Rect(
+            int(self.x), int(self.y), int(self.width), int(self.height))
+        self.maximized = True
+        self.x = self.y = 0.0
+        if self.parent is not None:
+            self.width, self.height = self.parent.width, self.parent.height
+        elif self._manager is not None:
+            canvas = self._manager.canvas_object()
+            self.width = to_num(canvas.get("width"))
+            self.height = to_num(canvas.get("height"))
+        self.fire_event("onmaximize")
+
+    def restore_window(self) -> None:
+        changed = self.minimized or self.maximized
+        self.minimized = self.maximized = False
+        if changed:
+            bounds = self.standard_bounds
+            self.x, self.y = float(bounds.x), float(bounds.y)
+            self.width, self.height = float(bounds.width), float(bounds.height)
+        self.fire_event("onrestore")
 
     def titlebar_rect(self) -> pygame.Rect:
         r = self.rect()
@@ -1494,6 +1563,18 @@ class GuiWindowCtrl(GuiControl):
             _draw_label(surf, font, self.text, prof.title_fg,
                         (lx, tb.y + (tb.height - label_h) // 2),
                         prof.text_shadow or drew_frame)
+        close, minimize, maximize = self._screen_button_rects()
+        glyph = prof.title_fg
+        if self.canclose:
+            pygame.draw.line(surf, glyph, (close.x + 4, close.y + 4),
+                             (close.right - 5, close.bottom - 5), 2)
+            pygame.draw.line(surf, glyph, (close.right - 5, close.y + 4),
+                             (close.x + 4, close.bottom - 5), 2)
+        if self.canminimize:
+            pygame.draw.line(surf, glyph, (minimize.x + 3, minimize.bottom - 4),
+                             (minimize.right - 4, minimize.bottom - 4), 2)
+        if self.canmaximize:
+            pygame.draw.rect(surf, glyph, maximize.inflate(-6, -6), 1)
 
 
 class GuiButtonCtrl(GuiControl):
@@ -2157,8 +2238,10 @@ class GuiPopUpEditCtrl(GuiControl):
     #: findEntryById, NOT as a row index (FourPlay quattroplay/src/gui/
     #: GuiPopUpMenuCtrl.cpp:316-327; binding GuiPopUpMenuCtrlProperties.cpp:74
     #: `{"setselected", false, 'v', "i"}`). Live sites construct the combo and
-    #: call it in the same with-block (era weaponGraalNet.txt:106,
-    #: pdamod_browser.txt:60), where row ids and indices happen to coincide.
+    #: call it in the same with-block
+    #: (GServer-v2/bin/servers/era/weapons/weaponGraalNet.txt:106,
+    #: GServer-v2/bin/servers/era/scripts/pdamod_browser.txt:60), where row ids
+    #: and indices happen to coincide.
     _m_setselected = _m_setselectedbyid
 
     def _m_findtext(self, *args) -> float:
@@ -2244,9 +2327,7 @@ class GuiPopUpMenuCtrl(GuiPopUpEditCtrl):
     """The non-editable spelling of the same combo box. Login's staff
     sprite-editor weapon builds every one of its selectors as
     GuiPopUpMenuCtrl and then calls getSelectedRow()/getSelectedText() on
-    them -- as an unknown class they fell back to a plain GuiControl, which
-    answered neither (45 misses in the 2026-07-24 corpus run, the
-    second-largest gap after gettextheight)."""
+    them."""
 
     CTRL_CLASS = "GuiPopUpMenuCtrl"
 
@@ -2267,11 +2348,7 @@ class GuiFrameSetCtrl(GuiControl):
     Sizing HAS to happen when a child is added, not at render time: the
     scripts build a cell's contents in a following `with (<cell>) {...}`
     block that reads `<cell>.clientwidth`/`.clientheight` to size them
-    (:617-660). Unimplemented, the class fell back to a generic GuiControl,
-    both cells kept their constructor defaults stacked at (0,0) -- a 160x120
-    channel scroll drawn OVER a 100x24 chat panel -- and the chat panel's
-    placeholder text wrapped into a ~150px strip clipped at the bottom,
-    which is exactly the reported symptom.
+    (:617-660).
     """
 
     CTRL_CLASS = "GuiFrameSetCtrl"
@@ -2332,12 +2409,7 @@ class GuiContextMenuCtrl(GuiPopUpEditCtrl):
     """A right-click menu: a row list that is HIDDEN until openAtMouse().
 
     `m_visible = false` in the constructor (FourPlay quattroplay/src/gui/
-    GuiContextMenuCtrl.cpp:35-46, GuiContextMenuCtrl::initObject) -- as an
-    unknown class it fell back to a generic, VISIBLE GuiControl, so Global
-    Chat's channel menu (`new GuiContextMenuCtrl("GlobalChat_ChannelMenu")`,
-    width 120, three rows, Preagonal/gbf/bytecode/login/
-    _Serverlist_Chat.gs2bc.gs2:697-717) drew as a stray filled rectangle at
-    the canvas origin, on top of the server-list window."""
+    GuiContextMenuCtrl.cpp:35-46, GuiContextMenuCtrl::initObject)."""
 
     CTRL_CLASS = "GuiContextMenuCtrl"
 
@@ -2374,8 +2446,8 @@ class GuiDrawingPanel(GuiControl):
         self.draw_ops.clear()
         return 0.0
 
+    # Drawing methods unpack their script arguments into persistent operations.
     def _m_drawline(self, *args) -> float:
-        """drawLine(x1, y1, x2, y2, thickness)."""
         values = [to_num(a) for a in args[:5]]
         while len(values) < 5:
             values.append(1.0)
@@ -2388,14 +2460,12 @@ class GuiDrawingPanel(GuiControl):
         return self._record(("rect", *values))
 
     def _m_drawimage(self, *args) -> float:
-        """drawImage(x, y, image)."""
         if len(args) < 3:
             return 0.0
         return self._record(("image", to_num(args[0]), to_num(args[1]),
                              to_str(args[2]), 0.0, 0.0))
 
     def _m_drawimagestretched(self, *args) -> float:
-        """drawImageStretched(x, y, w, h, image, ...)."""
         if len(args) < 5:
             return 0.0
         return self._record(("image", to_num(args[0]), to_num(args[1]),
@@ -2544,8 +2614,9 @@ class GuiTextListCtrl(GuiControl):
         GuiTextListCtrl.cpp:747-758), a linear scan returning the array
         position. The sibling binding findTextId() is the one that maps that
         position to a row id -- so this must NOT return the id. Live site:
-        era weaponSkyld/RC.txt:916 uses it to find its "Admins"/"Players"
-        group header and insert the row after it."""
+        GServer-v2/bin/servers/era/weapons/weaponSkyld%047RC.txt:915 uses it
+        to find its "Admins"/"Players" group header and insert the row after
+        it."""
         wanted = to_str(args[0]) if args else ""
         for index, row in enumerate(self.list_rows):
             if to_str(row.get("text")) == wanted:
@@ -3138,25 +3209,16 @@ _CONTROL_CLASSES: Dict[str, type] = {
         GuiBitmapCtrl, GuiShowImgCtrl, GuiPopUpEditCtrl, GuiControlProfile,
         GuiTextListCtrl, GuiTabCtrl, GuiTreeViewCtrl, GuiTaskbar,
         GuiStartMenuCtrl,
-        # classes the 2026-07-24 Login corpus constructs that used to fall
-        # back to a generic GuiControl ("unknown control class")
+        # These classes otherwise fall back to a generic GuiControl.
         GuiAccountPasswordCtrl, GuiMLTextEditCtrl, GuiProgressCtrl,
         GuiBitmapButtonCtrl, GuiPopUpMenuCtrl, GuiDrawingPanel,
-        # 2026-07-25: the two remaining "unknown control class" warnings on
-        # Login, both raised by -Serverlist_Chat's Global Chat window
         GuiFrameSetCtrl, GuiContextMenuCtrl,
     )
 }
 
 
 def control_method_names() -> frozenset:
-    """Every script-callable control method across the whole class table.
-
-    GS2ClientHost.host_surface() used to union GuiControl._METHOD_NAMES
-    alone, so every SUBCLASS method (setSelectedRow, getSelectedNode,
-    addNodeByPath, ...) was reported as an unimplemented gap by the deep
-    crawler even though the control answers it -- which is exactly the kind
-    of false gap that sends a coverage round chasing ghosts."""
+    """Every script-callable control method across the whole class table."""
     names: set = set()
     for cls in (*_CONTROL_CLASSES.values(), GuiControl):
         names |= set(getattr(cls, "_METHOD_NAMES", ()))
@@ -3205,6 +3267,7 @@ class GS2GuiManager:
         self._construction_stack: List[GuiControl] = []
         self._focus: Optional[GuiTextEditCtrl] = None
         self._drag: Optional[Tuple[GuiWindowCtrl, float, float]] = None
+        self._window_button_press: Optional[GuiWindowCtrl] = None
         # Render-only mouse state for hover/pressed visuals (button + check-
         # box/radio) -- maintained the same way as `_focus`, via mouse
         # events already flowing through handle_event() (see input.py's
@@ -3229,7 +3292,7 @@ class GS2GuiManager:
         # deltas on change (window resizes)
         self.canvas_size: Optional[Tuple[int, int]] = None
         # GuiCanvas cursor visibility (cursorOn/cursorOff/isCursorOn --
-        # FourPlay quattroplay/src/gui/GuiCanvas.cpp:47-63, bindings :83-85).
+        # FourPlay quattroplay/src/gui/GuiCanvas.cpp:48-63, bindings :82-84).
         # The canvas starts with the pointer shown, which is also pygame's
         # default, so cursorOn() -- the only one of the three any corpus
         # actually calls -- is a confirmation rather than a change.
@@ -3238,7 +3301,7 @@ class GS2GuiManager:
     def set_cursor_on(self, on: bool) -> None:
         """cursorOn()/cursorOff(): show or hide the mouse pointer over the
         canvas. Login's serverlist calls cursorOn() when it takes over the
-        screen (graal-loginserver weapon-Rescripted_Serverlist.txt:381)."""
+        screen (graal-loginserver weapon-Rescripted_Serverlist.txt:379)."""
         self.cursor_on = bool(on)
         try:
             pygame.mouse.set_visible(self.cursor_on)
@@ -3277,6 +3340,7 @@ class GS2GuiManager:
             _log_once(("addcontrol", type(ctrl).__name__),
                       "GS2 GUI: addcontrol() called on a non-control value (%r)", ctrl)
             return
+        ctrl._manager = self
         if owner_vm is not None and ctrl._owner_vm is None:
             # every new-statement emits addcontrol from the constructing
             # script's VM, so this stamps the whole tree -- fire_event's
@@ -3332,6 +3396,12 @@ class GS2GuiManager:
             self._set_focus(None)
         if self._drag is not None and self._is_or_descends(self._drag[0], ctrl):
             self._drag = None
+        if (self._window_button_press is not None
+                and self._is_or_descends(self._window_button_press, ctrl)):
+            self._window_button_press.close_button_pressed = False
+            self._window_button_press.minimize_button_pressed = False
+            self._window_button_press.maximize_button_pressed = False
+            self._window_button_press = None
         if self._hover is not None and self._is_or_descends(self._hover, ctrl):
             self._set_hover(None)
         if self._pressed is not None and self._is_or_descends(self._pressed, ctrl):
@@ -3744,10 +3814,28 @@ class GS2GuiManager:
         if window is not None:
             self.bring_to_front(window)
 
-        if isinstance(hit, GuiWindowCtrl) and hit.titlebar_rect().collidepoint(pos):
-            self._drag = (hit, pos[0] - hit.x, pos[1] - hit.y)
-            self._set_focus(None)
-            return True
+        if isinstance(hit, GuiWindowCtrl):
+            close, minimize, maximize = hit._screen_button_rects()
+            if hit.canclose and close.collidepoint(pos):
+                hit.close_button_pressed = True
+                self._window_button_press = hit
+                self._set_focus(None)
+                return True
+            if hit.canminimize and minimize.collidepoint(pos):
+                hit.minimize_button_pressed = True
+                self._window_button_press = hit
+                self._set_focus(None)
+                return True
+            if hit.canmaximize and maximize.collidepoint(pos):
+                hit.maximize_button_pressed = True
+                self._window_button_press = hit
+                self._set_focus(None)
+                return True
+            if hit.canmove and hit.titlebar_rect().collidepoint(pos):
+                r = hit.rect()
+                self._drag = (hit, pos[0] - r.x, pos[1] - r.y)
+                self._set_focus(None)
+                return True
 
         if isinstance(hit, GuiTextEditCtrl):
             self._set_focus(hit)
@@ -3811,6 +3899,25 @@ class GS2GuiManager:
 
     def _on_mouse_up(self, pos) -> bool:
         self._set_pressed(None)
+        pressed_window = self._window_button_press
+        self._window_button_press = None
+        if pressed_window is not None:
+            close_pressed = pressed_window.close_button_pressed
+            minimize_pressed = pressed_window.minimize_button_pressed
+            maximize_pressed = pressed_window.maximize_button_pressed
+            pressed_window.close_button_pressed = False
+            pressed_window.minimize_button_pressed = False
+            pressed_window.maximize_button_pressed = False
+            close, minimize, maximize = pressed_window._screen_button_rects()
+            if close_pressed and pressed_window.canclose and close.collidepoint(pos):
+                pressed_window.close_window()
+            elif (minimize_pressed and pressed_window.canminimize
+                  and minimize.collidepoint(pos)):
+                pressed_window.minimize_window()
+            elif (maximize_pressed and pressed_window.canmaximize
+                  and maximize.collidepoint(pos)):
+                pressed_window.maximize_window()
+            return True
         if self._drag is not None:
             self._drag = None
             return True

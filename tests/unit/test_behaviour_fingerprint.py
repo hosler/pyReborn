@@ -4,19 +4,12 @@ The two fixtures are REAL captures of the public Login server taken with
 game_tester/behaviour_fingerprint.py:
 
   fingerprint_login_good.json    the fixed tree (9 GUI roots, 90 named
-                                 controls, 3 weapon VMs). Re-captured
-                                 2026-07-25 after `player.platform` was
-                                 implemented: while it was unset it compared
-                                 EQUAL to "iphone"/"linuxstream" (an unset
-                                 host property is Number 0.0, and so is
-                                 strtofloat of a non-numeric string), so
-                                 weapon-Rescripted_Serverlist.txt:403-425
-                                 took its iPhone branch and ran the update
-                                 loop at setTimer(1) instead of
-                                 setTimer(0.05). The first capture therefore
-                                 recorded the 1 Hz cadence (31 events / 226
-                                 host calls) rather than the desktop 20 Hz
-                                 one (~435 / ~1438).
+                                 controls, 3 weapon VMs), re-captured
+                                 2026-07-25 once player.platform was
+                                 implemented -- while unset it took the
+                                 iPhone setTimer(1) branch
+                                 (weapon-Rescripted_Serverlist.txt:403-425),
+                                 so the counts were 1 Hz, not 20 Hz.
   fingerprint_login_broken.json  the same server observed with the
                                  object-vs-null `gs2_compare` regression
                                  re-introduced -- 4 roots, 3 named controls,

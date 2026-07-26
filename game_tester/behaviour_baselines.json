@@ -297,10 +297,7 @@
         ],
         "required_filled_controls": [
           "serverlist_serverlist",
-          "serverlist_description0",
-          "serverlist_eventnews",
           "serverlist_taskbar_menu",
-          "serverlist_tablestab",
           "globalchat_chatlabel"
         ],
         "required_weapon_events": [
@@ -620,10 +617,7 @@
         ],
         "required_filled_controls": [
           "serverlist_serverlist",
-          "serverlist_description0",
-          "serverlist_eventnews",
           "serverlist_taskbar_menu",
-          "serverlist_tablestab",
           "globalchat_chatlabel"
         ],
         "required_weapon_events": [

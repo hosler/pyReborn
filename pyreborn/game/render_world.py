@@ -22,6 +22,8 @@ from typing import List, Optional, Tuple
 
 import pygame
 
+from reborn_protocol.coords import segment_index, segment_origin
+
 from ..tiletypes import TileType, get_tile_type
 from . import theme
 from .assets import render_outlined_text
@@ -71,14 +73,14 @@ class WorldRenderMixin:
 
         if in_gmap and c.gmap_grid:
             min_tx, min_ty, max_tx, max_ty = tile_range
-            min_gx, max_gx = min_tx // 64, max_tx // 64
-            min_gy, max_gy = min_ty // 64, max_ty // 64
+            min_gx, max_gx = segment_index(min_tx), segment_index(max_tx)
+            min_gy, max_gy = segment_index(min_ty), segment_index(max_ty)
             segments = []
             for gy in range(min_gy, max_gy + 1):
                 for gx in range(min_gx, max_gx + 1):
                     level_name = c.gmap_grid.get((gx, gy))
                     if level_name:  # else segment not part of this gmap - stays black
-                        segments.append((level_name, gx * 64, gy * 64))
+                        segments.append((level_name, *segment_origin(gx, gy)))
         else:
             level_name = c._current_level_name or c._tiles_level_name or _STANDALONE_KEY
             segments = [(level_name, 0, 0)]
@@ -363,21 +365,34 @@ class WorldRenderMixin:
         if not tiles:
             return
 
+        # Resolve each DISTINCT tile id once. A 64x64 board is 4096 cells but
+        # only a few hundred distinct ids (259 on the live zlttp segments
+        # measured 2026-07-25), and get_tile_or_color is not a plain dict hit:
+        # with a tiledef active it re-evaluates `any(_applies(prefix))` over
+        # the definition list on every call. Memoising halves the bake even
+        # with no tiledefs (7.7 -> 3.8 ms/segment), and this bake is the frame
+        # cost that shows up as a stutter when a level change drops the
+        # segment cache and several segments re-bake in one frame.
+        resolved = {}
+        get_tile = self.tileset_mgr.get_tile_or_color
+        animated_types = self._ANIMATED_TILE_TYPES
+        blits = []
         for ty in range(64):
             row = ty * 64
             for tx in range(64):
                 tile_id = tiles[row + tx]
-                dest_x = tx * TILE_SIZE
-                dest_y = ty * TILE_SIZE
-
-                tile = self.tileset_mgr.get_tile_or_color(tile_id)
-                surface.blit(tile, (dest_x, dest_y))
-
+                entry = resolved.get(tile_id)
+                if entry is None:
+                    entry = (get_tile(tile_id),
+                             get_tile_type(tile_id) in animated_types)
+                    resolved[tile_id] = entry
+                blits.append((entry[0], (tx * TILE_SIZE, ty * TILE_SIZE)))
                 # Tier 4a: index water/lava tiles (segment-local coords) for
                 # the per-frame shimmer pass - cheap here since we're already
                 # iterating every tile once for the base composite.
-                if get_tile_type(tile_id) in self._ANIMATED_TILE_TYPES:
+                if entry[1]:
                     animated_out.append((tx, ty, tile_id))
+        surface.blits(blits, doreturn=False)
 
     def _get_shimmer_tile(self, tile_id: int, step: int) -> pygame.Surface:
         """Tier 4a fallback animation: a subtle brightness-pulsed copy of a

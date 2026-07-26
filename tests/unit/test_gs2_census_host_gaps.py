@@ -54,16 +54,14 @@ def _rt(**over):
     return ClientGS2(client, ClientGS1(client))
 
 
-# =============================================================================
-# contains() -- word-boundary containment, NOT substring
-# =============================================================================
-
 def test_contains_requires_word_borders_on_both_sides():
     """TInitStatics.cpp:1962-1990 walks matches and accepts one only when it
     is bounded by TStringConstants::wordborder (vars24, :283) or by the ends
-    of the string, case-insensitively. era's weapongun.txt:270 gates on
-    contains(this.weapon_opposite, "Dual") and -Commands.txt:1159 on
-    contains(player.level.name, "mall"); a substring test over-matches both."""
+    of the string, case-insensitively. GServer-v2/bin/servers/era/scripts/
+    weapongun.txt:236 uses the GS1 builtin
+    strcontains(#s(this.weapon_opposite),Dual), so it is not evidence for GS2
+    contains() word-boundary behaviour. GServer-v2/bin/servers/era/weapons/
+    weapon%045Commands.txt:1185 uses contains(player.level.name, "mall")."""
     rt = _rt()
     assert call(rt, "contains", ["hello world", "world"]) is True
     assert call(rt, "contains", ["era_mall-01.nw", "mall"]) is True
@@ -79,10 +77,6 @@ def test_contains_keeps_scanning_past_a_rejected_match():
     assert call(rt, "contains", ["smallroom the mall", "mall"]) is True
 
 
-# =============================================================================
-# degtorad / radtodeg
-# =============================================================================
-
 def test_degtorad_and_radtodeg_round_trip():
     """TInitStatics.cpp:1999/2004, bindings :2289-2290 `{'d', "d"}`."""
     rt = _rt()
@@ -90,10 +84,6 @@ def test_degtorad_and_radtodeg_round_trip():
     assert call(rt, "degtorad", [0]) == 0.0
     assert abs(call(rt, "radtodeg", [math.pi]) - 180.0) < 1e-9
 
-
-# =============================================================================
-# findplayer(account)
-# =============================================================================
 
 def test_findplayer_returns_the_same_objects_identity_comparisons_expect():
     """Reference TInitStatics.cpp:2127 (binding :2301 `{'o', "s"}`) checks
@@ -121,10 +111,6 @@ def test_findplayer_accepts_a_player_object_the_way_zelda_calls_it():
     assert call(rt, "findplayer", [players[1]]).get("account") == "near"
 
 
-# =============================================================================
-# objecttype()
-# =============================================================================
-
 def test_objecttype_reports_the_control_class():
     """TGraalVarProperties.cpp:475-483 `{'s', ""}`. Login filters its taskbar
     with `temp.button.objecttype() != "GuiButtonCtrl"`."""
@@ -136,10 +122,6 @@ def test_objecttype_reports_the_control_class():
     # a plain `new Foo()` object is named after its classname
     assert call(rt, "objecttype", obj=GS2Object(name="Foo")) == "Foo"
 
-
-# =============================================================================
-# cursorOn / cursorOff
-# =============================================================================
 
 def test_cursor_visibility_toggles_are_real():
     """GuiCanvas.cpp:47-63, bindings :83-85. Login's serverlist calls
@@ -153,12 +135,8 @@ def test_cursor_visibility_toggles_are_real():
     assert rt.gui.cursor_on is True and call(rt, "iscursoron") == 1.0
 
 
-# =============================================================================
-# imgwidth / imgheight and keycode -- legacy GS1 spellings
-# =============================================================================
-
 def test_imgwidth_is_the_legacy_spelling_of_getimgwidth():
-    """v6's table has only the get* pair (TInitStatics.cpp:2287-2288);
+    """v6's table has only the get* pair (TInitStatics.cpp:2297-2298);
     imgwidth/imgheight are in reborn_protocol.gs1's FUNCTIONS table, so both
     engines answer them from one implementation here."""
     sizes = {"x.png": (24, 48)}
@@ -177,12 +155,8 @@ def test_keycode_shares_the_gs1_engine_keymap():
     assert call(rt, "keycode", [""]) == 0.0
 
 
-# =============================================================================
-# onwater -- routed to the GS1 host's tile test
-# =============================================================================
-
 def test_onwater_reaches_the_shared_tile_test():
-    """TInitStatics.cpp:4240-4241 `{'b', "dd"}` -> TServerLevel::isOnWater.
+    """TInitStatics.cpp:4240 `{'b', "dd"}` -> TServerLevel::isOnWater.
     Zelda's movement weapon gates its swim branch on it."""
     rt = _rt()
     seen = []
@@ -191,10 +165,6 @@ def test_onwater_reaches_the_shared_tile_test():
     assert call(rt, "onwater", [5, 6]) is False
     assert seen == [(3, 4), (5, 6)]
 
-
-# =============================================================================
-# GUI control methods
-# =============================================================================
 
 def test_text_control_isempty_answers_the_login_autologin_gate():
     """`if (!PassEdit.isEmpty()) doLogin();` -- unanswered it returned 0.0,
@@ -241,10 +211,6 @@ def test_every_new_name_is_on_the_reported_host_surface():
                  "getandroiddevicemodel"):
         assert name in surface, name
 
-
-# =============================================================================
-# Census entries that are NOT host gaps -- pinned so they aren't re-chased
-# =============================================================================
 
 def test_array_remove_insert_delete_are_opcodes_not_builtins():
     """The census counted `arr.remove(x)` / `.insert(i,v)` / `.delete(i)` as

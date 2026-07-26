@@ -115,10 +115,6 @@ def _record(**over):
     return rec
 
 
-# =============================================================================
-# 1. this.<prop> -> the live npc dict
-# =============================================================================
-
 def test_position_write_moves_the_record_and_tracks_world_coords():
     """`x = 12.5` must move the sprite: the renderer prefers world_x/world_y
     (client.py stamps them on every PLO_NPCPROPS), so a local-frame write has
@@ -207,10 +203,6 @@ def test_string_keyed_npc_ids_resolve_to_the_same_record():
     assert rec["gani"] == "walk"
 
 
-# =============================================================================
-# 2. event routing + teardown
-# =============================================================================
-
 def _load_npc_vm(rt, npc_id):
     return rt.load_bytecode("npc", npc_id, _serialize(_timeout_counter_container()))
 
@@ -238,10 +230,6 @@ def test_forget_npc_drops_vm_timeout_and_scheduled_events():
     assert not [item for item in rt._scheduled if item["key"] == ("npc", 5)]
 
 
-# =============================================================================
-# 3. attach() replays bytecode that landed before the hook existed
-# =============================================================================
-
 def test_attach_replays_bytecode_received_before_the_hook():
     """The launcher logs in and only then builds GameClient, so the login
     burst's scripts land in client.gs2_bytecode with nobody listening."""
@@ -263,10 +251,6 @@ def test_attach_loads_classes_before_the_weapons_that_join_them():
     rt = ClientGS2(client).attach()
     assert set(rt.vms["class"]) == {"c"} and set(rt.vms["weapon"]) == {"-w"}
 
-
-# =============================================================================
-# 4. orphaned-NPC timer suppression
-# =============================================================================
 
 def test_timer_of_an_npc_left_behind_by_a_warp_stops_firing():
     rec = _record()

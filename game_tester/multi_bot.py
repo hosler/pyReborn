@@ -43,11 +43,22 @@ class MultiBotTest:
             self.bots.append(bot)
 
     def connect_all(self, timeout: float = 10.0) -> bool:
-        """Connect all bots to server."""
+        """Connect all bots to server; all-or-nothing.
+
+        A partial success used to leave the bots that DID get in logged in
+        forever: no caller compensates on False (game_tester/__main__.py's
+        run_multi_bot_tests returns, tests/test_qa_pytest.py's multi_bots
+        fixture pytest.fail()s before its disconnect_all() teardown), so those
+        accounts stayed online and the next run's own logins collided with
+        them. Every bot is still attempted before rolling back, so the issue
+        list distinguishes "one bot failed" from "the server is down".
+        """
         success = True
         for bot in self.bots:
             if not bot.connect(timeout=timeout):
                 success = False
+        if not success:
+            self.disconnect_all()
         return success
 
     def disconnect_all(self):
