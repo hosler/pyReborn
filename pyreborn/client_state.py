@@ -12,6 +12,8 @@ Nothing here talks to the network or to Client: these are plain state holders.
 from collections import OrderedDict
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import tiletypes as _tiletypes
+
 MAX_CACHED_LEVELS = 512
 MAX_CACHED_FILES = 512
 
@@ -144,6 +146,21 @@ class LevelState:
         self.board_heights: Dict[Tuple[int, int], dict] = {}
 
         self.is_leader = False          # PLO_ISLEADER: we drive level NPCs/baddies
+
+    # Every "the player is now in level X" write in client.py and
+    # handlers/level.py flows through this one property (via the
+    # _current_level_name alias), so it is THE hook that keeps the
+    # per-level tilestype selection (tiletypes.set_current_level /
+    # TTiles::GetLevelTiles) in step with the player's level — for the
+    # headless client as well as pygame.
+    @property
+    def current_level_name(self) -> str:
+        return self._current_level_name_value
+
+    @current_level_name.setter
+    def current_level_name(self, value: str) -> None:
+        self._current_level_name_value = value
+        _tiletypes.set_current_level(value)
 
 
 class GmapState:

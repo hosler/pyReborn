@@ -456,9 +456,11 @@ class TilesetManager:
         # Partial-sheet pastes (addtiledef2), in script order. Later entries
         # are blitted last and therefore win where images overlap.
         self.tiledefs: List[Tuple[str, str, int, int]] = []
-        # Base definitions use the longest matching prefix; ties keep the
-        # earlier definition (TTiles.cpp:567-630).
-        self.full_tiledefs: List[Tuple[str, str]] = []
+        # Base definitions (image, prefix, m_type) use the longest matching
+        # prefix; ties keep the earlier definition, and defs with
+        # m_type >= 3 (except 5) are skipped (TTiles.cpp:568-631). The
+        # m_type also selects the tile-TYPE table — see tiletypes.py.
+        self.full_tiledefs: List[Tuple[str, str, int]] = []
         # Player's current level, lowercased -- selects which defs apply.
         self.current_level = ""
         self._composed_sheet: Optional[pygame.Surface] = None
@@ -492,10 +494,13 @@ class TilesetManager:
         self.tiledefs.append(entry)
         self.clear_cache()
 
-    def set_full_tiledef(self, image: str, levelstart: str = ""):
+    def set_full_tiledef(self, image: str, levelstart: str = "",
+                         tile_type: int = 0):
         """addtiledef: replace the whole default tileset with `image` in
-        levels starting with `levelstart`."""
-        entry = (strip_tiledef_image(image), (levelstart or "").lower())
+        levels starting with `levelstart`. `tile_type` is the def's m_type
+        (0 classic, 1/2 new-world, 5 none)."""
+        entry = (strip_tiledef_image(image), (levelstart or "").lower(),
+                 int(tile_type))
         if entry in self.full_tiledefs:
             return
         prefix = entry[1]
@@ -536,7 +541,11 @@ class TilesetManager:
 
         base_name = self.default_tileset
         best_prefix_length = -1
-        for image, prefix in self.full_tiledefs:
+        for image, prefix, m_type in self.full_tiledefs:
+            # GetLevelTiles skips defs with m_type >= 3 (except 5) for the
+            # base image exactly as it does for the tilestype.
+            if m_type >= 3 and m_type != 5:
+                continue
             if (self._applies(prefix)
                     and len(prefix) > best_prefix_length
                     and self.sprite_mgr.has_sheet(image)):
@@ -591,7 +600,9 @@ class TilesetManager:
                     self.tile_cache[cache_key] = tile
                     return tile
             best_prefix_length = -1
-            for image, prefix in self.full_tiledefs:
+            for image, prefix, m_type in self.full_tiledefs:
+                if m_type >= 3 and m_type != 5:
+                    continue
                 if (self._applies(prefix)
                         and len(prefix) > best_prefix_length
                         and self.sprite_mgr.has_sheet(image)):

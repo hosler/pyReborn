@@ -29,7 +29,9 @@ from ..sounds import SoundManager, preload_common_sounds
 from ..inventory_ui import InventoryUI, HeartDisplay
 from ..npc_handler import NPCHandler
 from ..player import Player
-from ..tiletypes import TileType, get_tile_type, type_is_blocking
+from ..tiletypes import (
+    TileType, active_tilestype, get_tile_type, type_is_blocking,
+)
 from .constants import (
     TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     TILESET_COLS, TILESET_ROWS, MOVE_STEP, CORNER_ASSIST_MAX,
@@ -46,8 +48,13 @@ class CollisionMixin:
     """Mixin providing the above methods for GameClient."""
 
     def _get_corrected_tile_type(self, tile_id: int) -> int:
-        """Get tile type, using corrections if available."""
-        if tile_id in self.tile_corrections:
+        """Get tile type, using corrections if available.
+
+        The corrections overlay (liftable bushes/pots/rocks/signs) encodes
+        knowledge about the CLASSIC tileset's art, so it only applies while
+        the level's tilestype is 0; a new-world tileset (tilestype 1/2)
+        shows different art at those tile ids."""
+        if active_tilestype() == 0 and tile_id in self.tile_corrections:
             return self.tile_corrections[tile_id]
         return get_tile_type(tile_id)
     def _is_tile_blocking(self, tile_id: int) -> bool:

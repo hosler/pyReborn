@@ -25,7 +25,10 @@ from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
 from reborn_protocol.gs1.values import gs1_int, to_num, to_str
 from .sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
-from .tiletypes import get_tile_type, is_blocking, is_water
+from .tiletypes import (
+    TileType, get_tile_type, tilestype_for_level, type_is_blocking,
+    register_tiledef, remove_tiledefs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -684,18 +687,29 @@ class GS1ClientHost(Host):
     def _cmd_addtiledef(self, name, args, ctx, imgs):
         # addtiledef <image>[, <levelstart>[, <type>]] — replace the WHOLE
         # tileset (the image is a full 2048x512 sheet; Bomber v6's
-        # bmb_pics1.png).
+        # bmb_pics1.png). The type selects the tile-TYPE table for matching
+        # levels (0 classic, 1/2 new-world, 5 none — tiletypes.py); it is
+        # registered even headless, where on_tiledef is unwired but script
+        # probes (onwall/onwater/tiletype) still read the tables.
         rt = self.rt
-        if args and rt.on_tiledef:
-            image = to_str(args[0])
-            levelstart = to_str(args[1]) if len(args) >= 2 else ""
-            rt.on_tiledef("full", image, levelstart)
+        if not args:
+            return
+        image = to_str(args[0])
+        levelstart = to_str(args[1]) if len(args) >= 2 else ""
+        try:
+            tile_type = int(to_num(args[2])) if len(args) >= 3 else 0
+        except (TypeError, ValueError):
+            tile_type = 0
+        register_tiledef(levelstart, tile_type)
+        if rt.on_tiledef:
+            rt.on_tiledef("full", image, levelstart, tile_type)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "removetiledefs")
     def _cmd_removetiledefs(self, name, args, ctx, imgs):
         # revert to the default tileset
+        prefix = to_str(args[0]).lower() if args else ""
+        remove_tiledefs(prefix)
         if self.rt.on_tiledef:
-            prefix = to_str(args[0]).lower() if args else ""
             self.rt.on_tiledef(None, prefix)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "seteffect")
@@ -2337,6 +2351,15 @@ class ClientGS1:
                     pass
         return None
 
+    def _tilestype(self):
+        """The tilestype in force for the client's CURRENT level, so script
+        probes read the same type table (classic vs new-world) the level's
+        tiledefs select — see tiletypes.select_tilestype."""
+        name = ""
+        if self.client is not None:
+            name = getattr(self.client, "_current_level_name", "") or ""
+        return tilestype_for_level(name)
+
     def is_wall(self, x, y):
         """Collision test at world tile (x, y) for onwall(). Checks the level
         board under (x, y) (a blocking tile id), plus any dynamic collision
@@ -2345,7 +2368,7 @@ class ClientGS1:
         tile = self.tile_at(x, y)
         if tile is not None:
             try:
-                if is_blocking(tile):
+                if type_is_blocking(get_tile_type(tile, self._tilestype())):
                     return True
             except TypeError:
                 pass
@@ -2361,19 +2384,20 @@ class ClientGS1:
         if tile is None:
             return False
         try:
-            return bool(is_water(tile))
+            return get_tile_type(tile, self._tilestype()) in (
+                TileType.WATER, TileType.NEAR_WATER)
         except TypeError:
             return False
 
     def tile_type_at(self, x, y):
-        """`tiletype(x, y)`: the tile's TYPE code (tiletypes.py / the classic
-        0-21 table), not its tile id. Zelda's movement engine reads it for
-        chairs (3), beds (4/5) and jumpable ledges (21)."""
+        """`tiletype(x, y)`: the tile's TYPE code (tiletypes.py, table chosen
+        by the level's tilestype), not its tile id. Zelda's movement engine
+        reads it for chairs (3), beds (4/5) and jumpable ledges (21)."""
         tile = self.tile_at(x, y)
         if tile is None:
             return 0.0
         try:
-            return float(int(get_tile_type(tile)))
+            return float(int(get_tile_type(tile, self._tilestype())))
         except (TypeError, ValueError):
             return 0.0
 

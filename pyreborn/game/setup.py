@@ -228,7 +228,8 @@ class SetupMixin:
                 # instead of the default.
                 tm = self.tileset_mgr
                 if (any(img == filename for img, _, _, _ in tm.tiledefs)
-                        or any(img == filename for img, _ in tm.full_tiledefs)):
+                        or any(img == filename
+                               for img, _, _ in tm.full_tiledefs)):
                     tm.clear_cache()
                     self.world_surface = None
             elif ext == 'gani':
@@ -628,8 +629,10 @@ class SetupMixin:
                 return
             image = strip_tiledef_image(image)
             if kind == "full":
-                # addtiledef: whole-tileset replacement sheet
-                self.tileset_mgr.set_full_tiledef(image, levelstart)
+                # addtiledef: whole-tileset replacement sheet. For "full"
+                # the x slot carries the def's tile TYPE (0 classic,
+                # 1/2 new-world, 5 none), which also picks the type table.
+                self.tileset_mgr.set_full_tiledef(image, levelstart, x)
             else:
                 self.tileset_mgr.set_tiledef(image, levelstart, x, y)
             # tileset_mgr's tile_cache is cleared above, but the baked

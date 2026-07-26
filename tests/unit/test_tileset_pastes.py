@@ -31,7 +31,7 @@ def test_tiledef_image_is_lowercase_basename():
     manager = TilesetManager(SpriteManager([]))
     manager.set_full_tiledef("Levels/Tiles/CUSTOM.PNG", "")
 
-    assert manager.full_tiledefs == [("custom.png", "")]
+    assert manager.full_tiledefs == [("custom.png", "", 0)]
 
 
 def test_duplicate_paste_definition_is_ignored():
@@ -50,7 +50,7 @@ def test_full_definition_replaces_same_prefix_paste():
     manager.set_full_tiledef("full.png", "level")
 
     assert manager.tiledefs == []
-    assert manager.full_tiledefs == [("full.png", "level")]
+    assert manager.full_tiledefs == [("full.png", "level", 0)]
 
 
 def test_longest_prefix_selects_base_sheet():
@@ -73,7 +73,7 @@ def test_remove_prefix_keeps_unrelated_definition():
 
     assert manager.clear_tiledefs("zlttp") is True
     assert manager.tiledefs == []
-    assert manager.full_tiledefs == [("church.png", "church")]
+    assert manager.full_tiledefs == [("church.png", "church", 0)]
 
 
 def test_non_aligned_pastes_use_sheet_pixel_offsets_and_level_prefix():
