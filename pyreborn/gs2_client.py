@@ -20,6 +20,7 @@ handlers (client.gs2_host), and the game loop pumps process_timeouts(dt).
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from pathlib import Path
@@ -82,8 +83,17 @@ _GS1_COMMANDS = frozenset(_GS1_COMMANDS) | {
 #: gmap-aware, which a 0..63 board probe is not. Zelda spells tiletype both
 #: ways: bare (weapon-Player_Movement.txt:451) and as a level member (:369),
 #: so the obj-method block routes here too.
+#:
+#: testnpc/testplayer are the same deal one step out: they probe level
+#: OBJECTS rather than tiles, GS1ClientHost._test_at has answered them since
+#: the classic-Bomber shop fix, and v6 registers them as `level.testnpc`
+#: (src/TServerLevelProperties.cpp:263) and the global `testplayer`
+#: (src/TInitStatics.cpp:4278, body :3880-3900). They were simply missing
+#: from this table, so every GS2 spelling read 0.0 -- i.e. "index 0", a hit
+#: on the first NPC in the level, for a probe whose miss value is negative.
 _GS1_LEVEL_PROBES = frozenset({
     "onwall", "onwall2", "onwater", "onwater2", "tiletype",
+    "testnpc", "testplayer",
 })
 
 #: GS1 function names (value-returning) answered by GS1ClientHost.call_function.
@@ -118,13 +128,89 @@ _PLAYER_MEMBER_ATTR = {k[len("player"):]: v for k, v in PLAYER_ATTR.items()}
 _PLAYER_MEMBER_ATTR.update({
     "id": "id",
     "nick": "nickname",
-    "ani": "gani",
+    # Player stores the current gani in `animation`; "gani" is the key the
+    # remote-player RECORDS use, not an attribute on Player. This entry is
+    # reached on WRITES only (get() answers ani/gani as a handle above), and
+    # pointing it at a non-existent attribute made `player.ani = "walk"` land
+    # somewhere nothing reads.
+    "ani": "animation",
     # v6 HUD scripts read these members directly; none has a GS1
     # "player<name>" builtin. "darts" is the classic name for arrows.
     "mp": "mp", "magicpoints": "mp", "ap": "ap", "darts": "arrows",
     "swordimg": "sword_image", "shieldimg": "shield_image",
     "headimg": "head_image", "bodyimg": "body_image",
+    "horseimg": "horse_image",
+    # `hp`/`maxhp` are the v6 spellings of hearts/fullhearts; maxhp reuses
+    # fullhearts' getter outright (FourPlay quattroplay/src/
+    # TServerPlayerProperties.cpp:585) and is READ-ONLY there.
+    "hp": "hearts", "maxhp": "max_hearts",
+    # The RAW 0/1/2 field, not GS1's playerglovepower (which reports 1/2/3 --
+    # see gs1_client._pb_glovepower): the reference's getter hands back
+    # getGlovePower() unbiased (TServerPlayerProperties.cpp:118).
+    "glovepower": "glove_power",
 })
+
+#: player members READ-ONLY in the reference, i.e. registered with a nullptr
+#: setter. `nick` is the interesting one: TPlayerProperties's own entry
+#: (quattroplay/src/TPlayerProperties.cpp:252-258) has a nullptr setter and
+#: REPLACES TServerPlayer's read/write entry (:609) when the child table is
+#: compiled (src/TProperties.cpp:117-129), so writing player.nick on the LOCAL
+#: player is a no-op. Remote players keep the writable slot, which is why this
+#: gate lives here and not on the script_player_object entries.
+_PLAYER_READONLY = frozenset({"nick", "maxhp", "levelname"})
+
+#: Members the reference registers with returnType 's' that pyReborn has no
+#: source for. They must answer a STRING anyway: a name that resolves to
+#: nothing becomes Number 0.0 (quattroplay/src/TScriptStackEntry.cpp:228-229)
+#: and a Number-vs-String compare runs strtofloat() over the string
+#: (src/TScriptMachine.cpp:1463), which is 0.0 for any non-numeric literal --
+#: so an unanswered name equals EVERY word a script compares it against.
+#: "" goes through compareIgnoreCase instead and behaves.
+_PLAYER_EMPTY_STRINGS = frozenset({
+    # TGraalVar's own `name`, inherited by every object. TServerPlayer passes
+    # a null name to the TGraalVar base (src/TServerPlayer.cpp:95), so "" is
+    # the reference's answer here too, not a placeholder for one.
+    "name",
+    "language", "languagedomain",   # TServerPlayerProperties.cpp:555, :564
+    "chatoffset",                   # :339
+    "alliedguilds", "letters",      # TPlayerProperties.cpp:54, :234
+    "aniparams", "rotationcenter",  # TGaniObjectProperties.cpp:55, :208
+})
+
+#: The same rule for OTHER players (findplayer / findnearestplayers entries,
+#: whose chain is TServerPlayer -> TGaniObject -> TGraalVar). `platform` and
+#: `communityname` are "" here rather than what _PlayerObject answers: we know
+#: our own host OS, never a remote player's.
+_REMOTE_PLAYER_EMPTY_STRINGS = frozenset(
+    _PLAYER_EMPTY_STRINGS | {"platform", "communityname", "horseimg"})
+
+#: TGaniObject's per-object render transform (TGaniObjectProperties.cpp:199,
+#: :217, :226, :235, :244, :253, :262, :271, :280, :289), registered on
+#: players AND NPCs. Every getter there is a raw address, so the oracle backs
+#: only the names, types and read/write flags -- the values below are the
+#: identity transform our own showimg records already use, chosen so a script
+#: that reads a slot it never wrote gets a no-op rather than a black,
+#: zero-scaled object. Writes are remembered (the renderer does not consume
+#: them yet; that lives outside this module).
+_GANI_TRANSFORM_DEFAULTS = {
+    "rotation": 0.0, "zoom": 1.0, "stretchx": 1.0, "stretchy": 1.0,
+    "red": 1.0, "green": 1.0, "blue": 1.0, "alpha": 1.0,
+    "mode": 0.0, "useowncenter": 0.0,
+}
+
+#: player.zoomfactor's clamp: value <= 16.0 ? max(value, 1.0) : 16.0
+#: (quattroplay/src/TPlayerProperties.cpp:44-50, constants FLOAT_0040231c =
+#: 16.0 and FLOAT_004022c0 = 1.0 at src/TInitStatics.cpp:1221,1226).
+ZOOM_FACTOR_MIN = 1.0
+ZOOM_FACTOR_MAX = 16.0
+
+#: player.freezetime is carried as a tick counter decremented once per player
+#: update; the property converts with 20 ticks per second and the setter caps
+#: at 600 ticks == 30 s (quattroplay/src/TPlayerProperties.cpp:11-37, with
+#: DOUBLE_004023f8 = 20.0 and DOUBLE_00402518 = 30.0 at
+#: src/TInitStatics.cpp:1264,1254). Not frozen reads -1.0, not 0.
+FREEZE_TICKS_PER_SECOND = 20.0
+FREEZE_MAX_TICKS = 600
 
 
 def _csv_flatten(args) -> List[str]:
@@ -213,16 +299,27 @@ class _FlagScopeObject(GS2Object):
     server scope ("server." alone is stripped by its recv), so the serverr
     view prefixes its keys. serverr is the read-only replica -- writes stay
     local (dict.__setitem__) instead of echoing PLI_FLAGSET back.
+
+    `client`, `clientr` and `serverr` are ALSO the executing player:
+    resolveObjectMember binds all three to `executingplayer` (FourPlay
+    quattroplay/src/TScriptMachine.cpp:5123-5130), so `client.nick`,
+    `clientr.x` and `serverr.account` are player-property reads, not flags.
+    A `player` handed to __init__ answers those once the flag store has
+    said it does not have the name. Only READS fall through: a write here
+    stays a flag write, because these stores are the wire flag namespace
+    and live content spells `clientr.x = ...` meaning a flag.
     """
 
-    __slots__ = ("_scope", "_prefix", "_local_writes")
+    __slots__ = ("_scope", "_prefix", "_local_writes", "_player")
 
     def __init__(self, name: str, scope: dict, prefix: str = "",
-                 local_writes: bool = False):
+                 local_writes: bool = False,
+                 player: Optional[GS2Object] = None):
         super().__init__(name=name)
         self._scope = scope
         self._prefix = prefix
         self._local_writes = local_writes
+        self._player = player
 
     def _key(self, key: str) -> str:
         return self._prefix + key if self._prefix else key
@@ -237,7 +334,12 @@ class _FlagScopeObject(GS2Object):
         if self._prefix:
             if key in self._scope:
                 return self._scope[key]
-            return self._scope.get(key.lower(), "")
+            if key.lower() in self._scope:
+                return self._scope[key.lower()]
+        if self._player is not None:
+            value = self._player.get(key)
+            if value is not None:
+                return value
         return ""
 
     def set(self, key: str, value: Any) -> None:
@@ -251,7 +353,9 @@ class _FlagScopeObject(GS2Object):
         # flag as "" via get() (member-access never consults has()), but the
         # with-scope variable lookup (vm.py _lookup) DOES gate on has() --
         # returning True unconditionally there would silently redirect every
-        # bare local inside `with(server){...}` to a networked flag.
+        # bare local inside `with(server){...}` to a networked flag. The
+        # player fallback in get() is deliberately NOT reported here for the
+        # same reason: `with(client){ x = 1; }` must not become a teleport.
         k = self._key(key)
         return (k in self._scope or k.lower() in self._scope
                 or (bool(self._prefix)
@@ -504,7 +608,16 @@ class _PlayerObject(GS2Object):
                 # reads `i.ani.name` off every player findnearestplayers()
                 # hands it (weapon-Player_Movement.txt:734). _NameObject
                 # keeps the plain-string comparisons working too.
-                return _NameObject(to_str(getattr(p, "gani", "") or ""))
+                #
+                # The LOCAL player keeps it in Player.animation; only the
+                # remote-player RECORDS (packets.parse_other_player) use the
+                # key "gani". Reading `p.gani` here therefore always found
+                # nothing, so player.ani was permanently "" and every
+                # `player.ani == "idle"` / "walk" / "sword" branch in content
+                # was dead. Both spellings are accepted so a caller that does
+                # stamp `gani` still wins.
+                ani = getattr(p, "gani", None) or getattr(p, "animation", "")
+                return _NameObject(to_str(ani or ""))
             if key in _PLAYER_MEMBER_ATTR:
                 v = getattr(p, _PLAYER_MEMBER_ATTR[key], 0)
                 return v if isinstance(v, str) else to_num(v)
@@ -544,11 +657,107 @@ class _PlayerObject(GS2Object):
                 return obj
             if key == "weapons":
                 return self._rt2.weapon_list_objects()
-        return super().get(key)
+            if key == "levelname":
+                # The OFFICIAL spelling of the current level
+                # (TServerPlayerProperties.cpp:573, getter :181). `level`
+                # just above is our own extension -- no player class in the
+                # reference registers it (the reference puts `level` on
+                # TLevelObject, src/TLevelObjectProperties.cpp:6) -- but it
+                # fixed a real bug and stays; content written against the
+                # reference spells levelname and used to read 0.0.
+                return to_str(self.get("level"))
+            if key in ("hurt", "hurted"):
+                # b RO (TPlayerProperties.cpp:144, :171; raw-address bodies).
+                # Player.hurt_timeout is when the hurt animation ends, which
+                # is the only "recently hit" state this client keeps.
+                return 1.0 if to_num(getattr(p, "hurt_timeout", 0.0)) > \
+                    time.time() else 0.0
+            if key in ("hurtdx", "hurtdy", "hurtpower"):
+                # d RO (:153, :162, :180). PLO_HURTPLAYER carries these but
+                # nothing retains them past the handler, so 0.0 -- which is
+                # what a numeric-typed unanswered name reads as anyway, so
+                # this costs nothing and is listed only to be explicit.
+                return 0.0
+            if key in ("swimming", "onhorse", "online", "freezetime"):
+                return self._gs1_player_builtin("player" + key)
+        if key == "zoomfactor":
+            game = getattr(self._rt2, "game_shell", None)
+            camera = getattr(game, "camera", None)
+            if camera is not None:
+                return float(camera.zoom)
+            stored = super().get(key)
+            return ZOOM_FACTOR_MIN if stored is None else to_num(stored)
+        if key in ("defaultwalkspeed", "diagonalwalkspeed"):
+            # d RW (TPlayerProperties.cpp:81, :90), raw-address bodies -- the
+            # reference's UNIT was not recovered, so a script's write is
+            # remembered but deliberately not fed back into movement; the
+            # read reports our own walk speed in tiles/second.
+            stored = super().get(key)
+            if stored is not None:
+                return to_num(stored)
+            game = getattr(self._rt2, "game_shell", None)
+            return float(getattr(game, "walk_speed", 0.0) or 0.0)
+        value = super().get(key)
+        if value is None:
+            if key in _PLAYER_EMPTY_STRINGS:
+                return ""
+            if key in _GANI_TRANSFORM_DEFAULTS:
+                return _GANI_TRANSFORM_DEFAULTS[key]
+        return value
+
+    def _gs1_player_builtin(self, name: str) -> Any:
+        """One of the state flags both engines expose, answered by the GS1
+        host so the two never disagree (playerswimming / playeronhorse /
+        playeronline / playerfreezetime)."""
+        gs1 = self._rt2.gs1
+        if gs1 is None:
+            return 0.0
+        value = gs1._host.get_builtin(name, [], self._rt2._gs1_ctx(None))
+        return 0.0 if value is UNSET else value
+
+    def _set_freezetime(self, seconds: float) -> None:
+        """player.freezetime = N, with the reference's quantisation.
+
+        propfun_player_freezetime_w (quattroplay/src/TPlayerProperties.cpp:
+        18-37): a negative value freezes for 0 ticks, anything past 30 s
+        saturates at the 600-tick ceiling, and everything else is
+        `int(seconds * 20 + 1e-4)` ticks -- so 0.03 s rounds DOWN to nothing
+        while 0.05 s is exactly one tick. It then clears the action mode; the
+        input lock our freezeplayer handler installs (game/setup.py
+        on_freezeplayer) is this client's equivalent, so routing through the
+        GS1 command keeps one writer for both engines."""
+        if seconds < 0.0:
+            ticks = 0
+        elif seconds <= FREEZE_MAX_TICKS / FREEZE_TICKS_PER_SECOND:
+            ticks = int(seconds * FREEZE_TICKS_PER_SECOND + 0.0001)
+        else:
+            ticks = FREEZE_MAX_TICKS
+        self._rt2._gs1_command("freezeplayer",
+                               [ticks / FREEZE_TICKS_PER_SECOND], None)
 
     def set(self, key: str, value: Any) -> None:
         key = key.lower()
         p = self._player()
+        if key in _PLAYER_READONLY:
+            return
+        if key == "freezetime":
+            self._set_freezetime(to_num(value))
+            return
+        if key == "zoomfactor":
+            zoom = to_num(value)
+            zoom = ZOOM_FACTOR_MAX if zoom > ZOOM_FACTOR_MAX else max(
+                zoom, ZOOM_FACTOR_MIN)
+            game = getattr(self._rt2, "game_shell", None)
+            camera = getattr(game, "camera", None)
+            if camera is not None:
+                camera.zoom = zoom
+            super().set(key, zoom)
+            return
+        if key == "glovepower" and p is not None:
+            # The reference's setter floors at 0 and nothing else
+            # (TServerPlayerProperties.cpp:119-123).
+            setattr(p, "glove_power", max(0, int(to_num(value))))
+            return
         if key in ("x", "y") and p is not None:
             # p.x/p.y (== client.x/y) are already world-frame - see get()'s
             # comment - so the assigned value is written straight through,
@@ -611,7 +820,16 @@ class _ThisObject(GS2Object):
             kind, key_ = self._vm_key
             vm = self._rt2.vms.get(kind, {}).get(key_)
             if vm is not None:
-                return vm.script_function(key)
+                fn = vm.script_function(key)
+                if fn is not None:
+                    return fn
+            if key.lower() == "name":
+                # TGraalVar's `name` (quattroplay/src/TGraalVarProperties.cpp:
+                # 627) is on EVERY object and is string-typed, so leaving it
+                # unanswered makes `this.name == "<anything>"` true -- see
+                # _PLAYER_EMPTY_STRINGS for why. The reference passes no name
+                # to the base for a script object, so "" is its answer too.
+                return ""
         return v
 
 
@@ -629,7 +847,29 @@ _NPC_THIS_ATTR = {
     "headimg": "head_image", "bodyimg": "body_image",
     "shieldimg": "shield_image", "swordimg": "sword_image",
     "horseimg": "horse_image",
+    # Verified alias pairs: identical getter AND setter pointers in the same
+    # table, so each is one slot under two names -- head/headimg
+    # (quattroplay/src/TGaniObjectProperties.cpp:154 and :163), body/bodyimg
+    # (:109, :118), shield/shieldimg and sword/swordimg
+    # (src/TPlayerProperties.cpp:297/:306 and :333/:342). So `shield` on an
+    # NPC is the shield IMAGE, never the shield power.
+    "head": "head_image", "body": "body_image",
+    "shield": "shield_image", "sword": "sword_image",
 }
+
+#: string-typed members an NPC `this` inherits from TServerPlayer that a
+#: client-side NPC never has a value for. Answered as "" for the reason in
+#: _PLAYER_EMPTY_STRINGS: unanswered would compare equal to every literal.
+#: `account` src/TServerPlayerProperties.cpp:267, `communityname` :330,
+#: `platform` :627.
+_NPC_EMPTY_STRINGS = frozenset({"account", "communityname", "platform"})
+
+#: the string-typed half of _NPC_THIS_ATTR (the rest -- x/y/dir/glovepower --
+#: is numeric, where an unanswered read is already the right shape).
+_NPC_STRING_ATTRS = frozenset({
+    "image", "ani", "nick", "chat", "message", "headimg", "bodyimg",
+    "shieldimg", "swordimg", "horseimg", "head", "body", "shield", "sword",
+})
 
 
 class _NpcColorsObject(GS2Object):
@@ -714,7 +954,24 @@ class _NpcThisObject(_ThisObject):
             if npc is not None and attr in npc:
                 v = npc.get(attr)
                 return v if isinstance(v, str) else to_num(v)
-        return super().get(key)
+        if k == "guild":
+            # RO, src/TServerPlayerProperties.cpp:384. Derived from the nick
+            # exactly as TServerPlayer::setNick derives it -- see
+            # _guild_from_nick.
+            npc = self._npc()
+            return _guild_from_nick((npc or {}).get("nickname", ""))
+        if k in _NPC_EMPTY_STRINGS:
+            return ""
+        # Member storage still wins (bytecode can run before the NPC's props
+        # stream, and set() parks writes there), so the string/transform
+        # defaults only fill in a slot nobody has written.
+        value = super().get(key)
+        if value is None:
+            if k in _NPC_STRING_ATTRS:
+                return ""
+            if k in _GANI_TRANSFORM_DEFAULTS:
+                return _GANI_TRANSFORM_DEFAULTS[k]
+        return value
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
@@ -766,6 +1023,16 @@ class _LayerImage(GS2Object):
     _NUM_KEYS = frozenset(("x", "y", "zoom", "rotation", "mode"))
     _STR_KEYS = frozenset(("image", "font", "style"))
 
+    #: every string-typed TShowImg property (src/TShowImgProperties.cpp:144,
+    #: :171, :198, :207, :216, :225, :234, :270, :360, :387, :477, :531,
+    #: :558). A layer property nobody has written must still read as a STRING
+    #: -- see _PLAYER_EMPTY_STRINGS for what an unanswered one does.
+    _SHOWIMG_STRINGS = frozenset((
+        "ani", "image", "font", "shadowoffset", "shadowcolor", "style",
+        "text", "code", "position", "rotationcenter", "attachoffset",
+        "movementvector", "sound",
+    ))
+
     def __init__(self, index: int, rec: dict):
         super().__init__(name=f"image:{index}")
         self._rec = rec
@@ -777,7 +1044,11 @@ class _LayerImage(GS2Object):
         if k == "layer":
             return float(self._rec.get("vis", 4))
         v = self._rec.get(k)
-        return super().get(k) if v is None else v
+        if v is None:
+            v = super().get(k)
+        if v is None and k in self._SHOWIMG_STRINGS:
+            return ""
+        return v
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
@@ -799,6 +1070,91 @@ class _LayerImage(GS2Object):
             # unknown property: keep it on the record so a renderer that
             # learns the key later just works (and reads round-trip)
             self._rec[k] = value
+
+
+class _LevelObject(GS2Object):
+    """`level.` bridged onto the client's current level.
+
+    Its chain is TServerLevel -> TGraalVar: six own properties
+    (quattroplay/src/TServerLevelProperties.cpp:60-115) plus TGraalVar's
+    eight (src/TGraalVarProperties.cpp:625-698). All fourteen used to read
+    0.0, `name` included -- and `level.name == "somelevel.nw"` is a common
+    script idiom, so it was true in EVERY level."""
+
+    __slots__ = ("_rt2",)
+
+    def __init__(self, rt2: "ClientGS2"):
+        super().__init__(name="level")
+        self._rt2 = rt2
+
+    @property
+    def name(self) -> str:
+        # Shadows GS2Object's `name` slot on purpose: gs2_compare's
+        # object-vs-string row reads the object's name field, so a bare
+        # `level == "x.nw"` has to see the level filename rather than the
+        # literal string "level".
+        return self._name()
+
+    @name.setter
+    def name(self, value) -> None:
+        # no-op for the same reason set("name") is -- see below
+        pass
+
+    def _name(self) -> str:
+        # TServerLevel hands TFiles::lowerCaseFilename(levelName) to the
+        # TGraalVar base (src/TServerLevel.cpp:352-354), so the script-visible
+        # name is the LOWER-CASED level filename.
+        client = self._rt2.client
+        return to_str(getattr(client, "_current_level_name", "") or "").lower()
+
+    def _span(self, segments_attr: str) -> float:
+        # 64 for a plain level; on a gmap the MAP's segment count << 6
+        # (propfun_serverlevel_width_r / _height_r,
+        # src/TServerLevelProperties.cpp:43-53 and :6-16).
+        client = self._rt2.client
+        segments = int(getattr(client, segments_attr, 0) or 0) if client else 0
+        return float(segments << 6) if segments > 0 else 64.0
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "name":
+            return self._name()
+        if k == "width":
+            return self._span("gmap_width")
+        if k == "height":
+            return self._span("gmap_height")
+        if k == "tilelayercount":
+            # TServerLevel's m_tileLayers array size. PLO_BOARDLAYER ids are
+            # sparse here, so report the highest occupied one; a level with
+            # only the base board has exactly one layer.
+            layers = getattr(self._rt2.client, "board_layers", None) or {}
+            stored = super().get(k)
+            if stored is not None:
+                return to_num(stored)
+            return float(max([0] + [int(i) for i in layers]) + 1)
+        if k in ("joinedclasses", "scripterrors"):
+            # TGraalVar object-typed lists (:654, :672). Nothing joins or
+            # errors on the level object here; an empty array is what a
+            # script iterating one expects.
+            return []
+        value = super().get(key)
+        if value is None:
+            # The remaining TGraalVar entries -- initialized (:636),
+            # ispaused (:645), maxlooplimit (:663),
+            # scriptlogmissingfunctions (:681), timeout (:690) -- and
+            # TServerLevel's isnopkzone / nopkzone / issparringzone
+            # (:71, :89, :80) are all numeric or boolean, where 0.0 is both
+            # the right shape and the right value for a client-side level.
+            return 0.0
+        return value
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "name":
+            # propfun_graalvar_name_w (src/TGraalVarProperties.cpp:154-161)
+            # assigns only while the object is still unnamed AND unlinked; a
+            # live level is neither, so the write is a no-op there too.
+            return
+        super().set(key, value)
 
 
 # ---------------------------------------------------------------------------
@@ -865,6 +1221,58 @@ def _gs2_object(*names):
             _GS2_OBJECTS[entry] = fn
         return fn
     return register
+
+
+def _set_selected_weapon(rt2: "ClientGS2", key: str, value: Any) -> bool:
+    """selectedweapon / selectedsword writes, bounds-checked exactly as
+    propfun_gsfunctionsclient_selectedweapon_w does (quattroplay/src/
+    TInitStatics.cpp:2662-2668, and :2645-2654 for the sword): a negative
+    index, or one past the end of the weapon array, is IGNORED -- and setting
+    either one adopts the other when that one is still unselected."""
+    index = int(to_num(value))
+    weapons = getattr(rt2.client, "weapons", {}) or {}
+    if index < 0 or index >= len(weapons):
+        return True
+    if key == "selectedsword":
+        rt2._selected_sword = index
+    else:
+        inventory = getattr(getattr(rt2, "game_shell", None),
+                            "inventory_ui", None)
+        if inventory is not None:
+            inventory.selected_weapon_idx = index
+            inventory.cursor_weapon_idx = index
+        if rt2._selected_sword < 0:
+            rt2._selected_sword = index
+    return True
+
+
+#: Bare GLOBAL names the reference registers with a real setter. vm.py's
+#: _assign_name drops a bare-name write straight into the globals dict and
+#: _lookup reads that dict before ever consulting host.get_object, so without
+#: this hook the write would be swallowed by the dict: the engine would never
+#: see it and every later read would answer the swallowed copy instead of live
+#: state. A handler returning True means "consumed, store nothing".
+_GS2_GLOBAL_SETTERS = {
+    "selectedweapon": _set_selected_weapon,
+    "selectedsword": _set_selected_weapon,
+}
+
+
+class _GlobalsStore(dict):
+    """The VM-shared global namespace, with engine-backed globals routed to
+    the engine instead of shadowed -- see _GS2_GLOBAL_SETTERS."""
+
+    __slots__ = ("_rt2",)
+
+    def __init__(self, rt2: "ClientGS2"):
+        super().__init__()
+        self._rt2 = rt2
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        handler = _GS2_GLOBAL_SETTERS.get(key)
+        if handler is not None and handler(self._rt2, key, value):
+            return
+        super().__setitem__(key, value)
 
 
 def _gs2_sort_key(value):
@@ -1178,6 +1586,149 @@ class GS2ClientHost(GS2Host):
             return 0.0
         return gs1._host.get_builtin(name, [], self.rt2._gs1_ctx(None))
 
+    @_gs2_object("allfeatures", "allrenderobjecttypes")
+    def _obj_all_bitmasks(self, name):
+        # allstats' two neighbours in the same constant block
+        # (quattroplay/src/TInitStatics.cpp:2336 and :2338): 0xffff and 0x3f.
+        return 65535.0 if name == "allfeatures" else 63.0
+
+    @_gs2_object("spritesimage", "statusimage")
+    def _obj_sheet_names(self, name):
+        # RW globals with NON-EMPTY reference defaults
+        # (src/TInitStatics.cpp:2779/:2780, seeded at :4809-4813). A script
+        # write lands in the VM globals dict, which _lookup consults before
+        # ever reaching here, so the write shadows this default.
+        return "sprites.png" if name == "spritesimage" else "state.png"
+
+    @_gs2_object(
+        # -- registered 's', no source here: they must answer the empty
+        # STRING, never nothing. An unanswered name resolves to Number 0.0
+        # (quattroplay/src/TScriptStackEntry.cpp:228-229) and a Number/String
+        # compare strtofloat()s the string (src/TScriptMachine.cpp:1463), so
+        # `<name> == "<any word>"` is TRUE. That is not hypothetical: it is
+        # how serverstartconnect and player.platform each broke a live
+        # session. "" compares through compareIgnoreCase and behaves.
+        "emoticonchar",             # TInitStatics.cpp:2746 (TInput state)
+        "downloadfile",             # TFileDownload.cpp:69
+        "lastdownloadfile",         # :70
+        "disabledsoundeffects",     # sound/TSounds.cpp:214
+        "allowedimageanimations",   # TTexture.cpp:70
+        "installedlanguages",       # TTranslations.cpp:39
+        # The web-plugin session cookie, genuinely empty until a plugin host
+        # sets one (TOptions.cpp:457, backing store seeded as a bare TString
+        # at TInitStatics.cpp:4784-4786). A registry KEY a script types
+        # verbatim, so it keeps the reference's pre-rebrand spelling for the
+        # same reason gs1_client's `graalversion` builtin does.
+        "graalplugincookie",
+    )
+    def _obj_empty_string_globals(self, name):
+        # Deliberately "" rather than a guess: our file transport is a
+        # request/response fetch with no single "current download", and we run
+        # no translation catalogue -- so "" is the honest answer AND the safe
+        # one. Contrast _obj_option_defaults below, where the reference does
+        # seed a value and "" would be the wrong answer.
+        return ""
+
+    #: The desktop OPTION store. T4 says it is not implementable client-side,
+    #: which is true of the persistence -- but the reference seeds every one
+    #: of these at startup (`*_initStaticVars`), and content reads the seeds,
+    #: so answering "" is as wrong as answering nothing. Values verified at
+    #: quattroplay/src/TInitStatics.cpp:4777 (screenshotformat), :4789/:4790
+    #: (the two GUI styles), :4841 (language), :4981/:4983/:4984 (font size,
+    #: font name, unicode font). Same verbatim-key rule as graalplugincookie.
+    #:
+    #: `defaultfontsize` is the one this table exists for. It is NUMERIC, so
+    #: the `== "literal"` hazard does not apply and the top-down sweep of
+    #: string-typed names never listed it -- but Zelda does
+    #: `zoom = $pref::graal::defaultfontsize/24;` (graal-lttp
+    #: weapons/weapon-Player_Movement.txt:101) and then draws every player's
+    #: nick at that zoom (:93). Unanswered it is 0, so the labels render at
+    #: zoom 0; answered it is 24/24 == 1.
+    _OPTION_DEFAULTS = {
+        "$pref::video::defaultguistyle": "toon_small.wba",
+        "$pref::video::externalguistyle": "toon_small.wba",
+        "$pref::video::screenshotformat": "PNG",
+        "$pref::graal::language": "English",
+        "$pref::graal::defaultfontname": "Arial",
+        "$pref::graal::utf8fontfile": "DroidSansFallback.ttf",
+        "$pref::graal::defaultfontsize": 24.0,
+        # b RW (TOptions.cpp:45-46), default false there. We answer TRUE: this
+        # client never stores credentials on a script's behalf (see the
+        # `stubbed` credential set), so "do not save passwords" is the state
+        # the Login screen's checkbox should reflect.
+        "$pref::graal::dontsavepasswords": 1.0,
+    }
+
+    @_gs2_object(*_OPTION_DEFAULTS)
+    def _obj_option_defaults(self, name):
+        return self._OPTION_DEFAULTS[name]
+
+    @_gs2_object("iscarrying")
+    def _obj_iscarrying(self, name):
+        # b RO, TInitStatics.cpp:2754 (getter :2418-2421). Same answer the
+        # GS1 `carrying` builtin gives, so one carry state serves both.
+        gs1 = self.rt2.gs1
+        if gs1 is None:
+            return False
+        return gs1._host.get_builtin("carrying", [], self.rt2._gs1_ctx(None))
+
+    @_gs2_object("isonmap")
+    def _obj_isonmap(self, name):
+        # b RO, TInitStatics.cpp:2756 (getter :2428-2431: the acting player
+        # has a map pointer).
+        return bool(getattr(self.rt2.client, "gmap_width", 0))
+
+    @_gs2_object("levelorgx", "levelorgy")
+    def _obj_levelorg(self, name):
+        # d RO, TInitStatics.cpp:2757/:2758. NOT a level origin: the getters
+        # (:2445-2455, helper :2433-2443) return the LOCAL x/y of the object
+        # the acting NPC is ATTACHED TO, and 0 when nothing is attached.
+        # pyReborn models no attachment at all, so 0.0 is the reference's own
+        # answer for our situation, not a placeholder for one.
+        return 0.0
+
+    @_gs2_object("selectedweapon", "selectedsword")
+    def _obj_selected_weapon(self, name):
+        # i RW, TInitStatics.cpp:2778/:2777 (getters :2657-2660, :2640-2643):
+        # an index into the player's weapon array, -1 when nothing is
+        # selected. Writes are bounds-checked -- see _GLOBAL_SETTERS.
+        rt2 = self.rt2
+        if name == "selectedsword":
+            return float(rt2._selected_sword)
+        weapons = getattr(rt2.client, "weapons", {}) or {}
+        if not weapons:
+            return -1.0
+        game = getattr(rt2, "game_shell", None)
+        index = getattr(getattr(game, "inventory_ui", None),
+                        "selected_weapon_idx", 0) or 0
+        return float(index) if 0 <= index < len(weapons) else -1.0
+
+    @_gs2_object("mousebuttons", "mousebuttonsglobal", "rightmousebutton",
+                 "rightmousebuttonglobal", "middlemousebutton",
+                 "middlemousebuttonglobal", "leftmousebuttonglobal",
+                 "mousewheeldelta", "mousewheeldeltaglobal")
+    def _obj_mouse_buttons(self, name):
+        # TInitStatics.cpp:2759-2767. The mask is left=1, middle=2, right=4
+        # (:2457-2469); mousebuttons is mousebuttonsglobal forced to 0 while
+        # the game viewport lacks focus (:2471-2474), a distinction this
+        # client has no separate state for -- the pygame window IS the
+        # viewport -- so the two agree here. Only the left button is tracked
+        # (game/input.py feeds gs1.mouse_left and nothing else), so the other
+        # bits read 0; getattr keeps them correct the moment that changes.
+        gs1 = self.rt2.gs1
+        left = bool(getattr(gs1, "mouse_left", False))
+        middle = bool(getattr(gs1, "mouse_middle", False))
+        right = bool(getattr(gs1, "mouse_right", False))
+        if name.startswith("mousewheeldelta"):
+            return float(getattr(gs1, "mouse_wheel", 0) or 0)
+        if name.startswith("rightmousebutton"):
+            return right
+        if name.startswith("middlemousebutton"):
+            return middle
+        if name == "leftmousebuttonglobal":
+            return left
+        return float(left) + 2.0 * middle + 4.0 * right
+
     @_gs2_object("players")
     def _obj_players(self, name):
         return self.rt2.player_list_objects()
@@ -1205,7 +1756,14 @@ class GS2ClientHost(GS2Host):
         if self.rt2.gui is not None and (cn.startswith("gui")
                                          or cn.endswith("profile")):
             return self.rt2.gui.create_control(classname, arg)
-        return GS2Object(name=classname)
+        obj = GS2Object(name=classname)
+        # `new <Class>("objname")` names the object through the TGraalVar
+        # base, and TGraalVar's `name` is string-typed on EVERY object
+        # (quattroplay/src/TGraalVarProperties.cpp:627) -- so leaving the
+        # member unset made `obj.name == "<anything>"` true. "" when the
+        # constructor was handed something that is not a name.
+        obj.set("name", arg if isinstance(arg, str) else "")
+        return obj
 
     def sleep(self, vm: GS2VM, seconds: float) -> None:
         # The VM can't suspend, so sleep() blocks -- but it pumps the packet loop,
@@ -1415,27 +1973,31 @@ class GS2ClientHost(GS2Host):
         return to_str(getattr(target, "CTRL_CLASS", None)
                       or getattr(target, "name", "") or "")
 
+    @_gs2_builtin(_GS2_ANY, "testsign", "testitem", "testbomb", "testexplo")
+    def _any_test_level_object(self, vm, name, args, obj):
+        # level.testsign/testitem/testbomb/testexplo(x, y) -- the sibling
+        # probes of level.testnpc, registered at
+        # quattroplay/src/TServerLevelProperties.cpp:254, :245, :227 and
+        # :236. Their bodies are raw addresses in the decompilation, so only
+        # the signature and the -1 miss value are oracle-backed: the hit test
+        # below is a TILE-CELL containment, matching the granularity the
+        # protocol identifies each of these object kinds by. Answered for the
+        # bare form too, since content reaches level objects both ways.
+        if len(args) < 2:
+            return -1.0
+        tx, ty = math.floor(to_num(args[0])), math.floor(to_num(args[1]))
+        found = self.rt2.level_object_positions(name)
+        for index, (ox, oy) in enumerate(found):
+            if math.floor(ox) == tx and math.floor(oy) == ty:
+                return float(index)
+        return -1.0
+
     # -- _GS2_LIST_METHODS: methods on a plain Python list -------------------
 
     @_gs2_builtin(_GS2_LIST_METHODS, "sort")
     def _list_sort(self, vm, name, args, obj):
         obj.sort(key=_gs2_sort_key)
         return obj
-
-    @_gs2_builtin(_GS2_LIST_METHODS, "sortascending", "sortdescending")
-    def _list_sort_directed(self, vm, name, args, obj):
-        # The shared VM implements sortbyvalue but not these two
-        # (Login's staff file-explorer weapon sorts its listing with
-        # `files.sortascending()`); the host gets first refusal, so
-        # this is the only place they can live.
-        obj.sort(key=_gs2_sort_key, reverse=name == "sortdescending")
-        return obj
-
-    @_gs2_builtin(_GS2_LIST_METHODS, "savelines")
-    def _list_savelines(self, vm, name, args, obj):
-        if args:
-            self.rt2.save_lines(to_str(args[0]), obj)
-        return 0.0
 
     # -- _GS2_STR_METHODS: string methods the compiler leaves as calls -------
 
@@ -1544,6 +2106,43 @@ class GS2ClientHost(GS2Host):
         return 0.0
 
     # -- _GS2_OBJ_METHODS: object methods with no type gate -----------------
+    #
+    # The TGraalVar ROOT methods live here rather than in _GS2_LIST_METHODS.
+    # The reference registers them on TGraalVar, i.e. on EVERY object
+    # (quattroplay/src/TGraalVarProperties.cpp:494 savelines, :548 settimer,
+    # :557 sortascending, :566 sortdescending), so `this.savelines("f.txt", 0)`
+    # and `this.settimer(1)` are valid spellings. An `isinstance(obj, list)`
+    # gate here is not just narrow, it is LOAD-BEARING in the wrong direction:
+    # the host is consulted before the VM, so a gate that does not match
+    # walks on to the later stages and ends at 0.0 -- which is what these did
+    # even after the VM widened its own root surface.
+    # `add`/`size`/`clear`/`index` deliberately stay array-only in the VM:
+    # those mirror compiled opcodes, not registered names.
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "sortascending", "sortdescending")
+    def _obj_sort_directed(self, vm, name, args, obj):
+        if not isinstance(obj, list):
+            # An object with no array cells has nothing to sort -- the same
+            # answer the VM's root surface gives for addarray/sortbyvalue.
+            return 0.0
+        obj.sort(key=_gs2_sort_key, reverse=name == "sortdescending")
+        return obj
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "savelines")
+    def _obj_savelines(self, vm, name, args, obj):
+        # savelines(filename, appendflag): the second argument is the append
+        # flag ("si"), which this client's server-scoped cache does not model
+        # -- it always rewrites. A non-array object has no lines to write.
+        if args and isinstance(obj, list):
+            self.rt2.save_lines(to_str(args[0]), obj)
+        return 0.0
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "settimer")
+    def _obj_settimer(self, vm, name, args, obj):
+        # Same timer store the bare form arms, keyed on the CALLING script:
+        # the reference's timer lives on the TGraalVar it was called on, and
+        # every live call site is a script arming its own `this`.
+        return self._bi_settimer(vm, name, args, None)
 
     @_gs2_builtin(_GS2_OBJ_METHODS, "join")
     def _obj_join(self, vm, name, args, obj):
@@ -1679,6 +2278,22 @@ class GS2ClientHost(GS2Host):
             return value
         point = camera.world_to_screen(x, y)
         return float(point[0 if name == "screenx" else 1])
+
+    @_gs2_builtin(_GS2_BARE, "worldx", "worldy")
+    def _bi_worldxy(self, vm, name, args, obj):
+        # The inverse of screenx/screeny above: floor each argument after
+        # adding the engine's 1e-4 epsilon, then screenToWorldX/Y
+        # (quattroplay/src/TInitStatics.cpp:3906-3921, table :4284/:4285).
+        # worldx genuinely ignores its second argument -- the reference
+        # leaves that parameter unnamed -- while worldy uses both.
+        game = getattr(self.rt2, "game_shell", None)
+        camera = getattr(game, "camera", None)
+        sx = math.floor(to_num(args[0]) + 0.0001) if args else 0
+        sy = math.floor(to_num(args[1]) + 0.0001) if len(args) > 1 else 0
+        if camera is None:
+            return float(sx if name == "worldx" else sy)
+        point = camera.screen_to_world(sx, sy)
+        return float(point[0 if name == "worldx" else 1])
 
     @_gs2_builtin(_GS2_BARE, "getmapx", "getmapy")
     def _bi_getmapxy(self, vm, name, args, obj):
@@ -2358,9 +2973,12 @@ class ClientGS2:
         self.vms: Dict[str, Dict[Any, GS2VM]] = {
             "weapon": {}, "npc": {}, "class": {}, "gani": {},
         }
-        self.globals_store: Dict[str, Any] = {}
+        self.globals_store: Dict[str, Any] = _GlobalsStore(self)
+        #: selectedsword's backing store: pyReborn has one sword, so the
+        #: reference's separate weapon-array index has nowhere else to live.
+        self._selected_sword = -1
         self.player_object = _PlayerObject(self)
-        self.level_object = GS2Object(name="level")
+        self.level_object = _LevelObject(self)
         self._flag_scopes: Dict[str, GS2Object] = {}
         # onPlayerEnters bookkeeping: which VMs got it for the current level
         self._entered_level: Optional[str] = None
@@ -2588,6 +3206,16 @@ class ClientGS2:
         # Derived, never carried on the wire (see _guild_from_nick).
         # String unresolved-read rule: see the identity-property note.
         item.set("guild", _guild_from_nick(get("nickname", "")))
+        # The OFFICIAL spelling of the level (TServerPlayerProperties.cpp:573);
+        # `level` above is our own extension, kept for the same reason
+        # _PlayerObject keeps it.
+        item.set("levelname", to_str(get("level", "")))
+        for member in _REMOTE_PLAYER_EMPTY_STRINGS:
+            if not item.has(member):
+                # seeded once, not per refresh: there is no live source to
+                # refresh these FROM, so re-setting would only clobber a
+                # script's own write into the writable ones
+                item.set(member, "")
         return item
 
     def find_nearest_players(self, x: float, y: float) -> list:
@@ -2800,6 +3428,24 @@ class ClientGS2:
         # FourPlay/quattroplay/src/TInitStatics.cpp:2700-2703,2784;
         # weapon-Player_Movement.txt:473.
         return self._weapons_view
+
+    def level_object_positions(self, probe: str) -> list:
+        """(x, y) per entry of the list `level.test<kind>` indexes, in the
+        order the client stores it -- signs are per level, the other three
+        are already scoped to the current one (client.py clears them on every
+        level change)."""
+        client = self.client
+        if client is None:
+            return []
+        if probe == "testsign":
+            level = getattr(client, "_current_level_name", "") or ""
+            return list((getattr(client, "signs", {}) or {}).get(level, {}))
+        if probe == "testitem":
+            return list(getattr(client, "items", {}) or {})
+        if probe == "testbomb":
+            return list(getattr(client, "bombs", {}) or {})
+        return [(to_num(e.get("x", 0)), to_num(e.get("y", 0)))
+                for e in (getattr(client, "active_explosions", None) or [])]
 
     def tiles_view(self) -> list:
         tiles = getattr(self.client, "tiles", None) if self.client else None
@@ -3204,15 +3850,21 @@ class ClientGS2:
         obj = self._flag_scopes.get(name)
         if obj is None:
             shared = self.gs1._shared if self.gs1 is not None else {}
+            # `server` is the only one of the four that is NOT an alias of the
+            # executing player (TScriptMachine.cpp:5123-5130 lists client,
+            # clientr and serverr), so it gets no player fallback.
+            player = None if name == "server" else self.player_object
             if name in ("client", "clientr"):
                 scope = shared.setdefault("client", {})
                 obj = _FlagScopeObject(name, scope,
-                                       local_writes=(name == "clientr"))
+                                       local_writes=(name == "clientr"),
+                                       player=player)
             else:
                 scope = shared.setdefault("server", {})
                 prefix = "serverr." if name == "serverr" else ""
                 obj = _FlagScopeObject(name, scope, prefix=prefix,
-                                       local_writes=(name == "serverr"))
+                                       local_writes=(name == "serverr"),
+                                       player=player)
             self._flag_scopes[name] = obj
         return obj
 

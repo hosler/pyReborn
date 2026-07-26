@@ -2,7 +2,11 @@
 gs2_tests - GS2 VM end-to-end suite (bytecode EXECUTION, unlike tier5 which
 only tests transport).
 
-Server fixtures (compiled to GS2 bytecode by the local GServer-v2):
+Runs against either server: GServer-v2 serves these fixtures from
+bin/servers/default/, pygserver from its own weapons/ + scripts/ (compiling the
+clientside half with the same gs2test compiler -- see pygserver/pygserver/gs2.py).
+
+Server fixtures (identical copies in both server directories):
   weapons/weaponqa%095gs2vm.txt   - weapon `qa_gs2vm`:
       onCreated: this.count=0, this.created=1, showimg(200,...), settimer
       onTimeout: this.count++ (re-arms until count==3)

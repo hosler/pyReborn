@@ -335,12 +335,24 @@ def test_clearall_empties_rows_lists_and_tree_nodes():
 
 
 def test_text_list_selection_accessors():
+    """getSelectedRow is the ROW NUMBER, getSelectedId the id.
+
+    This used to assert getSelectedRow() == 12, the row's ID. The oracle
+    disagrees: the binding reuses propfun_guitextlistctrl_selectedrow_r
+    (FourPlay quattroplay/src/gui/GuiTextListCtrlProperties.cpp:423, body
+    :156-159 = getSelectedCell().y), and the table carries a SEPARATE
+    getselectedid entry (:421) for the id. With ids that are not their own
+    row numbers -- exactly the case here -- feeding getSelectedRow() back
+    into setSelectedRow(), which takes a row number, selected the wrong row.
+    """
     lst = GuiTextListCtrl("list")
     lst.get("addrow")(11, "Global Chat")
     lst.get("addrow")(12, "Log")
     assert lst.get("getselectedrow")() == -1.0
+    assert lst.get("getselectedid")() == -1.0
     lst.get("setselectedrow")(1)
-    assert lst.get("getselectedrow")() == 12
+    assert lst.get("getselectedrow")() == 1.0
+    assert lst.get("getselectedid")() == 12
     assert lst.get("getselectedtext")() == "Log"
 
 

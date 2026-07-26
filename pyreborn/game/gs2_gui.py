@@ -864,7 +864,7 @@ class GuiControl(GS2Object):
     _METHOD_NAMES = frozenset({
         "showtop", "show", "hide", "makefirstresponder",
         "seticonsize", "clearrows", "addrow", "sort", "setcolumnoffset",
-        "setrowoffset",
+        "setrowoffset", "resize",
         "pushtoback", "clearcontrols", "isactuallyvisible",
         "isfirstresponder", "bringtofront", "settext", "gettext",
         "setlines", "getlines", "clearall",
@@ -1103,6 +1103,17 @@ class GuiControl(GS2Object):
             return to_num(args[0]), to_num(args[1])
         pair = GuiControl._num_pair(args[0]) if args else None
         return pair if pair is not None else (0.0, 0.0)
+
+    def _m_resize(self, *args) -> float:
+        """resize(x, y, w, h): position AND extent in one call, on every
+        control (FourPlay quattroplay/src/gui/GuiControlProperties.cpp:883,
+        body :806-811 -> GuiControl::resize(point, extent)). Login's
+        -ScriptedRC GUI editor and the serverlist relayouters use it instead
+        of four separate property writes."""
+        if len(args) >= 4:
+            self.x, self.y = to_num(args[0]), to_num(args[1])
+            self.width, self.height = to_num(args[2]), to_num(args[3])
+        return 0.0
 
     def _m_seticonsize(self, *args) -> float:
         if len(args) >= 2:
@@ -1688,12 +1699,25 @@ class GuiMLTextCtrl(GuiControl):
     GuiScrollCtrl clips/scrolls it instead of the text vanishing."""
 
     CTRL_CLASS = "GuiMLTextCtrl"
+    #: reflow() is registered on the ML-text control, NOT on GuiTextListCtrl
+    #: (quattroplay/src/gui/GuiMLTextCtrlProperties.cpp:334, body :233-236).
+    #: The live callers are the RC log windows, which append lines and then
+    #: reflow before scrolling to the bottom.
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"reflow"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 160.0, 80.0
         self._ml_cache_key = None
         self._ml_paragraphs = None
+
+    def _m_reflow(self, *args) -> float:
+        # Force the next paint to re-run parse_mltext: our layout is lazy and
+        # keyed on self.text, so a script that mutated markup state without
+        # changing the text (colour/size runs) would otherwise keep the stale
+        # paragraph list.
+        self._ml_cache_key = None
+        return 0.0
 
     def _paragraphs(self):
         if self._ml_cache_key != self.text:
@@ -2167,7 +2191,7 @@ class GuiPopUpEditCtrl(GuiControl):
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
         {"getselectedrow", "getselectedtext", "setselectedrow",
          "setselectedbyid", "getrowtext", "clear",
-         "setselected", "findtext"})
+         "setselected", "findtext", "rowcount", "setselectedbytext"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -2243,6 +2267,21 @@ class GuiPopUpEditCtrl(GuiControl):
     #: GServer-v2/bin/servers/era/scripts/pdamod_browser.txt:60), where row ids
     #: and indices happen to coincide.
     _m_setselected = _m_setselectedbyid
+
+    def _m_rowcount(self, *args) -> float:
+        """rowCount(): the popup has its OWN binding for this
+        (GuiPopUpMenuCtrlProperties.cpp:73), separate from the text list's --
+        the popup's chain is GuiPopUpMenuCtrl -> GuiTextCtrl, so it inherits
+        nothing from GuiTextListCtrl."""
+        return float(len(self.rows))
+
+    def _m_setselectedbytext(self, *args) -> float:
+        """setSelectedByText(text) (:75). Same no-match-is-a-no-op rule the
+        text list's version has."""
+        row = self._m_findtext(*args)
+        if row >= 0:
+            self.select_row(int(row))
+        return 0.0
 
     def _m_findtext(self, *args) -> float:
         """findText(text) -> the matching row's INDEX, or -1.
@@ -2523,15 +2562,71 @@ class GuiTextListCtrl(GuiControl):
     """Vertical list of addRow() rows; click selects a row and fires
     onSelect(entryid, entrytext, entryindex) -- same convention as
     GuiPopUpEditCtrl. Used all over the Login UI (GlobalChat_Channels,
-    start-menu rows via the GuiStartMenuCtrl subclass)."""
+    start-menu rows via the GuiStartMenuCtrl subclass).
+
+    Rows are identified two independent ways and the reference is careful
+    about which: an ID (whatever addRow's first argument was) and a ROW
+    NUMBER (the array position). `getRowNumById` converts one to the other,
+    `getEntryId` the other way, and a miss is -1 both directions
+    (FourPlay quattroplay/src/gui/GuiTextListCtrl.cpp:664-676, :639-645).
+
+    Selection is a LIST of cells, not one index: GuiArrayCtrl keeps every
+    selected cell and `getSelectedCell()` is just the FIRST of them
+    (src/gui/GuiArrayCtrl.cpp:378-385), which is why isRowSelected and the
+    getSelected*s pair exist at all."""
 
     CTRL_CLASS = "GuiTextListCtrl"
     ROW_H = 18
 
+    #: sortorder/groupsortorder and sortmode are string ENUMS whose value is
+    #: the name at the stored index (GuiTextListCtrlProperties.cpp:9-19,
+    #: readers :113-115/:125-127/:135-137). Both default to index 0, so
+    #: sortmode reads "" -- and being string-typed, an unanswered read would
+    #: compare equal to every literal, so they answer even when unset.
+    _SORT_ORDER_NAMES = ("sortascending", "sortdescending")
+    _SORT_MODE_NAMES = ("", "sortbyvalue", "lexical", "sortbyextension")
+
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 160.0, 24.0
-        self.selected_index = -1
+        #: selected ROW NUMBERS, in selection order; [0] is getSelectedCell()
+        self.selected_rows: List[int] = []
+        self.allow_multiple_selections = False
+
+    @property
+    def selected_index(self) -> int:
+        """getSelectedCell().y -- the first selected row, -1 when none."""
+        return self.selected_rows[0] if self.selected_rows else -1
+
+    @selected_index.setter
+    def selected_index(self, value) -> None:
+        index = int(value)
+        self.selected_rows = [index] if index >= 0 else []
+
+    # -- row identity helpers ------------------------------------------------
+
+    def _row_num_by_id(self, row_id) -> int:
+        """findEntryById: array position of the row with that id, else -1."""
+        wanted = to_str(row_id)
+        for index, row in enumerate(self.list_rows):
+            if to_str(row.get("id")) == wanted:
+                return index
+        return -1
+
+    def _row_id(self, index: int) -> Any:
+        """getEntryId: that row's id, -1 when the row number is out of
+        range."""
+        if 0 <= index < len(self.list_rows):
+            return self.list_rows[index].get("id")
+        return -1.0
+
+    def _find_text(self, text: str) -> int:
+        """findEntryByText: array position of the first row whose text matches
+        exactly, else -1 (GuiTextListCtrl.cpp:747-758)."""
+        for index, row in enumerate(self.list_rows):
+            if to_str(row.get("text")) == text:
+                return index
+        return -1
 
     def _m_clearrows(self, *args) -> float:
         # clearRows() must also clear the SELECTION: Login rebuilds its tab
@@ -2539,8 +2634,176 @@ class GuiTextListCtrl(GuiControl):
         # server click -- with the old index kept, re-selecting the same id
         # was treated as a no-op and onSelect (which shows the pane) never
         # fired, leaving every table panel hidden.
-        self.selected_index = -1
+        self.selected_rows = []
         return super()._m_clearrows(*args)
+
+    # -- counts and lookups --------------------------------------------------
+
+    def _m_rowcount(self, *args) -> float:
+        """rowCount() -> getNumEntries (GuiTextListCtrl.cpp:677-680). The
+        single most-called list binding in the production corpus."""
+        return float(len(self.list_rows))
+
+    def _m_getrownumbyid(self, *args) -> float:
+        return float(self._row_num_by_id(args[0]) if args else -1)
+
+    def _m_findtextid(self, *args) -> Any:
+        """findTextId(text) -> the matching row's ID, where findText gives its
+        row NUMBER: the reference composes getEntryId(findEntryByText(...))
+        (GuiTextListCtrlProperties.cpp:231-237)."""
+        return self._row_id(self._find_text(to_str(args[0]) if args else ""))
+
+    def _m_getrowatpoint(self, *args) -> float:
+        """getRowAtPoint(x, y) -> the row number under a CANVAS-space point:
+        getCellAt globalToLocalCoord()s its argument first
+        (src/gui/GuiArrayCtrl.cpp:439-460)."""
+        if len(args) < 2:
+            return -1.0
+        return float(self.row_at((to_num(args[0]), to_num(args[1]))))
+
+    def _m_getrowidatpoint(self, *args) -> Any:
+        if len(args) < 2:
+            return -1.0
+        return self._row_id(self.row_at((to_num(args[0]), to_num(args[1]))))
+
+    # -- selection -----------------------------------------------------------
+
+    def _m_isrowselected(self, *args) -> bool:
+        return bool(args) and int(to_num(args[0])) in self.selected_rows
+
+    def _m_isidselected(self, *args) -> bool:
+        row = self._row_num_by_id(args[0]) if args else -1
+        return row >= 0 and row in self.selected_rows
+
+    def _m_getselectedid(self, *args) -> Any:
+        """getSelectedId() -> the FIRST selected row's id, -1 when the
+        selection is empty (GuiTextListCtrl.cpp:682-693)."""
+        return self._row_id(self.selected_index)
+
+    def _m_getselectedrows(self, *args) -> List[float]:
+        """getSelectedRows() -> the selected ROW NUMBERS.
+
+        The decompiled body looks like it returns ids and getSelectedIds
+        looks like it double-converts (GuiTextListCtrlProperties.cpp:238-261),
+        but the list it walks is GuiArrayCtrl's selected-CELL list, whose
+        elements are TPoints -- every other user of that list casts them that
+        way (insertEntry :561-566, removeEntryByIndex :880-893). So the field
+        the decompiler printed as `entry->id` is the cell's y, i.e. the row
+        number, and both names mean what they say."""
+        return [float(row) for row in self.selected_rows]
+
+    def _m_getselectedids(self, *args) -> List[Any]:
+        return [self._row_id(row) for row in self.selected_rows]
+
+    def _m_clearselection(self, *args) -> float:
+        # setSelectedCell(TPoint(-1, -1)) (:204-207)
+        self.selected_rows = []
+        return 0.0
+
+    def _m_setselectedbytext(self, *args) -> float:
+        """setSelectedByText(text): select the row whose text matches, and do
+        NOTHING when there is no match -- the reference gates on `row >= 0`
+        (:378-383), so a miss leaves the previous selection intact."""
+        row = self._find_text(to_str(args[0]) if args else "")
+        if row >= 0:
+            self.select_index(row)
+        return 0.0
+
+    def _m_setselectedbyids(self, *args) -> float:
+        return self._select_many(args, by_id=True)
+
+    def _m_setselectedrows(self, *args) -> float:
+        return self._select_many(args, by_id=False)
+
+    def _select_many(self, args, by_id: bool) -> float:
+        """setSelectedByIds/setSelectedRows(csv): empty clears the selection,
+        one token (or a single-selection control) is a plain select, and only
+        a multi-selection control accumulates the rest
+        (GuiTextListCtrlProperties.cpp:344-376)."""
+        raw = to_str(args[0] if args else "")
+        tokens = [t for t in raw.split(",") if t != ""]
+        if not tokens:
+            self.selected_rows = []
+            return 0.0
+        rows = [self._row_num_by_id(t) if by_id else int(to_num(t))
+                for t in tokens]
+        if len(tokens) == 1 or not self.allow_multiple_selections:
+            self.select_index(rows[0])
+            return 0.0
+        self.selected_rows = []
+        for row in rows:
+            if 0 <= row < len(self.list_rows) \
+                    and row not in self.selected_rows:
+                self.selected_rows.append(row)
+        return 0.0
+
+    def _m_makevisible(self, *args) -> float:
+        # scrollCellVisible; this client draws the whole list and lets the
+        # enclosing GuiScrollCtrl clip, so there is no scroll to nudge.
+        return 0.0
+
+    def _m_makevisiblebyid(self, *args) -> float:
+        return 0.0
+
+    # -- row mutation --------------------------------------------------------
+
+    def _m_insertrow(self, *args) -> Any:
+        """insertRow(index, id, text): note the argument ORDER -- the binding
+        is (index, id, text) and forwards to insertEntry(id, text, index)
+        (GuiTextListCtrlProperties.cpp:281-289). An index past the end
+        appends (GuiTextListCtrl.cpp:548-556)."""
+        if len(args) < 3:
+            return 0.0
+        index = int(to_num(args[0]))
+        row = GuiListRow(to_str(args[2]), args[1])
+        if index < 0 or index > len(self.list_rows):
+            self.list_rows.append(row)
+        else:
+            self.list_rows.insert(index, row)
+            self.selected_rows = [r + 1 if index <= r else r
+                                  for r in self.selected_rows]
+        return row
+
+    def _m_removerow(self, *args) -> float:
+        if args:
+            self._remove_row_num(int(to_num(args[0])))
+        return 0.0
+
+    def _m_removerowbyid(self, *args) -> float:
+        if args:
+            self._remove_row_num(self._row_num_by_id(args[0]))
+        return 0.0
+
+    def _remove_row_num(self, index: int) -> None:
+        """removeEntryByIndex: drop the row, then drop its selected cell and
+        shift every later one down (GuiTextListCtrl.cpp:868-894). Without the
+        fix-up the selection would silently point at a different row."""
+        if not 0 <= index < len(self.list_rows):
+            return
+        del self.list_rows[index]
+        self.selected_rows = [r - 1 if r > index else r
+                              for r in self.selected_rows if r != index]
+
+    def _m_setrowbyid(self, *args) -> float:
+        """setRowById(id, text): retext the row with that id -- and ADD it
+        when no row has that id yet (GuiTextListCtrl.cpp:897-903 falls
+        through to addEntry). Counter-intuitive but load-bearing: RC-style
+        lists build themselves purely out of setRowById calls."""
+        if len(args) < 2:
+            return 0.0
+        index = self._row_num_by_id(args[0])
+        if index < 0:
+            self.list_rows.append(GuiListRow(to_str(args[1]), args[0]))
+        else:
+            self.list_rows[index].set("text", to_str(args[1]))
+        return 0.0
+
+    def _m_setrowactivebyid(self, *args) -> float:
+        if len(args) >= 2:
+            index = self._row_num_by_id(args[0])
+            if index >= 0:
+                self.list_rows[index].set("active", to_num(args[1]))
+        return 0.0
 
     def content_height(self) -> int:
         return len(self.list_rows) * self.ROW_H
@@ -2578,19 +2841,20 @@ class GuiTextListCtrl(GuiControl):
         (Login: Serverlist_TablesTab.setSelectedById(0) right after
         addRow(0, ...))."""
         if args:
-            wanted = to_str(args[0])
-            for index, row in enumerate(self.list_rows):
-                if to_str(row.get("id")) == wanted:
-                    self.select_index(index)
-                    break
+            index = self._row_num_by_id(args[0])
+            if index >= 0:
+                self.select_index(index)
         return 0.0
 
     def _m_getselectedrow(self, *args) -> Any:
-        """getSelectedRow(): the selected row's ID (Torque returns the id,
-        not the index -- Login's own setSelectedById round-trips it)."""
-        if 0 <= self.selected_index < len(self.list_rows):
-            return self.list_rows[self.selected_index].get("id")
-        return -1.0
+        """getSelectedRow(): the selected ROW NUMBER, -1 when nothing is
+        selected. It is bound straight to the `selectedrow` property reader
+        (GuiTextListCtrlProperties.cpp:423 reuses
+        propfun_guitextlistctrl_selectedrow_r, :156-159 = getSelectedCell().y)
+        -- getSelectedId() is the one that hands back the id. This used to
+        return the id, which made a script that fed it to setSelectedRow (a
+        row NUMBER) select the wrong row whenever id != position."""
+        return float(self.selected_index)
 
     def _m_getselectedtext(self, *args) -> str:
         if 0 <= self.selected_index < len(self.list_rows):
@@ -2617,15 +2881,68 @@ class GuiTextListCtrl(GuiControl):
         GServer-v2/bin/servers/era/weapons/weaponSkyld%047RC.txt:915 uses it
         to find its "Admins"/"Players" group header and insert the row after
         it."""
-        wanted = to_str(args[0]) if args else ""
-        for index, row in enumerate(self.list_rows):
-            if to_str(row.get("text")) == wanted:
-                return float(index)
-        return -1.0
+        return float(self._find_text(to_str(args[0]) if args else ""))
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        # Properties the reference computes rather than stores
+        # (GuiTextListCtrlProperties.cpp:407-411): `selectedrow` and
+        # `selectedid` are the property spellings of the two getters above,
+        # and `selected` is the selected ROW OBJECT (:150-153).
+        if k == "allowmultipleselections":
+            # GuiArrayCtrl's, inherited (src/gui/GuiArrayCtrlProperties.cpp:26)
+            return 1.0 if self.allow_multiple_selections else 0.0
+        if k == "selectedrow":
+            return float(self.selected_index)
+        if k == "selectedid":
+            return self._row_id(self.selected_index)
+        if k == "selected":
+            index = self.selected_index
+            return self.list_rows[index] if 0 <= index < len(self.list_rows) \
+                else None
+        # `k not in self._members`, not has(): GuiControl.has() claims the
+        # whole Torque property vocabulary, so it cannot say whether a script
+        # actually wrote this one.
+        if k in ("sortorder", "groupsortorder", "sortmode") \
+                and k not in self._members:
+            return "" if k == "sortmode" else self._SORT_ORDER_NAMES[0]
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "allowmultipleselections":
+            self.allow_multiple_selections = bool(to_num(value))
+            return
+        if k == "selectedrow":
+            self.select_index(int(to_num(value)))
+            return
+        if k == "selectedid":
+            self._m_setselectedbyid(value)
+            return
+        if k in ("sortorder", "groupsortorder", "sortmode"):
+            # The writers only accept a member of the enum, by name or by
+            # index, and ignore anything else (:117-122, parseEnumValue
+            # :27-39). Store the NAME so the reader round-trips.
+            names = (self._SORT_MODE_NAMES if k == "sortmode"
+                     else self._SORT_ORDER_NAMES)
+            text = to_str(value)
+            for index, name in enumerate(names):
+                if text == name or text == str(index):
+                    super().set(k, name)
+                    return
+            return
+        super().set(key, value)
 
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
         {"setselectedrow", "setselectedbyid", "getselectedrow",
-         "getselectedtext", "sortascending", "sortdescending", "findtext"})
+         "getselectedtext", "sortascending", "sortdescending", "findtext",
+         # the row API proper -- every one of these was a 0.0 before
+         "rowcount", "isrowselected", "isidselected", "getrownumbyid",
+         "getselectedid", "getselectedids", "getselectedrows",
+         "setselectedbytext", "setselectedbyids", "setselectedrows",
+         "clearselection", "findtextid", "getrowatpoint", "getrowidatpoint",
+         "insertrow", "removerow", "removerowbyid", "setrowbyid",
+         "setrowactivebyid", "makevisible", "makevisiblebyid"})
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         # keep our height in sync with content so ancestor GuiScrollCtrl
@@ -2645,7 +2962,7 @@ class GuiTextListCtrl(GuiControl):
                                  (rr.x + 4, rr.centery), (rr.right - 4, rr.centery))
                 continue
             fg = prof.fg
-            if index == self.selected_index:
+            if index in self.selected_rows:   # every selected cell, not [0]
                 _fill_rect(surf, prof.title_bg, rr)
                 fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
             _draw_label(surf, font, text, fg,
