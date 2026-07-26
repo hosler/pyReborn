@@ -900,7 +900,7 @@ class TestProfileResolution:
         assert ctrl.profile_obj is prof_obj
         resolved = ctrl.resolve_profile()
         assert resolved.bg == (1, 2, 3, 200)
-        assert resolved.border_width == 0           # border = 0 -> borderless
+        assert resolved.border_style == 0           # border = 0 -> borderless
 
     def test_builtin_profile_vivifies_on_bare_reference(self):
         # `profile = GuiDefaultProfile;` -- engine builtin, never
@@ -1372,3 +1372,534 @@ class TestLoginVisualFidelity:
         gui.on_canvas_resize(1262, 594)
         assert win.x == (1262 - 600) / 2
         assert win.y == (594 - 422) / 2
+
+
+# =============================================================================
+# Control tables: the names the construction-block existence gate needs
+# =============================================================================
+
+def _construction_write(ctrl, name, value):
+    """A bare `name = value;` inside a `new <Class>(...) { ... }` block.
+
+    The VM resolves such an assignment against the with-target's has() and,
+    when the name is not claimed, writes a TEMP instead
+    (reborn_protocol/gs2/vm.py:572-578) -- so an unclaimed name is a write
+    that never reaches the control. Returns whether it landed."""
+    if not ctrl.has(name.lower()):
+        return False
+    ctrl.set(name.lower(), value)
+    return True
+
+
+class TestClaimedPropertyNames:
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+
+    def test_bitmap_button_claims_its_three_faces(self):
+        """Login's 2001-style buttons set all three in their construction
+        blocks (graal-loginserver/weapons/
+        weapon-Rescripted_IRC_Login2001.txt:324-326); unclaimed, they
+        rendered with no face at all."""
+        btn = self.gui.create_control("GuiBitmapButtonCtrl", "LoginButton")
+        faces = (("normalbitmap", "gui2001_button.png"),
+                 ("mouseoverbitmap", "gui2001_button_over.png"),
+                 ("pressedbitmap", "gui2001_button_pressed.png"))
+        for name, value in faces:
+            assert _construction_write(btn, name, value), name
+            assert btn.get(name) == value
+        assert btn.face() == "gui2001_button.png"
+        btn.hovered = True
+        assert btn.face() == "gui2001_button_over.png"
+        btn.pressed = True
+        assert btn.face() == "gui2001_button_pressed.png"
+        # an unset slot falls back to the normal face
+        btn.set("pressedbitmap", "")
+        assert btn.face() == "gui2001_button.png"
+        # setBitmap(name, slot) is the two-argument form on this class
+        btn.get("setbitmap")("other.png", 2)
+        assert btn.get("pressedbitmap") == "other.png"
+
+    def test_text_edit_claims_password(self):
+        """16 corpus files write it, 8 inside a construction block."""
+        edit = self.gui.create_control("GuiTextEditCtrl", "PassEdit")
+        assert _construction_write(edit, "password", True)
+        assert edit.get("password") == 1.0
+        for name in ("inputtype", "showcursor", "deniedsound"):
+            assert edit.has(name), name
+
+    def test_button_family_claims_checked_groupnum_buttontype(self):
+        """All three live on GuiButtonBaseCtrl, so they are reachable on a
+        plain button and a bitmap button too, not just on the checkbox
+        (GuiButtonBaseCtrlProperties.cpp:68-105)."""
+        for classname in ("GuiButtonCtrl", "GuiBitmapButtonCtrl",
+                          "GuiCheckBoxCtrl", "GuiRadioCtrl"):
+            ctrl = self.gui.create_control(classname, classname)
+            assert _construction_write(ctrl, "groupnum", 1), classname
+            assert ctrl.get("groupnum") == 1.0
+            assert _construction_write(ctrl, "checked", True), classname
+            assert ctrl.get("checked") == 1.0
+            assert _construction_write(ctrl, "buttontype", "RadioButton")
+            assert ctrl.get("buttontype") == "RadioButton"
+
+    def test_button_defaults_match_the_class(self):
+        assert self.gui.create_control("GuiButtonCtrl", "b").get(
+            "buttontype") == "PushButton"
+        assert self.gui.create_control("GuiCheckBoxCtrl", "c").get(
+            "buttontype") == "ToggleButton"
+        assert self.gui.create_control("GuiRadioCtrl", "r").get(
+            "buttontype") == "RadioButton"
+        # groupnum defaults to -1 (GuiButtonBaseCtrl.cpp:33)
+        assert self.gui.create_control("GuiRadioCtrl", "r2").get(
+            "groupnum") == -1.0
+
+    def test_buttontype_write_is_case_sensitive_and_silently_rejected(self):
+        btn = self.gui.create_control("GuiCheckBoxCtrl", "cb")
+        btn.set("buttontype", "pushbutton")          # wrong case -> no-op
+        assert btn.get("buttontype") == "ToggleButton"
+        btn.set("buttontype", "PushButton")
+        assert btn.get("buttontype") == "PushButton"
+
+    def test_mltext_claims_its_whole_table(self):
+        """All thirteen are written bare in construction blocks -- wordwrap
+        in 7 files, htmlcompatibility in 5, maxchars in 4."""
+        ml = self.gui.create_control("GuiMLTextCtrl", "Serverlist_EventNews")
+        for name in ("allowedtags", "alpha", "cursorposition", "deniedsound",
+                     "disallowedtags", "htmllinks", "htmlcompatibility",
+                     "maxchars", "parsetags", "plaintext", "text", "urlbase",
+                     "wordwrap"):
+            assert ml.has(name), name
+        assert _construction_write(ml, "urlbase", "http://example.com/")
+        assert ml.get("urlbase") == "http://example.com/"
+        assert _construction_write(ml, "wordwrap", False)
+        assert ml.word_wrap() is False
+
+    def test_scroll_claims_childmargin_and_the_rest_of_its_table(self):
+        scroll = self.gui.create_control("GuiScrollCtrl", "Scroll")
+        for name in ("childmargin", "constantthumbheight", "hscrollbar",
+                     "scrollpos", "tile", "vscrollbar", "wheelscrolllines",
+                     "willfirstrespond"):
+            assert scroll.has(name), name
+        # both spellings the corpus uses for a point-valued field
+        assert _construction_write(scroll, "childmargin", "0 0")
+        assert scroll.get("childmargin") == "0 0"
+        assert _construction_write(scroll, "childmargin", [10, 10])
+        assert scroll.get("childmargin") == [10, 10]
+
+    def test_scrollbar_mode_write_is_case_sensitive(self):
+        scroll = self.gui.create_control("GuiScrollCtrl", "Scroll")
+        scroll.set("vscrollbar", "alwaysOff")
+        scroll.set("vscrollbar", "ALWAYSON")         # not byte-exact -> no-op
+        assert scroll.get("vscrollbar") == "alwaysOff"
+        # wheelscrolllines ignores non-positive values (:103-112)
+        scroll.set("wheelscrolllines", 4)
+        scroll.set("wheelscrolllines", 0)
+        assert scroll.get("wheelscrolllines") == 4
+
+    def test_bitmap_ctrl_claims_tile_with_wrap_as_its_alias(self):
+        """12 corpus files set `tile`; `wrap` is the same field under a
+        second name (GuiBitmapCtrlProperties.cpp:95-112)."""
+        bmp = self.gui.create_control("GuiBitmapCtrl", "Back")
+        assert _construction_write(bmp, "tile", True)
+        assert bmp.tile is True and bmp.get("wrap") == 1.0
+        bmp.set("wrap", 0)
+        assert bmp.tile is False and bmp.get("tile") == 0.0
+        for name in ("bitmaprectangle", "fullbitmap"):
+            assert bmp.has(name), name
+
+    def test_tiled_bitmap_repeats_instead_of_stretching(self):
+        bmp = self.gui.create_control("GuiBitmapCtrl", "Back")
+        bmp.x, bmp.y, bmp.width, bmp.height = 0, 0, 32, 32
+        bmp.set("bitmap", "cell.png")
+        bmp.set("tile", True)
+        cell = pygame.Surface((16, 16))
+        cell.fill((0, 0, 0))
+        cell.fill((0, 255, 0), pygame.Rect(0, 0, 4, 4))
+        surf = pygame.Surface((32, 32))
+        bmp.draw(surf, _FakeFonts(), _FakeSpriteMgr({"cell.png": cell}))
+        # the marker corner repeats at every 16px step
+        assert surf.get_at((1, 1))[:3] == (0, 255, 0)
+        assert surf.get_at((17, 17))[:3] == (0, 255, 0)
+        assert surf.get_at((10, 10))[:3] == (0, 0, 0)
+
+
+class TestButtonActivation:
+    """Which control does what is driven by `buttontype`, and the
+    radio-group sweep lives in onAction() -- never in a `checked` write
+    (GuiButtonBaseCtrl.cpp:42-46 vs :59-94)."""
+
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+        self.panel = self.gui.create_control("GuiControl", "Panel")
+        self.gui.addcontrol(self.panel)
+
+    def _radio(self, name, groupnum):
+        radio = self.gui.create_control("GuiRadioCtrl", name)
+        self.gui.addcontrol(radio)
+        self.gui.add_to(self.panel, radio)
+        radio.set("groupnum", groupnum)
+        return radio
+
+    def test_script_checked_write_leaves_siblings_checked(self):
+        """`StartMemberCheck.checked = true;` does NOT clear the sibling --
+        Login clears it by hand on the next line (graal-loginserver/weapons/
+        weapon-Rescripted_IRC_Login2.txt:48-49)."""
+        a, b = self._radio("A", 1), self._radio("B", 1)
+        a.set("checked", True)
+        b.set("checked", True)
+        assert a.checked is True and b.checked is True
+
+    def test_activation_clears_only_same_groupnum_radios(self):
+        a, b = self._radio("A", 1), self._radio("B", 1)
+        other = self._radio("Other", 2)
+        a.on_action()
+        other.on_action()
+        b.on_action()
+        assert b.checked is True
+        assert a.checked is False
+        # a different groupnum is a different group and must survive
+        assert other.checked is True
+
+    def test_buttontype_not_class_decides_the_behaviour(self):
+        """A checkbox with buttontype = "RadioButton" is a working radio,
+        and a radio with "PushButton" stops being one."""
+        cb = self.gui.create_control("GuiCheckBoxCtrl", "CB")
+        self.gui.addcontrol(cb)
+        self.gui.add_to(self.panel, cb)
+        cb.set("buttontype", "RadioButton")
+        cb.set("groupnum", 3)
+        radio = self._radio("R", 3)
+        radio.on_action()
+        cb.on_action()
+        assert cb.checked is True and radio.checked is False
+
+        plain = self._radio("Plain", 3)
+        plain.set("buttontype", "PushButton")
+        plain.on_action()
+        assert plain.checked is False and cb.checked is True
+
+    def test_toggle_button_flips_on_every_activation(self):
+        cb = self.gui.create_control("GuiCheckBoxCtrl", "CB")
+        self.gui.addcontrol(cb)
+        cb.on_action()
+        assert cb.checked is True
+        cb.on_action()
+        assert cb.checked is False
+
+    def test_inactive_control_does_not_activate(self):
+        """onAction() returns early when `active` is false (:61-62); an
+        UNSET active is true (GuiControl.cpp:3172)."""
+        fired = []
+        cb = self.gui.create_control("GuiCheckBoxCtrl", "CB")
+        cb.set("onaction", lambda: fired.append(1))
+        assert cb.is_active() is True
+        cb.set("active", False)
+        cb.on_action()
+        assert cb.checked is False and fired == []
+
+
+class TestBorderStyle:
+    """`border` selects a border RENDERER, it is not a pixel width
+    (TGUIRender::renderBorder, FourPlay quattroplay/src/TGUIRender.cpp:
+    59-153); the width is the separate `borderthickness`."""
+
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.host = self.rt2.host
+
+    def _profile(self, name, fields):
+        prof = self.host.create_object("GuiControlProfile", name)
+        for key, value in fields.items():
+            prof.set(key, value)
+        self.gui.addcontrol(prof)
+        return prof
+
+    def _resolved(self, fields):
+        ctrl = self.gui.create_control("GuiControl", "C")
+        ctrl.set("profile", self._profile("P" + str(len(fields)), fields))
+        return ctrl.resolve_profile()
+
+    def test_border_5_is_the_skinned_style_not_a_3px_rectangle(self):
+        """Ten corpus assignments use the skinned value 5; clamped to 0..3
+        it drew a solid 3px frame."""
+        prof = self._resolved({"border": 5, "borderthickness": 2})
+        assert prof.border_style == 5
+        assert prof.border_thickness == 2
+
+    def test_border_style_0_draws_nothing(self):
+        from pyreborn.game.gs2_gui import _draw_border
+        prof = self._resolved({"border": 0, "bordercolor": [255, 0, 0]})
+        surf = pygame.Surface((20, 20))
+        surf.fill((0, 0, 0))
+        _draw_border(surf, pygame.Rect(0, 0, 20, 20), prof)
+        assert surf.get_at((0, 0))[:3] == (0, 0, 0)
+
+    def test_border_style_1_is_a_flat_one_pixel_bordercolor_rect(self):
+        from pyreborn.game.gs2_gui import _draw_border
+        prof = self._resolved({"border": 1, "bordercolor": [255, 0, 0]})
+        surf = pygame.Surface((20, 20))
+        surf.fill((0, 0, 0))
+        _draw_border(surf, pygame.Rect(0, 0, 20, 20), prof)
+        assert surf.get_at((0, 0))[:3] == (255, 0, 0)
+        assert surf.get_at((1, 1))[:3] == (0, 0, 0)      # one pixel only
+
+    def test_border_style_2_bevels_with_bordercolorna_and_black(self):
+        from pyreborn.game.gs2_gui import _draw_border
+        prof = self._resolved({"border": 2, "bordercolor": [255, 0, 0],
+                               "bordercolorna": [0, 255, 0]})
+        surf = pygame.Surface((20, 20))
+        surf.fill((0, 0, 0))
+        _draw_border(surf, pygame.Rect(0, 0, 20, 20), prof)
+        # outer ring: bordercolorna on top/left, bevel dark on bottom/right
+        assert surf.get_at((5, 0))[:3] == (0, 255, 0)
+        assert surf.get_at((0, 5))[:3] == (0, 255, 0)
+        # inner ring: the reverse (TGUIRender.cpp:65-90)
+        assert surf.get_at((5, 18))[:3] == (0, 255, 0)
+        assert surf.get_at((18, 5))[:3] == (0, 255, 0)
+
+    def test_justify_is_the_same_slot_as_align(self):
+        """`justify` and `align` share getter and setter pointers
+        (GuiControlProfileProperties.cpp:550 vs :582) and the live Login
+        content spells it `justify` (5 files, 23 assignments)."""
+        assert self._resolved({"justify": "center"}).align == "center"
+        # last write wins, whichever name it used
+        prof = self.host.create_object("GuiControlProfile", "PJ")
+        prof.set("align", "right")
+        prof.set("justify", "center")
+        self.gui.addcontrol(prof)
+        ctrl = self.gui.create_control("GuiControl", "CJ")
+        ctrl.set("profile", prof)
+        assert ctrl.resolve_profile().align == "center"
+
+    def test_align_write_is_case_sensitive_and_keeps_the_inherited_value(self):
+        base = self._profile("BaseAlign", {"align": "center"})
+        child = self.host.create_object("GuiControlProfile", "ChildAlign")
+        child.parent_profile_name = "basealign"
+        child.set("justify", "RIGHT")            # not byte-exact -> no-op
+        self.gui.addcontrol(child)
+        ctrl = self.gui.create_control("GuiControl", "CA")
+        ctrl.set("profile", child)
+        assert base is not None
+        assert ctrl.resolve_profile().align == "center"
+
+
+class TestTextTruncation:
+    """maxchars defaults to 255 and setText applies it, so it truncates
+    every write on labels and edit fields alike (GuiTextCtrl.cpp:27, :181)."""
+
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+
+    def test_label_text_is_truncated_at_the_default_255(self):
+        label = self.gui.create_control("GuiTextCtrl", "L")
+        assert label.get("maxchars") == 255.0
+        label.set("text", "x" * 300)
+        assert len(label.get("text")) == 255
+
+    def test_edit_field_inherits_the_cap_from_guitextctrl(self):
+        edit = self.gui.create_control("GuiTextEditCtrl", "E")
+        edit.set("maxchars", 5)
+        edit.get("settext")("abcdefgh")
+        assert edit.get("text") == "abcde"
+        # typing stops at the same cap
+        assert edit.max_len == 5
+
+    def test_a_non_positive_maxchars_disables_the_cap(self):
+        label = self.gui.create_control("GuiTextCtrl", "L")
+        label.set("maxchars", 0)
+        label.set("text", "y" * 400)
+        assert len(label.get("text")) == 400
+
+
+class TestScrollBehaviour:
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+        self.scroll = self.gui.create_control("GuiScrollCtrl", "S")
+        self.gui.addcontrol(self.scroll)
+        self.scroll.width, self.scroll.height = 100.0, 50.0
+        self.events = []
+        self.scroll.set("onscrolled", lambda *a: self.events.append(
+            (a, self.scroll.get("scrollpos"))))
+
+    def _child(self, w=80.0, h=250.0):
+        child = self.gui.create_control("GuiControl", "Inner")
+        self.gui.addcontrol(child)
+        self.gui.add_to(self.scroll, child)
+        child.width, child.height = w, h
+        return child
+
+    def test_a_childless_scroll_control_cannot_be_scrolled(self):
+        """`if (m_controls->mArraySize <= 0) return;` -- not even to 0
+        (GuiScrollCtrl.cpp:911)."""
+        self.scroll.get("scrollto")(0, 40)
+        assert self.scroll.scroll_y == 0.0
+        assert self.events == []
+
+    def test_onscrolled_fires_before_the_position_is_stored(self):
+        """The handler is invoked with (newX, newY, dx, dy) and only THEN
+        are the fields written, so a handler reading .scrollpos sees the
+        pre-scroll value (GuiScrollCtrl.cpp:930-939)."""
+        self._child()
+        self.scroll.get("scrollto")(0, 40)
+        assert self.scroll.scroll_y == 40.0
+        assert len(self.events) == 1
+        args, seen = self.events[0]
+        assert args == (0.0, 40.0, 0.0, 40.0)
+        assert seen == [0.0, 0.0]
+
+    def test_scrollpos_writes_go_through_scrollto(self):
+        self._child()
+        self.scroll.set("scrollpos", [0, 500])
+        assert self.scroll.get("scrollpos") == [0.0, 200.0]   # clamped
+        assert len(self.events) == 1
+
+    def test_an_unchanged_position_fires_nothing(self):
+        self._child()
+        self.scroll.get("scrollto")(0, 40)
+        self.scroll.get("scrollto")(0, 40)
+        assert len(self.events) == 1
+
+    def test_scrolltotop_and_bottom_reset_the_horizontal_scroll(self):
+        self._child(w=400.0)
+        self.scroll.get("scrollto")(120, 10)
+        assert self.scroll.scroll_x == 120.0
+        self.scroll.get("scrolltobottom")()
+        assert (self.scroll.scroll_x, self.scroll.scroll_y) == (0.0, 200.0)
+        self.scroll.get("scrollto")(120, 10)
+        self.scroll.get("scrolltotop")()
+        assert (self.scroll.scroll_x, self.scroll.scroll_y) == (0.0, 0.0)
+
+
+class TestMLTextReflow:
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+
+    def test_reflow_resizes_and_fires_onreflow(self):
+        """reflow() is not a pure layout pass: it resizes to the page's
+        extents and fires onReflow(width, height)
+        (GuiMLTextCtrl::reflowResize, quattroplay/src/gui/GuiMLTextCtrl.cpp:
+        1609-1648)."""
+        ml = self.gui.create_control("GuiMLTextCtrl", "Log")
+        self.gui.addcontrol(ml)
+        ml.x, ml.y, ml.width, ml.height = 0, 0, 200, 10
+        ml.set("text", "one two three four five six seven eight nine ten")
+        fired = []
+        ml.set("onreflow", lambda w, h: fired.append((w, h)))
+        surf = pygame.Surface((300, 300))
+        ml.draw(surf, _FakeFonts(), None)
+        ml.get("reflow")()
+        assert fired and fired[0] == (ml.width, ml.height)
+        assert ml.height > 10
+
+
+class TestDrawingPanelOps:
+    def setup_method(self):
+        self.gui = ClientGS2().gui
+        self.panel = self.gui.create_control("GuiDrawingPanel", "P")
+        self.panel.width, self.panel.height = 64.0, 64.0
+
+    def test_drawimagestretched_keeps_its_source_rectangle(self):
+        """Signature is `iiiisiiii` = (x, y, w, h, image, srcX, srcY, srcW,
+        srcH) (GuiDrawingPanelProperties.cpp:197); args 5-8 used to be
+        dropped, which only stayed invisible while every live caller passed
+        the whole image as its source rect."""
+        self.panel.get("drawimagestretched")(0, 0, 32, 32, "sheet.png",
+                                             16, 0, 16, 16)
+        assert self.panel.draw_ops == [
+            ("imagestretched", 0.0, 0.0, "sheet.png", (32.0, 32.0),
+             (16.0, 0.0, 16.0, 16.0))]
+        sheet = pygame.Surface((32, 16))
+        sheet.fill((255, 0, 0))
+        sheet.fill((0, 0, 255), pygame.Rect(16, 0, 16, 16))
+        surf = pygame.Surface((64, 64))
+        self.panel.draw(surf, _FakeFonts(), _FakeSpriteMgr({"sheet.png": sheet}))
+        # the BLUE half is what was asked for, scaled up to 32x32
+        assert surf.get_at((4, 4))[:3] == (0, 0, 255)
+        assert surf.get_at((30, 30))[:3] == (0, 0, 255)
+
+    def test_drawrect_is_not_a_reference_method(self):
+        """No `drawrect` entry exists in GuiDrawingPanelProperties::funcDefs
+        (:192-207) and no corpus script calls one -- it was ours."""
+        from pyreborn.game.gs2_gui import GuiDrawingPanel
+        assert "drawrect" not in GuiDrawingPanel._METHOD_NAMES
+
+    def test_checkbox_has_no_value_alias(self):
+        """`value` is registered nowhere under src/gui and no corpus script
+        uses it."""
+        cb = self.gui.create_control("GuiCheckBoxCtrl", "CB")
+        assert not cb.has("value")
+
+
+def test_stretch_control_client_size_is_its_own_field():
+    """GuiStretchCtrl redeclares clientextent/clientwidth/clientheight
+    against its virtual content size, so the write does NOT resize the outer
+    bounds the way GuiControl's versions do
+    (GuiStretchCtrlProperties.cpp:46-48)."""
+    from pyreborn.game.gs2_gui import GuiStretchCtrl
+    gui = ClientGS2().gui
+    stretch = gui.create_control("GuiStretchCtrl", "Stretch")
+    assert isinstance(stretch, GuiStretchCtrl)
+    stretch.set("extent", [200, 100])
+    stretch.set("clientwidth", 600)
+    stretch.set("clientheight", 400)
+    assert (stretch.width, stretch.height) == (200, 100)
+    assert stretch.get("clientextent") == [600.0, 400.0]
+
+
+def test_password_field_masks_its_text():
+    """`password = true;` in a GuiTextEditCtrl construction block (8 corpus
+    files) used to be dropped by the existence gate, so Login's password
+    fields echoed the characters. The flag is derived from `inputtype`, and
+    clearing it writes "default" rather than restoring the old type
+    (GuiTextEditCtrl.cpp:308-316)."""
+    gui = ClientGS2().gui
+    edit = gui.create_control("GuiTextEditCtrl", "PassEdit")
+    edit.set("inputtype", "email")
+    assert edit.get("password") == 0.0
+    edit.set("password", True)
+    assert edit.get("inputtype") == "password" and edit.is_password()
+    edit.text = "hunter2"
+    surf = pygame.Surface((200, 40))
+    edit.x, edit.y, edit.width, edit.height = 0, 0, 150, 22
+    edit.draw(surf, _FakeFonts(), None)
+    assert edit.text == "hunter2"            # only the rendering is masked
+    edit.set("password", False)
+    assert edit.get("inputtype") == "default"
+
+
+def test_window_maximized_is_a_toggle_and_the_methods_are_callable():
+    """`maximized = true;` twice UNmaximizes: the setter calls
+    maximizeWindow(), which restores when already maximized (FourPlay
+    quattroplay/src/gui/GuiWindowCtrlProperties.cpp:137-156,
+    GuiWindowCtrl.cpp:169-173). Two corpus files write it, and the write was
+    dropped entirely before -- the name was not claimed."""
+    gui = ClientGS2().gui
+    win = gui.create_control("GuiWindowCtrl", "W")
+    gui.addcontrol(win)
+    win.x, win.y, win.width, win.height = 20, 30, 200, 150
+    assert win.has("maximized")
+    win.set("maximized", True)
+    assert win.get("maximized") == 1.0 and (win.x, win.y) == (0.0, 0.0)
+    win.set("maximized", True)
+    assert win.get("maximized") == 0.0 and (win.x, win.y) == (20.0, 30.0)
+    # the four window methods are script-callable
+    win.get("maximize")()
+    assert win.get("maximized") == 1.0
+    win.get("restore")()
+    assert win.get("maximized") == 0.0 and (win.width, win.height) == (200, 150)
+    win.get("close")()
+    assert win.visible is False
+
+
+def test_context_menu_open_close_and_isopen():
+    """`isopen` has two corpus call sites (GuiContextMenuCtrlProperties.cpp:
+    164-169)."""
+    gui = ClientGS2().gui
+    menu = gui.create_control("GuiContextMenuCtrl", "Menu")
+    gui.addcontrol(menu)
+    assert menu.get("isopen")() == 0.0
+    menu.get("open")(40, 60)
+    assert menu.get("isopen")() == 1.0 and (menu.x, menu.y) == (40.0, 60.0)
+    menu.get("close")()
+    assert menu.get("isopen")() == 0.0
+    assert menu.has("maxpopupheight")

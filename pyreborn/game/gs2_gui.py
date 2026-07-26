@@ -116,18 +116,30 @@ def _log_once(key: Tuple, msg: str, *fmt: Any) -> None:
 class GuiProfile:
     """A RESOLVED style (plain colors/fonts + optional skin-bitmap name),
     built from profile field dicts by _profile_from_fields. bg may be None
-    (no fill -- text profiles) or RGBA (translucent windows)."""
+    (no fill -- text profiles) or RGBA (translucent windows).
 
-    __slots__ = ("bg", "border", "border_width", "fg", "title_bg",
+    `border_style` is the profile's `border` field, a RENDERER SELECTOR and
+    not a pixel width: TGUIRender::renderBorder switches on it (FourPlay
+    quattroplay/src/TGUIRender.cpp:59) with 1 = flat, 2/3/4 = bevels and
+    `default: return` for everything else, while 5 is handled by the caller
+    as the skinned mode (src/gui/GuiControl.cpp:3387-3410). The pixel
+    thickness is the separate `borderthickness` field."""
+
+    __slots__ = ("bg", "border", "border_style", "border_thickness",
+                 "border_na", "fg", "title_bg",
                  "title_fg", "font_size", "font_bold", "align",
                  "bitmap", "transparency", "opaque", "text_shadow")
 
     def __init__(self, bg, border, fg, title_bg, title_fg,
-                 border_width=1, font_size=18, font_bold=False, align="left",
-                 bitmap="", transparency=1.0, opaque=None, text_shadow=False):
+                 border_style=1, font_size=18, font_bold=False, align="left",
+                 bitmap="", transparency=1.0, opaque=None, text_shadow=False,
+                 border_thickness=1, border_na=None):
         self.bg = bg
         self.border = border
-        self.border_width = border_width
+        self.border_style = border_style
+        self.border_thickness = border_thickness
+        #: `bordercolorna`, the light edge of border styles 2 and 3
+        self.border_na = border_na if border_na is not None else border
         self.fg = fg
         self.title_bg = title_bg
         self.title_fg = title_fg
@@ -244,13 +256,25 @@ _DEFAULT_GUIPROFILE = GuiProfile(
     title_bg=_BLUE_FILL, title_fg=(235, 240, 250))
 
 #: profile fields that carry style meaning (everything else a script sets on
-#: a profile -- bitmap art names, textoffset, shadow params -- is retained on
-#: the object but not consulted by the solid-color renderer)
+#: a profile -- textoffset, shadow params -- is retained on the object but not
+#: consulted by the solid-color renderer)
 _STYLE_FIELDS = frozenset({
-    "fillcolor", "fontcolor", "bordercolor", "fillcolorhl", "fillcolorna",
-    "fontsize", "fontstyle", "align", "border", "opaque",
-    "bitmap", "transparency", "textshadow",
+    "fillcolor", "fontcolor", "bordercolor", "bordercolorna", "fillcolorhl",
+    "fillcolorna", "fontsize", "fontstyle", "align", "justify", "border",
+    "borderthickness", "opaque", "bitmap", "transparency", "textshadow",
 })
+
+#: `justify` and `align` are ONE slot under two names -- identical getter and
+#: setter pointers in the profile table (quattroplay/src/gui/
+#: GuiControlProfileProperties.cpp:550 vs :582) -- and the live content spells
+#: it `justify`. Collapsing the alias at merge time keeps last-write-wins
+#: within a profile and child-over-parent across the chain.
+_STYLE_ALIASES = {"justify": "align"}
+
+#: values `align`/`justify` accepts, byte-exact: the setter walks
+#: AlignmentArr (GuiControlProfileProperties.cpp:543-547) with TString's
+#: memcmp `==` and silently keeps the old value on a miss.
+_ALIGNMENTS = ("left", "center", "right")
 
 
 def _color(value, default=None):
@@ -281,8 +305,16 @@ def _profile_fields(ref: Any, mgr, visited: set) -> Dict[str, Any]:
         visited.add(id(ref))
         base = _profile_fields(ref.parent_profile_name, mgr, visited) \
             if ref.parent_profile_name else {}
-        own = {k: v for k, v in ref._members.items() if k in _STYLE_FIELDS}
-        base.update(own)
+        for key, value in ref._members.items():
+            if key not in _STYLE_FIELDS:
+                continue
+            key = _STYLE_ALIASES.get(key, key)
+            # An enum field compares its value byte-exact and silently keeps
+            # the previous one on a miss (GuiControlProfileProperties.cpp:
+            # 11-21) -- here "previous" is whatever the parent chain merged.
+            if key == "align" and to_str(value) not in _ALIGNMENTS:
+                continue
+            base[key] = value
         return base
     name = to_str(ref).lower() if ref is not None else ""
     if not name or name in visited:
@@ -308,20 +340,31 @@ def _profile_from_fields(fields: Dict[str, Any]) -> GuiProfile:
                     _shade(bg, 1.5) if bg else _BLUE_HL)
     title_bg = _color(fields.get("fillcolorhl"),
                       _shade(bg, 1.4) if bg else _BLUE_FILL)
-    bw = 1
+    # An unset `border` is left at 1 (flat): the reference initialises the
+    # field neither in GuiControlProfile's constructor nor in initObject
+    # (quattroplay/src/gui/GuiControlProfile.cpp:37-63, :184-221) -- it
+    # arrives via copyProfileFrom(GuiDefaultProfile), which our builtin field
+    # data does not carry a `border` for.
+    style = 1
     if "border" in fields:
-        bw = max(0, min(3, int(to_num(fields.get("border")))))
+        style = int(to_num(fields.get("border")))
+    thickness = 1
+    if "borderthickness" in fields:
+        thickness = max(0, int(to_num(fields.get("borderthickness"))))
     size = int(to_num(fields.get("fontsize"))) or 18
     size = max(9, min(28, size))
     transparency = 1.0
     if "transparency" in fields:
         transparency = max(0.0, min(1.0, to_num(fields.get("transparency"))))
     opaque = to_bool(fields["opaque"]) if "opaque" in fields else None
+    align = to_str(fields.get("align", "left"))
     return GuiProfile(
         bg=bg, border=border, fg=fg, title_bg=title_bg, title_fg=fg,
-        border_width=bw, font_size=size,
+        border_style=style, border_thickness=thickness,
+        border_na=_color(fields.get("bordercolorna"), border),
+        font_size=size,
         font_bold="b" in to_str(fields.get("fontstyle", "")).lower(),
-        align=to_str(fields.get("align", "left")).lower() or "left",
+        align=align if align in _ALIGNMENTS else "left",
         bitmap=to_str(fields.get("bitmap", "")),
         transparency=transparency, opaque=opaque,
         text_shadow=to_bool(fields.get("textshadow", 0)))
@@ -362,6 +405,63 @@ def _fill_rect(surf, color, rect, width=0, border_radius=0) -> None:
         surf.blit(scratch, rect.topleft)
     else:
         pygame.draw.rect(surf, color[:3], rect, width, border_radius)
+
+
+_BEVEL_DARK = (0, 0, 0)
+_BEVEL_LIGHT = (255, 255, 255)
+
+
+def _draw_border(surf, rect: pygame.Rect, prof: GuiProfile,
+                 skin: Optional["_Skin"] = None, border_radius: int = 0) -> None:
+    """Paint the profile's `border` STYLE over `rect`.
+
+    Faithful to TGUIRender::renderBorder's four cases (FourPlay quattroplay/
+    src/TGUIRender.cpp:59-153), which draw 1px lines in every case -- the
+    line width there is the constant 1.0, so `borderthickness` is layout
+    inset only (it is what GuiScrollCtrl measures with,
+    src/gui/GuiScrollCtrl.cpp:141). Styles 2/3/4 are two concentric 1px
+    rings, half of each in a bevel color (white/black,
+    TGUIRender.cpp:13-14). Style 5 is the skinned mode, whose renderer is
+    the style sheet we cannot resolve headless; the reference's own no-style
+    fallback is the profile bitmap (src/gui/GuiControl.cpp:3409), so that is
+    what we draw. Style 0 and anything unrecognised draw nothing.
+    """
+    style = prof.border_style
+    if style <= 0 or rect.width <= 0 or rect.height <= 0:
+        return
+    if style == 1:
+        _fill_rect(surf, prof.border, rect, 1, border_radius)
+        return
+    if style == 5:
+        if skin is not None:
+            skin.draw_nine(surf, rect, 0, int(255 * prof.transparency))
+        return
+    if style not in (2, 3, 4):
+        return
+    outer = rect
+    inner = rect.inflate(-2, -2)
+    if style == 2:
+        rings = ((outer, prof.border_na, _BEVEL_DARK),
+                 (inner, _BEVEL_DARK, prof.border_na))
+    elif style == 3:
+        rings = ((outer, prof.border_na, _BEVEL_DARK),
+                 (inner, _BEVEL_LIGHT, prof.bg or prof.border))
+    else:
+        rings = ((outer, _BEVEL_DARK, _BEVEL_LIGHT),
+                 (inner, None, prof.border))
+    for box, top_left, bottom_right in rings:
+        if box.width <= 0 or box.height <= 0:
+            continue
+        if top_left is not None:
+            pygame.draw.line(surf, top_left[:3], box.topleft,
+                             (box.right - 1, box.y))
+            pygame.draw.line(surf, top_left[:3], box.topleft,
+                             (box.x, box.bottom - 1))
+        if bottom_right is not None:
+            pygame.draw.line(surf, bottom_right[:3], (box.x, box.bottom - 1),
+                             (box.right - 1, box.bottom - 1))
+            pygame.draw.line(surf, bottom_right[:3], (box.right - 1, box.y),
+                             (box.right - 1, box.bottom - 1))
 
 
 def _font(fonts, prof: GuiProfile):
@@ -1417,8 +1517,7 @@ class GuiControl(GS2Object):
                     surf, r, 0, int(255 * prof.transparency)):
                 _fill_rect(surf, prof.bg if prof.bg is not None
                            else prof.title_bg, r)
-                if prof.border_width:
-                    _fill_rect(surf, prof.border, r, prof.border_width)
+                _draw_border(surf, r, prof, skin)
         if self.text and fonts is not None:
             _draw_label(surf, _font(fonts, prof), self.text, prof.fg,
                         (r.x + 4, r.y + 4), prof.text_shadow)
@@ -1451,20 +1550,59 @@ class GuiWindowCtrl(GuiControl):
         self.maximized = False
         self.standard_bounds = pygame.Rect(0, 0, 100, 200)
 
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
+        {"maximized", "minimized"})
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"close", "minimize", "maximize", "restore"})
+
     def get(self, key: str) -> Any:
         k = key.lower()
         if k in ("canclose", "canminimize", "canmaximize", "canmove",
-                 "closequery", "destroyonhide"):
+                 "closequery", "destroyonhide", "maximized", "minimized"):
             return 1.0 if getattr(self, k) else 0.0
         return super().get(k)
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
+        if k in ("maximized", "minimized"):
+            # These setters are TOGGLES, not idempotent state writes: a
+            # truthy write calls maximizeWindow()/minimizeWindow(), and
+            # those RESTORE when the window is already in that state; a
+            # falsy write restores only if it IS in that state (FourPlay
+            # quattroplay/src/gui/GuiWindowCtrlProperties.cpp:137-156,
+            # GuiWindowCtrl.cpp:151-155, :169-173).
+            if to_bool(value):
+                if k == "maximized":
+                    self.maximize_window()
+                else:
+                    self.minimize_window()
+            elif getattr(self, k):
+                self.restore_window()
+            return
         if k in ("canclose", "canminimize", "canmaximize", "canmove",
                  "closequery", "destroyonhide"):
             setattr(self, k, to_bool(value))
             return
         super().set(k, value)
+
+    def _m_close(self, *args) -> float:
+        """close(): note it does NOT consult `canclose`, which only gates
+        the title-bar button (GuiWindowCtrlProperties.cpp:181-184 vs
+        GuiWindowCtrl.cpp:253-258)."""
+        self.close_window()
+        return 0.0
+
+    def _m_minimize(self, *args) -> float:
+        self.minimize_window()
+        return 0.0
+
+    def _m_maximize(self, *args) -> float:
+        self.maximize_window()
+        return 0.0
+
+    def _m_restore(self, *args) -> float:
+        self.restore_window()
+        return 0.0
 
     def button_rects(self) -> Tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
         x = int(self.width) - 18
@@ -1558,8 +1696,7 @@ class GuiWindowCtrl(GuiControl):
             drew_frame = skin.draw_window_frame(surf, r, alpha)
         if not drew_frame:
             _fill_rect(surf, prof.bg, r)
-            if prof.border_width:
-                _fill_rect(surf, prof.border, r, prof.border_width)
+            _draw_border(surf, r, prof, skin)
             _fill_rect(surf, prof.title_bg, tb)
         if self.text and fonts is not None:
             font = _font(fonts, prof)
@@ -1588,7 +1725,93 @@ class GuiWindowCtrl(GuiControl):
             pygame.draw.rect(surf, glyph, maximize.inflate(-6, -6), 1)
 
 
-class GuiButtonCtrl(GuiControl):
+class GuiButtonBaseCtrl(GuiControl):
+    """Shared button surface: `text`, `checked`, `groupnum`, `buttontype`
+    (FourPlay quattroplay/src/gui/GuiButtonBaseCtrlProperties.cpp:68-105).
+    Every button-ish control -- plain, bitmap, checkbox, radio -- inherits
+    it; `GuiCheckBoxCtrlProperties.cpp` and `GuiRadioCtrlProperties.cpp`
+    register nothing of their own, so this table IS their whole
+    button-specific surface.
+
+    What the control DOES is driven by `buttontype`, not by the class: a
+    checkbox with `buttontype = "RadioButton"` is a working radio and a
+    radio with `"PushButton"` stops being one (GuiButtonBaseCtrl::onAction,
+    :59-94). The class only picks the default -- PushButton here,
+    ToggleButton on a checkbox (GuiCheckBoxCtrl.cpp:25-35), RadioButton on
+    a radio (GuiRadioCtrl.cpp:18-24)."""
+
+    CTRL_CLASS = "GuiButtonBaseCtrl"
+    #: byte-exact; the setter loops these three with TString's memcmp `==`
+    #: and, on no match, leaves the old value and reports nothing
+    #: (GuiButtonBaseCtrlProperties.cpp:16-26)
+    BUTTON_TYPES = ("PushButton", "ToggleButton", "RadioButton")
+    DEFAULT_BUTTON_TYPE = 0
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
+        {"checked", "groupnum", "buttontype"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.checked = False
+        self.button_type = self.DEFAULT_BUTTON_TYPE
+        #: radio-group id; default -1 (GuiButtonBaseCtrl.cpp:33)
+        self.groupnum = -1
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "checked":
+            return 1.0 if self.checked else 0.0
+        if k == "groupnum":
+            return float(self.groupnum)
+        if k == "buttontype":
+            return self.BUTTON_TYPES[self.button_type]
+        return super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "checked":
+            # setChecked() only stores and repaints (GuiButtonBaseCtrl.cpp:
+            # 42-46) -- radio-group exclusivity lives in onAction(), so a
+            # SCRIPT write leaves every sibling checked. Login clears them by
+            # hand for exactly that reason (graal-loginserver/weapons/
+            # weapon-Rescripted_IRC_Login2.txt:48-49).
+            self.checked = to_bool(value)
+            return
+        if k == "groupnum":
+            self.groupnum = int(to_num(value))
+            return
+        if k == "buttontype":
+            name = to_str(value)
+            if name in self.BUTTON_TYPES:
+                self.button_type = self.BUTTON_TYPES.index(name)
+            return
+        super().set(k, value)
+
+    def is_active(self) -> bool:
+        return to_bool(self._members.get("active", 1))
+
+    def on_action(self) -> bool:
+        """The engine's onAction(): the activation path a click/Enter/hotkey
+        takes (GuiButtonBaseCtrl.cpp:59-94). Inactive controls do nothing at
+        all; a ToggleButton flips `checked`; a RadioButton checks itself and
+        clears the same-`groupnum` RadioButton siblings among its parent's
+        direct children."""
+        if not self.is_active():
+            return False
+        if self.button_type == 1:
+            self.checked = not self.checked
+        elif self.button_type == 2:
+            self.checked = True
+            siblings = (self.parent.children if self.parent is not None
+                        else (self._manager.roots if self._manager else []))
+            for sib in siblings:
+                if (sib is not self and isinstance(sib, GuiButtonBaseCtrl)
+                        and sib.button_type == 2
+                        and sib.groupnum == self.groupnum):
+                    sib.checked = False
+        return self.fire_action()
+
+
+class GuiButtonCtrl(GuiButtonBaseCtrl):
     """Rect + text (aligned per profile) + optional icon; onAction fires on
     click (GS2GuiManager). Skin sheets (guiblue_button.png) carry four
     9-patch state groups in order normal/hilight/pressed/inactive."""
@@ -1633,9 +1856,7 @@ class GuiButtonCtrl(GuiControl):
             elif self.hovered:
                 fill = _shade(fill, 1.2)
             _fill_rect(surf, fill, r, border_radius=4)
-            if prof.border_width:
-                _fill_rect(surf, prof.border, r, prof.border_width,
-                           border_radius=4)
+            _draw_border(surf, r, prof, skin, border_radius=4)
         # optional icon (icon.drawimagestretched from the construction
         # block -- the taskbar's server buttons)
         tx = r.x + 8
@@ -1666,13 +1887,44 @@ class GuiButtonCtrl(GuiControl):
 
 
 class GuiTextCtrl(GuiControl):
-    """A plain (non-interactive) text label."""
+    """A plain (non-interactive) text label.
+
+    `maxchars` caps the text and defaults to **255**
+    (GuiTextCtrl::initObject, FourPlay quattroplay/src/gui/GuiTextCtrl.cpp:27),
+    and the cap is applied by `setText` itself -- `subString(0, maxchars)`
+    at :181 -- so it truncates every write, script-assigned or typed, on
+    labels and on the edit controls below alike. `maxchars <= 0` disables
+    it."""
 
     CTRL_CLASS = "GuiTextCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({"maxchars"})
+    maxchars = 255
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 100.0, 16.0
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @text.setter
+    def text(self, value: Any) -> None:
+        value = to_str(value)
+        if 0 < self.maxchars < len(value):
+            value = value[:self.maxchars]
+        self._text = value
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "maxchars":
+            return float(self.maxchars)
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "maxchars":
+            self.maxchars = int(to_num(value))
+            return
+        super().set(key, value)
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         if not self.text or fonts is None:
@@ -1704,19 +1956,43 @@ class GuiMLTextCtrl(GuiControl):
     #: The live callers are the RC log windows, which append lines and then
     #: reflow before scrolling to the bottom.
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"reflow"})
+    #: the rest of the own table (GuiMLTextCtrlProperties.cpp:305-319; `text`
+    #: comes from the base) -- all of these are written bare in construction
+    #: blocks, which the VM's existence gate drops unless the name is claimed
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({
+        "allowedtags", "alpha", "cursorposition", "deniedsound",
+        "disallowedtags", "htmllinks", "htmlcompatibility", "maxchars",
+        "parsetags", "plaintext", "urlbase", "wordwrap",
+    })
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 160.0, 80.0
         self._ml_cache_key = None
         self._ml_paragraphs = None
+        #: (width, height) of the last laid-out content -- reflow() reports
+        #: the page extents and it can only measure them at paint time
+        self._content_extent: Optional[Tuple[float, float]] = None
+
+    def word_wrap(self) -> bool:
+        return to_bool(self._members.get("wordwrap", 1))
 
     def _m_reflow(self, *args) -> float:
-        # Force the next paint to re-run parse_mltext: our layout is lazy and
-        # keyed on self.text, so a script that mutated markup state without
-        # changing the text (colour/size runs) would otherwise keep the stale
-        # paragraph list.
+        """reflow(): re-lay-out, RESIZE to the page's extents and fire
+        `onReflow(width, height)` -- it is not a pure layout pass
+        (GuiMLTextCtrl::reflowResize, quattroplay/src/gui/GuiMLTextCtrl.cpp:
+        1609-1648: height from the page's max height, width from its max
+        width + 1 when word-wrap is off, then resize(), then the event).
+        Our layout is lazy and keyed on self.text, so this also drops the
+        cache -- a script that mutated markup state without changing the
+        text would otherwise keep the stale paragraph list."""
         self._ml_cache_key = None
+        if self._content_extent is not None:
+            content_w, content_h = self._content_extent
+            self.height = content_h
+            if not self.word_wrap():
+                self.width = content_w + 1.0
+        self.fire_event("onreflow", float(self.width), float(self.height))
         return 0.0
 
     def _paragraphs(self):
@@ -1736,8 +2012,11 @@ class GuiMLTextCtrl(GuiControl):
         prof = self.resolve_profile()
         r = self.rect()
         base_font = _font(fonts, prof)
-        max_w = max(20, r.width)
+        # `wordwrap = false` lets a line run past the control's width; the
+        # reference's reflowResize then widens the control to fit it
+        max_w = max(20, r.width) if self.word_wrap() else 0
         y = r.y
+        widest = 0
         at = getattr(fonts, "at", None)
 
         def seg_font(seg):
@@ -1765,7 +2044,7 @@ class GuiMLTextCtrl(GuiControl):
             for word, seg in words:
                 font = seg_font(seg)
                 w = font.size(word + " ")[0]
-                if lines[-1] and line_w + w > max_w:
+                if lines[-1] and max_w and line_w + w > max_w:
                     lines.append([])
                     line_w = 0
                 lines[-1].append((word, seg))
@@ -1775,6 +2054,7 @@ class GuiMLTextCtrl(GuiControl):
                              for _w, seg in line)
                 total_w = sum(seg_font(seg).size(word + " ")[0]
                               for word, seg in line)
+                widest = max(widest, total_w)
                 if align == "center":
                     x = r.x + max(0, (r.width - total_w) // 2)
                 elif align == "right":
@@ -1795,6 +2075,7 @@ class GuiMLTextCtrl(GuiControl):
                     x += font.size(word + " ")[0]
                 y += line_h
         # autosize so ancestor scroll controls know the content extent
+        self._content_extent = (float(widest), float(y - r.y))
         self.height = max(self.height, float(y - r.y))
 
 
@@ -1807,6 +2088,14 @@ class GuiScrollCtrl(GuiControl):
 
     CTRL_CLASS = "GuiScrollCtrl"
     SCROLLBAR_W = 17
+    #: byte-exact values `hscrollbar`/`vscrollbar` accept; anything else is a
+    #: silent no-op that leaves the mode alone (writeScrollbarMode, FourPlay
+    #: quattroplay/src/gui/GuiScrollCtrlProperties.cpp:23-34)
+    SCROLLBAR_MODES = ("alwaysOn", "alwaysOff", "dynamic")
+
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({
+        "childmargin", "constantthumbheight", "scrollpos", "wheelscrolllines",
+    })
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -1814,7 +2103,28 @@ class GuiScrollCtrl(GuiControl):
         self.scroll_x = 0.0
         self.scroll_y = 0.0
 
-    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"scrolldelta"})
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
+        {"scrolldelta", "scrollto", "scrolltotop"})
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "scrollpos":
+            return [float(self.scroll_x), float(self.scroll_y)]
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "scrollpos":
+            # the setter IS scrollTo(x, y) (GuiScrollCtrlProperties.cpp:71-80)
+            pair = self._num_pair(value)
+            if pair is not None:
+                self.scroll_to(*pair)
+            return
+        if k in ("hscrollbar", "vscrollbar"):
+            if to_str(value) not in self.SCROLLBAR_MODES:
+                return
+        elif k == "wheelscrolllines" and to_num(value) <= 0:
+            return
+        super().set(k, value)
 
     def content_height(self) -> float:
         bottom = 0.0
@@ -1823,24 +2133,66 @@ class GuiScrollCtrl(GuiControl):
                 bottom = max(bottom, c.y + c.height)
         return bottom
 
+    def content_width(self) -> float:
+        right = 0.0
+        for c in self.children:
+            if c.visible:
+                right = max(right, c.x + c.width)
+        return right
+
     def max_scroll_y(self) -> float:
         return max(0.0, self.content_height() - self.height)
 
+    def max_scroll_x(self) -> float:
+        return max(0.0, self.content_width() - self.width)
+
+    def scroll_to(self, x: float, y: float) -> None:
+        """scrollTo(x, y), with the reference's three surprises: a control
+        with NO children cannot be scrolled at all (not even to 0), the
+        clamped position is compared against the old one, and `onScrolled`
+        is invoked with (newX, newY, dx, dy) BEFORE the new position is
+        stored -- so a handler reading `.scrollpos` sees the pre-scroll
+        value (quattroplay/src/gui/GuiScrollCtrl.cpp:909-943)."""
+        if not self.children:
+            return
+        new_x = max(0.0, min(to_num(x), self.max_scroll_x()))
+        new_y = max(0.0, min(to_num(y), self.max_scroll_y()))
+        old_x, old_y = self.scroll_x, self.scroll_y
+        if new_x == old_x and new_y == old_y:
+            return
+        self.fire_event("onscrolled", new_x, new_y, new_x - old_x,
+                        new_y - old_y)
+        self.scroll_x, self.scroll_y = new_x, new_y
+
+    def _m_scrollto(self, *args) -> float:
+        x, y = self._coord_arg(args)
+        self.scroll_to(x, y)
+        return 0.0
+
     def _m_scrolldelta(self, *args) -> float:
-        """scrollDelta(dx, dy): scroll BY the given amount (the wheel path
-        does the same clamp; Login Mobile's gui_scroll class drives its
-        touch-drag scrolling through it)."""
+        """scrollDelta(dx, dy): scroll BY the given amount (Login Mobile's
+        gui_scroll class drives its touch-drag scrolling through it)."""
         dx, dy = self._coord_arg(args)
-        self.scroll_x = max(0.0, self.scroll_x + dx)
-        self.scroll_y = max(0.0, min(self.scroll_y + dy, self.max_scroll_y()))
+        self.scroll_to(self.scroll_x + dx, self.scroll_y + dy)
+        return 0.0
+
+    def _m_scrolltotop(self, *args) -> float:
+        """scrollToTop(): scrollTo(0, 0) -- it resets the HORIZONTAL scroll
+        too (GuiScrollCtrlProperties.cpp:144-147)."""
+        self.scroll_to(0.0, 0.0)
+        return 0.0
+
+    def _m_scrolltobottom(self, *args) -> float:
+        """scrollToBottom(): scrollTo(0, INT_MAX), i.e. x is reset (:139-142)."""
+        self.scroll_to(0.0, self.max_scroll_y())
         return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
         r = self.rect()
+        skin = self._skin(prof, sprite_mgr)
         _fill_rect(surf, prof.bg, r)
-        if prof.border_width:
-            _fill_rect(surf, prof.border, r, prof.border_width)
+        _draw_border(surf, r, prof, skin)
         # vertical scrollbar on overflow
         vmode = to_str(self._members.get("vscrollbar", "dynamic")).lower()
         max_scroll = self.max_scroll_y()
@@ -1882,32 +2234,74 @@ class GuiScrollCtrl(GuiControl):
                    border_radius=4)
 
 
-class GuiTextEditCtrl(GuiControl):
+class GuiTextEditCtrl(GuiTextCtrl):
     """Single-line editable text field. Enter fires onAction (GS2GuiManager
-    routes focus + key/Enter handling; `.text` is the live edit buffer)."""
+    routes focus + key/Enter handling; `.text` is the live edit buffer).
+
+    Chain is GuiTextEditCtrl -> GuiTextCtrl (quattroplay/src/gui/
+    GuiTextEditCtrlProperties.cpp:57), which is where `maxchars` and its
+    truncation come from."""
 
     CTRL_CLASS = "GuiTextEditCtrl"
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
         {"setselection", "getselection"})
+    _TORQUE_PROPS = GuiTextCtrl._TORQUE_PROPS | frozenset({
+        "password", "inputtype", "showcursor", "deniedsound",
+    })
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 150.0, 22.0
         self.focused = False
-        self.max_len = 256
         #: [start, end] character range, empty when start == end. Login's
         #: chat bar recalls a message and then selects all of it
         #: (`ChatBar.setSelection(0, ChatBar.text.length())`) precisely so
         #: the next keystroke REPLACES it -- see take_selection().
         self.selection: Tuple[int, int] = (0, 0)
 
+    @property
+    def max_len(self) -> int:
+        """Typing cap: `maxchars`, since every text change routes through
+        the truncating GuiTextCtrl::setText (GuiTextEditCtrl::setText ->
+        setTextKeepCursor, quattroplay/src/gui/GuiTextEditCtrl.cpp:
+        1072-1079)."""
+        return self.maxchars if self.maxchars > 0 else 1 << 30
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "password":
+            return 1.0 if self.is_password() else 0.0
+        if k == "inputtype":
+            return to_str(self._members.get("inputtype", "default"))
+        return super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "password":
+            # `password` and `inputtype` are the same storage under two
+            # names, and clearing it writes "default" rather than restoring
+            # the previous type (setPasswordText, GuiTextEditCtrl.cpp:
+            # 308-316; getPasswordText is `m_inputType == "password"`)
+            super().set("inputtype", "password" if to_bool(value) else "default")
+            return
+        super().set(k, value)
+
+    def is_password(self) -> bool:
+        return to_str(self._members.get("inputtype", "default")) == "password"
+
     def _m_setselection(self, *args) -> float:
+        """setSelection(start, end): start clamps up to 0 and end down to
+        the text length, and an INVERTED range zeroes BOTH ends rather than
+        swapping them -- `setSelection(5, 2)` selects nothing
+        (GuiTextEditCtrl::setSelection, quattroplay/src/gui/
+        GuiTextEditCtrl.cpp:205-225)."""
         start = int(to_num(args[0])) if args else 0
         end = int(to_num(args[1])) if len(args) > 1 else start
-        limit = len(self.text)
-        start = max(0, min(start, limit))
-        end = max(0, min(end, limit))
-        self.selection = (min(start, end), max(start, end))
+        start = max(0, start)
+        end = min(end, len(self.text))
+        if end < start:
+            start = end = 0
+        self.selection = (start, end)
         return 0.0
 
     def _m_getselection(self, *args) -> List[float]:
@@ -1939,10 +2333,11 @@ class GuiTextEditCtrl(GuiControl):
         if fonts is None:
             return
         font = _font(fonts, prof)
-        label = font.render(self.text, True, prof.fg)
+        shown = "*" * len(self.text) if self.is_password() else self.text
+        label = font.render(shown, True, prof.fg)
         surf.blit(label, (r.x + 4, r.centery - label.get_height() // 2))
         if self.focused and (pygame.time.get_ticks() // 500) % 2 == 0:
-            cx = r.x + 4 + font.size(self.text)[0]
+            cx = r.x + 4 + font.size(shown)[0]
             pygame.draw.line(surf, prof.fg, (cx, r.y + 3), (cx, r.bottom - 3), 1)
 
 
@@ -2011,33 +2406,18 @@ class GuiProgressCtrl(GuiControl):
         pygame.draw.rect(surf, prof.border[:3], r, 1)
 
 
-class GuiCheckBoxCtrl(GuiControl):
-    """Stub-but-track: rendered as a small button with a checked state.
-    `value`/`checked` alias to the same boolean (real client scripts use
-    either name)."""
+class GuiCheckBoxCtrl(GuiButtonBaseCtrl):
+    """Rendered as a small box with a checked state. Registers nothing of
+    its own (GuiCheckBoxCtrlProperties.cpp:3-6 is a bare constructor) --
+    the whole surface is GuiButtonBaseCtrl's; it only defaults `buttontype`
+    to ToggleButton (GuiCheckBoxCtrl.cpp:25-35)."""
 
     CTRL_CLASS = "GuiCheckBoxCtrl"
-    _BOOL_KEYS = ("value", "checked")
-    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(_BOOL_KEYS)
+    DEFAULT_BUTTON_TYPE = 1
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 16.0, 16.0
-        self.checked = False
-
-    def get(self, key: str) -> Any:
-        if key.lower() in self._BOOL_KEYS:
-            return 1.0 if self.checked else 0.0
-        return super().get(key)
-
-    def set(self, key: str, value: Any) -> None:
-        if key.lower() in self._BOOL_KEYS:
-            self.checked = to_bool(value)
-            return
-        super().set(key, value)
-
-    def toggle(self) -> None:
-        self.checked = not self.checked
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
@@ -2057,13 +2437,13 @@ class GuiCheckBoxCtrl(GuiControl):
 
 
 class GuiRadioCtrl(GuiCheckBoxCtrl):
-    """Same as GuiCheckBoxCtrl visually (a filled circle instead of a box).
-    Per-group mutual-exclusion is handled by GS2GuiManager._select_radio:
-    clicking a radio checks it and unchecks its siblings (the children of
-    its immediate parent container -- there is no separate group-name
-    property on the wire, matching the C# client's reference semantics)."""
+    """Same as GuiCheckBoxCtrl visually (a filled circle instead of a box);
+    it only defaults `buttontype` to RadioButton (GuiRadioCtrl.cpp:18-24).
+    Mutual exclusion runs on activation and is scoped by `groupnum` -- see
+    GuiButtonBaseCtrl.on_action()."""
 
     CTRL_CLASS = "GuiRadioCtrl"
+    DEFAULT_BUTTON_TYPE = 2
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()
@@ -2084,32 +2464,62 @@ class GuiRadioCtrl(GuiCheckBoxCtrl):
 
 class GuiBitmapCtrl(GuiControl):
     """Renders an image (by filename, resolved via the game's SpriteManager)
-    stretched to fit the control's rect."""
+    stretched to fit the control's rect, or TILED when `tile` is set.
+
+    `wrap` is an alias of `tile` -- one field, two names, identical accessor
+    pointers (FourPlay quattroplay/src/gui/GuiBitmapCtrlProperties.cpp:95-112).
+    `image` is ours, not the reference's: no such property exists on this
+    class."""
 
     CTRL_CLASS = "GuiBitmapCtrl"
-    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({"bitmap", "image"})
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
+        {"bitmap", "image", "bitmaprectangle", "fullbitmap", "tile", "wrap"})
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"setbitmap"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.bitmap = ""
+        self.tile = False
         self._scaled_cache: Optional[Tuple[str, Tuple[int, int]]] = None
         self._scaled_surf: Optional[pygame.Surface] = None
 
     def get(self, key: str) -> Any:
-        if key.lower() in ("bitmap", "image"):
+        k = key.lower()
+        if k in ("bitmap", "image"):
             return self.bitmap
-        return super().get(key)
+        if k in ("tile", "wrap"):
+            return 1.0 if self.tile else 0.0
+        return super().get(k)
 
     def set(self, key: str, value: Any) -> None:
-        if key.lower() in ("bitmap", "image"):
+        k = key.lower()
+        if k in ("bitmap", "image"):
             self.bitmap = to_str(value)
             return
-        super().set(key, value)
+        if k in ("tile", "wrap"):
+            self.tile = to_bool(value)
+            return
+        super().set(k, value)
+
+    def _m_setbitmap(self, *args) -> float:
+        """setBitmap(name): identical to writing `bitmap`
+        (GuiBitmapCtrlProperties.cpp:52-55)."""
+        self.bitmap = to_str(args[0]) if args else ""
+        return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         r = self.rect()
         img = sprite_mgr.load_sheet(self.bitmap) if (sprite_mgr and self.bitmap) else None
         if img is not None:
+            if self.tile:
+                prev = surf.get_clip()
+                surf.set_clip(r if prev is None else r.clip(prev))
+                iw, ih = img.get_size()
+                for ty in range(r.y, r.bottom, max(1, ih)):
+                    for tx in range(r.x, r.right, max(1, iw)):
+                        surf.blit(img, (tx, ty))
+                surf.set_clip(prev)
+                return
             key = (self.bitmap, r.size)
             if self._scaled_cache != key:
                 self._scaled_surf = (img if img.get_size() == r.size
@@ -2136,36 +2546,76 @@ class GuiShowImgCtrl(GuiBitmapCtrl):
 
 
 class GuiBitmapButtonCtrl(GuiButtonCtrl):
-    """A button whose face is a bitmap (Login Mobile's Rescripted/IRC/
-    Login2001 builds its on-screen keys this way). Clicking behaves exactly
-    like GuiButtonCtrl -- only the face differs, so the profile skin/label
-    path is replaced by the `bitmap` image and the text is drawn over it."""
+    """A button whose face is a bitmap (Login's 2001-style buttons and
+    Mobile's on-screen keys). Clicking behaves exactly like GuiButtonCtrl --
+    only the face differs.
+
+    Three separate faces, one per mouse state, are what the reference
+    registers: `normalbitmap` / `mouseoverbitmap` / `pressedbitmap`, all
+    routed through setBitmap(name, slot) with slots 0/1/2 (FourPlay
+    quattroplay/src/gui/GuiBitmapButtonCtrlProperties.cpp:5-33, table
+    :40-67). `bitmap`/`image` are ours and stand in for the normal face --
+    the class has no property of either name."""
 
     CTRL_CLASS = "GuiBitmapButtonCtrl"
-    _TORQUE_PROPS = GuiButtonCtrl._TORQUE_PROPS | frozenset({"bitmap", "image"})
+    _BITMAP_SLOTS = ("normalbitmap", "mouseoverbitmap", "pressedbitmap")
+    _TORQUE_PROPS = GuiButtonCtrl._TORQUE_PROPS | frozenset(
+        ("bitmap", "image") + _BITMAP_SLOTS)
+    _METHOD_NAMES = GuiButtonCtrl._METHOD_NAMES | frozenset({"setbitmap"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
-        self.bitmap = ""
+        self.bitmaps = ["", "", ""]
+
+    @property
+    def bitmap(self) -> str:
+        return self.bitmaps[0]
+
+    @bitmap.setter
+    def bitmap(self, value: Any) -> None:
+        self.bitmaps[0] = to_str(value)
+
+    def face(self) -> str:
+        """The bitmap for the current mouse state, falling back to the
+        normal face (an unset hover/press slot is not a blank button)."""
+        slot = 2 if self.pressed else (1 if self.hovered else 0)
+        return self.bitmaps[slot] or self.bitmaps[0]
 
     def get(self, key: str) -> Any:
-        if key.lower() in ("bitmap", "image"):
-            return self.bitmap
-        return super().get(key)
+        k = key.lower()
+        if k in ("bitmap", "image"):
+            return self.bitmaps[0]
+        if k in self._BITMAP_SLOTS:
+            return self.bitmaps[self._BITMAP_SLOTS.index(k)]
+        return super().get(k)
 
     def set(self, key: str, value: Any) -> None:
-        if key.lower() in ("bitmap", "image"):
-            self.bitmap = to_str(value)
+        k = key.lower()
+        if k in ("bitmap", "image"):
+            self.bitmaps[0] = to_str(value)
             return
-        super().set(key, value)
+        if k in self._BITMAP_SLOTS:
+            self.bitmaps[self._BITMAP_SLOTS.index(k)] = to_str(value)
+            return
+        super().set(k, value)
+
+    def _m_setbitmap(self, *args) -> float:
+        """setBitmap(name, slot) -- note the two-argument signature, unlike
+        GuiBitmapCtrl's one-argument one (funcDefs `"si"`, :70-80)."""
+        if len(args) >= 2:
+            slot = int(to_num(args[1]))
+            if 0 <= slot < len(self.bitmaps):
+                self.bitmaps[slot] = to_str(args[0])
+        return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         r = self.rect()
-        img = (sprite_mgr.load_sheet(self.bitmap)
-               if (sprite_mgr is not None and self.bitmap) else None)
+        name = self.face()
+        img = (sprite_mgr.load_sheet(name)
+               if (sprite_mgr is not None and name) else None)
         if img is None:
-            if self.bitmap and self._manager is not None:
-                self._manager.request_image(self.bitmap)
+            if name and self._manager is not None:
+                self._manager.request_image(name)
             super()._draw_self(surf, fonts, sprite_mgr)
             return
         if img.get_size() != r.size:
@@ -2444,18 +2894,84 @@ class GuiFrameSetCtrl(GuiControl):
         return rv
 
 
+class GuiStretchCtrl(GuiControl):
+    """A container whose `clientwidth`/`clientheight`/`clientextent` mean
+    something DIFFERENT from every other control's: this class redeclares
+    all three (FourPlay quattroplay/src/gui/GuiStretchCtrlProperties.cpp:
+    46-48, bodies :6-43) against its own virtual content size `m_size`,
+    where GuiControl's versions derive the client area from the outer
+    bounds. Child replaces parent, so on a stretch control the write does
+    NOT resize the outer bounds.
+
+    The reference additionally calls resizeChildren(old, new) on each such
+    write; that body was not read, so no child rescaling is modelled here.
+    """
+
+    CTRL_CLASS = "GuiStretchCtrl"
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.client_size = (self.width, self.height)
+
+    def client_width(self) -> float:
+        return float(self.client_size[0])
+
+    def client_height(self) -> float:
+        return float(self.client_size[1])
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k in ("clientextent", "clientwidth", "clientheight"):
+            if k == "clientwidth":
+                pair = (to_num(value), self.client_size[1])
+            elif k == "clientheight":
+                pair = (self.client_size[0], to_num(value))
+            else:
+                pair = self._num_pair(value)
+            if pair is not None:
+                self.client_size = (to_num(pair[0]), to_num(pair[1]))
+            return
+        super().set(k, value)
+
+
 class GuiContextMenuCtrl(GuiPopUpEditCtrl):
     """A right-click menu: a row list that is HIDDEN until openAtMouse().
 
     `m_visible = false` in the constructor (FourPlay quattroplay/src/gui/
-    GuiContextMenuCtrl.cpp:35-46, GuiContextMenuCtrl::initObject)."""
+    GuiContextMenuCtrl.cpp:35-46, GuiContextMenuCtrl::initObject).
+
+    The reference's parent is GuiControl, not a popup, but it reaches the
+    text list's whole surface by delegation -- addPropertyObject(m_textListCtrl)
+    at GuiContextMenuCtrl.cpp:158 -- which is what deriving from
+    GuiPopUpEditCtrl approximates here. Not modelled: `profile` aliasing to
+    the embedded SCROLL control's profile and `width` reading the text
+    list's extent while writing the scroll control's
+    (GuiContextMenuCtrlProperties.cpp:157-161)."""
 
     CTRL_CLASS = "GuiContextMenuCtrl"
+    _TORQUE_PROPS = GuiPopUpEditCtrl._TORQUE_PROPS | frozenset(
+        {"maxpopupheight", "scrollprofile"})
+    _METHOD_NAMES = GuiPopUpEditCtrl._METHOD_NAMES | frozenset(
+        {"close", "isopen", "open"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.visible = False
         self.width, self.height = 120.0, 22.0
+
+    def _m_isopen(self, *args) -> float:
+        return 1.0 if self.visible else 0.0
+
+    def _m_close(self, *args) -> float:
+        return self._m_hide()
+
+    def _m_open(self, *args) -> float:
+        """open(x, y) (:126-138). The reference additionally reparents the
+        popup to the moused control's context-menu parent; that is not
+        modelled -- it opens in place."""
+        if len(args) >= 2:
+            self.x, self.y = to_num(args[0]), to_num(args[1])
+        return self._m_showtop()
 
 
 class GuiDrawingPanel(GuiControl):
@@ -2473,8 +2989,8 @@ class GuiDrawingPanel(GuiControl):
         self.draw_ops: List[Tuple] = []
 
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"drawline", "drawrect", "drawimage", "drawimagestretched",
-         "drawimagerectangle"})
+        {"drawline", "drawimage", "drawimagestretched",
+         "drawimagerectangle", "clearrectangle", "drawtext"})
 
     def _record(self, op: Tuple) -> float:
         if len(self.draw_ops) < self._MAX_OPS:
@@ -2492,11 +3008,23 @@ class GuiDrawingPanel(GuiControl):
             values.append(1.0)
         return self._record(("line", *values))
 
-    def _m_drawrect(self, *args) -> float:
+    def _m_clearrectangle(self, *args) -> float:
+        """clearRectangle(x, y, w, h) (funcDefs `"iiii"`,
+        GuiDrawingPanelProperties.cpp:194): erase a region of the canvas.
+        Recorded as an op so replay order matches the call order."""
         values = [to_num(a) for a in args[:4]]
         while len(values) < 4:
             values.append(0.0)
-        return self._record(("rect", *values))
+        return self._record(("clear", *values))
+
+    def _m_drawtext(self, *args) -> float:
+        """drawText(x, y, text) (`"iis"`, :201). The pen font/colour come
+        from the CONTROL's profile, not from any draw-state property
+        (setGuiDrawingPanelProfile, :23-26)."""
+        if len(args) < 3:
+            return 0.0
+        return self._record(("text", to_num(args[0]), to_num(args[1]),
+                             to_str(args[2])))
 
     def _m_drawimage(self, *args) -> float:
         if len(args) < 3:
@@ -2505,11 +3033,19 @@ class GuiDrawingPanel(GuiControl):
                              to_str(args[2]), 0.0, 0.0))
 
     def _m_drawimagestretched(self, *args) -> float:
+        """drawImageStretched(x, y, w, h, image, srcX, srcY, srcW, srcH):
+        the image is the FIFTH argument and four source-rect arguments
+        follow it (funcDefs `"iiiisiiii"`,
+        quattroplay/src/gui/GuiDrawingPanelProperties.cpp:197, body
+        :105-111). We used to read `(x, y, w, h, image)` and drop args 5-8,
+        which is only invisible while a caller passes the whole image as
+        the source rect."""
         if len(args) < 5:
             return 0.0
-        return self._record(("image", to_num(args[0]), to_num(args[1]),
-                             to_str(args[4]), to_num(args[2]),
-                             to_num(args[3])))
+        source = tuple(to_num(a) for a in args[5:9]) if len(args) >= 9 else None
+        return self._record(("imagestretched", to_num(args[0]),
+                             to_num(args[1]), to_str(args[4]),
+                             (to_num(args[2]), to_num(args[3])), source))
 
     def _m_drawimagerectangle(self, *args) -> float:
         """drawImageRectangle(x, y, image, partx, party, partw, parth):
@@ -2532,12 +3068,18 @@ class GuiDrawingPanel(GuiControl):
                                  (r.x + int(x1), r.y + int(y1)),
                                  (r.x + int(x2), r.y + int(y2)),
                                  max(1, int(thickness)))
-            elif op[0] == "rect":
+            elif op[0] == "clear":
                 _, x, y, w, h = op
-                pygame.draw.rect(surf, prof.fg[:3],
-                                 pygame.Rect(r.x + int(x), r.y + int(y),
-                                             max(0, int(w)), max(0, int(h))), 1)
-            elif op[0] in ("image", "imagepart"):
+                _fill_rect(surf, prof.bg if prof.bg is not None else (0, 0, 0, 0),
+                           pygame.Rect(r.x + int(x), r.y + int(y),
+                                       max(0, int(w)), max(0, int(h))))
+            elif op[0] == "text":
+                if fonts is None:
+                    continue
+                _, x, y, text = op
+                _draw_label(surf, _font(fonts, prof), text, prof.fg,
+                            (r.x + int(x), r.y + int(y)), prof.text_shadow)
+            elif op[0] in ("image", "imagepart", "imagestretched"):
                 name = op[3]
                 img = (sprite_mgr.load_sheet(name)
                        if (sprite_mgr is not None and name) else None)
@@ -2552,7 +3094,18 @@ class GuiDrawingPanel(GuiControl):
                                        max(0, int(ph)))
                     surf.blit(img, (r.x + int(x), r.y + int(y)), area)
                     continue
-                w, h = op[4], op[5]
+                if op[0] == "imagestretched":
+                    (w, h), source = op[4], op[5]
+                    if source is not None:
+                        area = pygame.Rect(int(source[0]), int(source[1]),
+                                           max(0, int(source[2])),
+                                           max(0, int(source[3])))
+                        area = area.clip(img.get_rect())
+                        if area.width <= 0 or area.height <= 0:
+                            continue
+                        img = img.subsurface(area)
+                else:
+                    w, h = op[4], op[5]
                 if w > 0 and h > 0 and img.get_size() != (int(w), int(h)):
                     img = pygame.transform.smoothscale(img, (int(w), int(h)))
                 surf.blit(img, (r.x + int(x), r.y + int(y)))
@@ -3529,7 +4082,7 @@ _CONTROL_CLASSES: Dict[str, type] = {
         # These classes otherwise fall back to a generic GuiControl.
         GuiAccountPasswordCtrl, GuiMLTextEditCtrl, GuiProgressCtrl,
         GuiBitmapButtonCtrl, GuiPopUpMenuCtrl, GuiDrawingPanel,
-        GuiFrameSetCtrl, GuiContextMenuCtrl,
+        GuiFrameSetCtrl, GuiContextMenuCtrl, GuiStretchCtrl,
     )
 }
 
@@ -4064,22 +4617,14 @@ class GS2GuiManager:
         if popup.parent is None and popup not in self.roots:
             self._close_popup()
 
-    def _select_radio(self, radio: "GuiRadioCtrl") -> None:
-        """Radio-group mutual exclusion: checking one radio unchecks its
-        siblings -- the other children of the same immediate parent
-        container (roots, if the radio has no parent), per the module
-        docstring's "no group-name property on the wire" note. Matches real
-        radio-button UX: clicking the already-checked radio is a no-op (it
-        doesn't uncheck itself), and onAction only fires on an actual
-        selection change, not on every click."""
-        if radio.checked:
+    def _activate_button(self, btn: "GuiButtonBaseCtrl") -> None:
+        """User activation: the engine's onAction(), which owns the toggle
+        flip and the radio-group sweep (see GuiButtonBaseCtrl.on_action).
+        One deliberate divergence: re-clicking an already-checked radio is a
+        no-op here, where the reference re-fires onAction."""
+        if btn.button_type == 2 and btn.checked:
             return
-        siblings = radio.parent.children if radio.parent is not None else self.roots
-        for sib in siblings:
-            if sib is not radio and isinstance(sib, GuiRadioCtrl) and sib.checked:
-                sib.checked = False
-        radio.checked = True
-        radio.fire_action()
+        btn.on_action()
 
     def _shift(self, ctrl: GuiControl, dx: float, dy: float) -> None:
         ctrl.x += dx
@@ -4165,17 +4710,11 @@ class GS2GuiManager:
             return True
 
         self._set_focus(None)
-        if isinstance(hit, GuiRadioCtrl):
+        if isinstance(hit, GuiButtonBaseCtrl):
             self._set_pressed(hit)
-            self._select_radio(hit)
-        elif isinstance(hit, GuiCheckBoxCtrl):
-            self._set_pressed(hit)
-            hit.toggle()
-            hit.fire_action()
-        elif isinstance(hit, GuiButtonCtrl):
-            self._set_pressed(hit)
-            if not self._toggle_start_menu(hit):
-                hit.fire_action()
+            if not (isinstance(hit, GuiButtonCtrl)
+                    and self._toggle_start_menu(hit)):
+                self._activate_button(hit)
         elif isinstance(hit, GuiTreeViewCtrl):
             node = hit.node_at(pos)
             if node is not None:
@@ -4249,7 +4788,7 @@ class GS2GuiManager:
             return True
         hit = self.hit_test(pos)
         self._set_hover(hit if isinstance(
-            hit, (GuiButtonCtrl, GuiCheckBoxCtrl, GuiPopUpEditCtrl)) else None)
+            hit, (GuiButtonBaseCtrl, GuiPopUpEditCtrl)) else None)
         if self._drag is None:
             return False
         win, off_x, off_y = self._drag

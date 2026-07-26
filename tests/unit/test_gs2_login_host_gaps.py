@@ -570,11 +570,19 @@ def test_setselection_makes_the_next_keystroke_replace_the_text():
 
 
 def test_setselection_clamps_out_of_range_ranges():
+    """An INVERTED range zeroes both ends instead of swapping them, so
+    nothing is selected and take_selection() keeps the text -- this test
+    previously asserted the swap, which deleted text the reference client
+    keeps (GuiTextEditCtrl::setSelection, FourPlay quattroplay/src/gui/
+    GuiTextEditCtrl.cpp:205-225)."""
     edit = make_control("GuiTextEditCtrl", "edit")
     edit.text = "abc"
     edit.get("setselection")(9, -4)
-    assert edit.get("getselection")() == [0.0, 3.0]
-    assert edit.take_selection() and edit.text == ""
+    assert edit.get("getselection")() == [0.0, 0.0]
+    assert not edit.take_selection() and edit.text == "abc"
+    # end alone still clamps down to the text length
+    edit.get("setselection")(1, 99)
+    assert edit.get("getselection")() == [1.0, 3.0]
 
 
 def test_backspace_deletes_a_whole_selection():
