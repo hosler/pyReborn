@@ -208,8 +208,10 @@ def test_unsourced_string_names_answer_the_empty_string():
     for name, value in representatives.items():
         assert value == "", name
         assert not gs2_eq(value, "somestring"), name
-    # the failure mode being prevented, for contrast
-    assert gs2_eq(None, "somestring")
+    # an unanswered name (None -> 0.0) doesn't equal words either, since
+    # strtofloat("somestring") is -1.0 — seeding is about matching the
+    # reference's seeded values, not about dodging a phantom equality
+    assert not gs2_eq(None, "somestring")
 
 
 def test_unsourced_names_have_non_empty_defaults_where_the_reference_does():

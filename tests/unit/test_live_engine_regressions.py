@@ -148,12 +148,14 @@ def test_serverlist_string_globals_answer_as_strings_not_unset():
         assert gs2_eq(value, "")
 
 
-def test_unset_global_still_equals_any_word_so_the_host_must_answer():
-    """Pins WHY the fix belongs in the host, not in gs2_compare.
-
-    The compare rule is faithful to the reference and must not be "fixed";
-    the bug was that the host left a string-typed global unanswered.
+def test_unset_global_does_not_equal_words_under_faithful_strtofloat():
+    """An unanswered name resolves to Number 0.0, and official strtofloat of
+    a string strtod can't parse is -1.0 (TInitStatics.cpp:4377-4380) — so
+    0.0 == "word" is FALSE. Host seeding (T1) remains correct fidelity
+    because the reference seeds these globals, but the old "an unanswered
+    name equals every word" mechanism was a misreading and is gone.
     """
-    assert gs2_eq(None, "skills")
-    assert gs2_eq(None, "anything at all")
+    assert not gs2_eq(None, "skills")
+    assert not gs2_eq(None, "anything at all")
+    assert gs2_eq(None, "")  # "" -> 0.0, matches an unanswered name
     assert not gs2_eq("", "skills")

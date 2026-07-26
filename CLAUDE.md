@@ -157,12 +157,19 @@ fixed window of frames, and asserts ~33 invariants against
   and `serverlist_tablestab` were removed from Login/Login DEV on 2026-07-26
   for that reason. They belong to the Account Info pane, which
   `Rescripted_Serverlist`'s `showLoginInfo()` only builds when the first listed
-  server is a `"P "`/`"3 "` entry — a `"U "` server first yields a blank-named
-  root folder whose unset `id` fails `node.id >= 0`, so the pane never builds.
-  Faithfully emulated, verified against baseline-era code on the same server
-  (identical fingerprints), and flipped 33/33 by reordering only the server's
-  own payload. `serverlist_serverlist` is the real list-is-populated signal;
-  keep that one;
+  server is a `"P "`/`"3 "` entry. A `"U "` server first yields a blank-named
+  root folder (`serverlistcats[4]` is unset) whose auto-select instead runs
+  `showServerListEntry(serverlistentries[0])` — its unset `id` reads 0.0, so
+  `node.id >= 0` HOLDS — and the faithful engine builds the MAP pane for that
+  first row (`Serverlist_Map` with unfetchable `login_servermap_*` art, hence
+  0×0, plus per-tick `updateServerMapIcons` host calls; Login was re-baselined
+  for this on 2026-07-26). Under the pre-lattice `to_num` compare, the
+  `this.selectedserver == entry` guard at weapon-Rescripted_Serverlist.txt:559
+  was spuriously TRUE (`<unset> == "<row string>"`), which early-returned and
+  built neither pane — the earlier claim that `node.id >= 0` fails was a
+  mis-attribution of that masking. Either way pane choice is payload-order
+  dependent; the pruned pins stay pruned. `serverlist_serverlist` is the real
+  list-is-populated signal; keep that one;
 - **geometry** — `within_parent`, `nonzero_area`, `window_layout`. These catch
   a layout that collapses without changing any count: an unimplemented
   `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults

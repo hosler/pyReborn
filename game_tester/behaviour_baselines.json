@@ -44,13 +44,13 @@
         "frames": 1560,
         "gui": {
           "classes": {
-            "GuiBitmapCtrl": 3,
-            "GuiButtonCtrl": 20,
+            "GuiBitmapCtrl": 4,
+            "GuiButtonCtrl": 21,
             "GuiContextMenuCtrl": 1,
             "GuiControl": 16,
             "GuiFrameSetCtrl": 1,
-            "GuiMLTextCtrl": 8,
-            "GuiScrollCtrl": 9,
+            "GuiMLTextCtrl": 7,
+            "GuiScrollCtrl": 8,
             "GuiStartMenuCtrl": 1,
             "GuiTabCtrl": 4,
             "GuiTaskbar": 1,
@@ -61,15 +61,16 @@
             "GuiWindowCtrl": 6
           },
           "controls": 90,
-          "degenerate": [],
+          "degenerate": [
+            "serverlist_map"
+          ],
           "filled_controls": [
             "chatbar_toggletaskbarbutton",
             "globalchat_chatlabel",
             "globalchat_window",
-            "serverlist_description0",
+            "serverlist_connectbutton",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
-            "serverlist_eventnews",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
             "serverlist_protectquery_protectbutton",
@@ -88,7 +89,7 @@
           ],
           "list_rows": 13,
           "max_depth": 6,
-          "named": 108,
+          "named": 109,
           "overflowing": [],
           "root_classes": {
             "GuiButtonCtrl": 2,
@@ -111,7 +112,7 @@
             "serverlist_test_window"
           ],
           "roots": 11,
-          "text_controls": 32,
+          "text_controls": 31,
           "tree_names": [
             "chatbar",
             "chatbar_toggletaskbarbutton",
@@ -139,6 +140,7 @@
             "guitextlistctrl",
             "item_scroll",
             "serverdescription_scroll",
+            "serverlist_connectbutton",
             "serverlist_description0",
             "serverlist_description1",
             "serverlist_description2",
@@ -151,10 +153,9 @@
             "serverlist_descriptionscroll2",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
-            "serverlist_eventnews",
-            "serverlist_eventnews_scroll",
             "serverlist_mainpanel",
             "serverlist_mainpanel_back",
+            "serverlist_map",
             "serverlist_panel",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
@@ -188,7 +189,7 @@
             "test_back",
             "test_tab"
           ],
-          "tree_nodes": 15,
+          "tree_nodes": 14,
           "window_overlaps": [
             "globalchat_window|serverlist_descriptionwindow",
             "globalchat_window|serverlist_tableswindow",
@@ -196,7 +197,7 @@
           ]
         },
         "host_calls": {
-          "distinct": 33,
+          "distinct": 36,
           "missing": [],
           "names": [
             "addcontrol",
@@ -212,14 +213,17 @@
             "drawimagestretched",
             "echo",
             "findweapon",
+            "getimgheight",
             "getimgwidth",
             "getnode",
             "hide",
+            "isactuallyvisible",
             "isobject",
             "keydown",
             "lowercase",
             "makefirstresponder",
             "pushtoback",
+            "requestserverinfo",
             "requesttext",
             "requesturl",
             "select",
@@ -233,7 +237,7 @@
             "showtop",
             "sort"
           ],
-          "total": 1628
+          "total": 2969
         },
         "level": "black.nw",
         "logs": {
@@ -258,7 +262,7 @@
             "-serverlist_chat"
           ]
         },
-        "wall_seconds": 25.46,
+        "wall_seconds": 25.43,
         "world": {
           "gs1_scripts": 0,
           "npcs": 1,
@@ -316,7 +320,7 @@
           "-serverlist_chat"
         ]
       },
-      "recorded_at": "2026-07-25T01:23:23.608360+00:00",
+      "recorded_at": "2026-07-26T23:10:31.074438+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"
@@ -340,7 +344,7 @@
         },
         "connected_at_end": true,
         "events": {
-          "calls": 452,
+          "calls": 453,
           "distinct": 9,
           "kinds": [
             "weapon.oncreated",
@@ -364,13 +368,13 @@
         "frames": 1560,
         "gui": {
           "classes": {
-            "GuiBitmapCtrl": 3,
-            "GuiButtonCtrl": 20,
+            "GuiBitmapCtrl": 4,
+            "GuiButtonCtrl": 21,
             "GuiContextMenuCtrl": 1,
             "GuiControl": 16,
             "GuiFrameSetCtrl": 1,
-            "GuiMLTextCtrl": 8,
-            "GuiScrollCtrl": 9,
+            "GuiMLTextCtrl": 7,
+            "GuiScrollCtrl": 8,
             "GuiStartMenuCtrl": 1,
             "GuiTabCtrl": 4,
             "GuiTaskbar": 1,
@@ -381,15 +385,16 @@
             "GuiWindowCtrl": 6
           },
           "controls": 90,
-          "degenerate": [],
+          "degenerate": [
+            "serverlist_map"
+          ],
           "filled_controls": [
             "chatbar_toggletaskbarbutton",
             "globalchat_chatlabel",
             "globalchat_window",
-            "serverlist_description0",
+            "serverlist_connectbutton",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
-            "serverlist_eventnews",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
             "serverlist_protectquery_protectbutton",
@@ -408,7 +413,7 @@
           ],
           "list_rows": 13,
           "max_depth": 6,
-          "named": 108,
+          "named": 109,
           "overflowing": [],
           "root_classes": {
             "GuiButtonCtrl": 2,
@@ -431,7 +436,7 @@
             "serverlist_test_window"
           ],
           "roots": 11,
-          "text_controls": 32,
+          "text_controls": 31,
           "tree_names": [
             "chatbar",
             "chatbar_toggletaskbarbutton",
@@ -459,6 +464,7 @@
             "guitextlistctrl",
             "item_scroll",
             "serverdescription_scroll",
+            "serverlist_connectbutton",
             "serverlist_description0",
             "serverlist_description1",
             "serverlist_description2",
@@ -471,10 +477,9 @@
             "serverlist_descriptionscroll2",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
-            "serverlist_eventnews",
-            "serverlist_eventnews_scroll",
             "serverlist_mainpanel",
             "serverlist_mainpanel_back",
+            "serverlist_map",
             "serverlist_panel",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
@@ -508,7 +513,7 @@
             "test_back",
             "test_tab"
           ],
-          "tree_nodes": 15,
+          "tree_nodes": 14,
           "window_overlaps": [
             "globalchat_window|serverlist_descriptionwindow",
             "globalchat_window|serverlist_tableswindow",
@@ -516,7 +521,7 @@
           ]
         },
         "host_calls": {
-          "distinct": 33,
+          "distinct": 36,
           "missing": [],
           "names": [
             "addcontrol",
@@ -532,14 +537,17 @@
             "drawimagestretched",
             "echo",
             "findweapon",
+            "getimgheight",
             "getimgwidth",
             "getnode",
             "hide",
+            "isactuallyvisible",
             "isobject",
             "keydown",
             "lowercase",
             "makefirstresponder",
             "pushtoback",
+            "requestserverinfo",
             "requesttext",
             "requesturl",
             "select",
@@ -553,7 +561,7 @@
             "showtop",
             "sort"
           ],
-          "total": 1625
+          "total": 2969
         },
         "level": "onlinestartlocal.nw",
         "logs": {
@@ -578,7 +586,7 @@
             "-serverlist_chat"
           ]
         },
-        "wall_seconds": 25.45,
+        "wall_seconds": 25.42,
         "world": {
           "gs1_scripts": 0,
           "npcs": 2,
@@ -636,7 +644,7 @@
           "-serverlist_chat"
         ]
       },
-      "recorded_at": "2026-07-25T01:23:52.437703+00:00",
+      "recorded_at": "2026-07-26T23:14:29.981734+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"
