@@ -650,6 +650,121 @@ class EffectsRenderMixin(FrameContextMixin):
             color = (*colors[leaf['shade']], int(255 * (1.0 - t)))
             pygame.draw.rect(self.screen, color, (round(px), round(py), size, 2))
 
+    # -- putleaps bursts ---------------------------------------------------
+    #
+    # GS1 `putleaps type,x,y` debris/splash bursts, the reference client's
+    # exact frame data: TServerLeap.cpp's leapslen/leaps0..leaps5 tables
+    # (Preagonal/FourPlay/quattroplay/src/TServerLeap.cpp:11-71), each packed
+    # int decoded as (sprite index, dx, dy) with dx/dy signed eighth-tiles
+    # (TServerLeap::draw applies offset * 0.125 tiles, :107-131). Sprites are
+    # rects on the classic built-in sheet sprites.png (TPlayer::
+    # drawSpriteAbsoluteOffset reads spritespos[], TPlayer.cpp:5315-5326;
+    # rect table at TInitStatics.cpp:1045, defaults *spritesname =
+    # "sprites.png" :4811). One frame advances per 0.05s engine tick;
+    # spawn plays water.wav for type 5, else crush.wav
+    # (TServerLevel::putLeaps, TServerLevel.cpp:2850-2866).
+    LEAP_FRAME_TIME = 0.05
+    MAX_LEAP_BURSTS = 64
+
+    _LEAP_SPRITE_RECTS = {  # sprite index -> (x, y, w, h) on sprites.png
+        24: (34, 8, 10, 8), 25: (44, 0, 16, 16), 26: (60, 0, 16, 16),
+        96: (40, 82, 16, 16), 97: (24, 98, 16, 16), 98: (40, 98, 16, 16),
+        99: (56, 82, 16, 14), 100: (72, 82, 16, 14), 101: (56, 96, 16, 14),
+        102: (72, 96, 16, 14), 103: (104, 96, 16, 22),
+        132: (12, 116, 12, 14), 133: (0, 130, 12, 14), 134: (12, 130, 12, 14),
+        135: (0, 144, 16, 32), 326: (54, 114, 30, 30), 327: (90, 196, 16, 20),
+    }
+
+    _LEAP_FRAMES = (
+        (  # type 0
+            ((25, 0, 4), (25, 6, 0), (26, 6, 8), (26, 9, 17)),
+            ((25, -2, 4), (25, 4, -4), (26, 8, 10), (26, 9, 19)),
+            ((26, -4, 4), (25, 2, -8), (26, 10, 12), (26, 9, 21)),
+            ((25, -5, 4), (25, 1, -10), (25, 9, 13), (25, 9, 22)),
+            ((25, -6, 4), (25, 0, -12), (25, 10, 14), (25, 10, 23)),
+            ((26, -7, 4), (25, -1, -14), (26, 10, 15), (26, 10, 24)),
+            ((26, -8, 4), (25, -2, -16), (26, 10, 22), (26, 10, 25)),
+        ),
+        (  # type 1
+            ((24, 0, 8), (24, 8, 0), (24, 12, 8)),
+            ((24, -2, 8), (24, 8, -2), (24, 14, 8)),
+            ((24, -4, 8), (24, 8, -4), (24, 16, 8)),
+            ((24, -6, 8), (24, 8, -6), (24, 18, 8)),
+        ),
+        (  # type 2
+            ((96, -1, 0), (96, 0, 9), (98, 9, -1), (98, 10, 8)),
+            ((99, -3, -2), (99, -2, 11), (97, 11, -3), (97, 12, 10)),
+            ((96, -5, -4), (96, -4, 13), (98, 13, -5), (98, 14, 12)),
+            ((99, -7, -6), (99, -6, 15), (97, 15, -7), (97, 16, 14)),
+        ),
+        (  # type 3
+            ((100, -1, 0), (100, 0, 9), (102, 9, -1), (102, 10, 8)),
+            ((103, -3, -2), (103, -2, 11), (101, 11, -3), (101, 12, 10)),
+            ((100, -5, -4), (100, -4, 13), (102, 13, -5), (102, 14, 12)),
+            ((103, -7, -6), (103, -6, 15), (101, 15, -7), (101, 16, 14)),
+        ),
+        (  # type 4
+            ((132, 0, 0), (133, 10, 0), (134, 0, 9), (135, 10, 9)),
+            ((132, -4, -4), (133, 14, -4), (134, -4, 13), (135, 14, 13)),
+            ((132, -8, -8), (133, 18, -8), (134, -8, 17), (135, 18, 17)),
+            ((132, -12, -12), (133, 22, -12), (134, -12, 21), (135, 22, 21)),
+        ),
+        (  # type 5
+            ((326, -6, 3), (327, 7, 3)),
+            ((326, -8, 1), (327, 9, 1)),
+            ((326, -9, -1), (327, 10, -1)),
+            ((326, -10, -3), (327, 11, -3)),
+            ((326, -13, -4), (327, 14, -4)),
+            ((326, -15, -4), (327, 16, -4)),
+            ((326, -17, -3), (327, 18, -3)),
+            ((326, -19, -1), (327, 20, -1)),
+        ),
+    )
+
+    def _spawn_leaps(self, leap_type: int, x: float, y: float, now=None):
+        """GS1 `putleaps type,x,y` (wired from gs1.on_putleaps): queue the
+        burst at level coords (x, y) and play its spawn sound."""
+        if not 0 <= int(leap_type) <= 5:
+            return
+        now = time.time() if now is None else now
+        bursts = getattr(self, 'leap_bursts', None)
+        if bursts is None:
+            bursts = self.leap_bursts = []
+        if len(bursts) >= self.MAX_LEAP_BURSTS:
+            return
+        bursts.append({'type': int(leap_type), 'x': float(x), 'y': float(y),
+                       'time': now})
+        try:
+            self._play_audio('water.wav' if int(leap_type) == 5 else 'crush.wav')
+        except Exception:
+            pass
+
+    def _render_leaps(self):
+        """Draw active putleaps bursts and expire finished ones."""
+        bursts = getattr(self, 'leap_bursts', None)
+        if not bursts:
+            return
+        now = time.time()
+        sheet = self._get_effect_sprite('sprites.png')
+        alive = []
+        for burst in bursts:
+            frames = self._LEAP_FRAMES[burst['type']]
+            idx = int((now - burst['time']) / self.LEAP_FRAME_TIME)
+            if idx >= len(frames):
+                continue
+            alive.append(burst)
+            if sheet is None:
+                continue        # keep animating; sheet may stream in mid-burst
+            for sprite, dx, dy in frames[idx]:
+                rect = self._LEAP_SPRITE_RECTS.get(sprite)
+                if rect is None:
+                    continue
+                px, py = self.camera.world_to_screen(
+                    burst['x'] + dx * 0.125, burst['y'] + dy * 0.125)
+                self.screen.blit(sheet, (round(px), round(py)),
+                                 area=pygame.Rect(rect))
+        self.leap_bursts[:] = alive
+
     def _ripple_surface(self, radius: int):
         """Return a cached one-pixel ring for a ripple scale."""
         cache = getattr(self, '_ripple_surface_cache', None)

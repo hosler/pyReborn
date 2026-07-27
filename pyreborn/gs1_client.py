@@ -269,6 +269,38 @@ _TIMEOUT_CANCEL = 0.0001
 # Preagonal/FourPlay/quattroplay/src/TParticleData.cpp:155-163).
 _DEFAULT_IMAGE_PX = 32
 
+# Classic baddy ("compus") tables for putcomp/putnewcomp, from GServer-v2:
+# names + spider->octopus alias, LevelBaddy.h:26-47 (BaddyType/BaddyNames);
+# per-type default image and power (half-hearts), LevelBaddy.cpp:29-40
+# (baddyImages/baddyPower). GTA's corpus maps the same names to the same art
+# (`putnewcomp graysoldier,x,y,skeleton_baddy.png,...`).
+_BADDY_TYPES = {
+    "graysoldier": 0, "bluesoldier": 1, "redsoldier": 2, "shootingsoldier": 3,
+    "swampsoldier": 4, "frog": 5, "octopus": 6, "goldenwarrior": 7,
+    "lizardon": 8, "dragon": 9, "spider": 6,
+}
+_BADDY_DEFAULT_IMAGE = (
+    "baddygray.png", "baddyblue.png", "baddyred.png", "baddyblue.png",
+    "baddygray.png", "baddyhare.png", "baddyoctopus.png", "baddygold.png",
+    "baddylizardon.png", "baddydragon.png",
+)
+_BADDY_DEFAULT_POWER = (2, 3, 4, 3, 2, 1, 1, 6, 12, 8)
+
+
+def _baddy_type_from_name(value) -> int:
+    """Baddy name/id -> BaddyType id, the reference resolution order
+    (LevelBaddy::getBaddyTypeFromString, LevelBaddy.cpp:44-66): name
+    case-insensitively (spider aliased to octopus), then numeric id, else
+    graysoldier."""
+    name = to_str(value).strip().lower()
+    if name in _BADDY_TYPES:
+        return _BADDY_TYPES[name]
+    try:
+        as_id = int(float(name))
+    except (TypeError, ValueError):
+        return 0
+    return as_id if 0 <= as_id <= 9 else 0
+
 
 # ---------------------------------------------------------------------------
 # GS1 client-host dispatch registries.
@@ -1414,6 +1446,20 @@ class GS1ClientHost(Host):
     @_gs1_command(_GS1_MAIN_COMMANDS, "message", "say")
     def _cmd_say(self, name, args, ctx, imgs):
         rt, npc = self.rt, ctx.this_obj
+        if name == "say" and args:
+            # `say index` displays LEVEL SIGN <index>'s text in the sign
+            # dialogue, exactly like reading that sign (the lexer types the
+            # arg as an expression - _tables.py 'say': 'E' - vs `message`'s
+            # string). We used to alias it to `message` and paint the raw
+            # index as a chat bubble. Out-of-range index shows nothing.
+            sign_text = rt.sign_text_by_index(args[0])
+            if sign_text is not None:
+                if rt.on_say2:
+                    rt.on_say2(sign_text)
+                return
+            if isinstance(args[0], (int, float)):
+                return      # numeric but no such sign: nothing to show
+            # non-numeric `say` (sloppy scripts): keep the bubble fallback
         text = to_str(args[0]) if args else ""
         if isinstance(npc, dict):
             npc["message"] = text
@@ -1425,6 +1471,114 @@ class GS1ClientHost(Host):
         text = to_str(args[0]) if args else ""
         if self.rt.on_say2:
             self.rt.on_say2(text)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "putnpc")
+    def _cmd_putnpc(self, name, args, ctx, imgs):
+        # putnpc image,scriptfile,x,y - a WIRE command on the classic
+        # client: the server creates the NPC from its own copy of
+        # `scriptfile` and streams it back to the whole level (see
+        # Client.send_putnpc / build_putnpc). No local spawn: the server
+        # echo is the NPC, which is why GTA's furniture scripts guard with
+        # `if (testnpc(x,y)<0) putnpc ...` - on re-entry the NPCs are
+        # already there and the guard holds them back.
+        rt = self.rt
+        if len(args) < 4 or rt.client is None:
+            return _FALL_THROUGH
+        try:
+            rt.client.send_putnpc(to_str(args[0]), to_str(args[1]),
+                                  to_num(args[2]), to_num(args[3]))
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "putcomp", "putnewcomp")
+    def _cmd_putcomp(self, name, args, ctx, imgs):
+        # putcomp baddyname,x,y / putnewcomp baddyname,x,y,image,power -
+        # "compus" are the classic computer-controlled baddies. Both send
+        # PLI_BADDYADD; the baddy comes back via the server's level-wide
+        # PLO_BADDYPROPS broadcast (Client.send_baddy_add). putcomp uses the
+        # per-type default power/image tables; putnewcomp overrides both.
+        # Power is half-hearts end to end: the defaults table, the script
+        # arg and the wire byte share the unit (server clamps at 12).
+        rt = self.rt
+        if len(args) < 3 or rt.client is None:
+            return _FALL_THROUGH
+        btype = _baddy_type_from_name(args[0])
+        x, y = to_num(args[1]), to_num(args[2])
+        if name == "putnewcomp" and len(args) >= 5:
+            image = to_str(args[3])
+            power = int(to_num(args[4]))
+        else:
+            image = _BADDY_DEFAULT_IMAGE[btype]
+            power = _BADDY_DEFAULT_POWER[btype]
+        try:
+            rt.client.send_baddy_add(x, y, btype, power, image)
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "removecompus")
+    def _cmd_removecompus(self, name, args, ctx, imgs):
+        rt = self.rt
+        if rt.client is None:
+            return _FALL_THROUGH
+        try:
+            rt.client.kill_all_baddies()
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "putleaps")
+    def _cmd_putleaps(self, name, args, ctx, imgs):
+        # putleaps type,x,y - purely client-local debris burst. The
+        # reference handler (scriptfun_gsfunctionsclient_putleaps,
+        # Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:3579-3597)
+        # rejects type >= 6 and calls TServerLevel::putLeaps, which spawns
+        # the sprite animation and plays water.wav (type 5) or crush.wav
+        # positionally (TServerLevel.cpp:2850-2866). Frames/sprites live in
+        # game/render_effects.py; this just forwards to the renderer.
+        rt = self.rt
+        if len(args) < 3:
+            return _FALL_THROUGH
+        leap_type = int(to_num(args[0]))
+        if not (0 <= leap_type <= 5):
+            return
+        if rt.on_putleaps:
+            rt.on_putleaps(leap_type, to_num(args[1]), to_num(args[2]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "attachplayertoobj")
+    def _cmd_attachplayertoobj(self, name, args, ctx, imgs):
+        # attachplayertoobj objecttype,id - slave the local player to an
+        # NPC. The reference only accepts objecttype 0 (NPC) and looks the
+        # id up in the universe NPC list (scriptfun_gsfunctionsclient_
+        # attachplayertoobj, TInitStatics.cpp:3185-3205). While attached,
+        # NPC movement propagates to the player with the attach-time offset
+        # preserved, and the player's own position writes stay relative to
+        # the NPC (TServerPlayer::attachToNPC / setlocalx,
+        # TServerPlayer.cpp:530-581, 1491-1521) - our per-frame delta model
+        # in process_timeouts is equivalent. Re-attaching to the same NPC is
+        # a no-op, like the reference's `npc != attachedTo` check.
+        rt = self.rt
+        if len(args) < 2 or rt.client is None:
+            return _FALL_THROUGH
+        if int(to_num(args[0])) != 0:
+            return
+        npc_id = int(to_num(args[1]))
+        npcs = getattr(rt.client, "npcs", {})
+        if npc_id not in npcs:
+            return
+        att = rt._player_attach
+        if att is not None and att.get("npc_id") == npc_id:
+            return
+        npc = npcs[npc_id]
+        rt._player_attach = {
+            "npc_id": npc_id,
+            "last_x": to_num(npc.get("x", 0)),
+            "last_y": to_num(npc.get("y", 0)),
+        }
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "detachplayer")
+    def _cmd_detachplayer(self, name, args, ctx, imgs):
+        # scriptfun_gsfunctionsclient_detachplayer (TInitStatics.cpp:
+        # 3207-3211) -> TServerPlayer::detach.
+        self.rt._player_attach = None
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "play", "play2", "playlooped", "setmusic")
     def _cmd_play(self, name, args, ctx, imgs):
@@ -1738,8 +1892,18 @@ class GS1ClientHost(Host):
 
     def _npc_rect(self, npc_id, npc):
         """An NPC's collision rect in pixels for _test_at: its setshape/
-        setshape2 box if it set one, else the character square, else None —
-        a plain image NPC that never called setshape cannot be hit at all.
+        setshape2 box if it set one, else the character square, else — for a
+        VISIBLE image NPC — its image footprint, the same geometry that
+        blocks and touches (npc_image_rect). A plain image NPC used to have
+        no rect at all here, which broke the classic putnpc guard idiom
+        live: GTA furnishes interiors with `if (testnpc(x,y)<0) putnpc ...`
+        (the guard is the ONLY thing stopping every visit from stacking
+        another copy onto the server), and with testnpc blind to the
+        already-present furniture our client re-spawned the whole pub each
+        entry (live-observed: adventurerpub.nw 34 -> 66 NPCs in two
+        visits). The reference hit test that touch and walls share bails on
+        invisible NPCs before any geometry (TServerNPC::isOnNPC — see
+        npc_handler.update_npcs), hence the visibility gate on this path.
 
         rt.shapes holds the box in TILES (_cmd_setshape divides the command's
         PIXEL width/height by 16), so a `setshape 1,96,16` counter is 6x1
@@ -1752,6 +1916,12 @@ class GS1ClientHost(Host):
             return x, y, to_num(shape[0]) * 16, to_num(shape[1]) * 16
         if npc.get("gani") or npc.get("body_image") or npc.get("head_image"):
             return self._char_rect(npc.get("x", 0), npc.get("y", 0))
+        if npc.get("visible", True) is False:
+            return None
+        rect = self.rt.npc_image_rect(npc)
+        if rect is not None:
+            rx, ry, rw, rh = rect
+            return rx * 16, ry * 16, rw * 16, rh * 16
         return None
 
     def _playersays(self, args, contains):
@@ -2268,6 +2438,11 @@ class ClientGS1:
         self.on_toweapons = None
         self.on_tiledef = None
         self.on_seteffect = None
+        self.on_putleaps = None
+        # attachplayertoobj state: {'npc_id', 'last_x', 'last_y'} or None.
+        # last_* is the NPC's position when we last propagated its movement
+        # to the player (see the delta step in process_timeouts).
+        self._player_attach = None
 
     def board_ready(self) -> bool:
         """Is the CURRENT level's board in hand?
@@ -2404,6 +2579,10 @@ class ClientGS1:
         self.drop_level_weapon_layers()  # GS1 weapon layers are re-drawn per level
         self._coros.clear()             # abandon suspended scripts from old level
         self._active_coro_keys.clear()
+        # attachplayertoobj does not survive the level: the ride NPC lives in
+        # the level we just left (process_attachment would self-detach when
+        # client.npcs turns over anyway; this just makes it deterministic).
+        self._player_attach = None
         # default_movement is deliberately NOT reset here: dis/enabledefmovement
         # is PLAYER-scoped state, not level-scoped. In the reference client the
         # only setDefaultMovement(true) resets are session boundaries — leaving
@@ -2691,7 +2870,9 @@ class ClientGS1:
             nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
             return (nx + 0.5, ny + 1.0, 2.0, 2.0)
         image = npc.get("image") or ""
-        if not image:
+        if not image or image == "-":
+            # "-" is the classic no-image placeholder (script-only NPCs in
+            # .nw files): no art, no footprint.
             return None
         part = npc.get("imagepart")
         if part:
@@ -2880,12 +3061,80 @@ class ClientGS1:
         Call once per game-loop iteration after handling input."""
         self._keys_raw_prev = set(self.keys_raw)
 
+    def process_attachment(self):
+        """Propagate an attached-to NPC's movement to the local player
+        (attachplayertoobj). The reference slaves the player to the NPC by
+        propagating every NPC position write to its attached children with
+        the child's offset preserved, while the player's OWN writes just
+        re-derive the offset (TServerPlayer::setlocalx/setlocaly,
+        Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:1491-1552).
+        Applying the NPC's per-frame movement DELTA to the player is the same
+        math: script movement of the player between frames implicitly updates
+        the offset. Detaches itself when the NPC disappears (level change
+        clears client.npcs; the reference equally can't stay attached to a
+        despawned NPC)."""
+        att = self._player_attach
+        cl = self.client
+        if att is None or cl is None:
+            return
+        npc = getattr(cl, "npcs", {}).get(att["npc_id"])
+        if not isinstance(npc, dict):
+            self._player_attach = None
+            return
+        nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+        dx, dy = nx - att["last_x"], ny - att["last_y"]
+        if dx or dy:
+            att["last_x"], att["last_y"] = nx, ny
+            try:
+                cl.player.x += dx
+                cl.player.y += dy
+                cl.send_position()
+            except Exception:
+                pass
+
+    def sign_text_by_index(self, index) -> "str | None":
+        """Text of the CURRENT level's sign `index` (0-based, in the order the
+        signs arrived - PLO_LEVELSIGN is sent in level-file order, kept as an
+        ordered list in client.sign_lists). The (x, y)-keyed client.signs
+        dict is only a fallback for harnesses that never populated the list;
+        it CANNOT be authoritative because say-only signs are conventionally
+        stacked at 0,0 and collapse to one dict key (live GTA abermose7.nw:
+        five signs, one dict entry). None for a non-numeric index or one out
+        of range. Used by `say <n>`."""
+        cl = self.client
+        if cl is None:
+            return None
+        if isinstance(index, bool):
+            return None
+        if isinstance(index, (int, float)):
+            idx = int(index)
+        else:
+            # a stringly number still counts; anything else is not an index
+            # (to_num would silently read it as 0 = sign zero)
+            try:
+                idx = int(float(to_str(index).strip()))
+            except (TypeError, ValueError):
+                return None
+        lvl = getattr(cl, "_current_level_name", "")
+        ordered = getattr(cl, "sign_lists", {}).get(lvl)
+        if ordered:
+            if 0 <= idx < len(ordered):
+                return ordered[idx][2]
+            return None
+        signs = getattr(cl, "signs", {}).get(lvl)
+        if not signs or not 0 <= idx < len(signs):
+            return None
+        return list(signs.values())[idx]
+
     def process_timeouts(self, dt):
         """Count down each NPC's pending `timeout` and fire its `timeout` event
         when it elapses (the event handler typically re-arms it). This is what
-        drives proximity checks, the room-join state machine, etc."""
+        drives proximity checks, the room-join state machine, etc. Also steps
+        the attachplayertoobj slave link - it must track scripted NPC movement
+        every frame, and this is the engine's per-frame hook."""
         if self.client is None:
             return
+        self.process_attachment()
         for npc_id, npc in list(getattr(self.client, "npcs", {}).items()):
             t = npc.get("_timeout")
             if t is None:

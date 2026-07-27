@@ -219,6 +219,12 @@ def handle_board_packet(client, data):
     level_for_tiles = client._pending_level_name or client._current_level_name
     if level_for_tiles:
         client.levels[level_for_tiles] = tiles
+        # A fresh board stream means this level's static data (signs
+        # included) is being (re-)sent: restart the ordered sign list so a
+        # server that re-streams per entry (pygserver) doesn't append
+        # duplicates and shift `say <n>` indices. gs2emu streams a level's
+        # board only once per session, so its list is simply never reset.
+        client.sign_lists.pop(level_for_tiles, None)
     # client.tiles is the ACTIVE render/collision board and must only
     # ever switch on a real warp/segment change - never on a GMAP
     # adjacent-segment preload (request_adjacent_levels(), answered
@@ -369,6 +375,10 @@ def handle_level_sign(client, data):
         # — local sign coords collide across segments otherwise.
         lvl = client._pending_level_name or client._current_level_name
         client.signs.setdefault(lvl, {})[(sign['x'], sign['y'])] = sign['text']
+        # Arrival-order list for `say <n>` index addressing - the dict
+        # above collapses coordinate collisions (see client_state.py).
+        client.sign_lists.setdefault(lvl, []).append(
+            (sign['x'], sign['y'], sign['text']))
         if client.on_sign:
             client.on_sign(sign['x'], sign['y'], sign['text'])
 

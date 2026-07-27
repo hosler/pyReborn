@@ -115,7 +115,6 @@ def test_tokenscount_matches_through_the_real_interpreter():
         ("setani walk; setcharani idle;", ("gani",)),
         ("setimgpart sheet.png,1,2,3,4;", ("image", "imagepart")),
         ("message hello;", ("message",)),
-        ("say hello;", ("message",)),
     ],
 )
 def test_npc_command_contracts_match_through_the_real_interpreter(script, fields):
@@ -123,6 +122,18 @@ def test_npc_command_contracts_match_through_the_real_interpreter(script, fields
     for field in fields:
         assert client_npc.get(field) == getattr(server_npc, field, None)
         assert type(client_npc.get(field)) is type(getattr(server_npc, field, None))
+
+
+def test_say_is_a_sign_index_not_a_message_alias():
+    """`say <n>` displays LEVEL SIGN n, it does not set the chat bubble -
+    GServer-v2's own handler throws "invalid arguments: say signindex"
+    (GS1Commands.cpp:2008-2016). The client now follows that contract
+    (gs1_client._cmd_say -> sign_text_by_index); pygserver's GS1 host still
+    aliases say to message, so this is deliberately NOT in the cross-host
+    parametrize above until pygserver catches up."""
+    _, client_npc, _, _, _, _ = _run_pair("say 0;")
+    # no sign store in this harness: nothing shown, bubble untouched
+    assert client_npc.get("message") == _NPC_VALUES["message"]
 
 
 def test_player_toggle_contract_matches_through_the_real_interpreter():

@@ -79,6 +79,8 @@ from .packets import (
     build_level_warp,
     build_private_message,
     build_baddy_hurt,
+    build_baddy_add,
+    build_putnpc,
     build_open_chest,
     build_horse_add,
     build_baddy_props,
@@ -950,6 +952,48 @@ class Client:
             return False
         data = PacketBuilder().write_gint3(npc_id).build()
         return self._protocol.send_packet(PacketID.PLI_NPCDEL, data)
+
+    def send_putnpc(self, image: str, script_file: str, x: float, y: float) -> bool:
+        """GS1 `putnpc image,scriptfile,x,y`: ask the server to create a level
+        NPC from one of ITS script files (PLI_PUTNPC). The new NPC streams back
+        to everyone in the level via normal NPC props - see build_putnpc for
+        why the client must not also spawn a local copy. Gated server-side on
+        `putnpcenabled` (GTA and the classic-gs1 reference configs enable it)."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_putnpc(image, script_file, x, y)
+        return self._protocol.send_packet(PacketID.PLI_PUTNPC, data)
+
+    def send_baddy_add(self, x: float, y: float, baddy_type: int,
+                       power: int, image: str) -> bool:
+        """GS1 `putcomp`/`putnewcomp`: ask the server to add a baddy
+        (PLI_BADDYADD); it comes back via the level-wide PLO_BADDYPROPS
+        broadcast. `power` is half-hearts."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_baddy_add(x, y, baddy_type, power, image)
+        return self._protocol.send_packet(PacketID.PLI_BADDYADD, data)
+
+    def kill_all_baddies(self) -> bool:
+        """GS1 `removecompus`: there is no dedicated wire op for the classic
+        client, but the leader-authoritative baddy channel (PLI_BADDYPROPS,
+        the same one hit resolution uses - see _leader_broadcast_baddy_props)
+        lets us mark every baddy dead: the server applies MODE=DEAD to its
+        copy and relays it to the level (see build_baddy_props' wire-format
+        citation). putcomp/BADDYADD baddies have
+        respawn disabled server-side, so dead is gone; level-placed baddies
+        follow their normal respawn timer. Local state is updated in the same
+        step because the relay excludes the sender when we are the leader."""
+        ok = True
+        for baddy_id, baddy in list(self.baddies.items()):
+            if isinstance(baddy, dict):
+                baddy['mode'] = int(BDMODE.DEAD)
+            if self.connected and self._authenticated:
+                data = build_baddy_props(baddy_id,
+                                         {BDPROP.MODE: int(BDMODE.DEAD)})
+                ok = self._protocol.send_packet(PacketID.PLI_BADDYPROPS,
+                                                data) and ok
+        return ok
 
     def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
         """
@@ -2530,6 +2574,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'chests': ('level_state', 'chests'),
     'chest_items': ('level_state', 'chest_items'),
     'signs': ('level_state', 'signs'),
+    'sign_lists': ('level_state', 'sign_lists'),
     'board_layers': ('level_state', 'board_layers'),
     'board_heights': ('level_state', 'board_heights'),
     'is_leader': ('level_state', 'is_leader'),

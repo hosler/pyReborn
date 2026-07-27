@@ -654,6 +654,9 @@ class SetupMixin:
 
         self.gs1.on_play = on_play
         self.gs1.on_stopmusic = on_stopmusic
+        # putleaps type,x,y -> debris burst (render_effects owns frames+sound)
+        self.gs1.on_putleaps = (lambda leap_type, x, y:
+                                self._spawn_leaps(leap_type, x, y))
         self.gs1.on_say = on_say
         self.gs1.on_say2 = on_say2
         self.gs1.on_setani = on_setani

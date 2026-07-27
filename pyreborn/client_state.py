@@ -137,6 +137,14 @@ class LevelState:
 
         # Level signs: maps (x, y) -> text
         self.signs: Dict[str, Dict[Tuple[float, float], str]] = {}  # level -> {(x,y): text}
+        # The same signs in ARRIVAL ORDER: level -> [(x, y, text), ...].
+        # GS1 `say <n>` addresses signs by index, and the (x, y) dict above
+        # cannot answer that: say-only signs are conventionally all parked at
+        # "SIGN 0 0" (GTA's abermose7.nw stacks five there), so they collapse
+        # to one dict key. Reset per level when a fresh board streams
+        # (handlers/level.py) - servers that never re-stream a level's static
+        # data per session (gs2emu) simply keep the first list.
+        self.sign_lists: Dict[str, list] = {}
 
         # Board layers: maps layer_id -> tile data
         self.board_layers: Dict[int, bytes] = {}

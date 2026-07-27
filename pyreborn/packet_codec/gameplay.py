@@ -845,6 +845,48 @@ def build_baddy_props(baddy_id: int, props: dict) -> bytes:
     return builder.build()
 
 
+def build_putnpc(image: str, script_file: str, x: float, y: float) -> bytes:
+    """
+    Build PLI_PUTNPC (packet 21) - the classic client's `putnpc
+    image,scriptfile,x,y` GS1 command. The SERVER opens `script_file` from its
+    own filesystem and adds a real level NPC, which then streams back to every
+    player in the level (including the sender) as ordinary NPC props - the
+    client never fetches the script itself and must NOT also spawn a local
+    copy, or the server echo would double it.
+
+    Wire format (GServer-v2 msgPLI_PUTNPC, PlayerClientPackets.cpp:753-760):
+    {GUChar len}{image}{GUChar len}{scriptfile}{GUChar x*2}{GUChar y*2}.
+    x/y are level-local tiles at half-tile precision.
+    """
+    builder = PacketBuilder()
+    builder.write_gstring(image or '')
+    builder.write_gstring(script_file or '')
+    builder.write_gchar(max(0, min(223, int(float(x) * 2))))
+    builder.write_gchar(max(0, min(223, int(float(y) * 2))))
+    return builder.build()
+
+
+def build_baddy_add(x: float, y: float, baddy_type: int, power: int,
+                    image: str) -> bytes:
+    """
+    Build PLI_BADDYADD (packet 17) - the classic client's `putcomp` /
+    `putnewcomp` GS1 commands. The server adds the baddy (respawn disabled),
+    then broadcasts PLO_BADDYPROPS to the whole level, so the baddy comes back
+    to us through the normal baddy stream - no local spawn here either.
+
+    Wire format (GServer-v2 msgPLI_BADDYADD, PlayerClientPackets.cpp:544-575):
+    {GUChar x*2}{GUChar y*2}{GUChar type}{GUChar power}{image chars to end of
+    packet, NO length prefix}. Power is half-hearts, server-clamped to 12.
+    """
+    builder = PacketBuilder()
+    builder.write_gchar(max(0, min(223, int(float(x) * 2))))
+    builder.write_gchar(max(0, min(223, int(float(y) * 2))))
+    builder.write_gchar(int(baddy_type) & 0x7F)
+    builder.write_gchar(max(0, min(12, int(power))))
+    builder.write_string(image or '')
+    return builder.build()
+
+
 def build_open_chest(x: float, y: float) -> bytes:
     """
     Build PLI_OPENCHEST (packet 20) - open a chest at position.

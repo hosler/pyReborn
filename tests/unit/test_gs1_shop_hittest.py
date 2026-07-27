@@ -154,10 +154,31 @@ def test_testnpc_hits_a_character_npc_without_a_shape():
     assert scope["b"] == -1.0           # above/left of the feet box
 
 
-def test_testnpc_cannot_hit_a_plain_image_npc():
+def test_testnpc_hits_a_plain_image_npc_on_its_footprint():
+    # A visible shapeless image NPC is hittable on its image footprint - the
+    # same geometry that blocks and touches. This is what makes the classic
+    # putnpc guard idiom work: GTA's `if (testnpc(19,17.5)<0) putnpc ...`
+    # must SEE the barrel that is already there, or every level entry stacks
+    # another copy onto the server (live-observed on adventurerpub.nw before
+    # this rule). Hidden NPCs stay unhittable (isOnNPC bails on !visible),
+    # and image "-" is the classic no-image placeholder (no footprint).
     npcs = {9: {"x": 12.0, "y": 30.0, "image": "koni_vase.png"},
             5: {"x": 0.0, "y": 0.0, "image": "-",
-                "script": "if (timeout) { this.n = testnpc(13,32); }"}}
+                "script": "if (timeout) { this.n = testnpc(13,31);"
+                          " this.o = testnpc(15,33); this.p = testnpc(1,1); }"}}
+    _c, gs1 = _engine(npcs)
+    gs1.trigger_npc_event(5, "timeout")
+    scope = _this(gs1, 5)
+    assert scope["n"] == 1.0            # inside the default 2x2 footprint
+    assert scope["o"] == -1.0           # outside it
+    assert scope["p"] == -1.0           # "-" image NPC has no footprint
+
+
+def test_testnpc_cannot_hit_a_hidden_image_npc():
+    npcs = {9: {"x": 12.0, "y": 30.0, "image": "koni_vase.png",
+                "visible": False},
+            5: {"x": 0.0, "y": 0.0, "image": "-",
+                "script": "if (timeout) { this.n = testnpc(13,31); }"}}
     _c, gs1 = _engine(npcs)
     gs1.trigger_npc_event(5, "timeout")
     assert _this(gs1, 5)["n"] == -1.0

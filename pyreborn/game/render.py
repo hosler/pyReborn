@@ -507,6 +507,7 @@ class RenderMixin(FrameContextMixin):
         self._update_and_render_thrown(getattr(self, '_last_dt', 0.016))
         self._render_break_effects()
         self._render_leaf_particles()
+        self._render_leaps()                        # putleaps debris bursts
         self._render_water_ripples()
         self._render_chest_reveals()
         self._render_server_explosions()
