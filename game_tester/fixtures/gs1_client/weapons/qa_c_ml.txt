@@ -1,0 +1,7 @@
+GRAWP001
+REALNAME -qa_c_ml
+IMAGE 
+SCRIPT
+if (playerenters) { this.line1 = 1;
+this.line2 = 2; }
+SCRIPTEND

@@ -1,0 +1,6 @@
+GRAWP001
+REALNAME -qa_c_selectedweapon_full_index
+IMAGE 
+SCRIPT
+if (playerenters) { if (strequals(#L,qa_c_selectedweapon_full_index.nw)) { setplayerprop #n,w#v(selectedweapon); } }
+SCRIPTEND

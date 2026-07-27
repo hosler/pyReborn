@@ -197,6 +197,11 @@ Examples:
                        help="Run the GS1 behavioral conformance suite: same GS1 "
                             "NPC scripts on pygserver vs the C++ gs2emu oracle, "
                             "diffing client-observable effects")
+    parser.add_argument("--gs1-client", action="store_true", dest="gs1_client",
+                       help="Run the CLIENT-side GS1 engine conformance suite: "
+                            "table-driven cases (each citing its FourPlay "
+                            "reference line) executed by the real Client + "
+                            "GameClient stack against a throwaway pygserver")
     parser.add_argument("--behaviour", "--fingerprint", action="store_true",
                        dest="behaviour",
                        help="Run the live behavioural-fingerprint suite: log in "
@@ -346,6 +351,23 @@ Examples:
         reporter.print_summary()
         if args.report:
             reporter.save_json(f"{args.report}_gs1.json")
+        sys.exit(0 if all(r.passed for r in tresults) else 1)
+
+    # CLIENT-side GS1 conformance runs standalone (spawns its own throwaway
+    # pygserver; fixtures must live in the server's world, so it never targets
+    # --host/--port).
+    if args.gs1_client:
+        from game_tester.gs1_client_conformance import run_gs1_client_conformance
+        print("\n[GS1 CLIENT-ENGINE CONFORMANCE]")
+        reporter = TestReporter("Game Tester - GS1 Client Conformance")
+        reporter.set_config(host="(throwaway pygserver)", bots=1, mode="gs1-client")
+        tresults = run_gs1_client_conformance()
+        for r in tresults:
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.print_result(r)
+        reporter.print_summary()
+        if args.report:
+            reporter.save_json(f"{args.report}_gs1_client.json")
         sys.exit(0 if all(r.passed for r in tresults) else 1)
 
     # Tier3 suite runs standalone (own bot lifecycle).

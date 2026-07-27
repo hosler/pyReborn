@@ -1,0 +1,6 @@
+GRAWP001
+REALNAME -qa_c_updateboard_publishes
+IMAGE 
+SCRIPT
+if (playerenters) { if (strequals(#L,qa_c_updateboard_publishes.nw)) { tiles[12,12] = 171; updateboard 10,10,4,4; } }
+SCRIPTEND

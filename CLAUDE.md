@@ -195,6 +195,29 @@ outage?" stays answerable with no network, even after a re-baseline. The
 `emptylist` and `layout` fixtures also assert the *converse*: that the
 structural invariants alone would NOT have caught them.
 
+### GS1 client-engine conformance (`--gs1-client`)
+
+`python -m game_tester --gs1-client` pins the CLIENT-side GS1 engine
+(`pyreborn/gs1_client.py` running in the real Client + GameClient + NPCHandler
+stack, SDL dummy) against the decompiled reference client. Each of the ~37
+rows in `game_tester/gs1_client_conformance.py` is an executable transcription
+of one FourPlay citation (`Preagonal/FourPlay/quattroplay/src/...` file:line
+in the row), covering footprint blocking/dontblock, touchtestd touch,
+timeout=0 cancel, setani-vs-setcharani, say/say2/message/sign ordering,
+tiles[]/updateboard, hurt half-hearts, putbomb/putexplosion wire+local pairs,
+hideimg(s), hidelocal/showlocal and selectedweapon — so a semantic change that
+breaks a row contradicts a cited reference line, not a guess. It spawns its
+own throwaway pygserver (never targets `--host`), skips wholesale if that
+fails, and finishes in ~12s. Two delivery gotchas are baked in and documented
+in the module docstring: weapon-channel scripts must be ONE line (pygserver's
+weapon-text builder skips the newline→0xa7 GS1 wire mangling — pinned by the
+`weapon_multiline_truncation` divergence row) and every fixture weapon ships
+an empty `.gs2bc` cache, because a gs2test binary in the checkout otherwise
+compiles GS1-style bodies as GS2 and the cases silently run in the GS2 VM
+instead of the engine under test. Rows marked `[PINNED DIVERGENCE]` assert the
+current known-divergent shipping state (stacked-sign collapse, weapon
+truncation) and go red when the server side gets fixed.
+
 ### Test Categories
 
 | Category | Tests | What It Checks |
