@@ -2146,6 +2146,23 @@ class GS2ClientHost(GS2Host):
         obj.set("active", 1.0 if not args or to_num(args[0]) else 0.0)
         return 0.0
 
+    @_gs2_builtin(_GS2_ENGINE_METHODS, "makefirstresponder")
+    def _engine_makefirstresponder(self, vm, name, args, obj):
+        # GraalControl.makeFirstResponder(true): the canvas root takes the
+        # keyboard back from whatever control held it (Login's hideChatBar,
+        # weapon-Rescripted_Serverlist.txt:2698). Canvas-as-first-responder
+        # IS this model's FR-None state, so clear the manager's slot (which
+        # fires onLoseFirstResponder on the outgoing control) and the text
+        # focus. Unanswered, this fell into the engine-object inert
+        # catch-all and FR could never return to the canvas -- keystrokes
+        # vanished into the invisible chat bar and keyboard_captured
+        # blocked held-key movement for the rest of the session.
+        rt2 = self.rt2
+        if rt2.gui is not None and to_str(getattr(obj, "name", "")).lower() \
+                in ("graalcontrol", "graalcontrol3d", "guicontainer"):
+            rt2.gui.focus(None)
+        return 0.0
+
     # -- _GS2_GUI_METHODS: control methods (gate: a GUI manager exists) -----
 
     def _obj_addcontrol(self, vm, name, args, obj):

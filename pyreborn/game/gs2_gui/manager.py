@@ -116,6 +116,27 @@ class GS2GuiManager:
     # -- construction --------------------------------------------------------
 
     def create_control(self, classname: str, ctor_arg: Any) -> GuiControl:
+        # Named `new` REUSES a live same-named engine object: the reference
+        # looks the name up in universe->vars and returns the EXISTING
+        # object -- identity, members, children and catchevent registrations
+        # all survive and NO reset happens (the construction block's writes
+        # simply re-apply); only a PLAIN script variable holding the name is
+        # replaced by a fresh engine object, and the requested class is not
+        # even consulted on reuse (TScriptMachine::createObject,
+        # TScriptMachine.cpp:1135-1157). Login's onServerLogin re-runs
+        # initGraalControlSize(); without reuse each run minted a ghost
+        # ChatBar+toggle root that kept rendering while script writes only
+        # reached the newest copy -- a successful hide looked inert.
+        if isinstance(ctor_arg, str) and ctor_arg:
+            existing = self._named.get(ctor_arg.lower())
+            if isinstance(existing, GuiControl):
+                if not existing.is_profile:
+                    if self._construction_stack:
+                        if (self._construction_stack[-1].add_child(existing)
+                                and existing in self.roots):
+                            self.roots.remove(existing)
+                    self._construction_stack.append(existing)
+                return existing
         ctrl = make_control(classname, ctor_arg)
         ctrl._manager = self
         if ctrl.ctrl_name:
@@ -872,10 +893,12 @@ class GS2GuiManager:
         return True
 
     def _toggle_start_menu(self, btn: GuiButtonCtrl) -> bool:
-        """Engine behavior with no script-side handler: a taskbar button
-        styled as the start button (`stylesection = "Taskbar.StartButton"`,
-        Login's Serverlist_TaskButton_Start) toggles the GuiStartMenuCtrl,
-        anchored just above it."""
+        """Built-in behavior of a taskbar button styled as the start button
+        (`stylesection = "Taskbar.StartButton"`, Login's
+        Serverlist_TaskButton_Start): toggle the GuiStartMenuCtrl, anchored
+        just above it. Runs IN ADDITION to the script onAction dispatch
+        (see GuiButtonCtrl.pointer_down) -- engine handling never consumes
+        events away from scripts."""
         if to_str(btn._members.get("stylesection", "")).lower() != \
                 "taskbar.startbutton":
             return False

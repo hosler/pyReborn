@@ -490,8 +490,9 @@ class GuiControl(GS2Object):
     def _m_clearcontrols(self, *args) -> float:
         """clearControls(): remove every child (Login rebuilds its
         Serverlist_TablesPanel0 contents this way on each tab switch).
-        Children stay in the name registry -- the rebuild recreates them
-        under the same names, which overwrites the entries."""
+        Children stay in the name registry -- the rebuild's same-name `new`s
+        REUSE the detached objects and reparent them (named-reuse semantics,
+        see GS2GuiManager.create_control)."""
         for child in list(self.children):
             if self._manager is not None:
                 self._manager._release_pointers_under(child)
@@ -828,7 +829,13 @@ class GuiControl(GS2Object):
         """setVisible (GuiControl.cpp:1288-1306): flip the flag, then fire
         onShow/onHide only when EFFECTIVE visibility changed -- toggling a
         control inside a hidden/detached tree fires nothing, and the flag is
-        already updated when the handler runs."""
+        already updated when the handler runs.
+
+        Going invisible also releases any keyboard capture / pointer state
+        this subtree holds, same as manager.hide(): the script path
+        `ChatBar.visible = false` (Login's Tab-close) otherwise left the
+        invisible edit holding first responder + text focus -- keystrokes
+        vanished into it and keyboard_captured blocked held-key movement."""
         value = bool(value)
         if value == self.visible:
             return
@@ -836,6 +843,8 @@ class GuiControl(GS2Object):
         self.visible = value
         if before != self.effectively_visible():
             self.notify_visible(value)
+        if not value and self._manager is not None:
+            self._manager._release_pointers_under(self)
 
     def notify_visible(self, shown: bool) -> None:
         """notifyVisible (GuiControl.cpp:1309-1332): onShow/onHide (no args)

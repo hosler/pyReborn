@@ -356,7 +356,12 @@ class GuiButtonCtrl(GuiButtonBaseCtrl):
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
         manager._set_pressed(self)
-        if not manager._toggle_start_menu(self):
+        if manager._toggle_start_menu(self):
+            # the built-in start-menu toggle AND the script onAction both
+            # run -- engine handling never starves scripts (Login's
+            # Serverlist_TaskButton_Start.onAction drives its own menu)
+            self.fire_action()
+        else:
             manager._activate_button(self)
         return True
 

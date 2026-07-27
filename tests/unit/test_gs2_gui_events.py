@@ -713,6 +713,149 @@ class TestLifecycleEvents:
 
 
 # =============================================================================
+# 6b. Keyboard-capture handback (the Login Tab-toggle chain)
+# =============================================================================
+
+class TestKeyboardHandback:
+    """Login's chat-bar toggle (weapon-Rescripted_Serverlist.txt:2649-2700):
+    Tab on the canvas shows ChatBar + ChatBar.makeFirstResponder(true); Tab
+    on ChatBar sets ChatBar.visible = false + GraalControl.
+    makeFirstResponder(true). Both halves used to trap the keyboard: the
+    engine-object makeFirstResponder fell into the inert catch-all (FR never
+    returned to the canvas) and the visible=false script path released
+    nothing (the invisible edit kept _focus, blocking held-key movement)."""
+
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.host = self.rt2.host
+        self.chatbar = self.gui.create_control("GuiTextEditCtrl", "ChatBar")
+        self.gui.addcontrol(self.chatbar)
+
+    def test_visible_false_releases_first_responder_and_focus(self):
+        lost = []
+        self.chatbar.set("onlosefirstresponder", lambda: lost.append(True))
+        self.gui.focus(self.chatbar)
+        assert self.gui.keyboard_captured is True
+        self.chatbar.set("visible", False)     # the script path, NOT hidegui
+        assert self.gui.keyboard_captured is False
+        assert self.gui._first_responder is None and self.gui._focus is None
+        assert lost == [True]
+
+    def test_engine_object_makefirstresponder_hands_fr_back_to_canvas(self):
+        lost = []
+        self.chatbar.set("onlosefirstresponder", lambda: lost.append(True))
+        self.gui.focus(self.chatbar)
+        graalcontrol = self.host.get_object("graalcontrol")
+        self.host.call_builtin(None, "makefirstresponder", [1.0],
+                               obj=graalcontrol)
+        assert self.gui._first_responder is None and self.gui._focus is None
+        assert lost == [True]
+
+    def test_tab_toggle_round_trip(self):
+        """Open (canvas Tab), Tab-close (visible=false + GraalControl
+        handback), verify capture released, then Tab reaches the canvas
+        handler again (reopen)."""
+        opened = []
+        vm = _FakeVM({"graalcontrol.onkeydown": lambda *a: opened.append(a)})
+        self.rt2.vms["weapon"]["w"] = vm
+        # boot state: an edit holds FR (Serverlist_ServerDirectConnect
+        # pattern) -- the canvas fallback must NOT engage
+        self.gui.focus(self.chatbar)
+        self.gui.handle_event(_keydown(pygame.K_TAB, "\t"))
+        assert opened == []
+        # ChatBar.onKeyDown Tab-close: hideChatBar()
+        self.chatbar.set("visible", False)
+        graalcontrol = self.host.get_object("graalcontrol")
+        self.host.call_builtin(None, "makefirstresponder", [1.0],
+                               obj=graalcontrol)
+        assert self.gui.keyboard_captured is False
+        assert self.gui._first_responder is None
+        # Tab now reaches GraalControl.onKeyDown (the reopen path)
+        self.gui.handle_event(_keydown(pygame.K_TAB, "\t"))
+        assert opened == [(9.0, "\t", 1.0)]
+
+
+# =============================================================================
+# 6c. Named `new` reuses the live object
+# =============================================================================
+
+class TestNamedReuse:
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+        self.host = self.rt2.host
+
+    def test_named_new_reuses_identity_members_and_catchers(self):
+        """TScriptMachine::createObject (TScriptMachine.cpp:1135-1157):
+        `new <Class>("Name")` with a live same-named engine object returns
+        THAT object -- no reset; members, children and catchevent
+        registrations survive. Login's onServerLogin re-runs
+        initGraalControlSize() and used to mint a ghost ChatBar root."""
+        first = self.gui.create_control("GuiTextEditCtrl", "ChatBar")
+        self.gui.addcontrol(first)
+        first.set("width", 500)
+        got = []
+        vm = _FakeVM({"onCaught": lambda *a: got.append(a)})
+        self.host.call_builtin(vm, "catchevent",
+                               [first, "onAction", "onCaught"])
+        again = self.gui.create_control("GuiTextEditCtrl", "ChatBar")
+        assert again is first
+        self.gui.addcontrol(again)
+        assert self.gui.roots.count(first) == 1        # no ghost root
+        assert again.width == 500.0                    # no property reset
+        again.fire_event("onaction")
+        assert got == [(first,)]                       # catcher survived
+
+    def test_named_new_inside_construction_reparents_the_reused_control(self):
+        child = self.gui.create_control("GuiControl", "ReusedKid")
+        self.gui.addcontrol(child)
+        assert child in self.gui.roots
+        parent = self.gui.create_control("GuiControl", "NewParent")
+        reused = self.gui.create_control("GuiControl", "ReusedKid")
+        assert reused is child
+        self.gui.addcontrol(reused)
+        self.gui.addcontrol(parent)
+        assert child.parent is parent
+        assert child not in self.gui.roots
+
+    def test_fresh_name_still_constructs(self):
+        a = self.gui.create_control("GuiButtonCtrl", "OnlyOnce")
+        self.gui.addcontrol(a)
+        b = self.gui.create_control("GuiButtonCtrl", "SomethingElse")
+        self.gui.addcontrol(b)
+        assert a is not b and len(self.gui.roots) == 2
+
+
+# =============================================================================
+# 6d. Start-button click fires script onAction alongside the menu toggle
+# =============================================================================
+
+def test_start_button_toggle_also_fires_script_onaction():
+    """Serverlist_TaskButton_Start.onAction (weapon-Rescripted_Serverlist
+    .txt:2884-2888) must fire even though the engine's start-menu toggle
+    handles the click -- everything fires, engine handling can't consume
+    events away from scripts."""
+    rt2 = ClientGS2()
+    gui = rt2.gui
+    menu = gui.create_control("GuiStartMenuCtrl", "StartMenu")
+    gui.addcontrol(menu)
+    btn = gui.create_control("GuiButtonCtrl", "StartBtn")
+    btn.x, btn.y, btn.width, btn.height = 0.0, 580.0, 80.0, 20.0
+    btn.set("stylesection", "Taskbar.StartButton")
+    gui.addcontrol(btn)
+    fired = []
+    btn.set("onaction", lambda *a: fired.append(True))
+    assert menu.visible is False
+    gui.handle_event(_mousedown((10, 590)))
+    assert menu.visible is True                        # built-in toggle ran
+    assert fired == [True]                             # script event too
+    gui.handle_event(_mousedown((10, 590)))
+    assert menu.visible is False
+    assert fired == [True, True]
+
+
+# =============================================================================
 # 7. GuiMLTextCtrl onURL
 # =============================================================================
 
