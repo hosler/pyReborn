@@ -6,9 +6,10 @@ import pygame
 
 from reborn_protocol.gs2 import GS2Object, to_num, to_str
 
-from .base import GuiControl
+from .base import DOUBLE_CLICK_MS, GuiControl, _same_catcher, catcher_identity
 from .collection_controls import GuiStartMenuCtrl, GuiTreeNode
 from .factory import make_control
+from .keycodes import full_modifier_key, torque_modifier, vk_from_pygame
 from .profiles import (
     GuiControlProfile, _BUILTIN_PROFILE_FIELDS, _MAX_PARENT_DEPTH, _log_once, logger,
 )
@@ -23,6 +24,11 @@ from reborn_protocol.gs2 import to_bool  # noqa: F401  - kept: original import b
 # =============================================================================
 # Manager
 # =============================================================================
+
+def _ticks() -> int:
+    """Monotonic ms clock for click counting (tests monkeypatch this)."""
+    return pygame.time.get_ticks()
+
 
 class GS2GuiManager:
     """Root of the GS2 GUI control tree.
@@ -53,6 +59,25 @@ class GS2GuiManager:
         # (ticks, node) of the last tree-view row click, for double-click
         # detection (onDblClick = connect on the Login server list)
         self._last_tree_click: Tuple[int, Optional[GuiTreeNode]] = (0, None)
+        # canvas first responder: the control keyboard script events go to
+        # (distinct from _focus, which is the text-edit TYPING slot -- a
+        # button can be first responder without capturing gameplay keys)
+        self._first_responder: Optional[GuiControl] = None
+        # script mouse-event state: hover control for onMouseEnter/Leave,
+        # the mouse-locked control (receives everything until release), and
+        # the click counter (same button within DOUBLE_CLICK_MS increments)
+        self._script_hover: Optional[GuiControl] = None
+        self._mouse_lock: Optional[GuiControl] = None
+        self._lock_button = 0
+        self._click_count = 0
+        self._click_ticks = 0
+        self._click_button = 0
+        # control the current built-in press started on (pointer_up routing)
+        self._press_target: Optional[GuiControl] = None
+        # catchevent registrations for control names that don't exist yet:
+        # name -> event -> [[catcher_vm, handler_name], ...]; adopted by
+        # create_control (TScriptSpace.cpp:1662-1764's pending TEventObject)
+        self._pending_catchers: Dict[str, Dict[str, List[list]]] = {}
         # skin-art cache (profile bitmap sheets, sliced) + one-shot file
         # requests for art the sprite manager doesn't have yet
         self._skins: Dict[str, _Skin] = {}
@@ -95,6 +120,12 @@ class GS2GuiManager:
         ctrl._manager = self
         if ctrl.ctrl_name:
             self._named[ctrl.ctrl_name.lower()] = ctrl
+            # adopt catchevent registrations made before this control existed
+            pending = self._pending_catchers.pop(ctrl.ctrl_name.lower(), None)
+            if pending:
+                for event, entries in pending.items():
+                    for vm, handler in entries:
+                        ctrl.add_event_catcher(event, vm, handler)
         if ctrl.is_profile:
             # named registration only -- never in the construction stack or
             # the render tree (its auto-emitted addcontrol no-ops below)
@@ -131,6 +162,22 @@ class GS2GuiManager:
             del self._construction_stack[idx:]
         if ctrl.parent is None and ctrl not in self.roots:
             self.roots.append(ctrl)
+        # attach into the live tree wakes the subtree (addObject into an
+        # awake parent / canvas attach, GuiControl.cpp:2260-2261); a nested
+        # child under a still-under-construction parent waits for the
+        # outermost addcontrol.
+        # PINNED DIVERGENCE: a parentless finished construction roots and
+        # wakes IMMEDIATELY, so `HiddenParent.addcontrol(new ...)` sees one
+        # transient-root onShow before add_to reparents it under the hidden
+        # parent (the reference attaches nothing until explicit placement,
+        # firing nothing until real effective visibility). Deferring the
+        # awaken to a post-call flush would shift EVERY onWake/onShow on
+        # live Login relative to same-call script code under this model's
+        # synchronous dispatch -- judged too risky; pinned by
+        # test_transient_root_show_divergence_is_pinned.
+        if not ctrl._awake and (ctrl.parent is None
+                                or ctrl.parent._awake):
+            ctrl.awaken()
 
     def _reap_construction_leak(self) -> None:
         """Valid construction is synchronous within one VM execution, so the
@@ -150,6 +197,11 @@ class GS2GuiManager:
         ctrl = self._resolve(target)
         if ctrl is None:
             return
+        # capture the ancestor chain's visibility BEFORE detaching: the
+        # teardown onHide pass needs to know whether this subtree was
+        # actually on screen
+        ancestors_visible = (ctrl.parent.effectively_visible()
+                             if ctrl.parent is not None else True)
         if ctrl.parent is not None:
             ctrl.parent.remove_child(ctrl)
         elif ctrl in self.roots:
@@ -157,6 +209,7 @@ class GS2GuiManager:
         if ctrl.ctrl_name and self._named.get(ctrl.ctrl_name.lower()) is ctrl:
             del self._named[ctrl.ctrl_name.lower()]
         self._release_pointers_under(ctrl)
+        ctrl.sleep_subtree(ancestors_visible)
 
     def _release_pointers_under(self, ctrl: GuiControl) -> None:
         """Drop keyboard focus / an active drag / hover / pressed state held
@@ -180,6 +233,18 @@ class GS2GuiManager:
             self._set_hover(None)
         if self._pressed is not None and self._is_or_descends(self._pressed, ctrl):
             self._set_pressed(None)
+        if (self._first_responder is not None
+                and self._is_or_descends(self._first_responder, ctrl)):
+            self.set_first_responder(None)
+        if (self._script_hover is not None
+                and self._is_or_descends(self._script_hover, ctrl)):
+            self._script_hover = None
+        if (self._mouse_lock is not None
+                and self._is_or_descends(self._mouse_lock, ctrl)):
+            self._mouse_lock = None
+        if (self._press_target is not None
+                and self._is_or_descends(self._press_target, ctrl)):
+            self._press_target = None
         if (self._open_popup is not None and
                 self._is_or_descends(self._open_popup, ctrl)):
             self._close_popup()
@@ -236,7 +301,7 @@ class GS2GuiManager:
             _log_once(("show", to_str(target)),
                       "GS2 GUI: showgui() target not found: %r", target)
             return
-        ctrl.visible = True
+        ctrl.set_visible(True)
         self.bring_to_front(ctrl)
 
     def hide(self, target: Any) -> None:
@@ -245,7 +310,7 @@ class GS2GuiManager:
             _log_once(("hide", to_str(target)),
                       "GS2 GUI: hidegui() target not found: %r", target)
             return
-        ctrl.visible = False
+        ctrl.set_visible(False)
         self._release_pointers_under(ctrl)
 
     def bring_to_front(self, ctrl: GuiControl) -> None:
@@ -260,6 +325,8 @@ class GS2GuiManager:
                 and not child_ctrl.is_profile):
             if parent_ctrl.add_child(child_ctrl) and child_ctrl in self.roots:
                 self.roots.remove(child_ctrl)
+            if parent_ctrl._awake and not child_ctrl._awake:
+                child_ctrl.awaken()      # addcontrol into an awake parent
 
     def get_child(self, parent: Any, child: Any) -> Any:
         parent_ctrl = self._resolve(parent)
@@ -280,12 +347,134 @@ class GS2GuiManager:
         ctrl = self._resolve(parent)
         if ctrl is not None:
             for child in ctrl.children:
-                child.visible = False
+                child.set_visible(False)
                 self._release_pointers_under(child)
 
     def focus(self, target: Any) -> None:
         ctrl = self._resolve(target)
+        self.set_first_responder(ctrl if isinstance(ctrl, GuiControl)
+                                 and not ctrl.is_profile else None)
         self._set_focus(ctrl if isinstance(ctrl, GuiTextEditCtrl) else None)
+
+    def set_first_responder(self, ctrl: Optional[GuiControl]) -> None:
+        """GuiCanvas::setFirstResponder (GuiCanvas.cpp:1411-1433): on change,
+        `onFirstResponderChanges(new)` on the universe object -- this model
+        has no universe, so that one is skipped -- then onLoseFirstResponder
+        on the old control and onBecomeFirstResponder on the new."""
+        if ctrl is self._first_responder:
+            return
+        old, self._first_responder = self._first_responder, ctrl
+        if old is not None:
+            old.fire_event("onlosefirstresponder")
+        if ctrl is not None:
+            ctrl.fire_event("onbecomefirstresponder")
+
+    # -- catchevent plumbing ---------------------------------------------
+
+    def register_catchevent(self, target: Any, event: str, vm,
+                            handler: str) -> bool:
+        """Attach a catcher to a control, by object or by name; an unknown
+        NAME registers pending and is adopted when the control is created
+        (TScriptSpace::catchEvent, TScriptSpace.cpp:1662-1764). Returns
+        False only for an unresolvable non-string target."""
+        event = event.lower()
+        if isinstance(target, GuiControl):
+            target.add_event_catcher(event, vm, handler)
+            return True
+        if isinstance(target, str) and target:
+            ctrl = self._named.get(target.lower())
+            if isinstance(ctrl, GuiControl):
+                ctrl.add_event_catcher(event, vm, handler)
+                return True
+            ident = catcher_identity(vm)
+            entries = self._pending_catchers.setdefault(
+                target.lower(), {}).setdefault(event, [])
+            for entry in entries:
+                if _same_catcher(entry[0], ident):
+                    entry[1] = handler
+                    return True
+            entries.append([ident, handler])
+            return True
+        return False
+
+    def unregister_catchevent(self, target: Any, event: str, vm) -> None:
+        event = event.lower()
+        if isinstance(target, GuiControl):
+            target.remove_event_catcher(event, vm)
+            return
+        if isinstance(target, str) and target:
+            ctrl = self._named.get(target.lower())
+            if isinstance(ctrl, GuiControl):
+                ctrl.remove_event_catcher(event, vm)
+                return
+            entries = self._pending_catchers.get(target.lower(), {}).get(event)
+            if entries:
+                ident = catcher_identity(vm)
+                entries[:] = [e for e in entries
+                              if not _same_catcher(e[0], ident)]
+
+    def _resolve_catcher_vm(self, ident) -> Any:
+        """See GuiControl._resolve_catcher_vm -- the (kind, key) identities
+        resolve against the runtime's live VM table."""
+        if not isinstance(ident, tuple):
+            return ident
+        vms = getattr(self.rt2, "vms", None)
+        if isinstance(vms, dict) and len(ident) == 2:
+            return vms.get(ident[0], {}).get(ident[1])
+        return None
+
+    def _all_vms(self) -> list:
+        seen = set()
+        out = []
+        vms = getattr(self.rt2, "vms", None)
+        if isinstance(vms, dict):
+            for kind in ("weapon", "npc"):
+                for vm in list(vms.get(kind, {}).values()):
+                    if id(vm) not in seen:
+                        seen.add(id(vm))
+                        out.append(vm)
+        return out
+
+    def fire_unbound_event(self, name: str, event: str, *args) -> bool:
+        """Dispatch an event addressed to a control NAME with no live object
+        behind it -- the canvas root's fixed names (GraalControl /
+        GraalControl3D, which scripts hang dotted handlers and catchevents
+        off even though no such control exists in this model). A real
+        control by that name gets normal fire_event; otherwise pending
+        catchers and the dotted functions across every loaded VM run, with
+        the NAME standing in for the source-object prepend."""
+        key = name.lower()
+        ctrl = self._named.get(key)
+        if isinstance(ctrl, GuiControl) and not ctrl.is_profile:
+            return ctrl.fire_event(event, *args)
+        event = event.lower()
+        handled = False
+        entries = self._pending_catchers.get(key, {}).get(event)
+        for entry in list(entries or ()):
+            ident, handler = entry
+            if not handler:
+                continue
+            vm = self._resolve_catcher_vm(ident)
+            if vm is None:
+                if entry in entries:
+                    entries.remove(entry)
+                continue
+            try:
+                vm.call(handler, name, *args)
+            except Exception:
+                logger.exception("GS2 GUI: %s catcher %s for %s raised",
+                                 event, handler, name)
+            handled = True
+        fname = f"{key}.{event}"
+        for vm in self._all_vms():
+            try:
+                if vm.has_function(fname):
+                    vm.call(fname, *args)
+                    handled = True
+            except Exception:
+                logger.exception("GS2 GUI: %s raised", fname)
+                handled = True
+        return handled
 
     # -- skin art / downloads --------------------------------------------
 
@@ -329,54 +518,9 @@ class GS2GuiManager:
         return entry
 
     # -- canvas resize (Torque horizSizing/vertSizing) -------------------
-
-    @staticmethod
-    def _apply_sizing(ctrl: GuiControl, old_w: float, old_h: float,
-                      new_w: float, new_h: float) -> None:
-        """Torque GuiControl::parentResized: adjust one control for its
-        parent's extent change, then recurse with this control's own
-        old/new extent. Defaults ("right"/"bottom") anchor to the top-left
-        and change nothing."""
-        dx, dy = new_w - old_w, new_h - old_h
-        if not dx and not dy:
-            return
-        old_cw, old_ch = ctrl.width, ctrl.height
-        h = to_str(ctrl._members.get("horizsizing", "")).lower() or "right"
-        v = to_str(ctrl._members.get("vertsizing", "")).lower() or "bottom"
-        if h == "width":
-            ctrl.width = max(0.0, ctrl.width + dx)
-        elif h == "left":
-            ctrl.x += dx
-        elif h == "center":
-            ctrl.x = (new_w - ctrl.width) / 2.0
-        elif h == "relative" and old_w > 0:
-            scale = new_w / old_w
-            ctrl.x *= scale
-            ctrl.width *= scale
-        if v == "height":
-            ctrl.height = max(0.0, ctrl.height + dy)
-        elif v == "top":
-            ctrl.y += dy
-        elif v == "center":
-            ctrl.y = (new_h - ctrl.height) / 2.0
-        elif v == "relative" and old_h > 0:
-            scale = new_h / old_h
-            ctrl.y *= scale
-            ctrl.height *= scale
-        if (ctrl.width, ctrl.height) != (old_cw, old_ch):
-            for child in ctrl.children:
-                GS2GuiManager._apply_sizing(child, old_cw, old_ch,
-                                            ctrl.width, ctrl.height)
-            # NOT fired here: the reference fires onResize("ii", w, h) from
-            # GuiControl::resize on EVERY extent change (GuiControl.cpp:
-            # 2615-2618) -- i.e. script width/height writes included, a full
-            # event-feedback layout loop. Login's Serverlist_*Window.onResize
-            # handlers resize EACH OTHER and call updateServerMapIcons();
-            # firing them only from this sweep (a state the reference never
-            # sees) live-collapsed Serverlist_Map to zero area and nearly
-            # doubled the host-call volume on 2026-07-26. All-or-nothing:
-            # until every resize path dispatches (with the changed-extent
-            # early-outs doing the convergence), fire none of them.
+    # The per-control sizing cascade lives on GuiControl.on_parent_resized /
+    # resize_control now, so canvas resizes dispatch onResize/onMove through
+    # the same choke point every other resize path uses.
 
     def canvas_object(self) -> GS2Object:
         """Live-geometry stand-in for the canvas, handed out as root
@@ -401,24 +545,19 @@ class GS2GuiManager:
         self.canvas_size = (new_w, new_h)
         if old is None or old == (new_w, new_h):
             return
-        for root in self.roots:
-            self._apply_sizing(root, float(old[0]), float(old[1]),
-                               float(new_w), float(new_h))
+        for root in list(self.roots):
+            root.on_parent_resized(float(old[0]), float(old[1]),
+                                   float(new_w), float(new_h))
         # The canvas root control resizes too: scripts hang dotted handlers
         # off its fixed names -- `function GraalControl.onResize(newwidth,
         # newheight)` in Login's Rescripted_Serverlist relayouts the whole
         # serverlist UI (weapon-Rescripted_Serverlist.txt:2634, GraalControl3D
-        # :2735). There is no control object by that name here, so dispatch
-        # the dotted functions across the loaded weapon VMs directly.
-        vms = getattr(self.rt2, "vms", None)
-        weapon_vms = vms.get("weapon", {}) if isinstance(vms, dict) else {}
-        for vm in list(weapon_vms.values()):
-            for fname in ("graalcontrol.onresize", "graalcontrol3d.onresize"):
-                try:
-                    if vm.has_function(fname):
-                        vm.call(fname, float(new_w), float(new_h))
-                except Exception:
-                    logger.exception("GS2 GUI: %s raised on canvas resize", fname)
+        # :2735). There is no control object by those names here, so they go
+        # through the unbound-name dispatch (dotted functions + pending
+        # catchevents across the loaded VMs).
+        for cname in ("graalcontrol", "graalcontrol3d"):
+            self.fire_unbound_event(cname, "onresize",
+                                    float(new_w), float(new_h))
 
     # -- render ---------------------------------------------------------
 
@@ -575,6 +714,13 @@ class GS2GuiManager:
         pos = getattr(event, "pos", None)
         if pos is not None:
             self.last_mouse = (int(pos[0]), int(pos[1]))
+        # Script events first, before any built-in handling, and they can
+        # never consume the event -- consumption is decided exclusively by
+        # the built-in chain (GuiCanvas.cpp:494-516 for mouse, :958-966 for
+        # keys; handler return values are discarded by the dispatcher).
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+                          pygame.MOUSEMOTION, pygame.MOUSEWHEEL):
+            self._fire_pointer_scripts(event)
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             return self._on_mouse_down(event.pos)
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -584,8 +730,115 @@ class GS2GuiManager:
         if event.type == pygame.MOUSEWHEEL:
             return self._on_wheel(event)
         if event.type == pygame.KEYDOWN:
+            self._fire_key_script(event, "onkeydown")
             return self._on_keydown(event)
+        if event.type == pygame.KEYUP:
+            self._fire_key_script(event, "onkeyup")
+            return False
         return False
+
+    # -- script input events ----------------------------------------------
+
+    def _mouse_args(self, pos) -> tuple:
+        """The uniform 5-arg mouse signature (modifier, mousex, mousey,
+        clickcount, deviceid) in GLOBAL canvas pixels, deviceid 0
+        (GuiControl::sendMouseEvent, GuiControl.cpp:2079-2082,
+        asm-verified)."""
+        try:
+            mods = pygame.key.get_mods()
+        except Exception:                      # no keyboard subsystem
+            mods = 0
+        return (float(torque_modifier(mods)), float(pos[0]), float(pos[1]),
+                float(self._click_count), 0.0)
+
+    def _fire_pointer_scripts(self, event) -> None:
+        """Script mouse events (GuiCanvas::rootMouseEvent, GuiCanvas.cpp:
+        419-517): the mouse-locked control receives everything until
+        release, otherwise the hover control from the hit test; moves with
+        the locking button held are onMouseDragged; hover changes fire
+        onMouseEnter/onMouseLeave (GuiCanvas.cpp:519-531). Skipped while
+        the popup overlay is open (a transient engine surface with no
+        script identity)."""
+        if self._open_popup is not None:
+            return
+        if event.type == pygame.MOUSEWHEEL:
+            pos = self.last_mouse or (0, 0)
+            target = self._mouse_lock or self.hit_test(pos)
+            if target is not None and event.y:
+                target.fire_event(
+                    "onmousewheelup" if event.y > 0 else "onmousewheeldown",
+                    *self._mouse_args(pos))
+            return
+        pos = event.pos
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 3):
+            now = _ticks()
+            if (event.button == self._click_button
+                    and now - self._click_ticks <= DOUBLE_CLICK_MS):
+                self._click_count += 1
+            else:
+                self._click_count = 1
+                self._click_button = event.button
+            self._click_ticks = now
+            target = self._mouse_lock or self.hit_test(pos)
+            if target is not None:
+                # arm the lock BEFORE firing: a handler that destroys the
+                # control runs destroy() -> _release_pointers_under, which
+                # clears the lock -- arming after the fire would re-pin the
+                # dead control until button release
+                self._mouse_lock = target      # buttons lock down -> up
+                self._lock_button = event.button
+                target.fire_event(
+                    "onmousedown" if event.button == 1 else "onrightmousedown",
+                    *self._mouse_args(pos))
+            return
+        if event.type == pygame.MOUSEBUTTONUP and event.button in (1, 3):
+            target = self._mouse_lock or self.hit_test(pos)
+            if target is not None:
+                target.fire_event(
+                    "onmouseup" if event.button == 1 else "onrightmouseup",
+                    *self._mouse_args(pos))
+            if self._mouse_lock is not None and event.button == self._lock_button:
+                self._mouse_lock = None
+            return
+        if event.type == pygame.MOUSEMOTION:
+            buttons = getattr(event, "buttons", (0, 0, 0))
+            if self._mouse_lock is not None and (buttons[0] or buttons[2]):
+                self._mouse_lock.fire_event(
+                    "onmousedragged" if self._lock_button == 1
+                    else "onrightmousedragged", *self._mouse_args(pos))
+                return
+            hit = self.hit_test(pos)
+            old = self._script_hover
+            entered = hit is not old
+            if entered:
+                # arm before firing (same destroy-in-handler reasoning as
+                # the lock above): if the leave handler destroys the entered
+                # control, _release_pointers_under clears _script_hover and
+                # the enter/move fires below are skipped
+                self._script_hover = hit
+                if old is not None:
+                    old.fire_event("onmouseleave", *self._mouse_args(pos))
+            if entered and hit is not None and self._script_hover is hit:
+                hit.fire_event("onmouseenter", *self._mouse_args(pos))
+            if hit is not None and self._script_hover is hit:
+                hit.fire_event("onmousemove", *self._mouse_args(pos))
+
+    def _fire_key_script(self, event, name: str) -> None:
+        """onKeyDown/onKeyUp(keycode, keytext, repeatcount) on the first
+        responder only, before built-in key handling (GuiCanvas.cpp:
+        882-1011, script event at :958-965). With no first responder the
+        canvas root ("GraalControl") is the stand-in target, same as the
+        onresize dispatch -- Login's Tab-opens-chatbar handler lives there."""
+        vk = vk_from_pygame(event.key)
+        if not vk:
+            return
+        keycode = float(full_modifier_key(vk, getattr(event, "mod", 0)))
+        text = getattr(event, "unicode", "") or ""
+        fr = self._first_responder
+        if fr is not None:
+            fr.fire_event(name, keycode, text, 1.0)
+        else:
+            self.fire_unbound_event("graalcontrol", name, keycode, text, 1.0)
 
     def _on_mouse_down(self, pos) -> bool:
         if self._open_popup is not None:
@@ -601,6 +854,7 @@ class GS2GuiManager:
         hit = self.hit_test(pos)
         if hit is None:
             self._set_focus(None)
+            self.set_first_responder(None)     # click-through to the canvas
             return False
 
         window = hit.ancestor_window()
@@ -609,6 +863,9 @@ class GS2GuiManager:
         if window is not None:
             self.bring_to_front(window)
 
+        self._press_target = hit
+        if hit.can_key_focus:
+            self.set_first_responder(hit)
         if hit.pointer_down(self, pos):
             return True
         self._set_focus(None)
@@ -638,6 +895,9 @@ class GS2GuiManager:
 
     def _on_mouse_up(self, pos) -> bool:
         self._set_pressed(None)
+        press, self._press_target = self._press_target, None
+        if press is not None:
+            press.pointer_up(self, pos)
         pressed_window = self._window_button_press
         self._window_button_press = None
         if pressed_window is not None:
@@ -676,9 +936,10 @@ class GS2GuiManager:
             return False
         win, off_x, off_y = self._drag
         # children's x/y are parent-relative (see effective_offset), so
-        # moving just the window moves its whole subtree
-        win.x = pos[0] - off_x
-        win.y = pos[1] - off_y
+        # moving just the window moves its whole subtree; routed through the
+        # choke point so the drag fires onMove
+        win.resize_control(pos[0] - off_x, pos[1] - off_y,
+                           win.width, win.height)
         return True
 
     def _on_wheel(self, event) -> bool:

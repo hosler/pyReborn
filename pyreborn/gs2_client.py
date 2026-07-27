@@ -67,9 +67,10 @@ SCHEDULED_EVENT_CAP = 256
 # ClientGS2 with no pygame installed -- still work; GUI construction/builtins
 # just no-op when it's unavailable.
 try:
-    from .game.gs2_gui import GS2GuiManager, GuiPopUpEditCtrl
+    from .game.gs2_gui import GS2GuiManager, GuiControl, GuiPopUpEditCtrl
 except Exception:  # pragma: no cover - pygame not installed (headless use)
     GS2GuiManager = None
+    GuiControl = None
     GuiPopUpEditCtrl = None
 
 #: GS1 command names (from the shared lexer table) -- any GS2 builtin call
@@ -2038,32 +2039,48 @@ class GS2ClientHost(GS2Host):
 
     @_gs2_builtin(_GS2_ANY, "catchevent")
     def _any_catchevent(self, vm, name, args, obj):
-        # catchevent(target, eventname, handlername): route a GUI
-        # control's event to a function in the calling script.
-        # -Serverlist_Chat wires its smilie buttons this way from inside
-        # each button's construction block:
-        #   thiso.catchevent(this.name, "onAction", "onSmilieButton")
-        # `this.name` reads back empty there (the VM's `this` is the
-        # weapon, not the control under construction), so an empty or
-        # unresolvable target falls back to the control currently being
-        # constructed. The handler receives the control's name (the
-        # callbacks parse a trailing index off it).
+        # catchevent(target, eventname, handlername) -> the multi-catcher
+        # registry (TScriptSpace::catchEvent, quattroplay/src/TScriptSpace.
+        # cpp:1662-1764): distinct catcher scripts accumulate, re-registering
+        # the same (catcher, event) replaces the handler name, and a name
+        # that resolves to nothing registers PENDING and attaches when the
+        # control is created. The named handler runs with the source object
+        # prepended to the event's own args. Two model-specific fallbacks:
+        # -Serverlist_Chat wires its smilie buttons from inside each
+        # button's construction block via `thiso.catchevent(this.name,
+        # "onAction", "onSmilieButton")`, where `this.name` reads back
+        # empty (the VM's `this` is the weapon) -- an EMPTY name falls back
+        # to the control currently being constructed; and a non-control
+        # object target (requesturl's dead request object) takes a member
+        # closure so the registration still lands somewhere real.
         rt2 = self.rt2
-        if rt2.gui is not None and len(args) >= 3 and vm is not None:
-            target = args[0]
-            ctrl = (rt2.gui._named.get(target.lower())
-                    if isinstance(target, str)
-                    else rt2.gui._resolve(target))
-            if ctrl is None and rt2.gui._construction_stack:
-                ctrl = rt2.gui._construction_stack[-1]
-            event = to_str(args[1]).lower()
-            handler = to_str(args[2]).lower()
-            if ctrl is not None and event and handler:
-                # the handler receives the CONTROL (onSmilieButton reads
-                # obj.smiliecode off it)
-                ctrl.set(event,
-                         lambda *a, _c=ctrl, _vm=vm, _h=handler:
-                             _vm.call(_h, _c))
+        if rt2.gui is None or len(args) < 3 or vm is None:
+            return 0.0
+        target = args[0]
+        event = to_str(args[1]).lower()
+        handler = to_str(args[2]).lower()
+        if not event or not handler:
+            return 0.0
+        if isinstance(target, str) and not target \
+                and rt2.gui._construction_stack:
+            target = rt2.gui._construction_stack[-1]
+        if GuiControl is not None and not isinstance(target, GuiControl) \
+                and isinstance(target, GS2Object):
+            target.set(event,
+                       lambda *a, _o=target, _vm=vm, _h=handler:
+                           _vm.call(_h, _o, *a))
+            return 0.0
+        rt2.gui.register_catchevent(target, event, vm, handler)
+        return 0.0
+
+    @_gs2_builtin(_GS2_ANY, "ignoreevent", "ignoreevents")
+    def _any_ignoreevent(self, vm, name, args, obj):
+        # ignoreevent(target, eventname): reverse a catchevent registration
+        # (TScriptSpace.cpp:597-613).
+        rt2 = self.rt2
+        if rt2.gui is None or len(args) < 2 or vm is None:
+            return 0.0
+        rt2.gui.unregister_catchevent(args[0], to_str(args[1]).lower(), vm)
         return 0.0
 
     @_gs2_builtin(_GS2_ANY, "objecttype")
@@ -3740,16 +3757,24 @@ class ClientGS2:
                     and (kind == "weapon" or self.client is None)):
                 self._run(vm, "onCreated")
             if (old is None and kind == "weapon"
-                    and vm.has_function("onServerListerConnect")
                     and getattr(self.client, "connected", False)):
-                # "serverlisterconnect" engine event (reference client event
-                # list, FourPlay TInitStatics.cpp). The v6 client raises it
-                # when its serverlist link comes up; server weapons load over
-                # a connection whose lister link is ALREADY up, so the
-                # notification replays at load. Login's -Serverlist_Chat
-                # does its whole lister login (sendLogin -> sendtext
-                # "irc","login") from exactly this handler.
-                self._run(vm, "onServerListerConnect")
+                # "serverlisterconnect" engine event: fired on the UNIVERSE
+                # object, no args (TClient.cpp:2231-2241 -> universe->
+                # invokeEvent("onServerListerConnect")). The v6 client raises
+                # it when its serverlist link comes up; server weapons load
+                # over a connection whose lister link is ALREADY up, so the
+                # notification replays at load. Login's corpus handler is a
+                # dotted `function universe.onServerListerConnect()` that
+                # just forwards to a bare global of the same name -- the
+                # bare spelling stays the primary call (it is what the live
+                # fingerprint pins), with the universe-dotted form covering
+                # content that defines ONLY the forwarder. Login's
+                # -Serverlist_Chat does its whole lister login (sendLogin ->
+                # sendtext "irc","login") from exactly this handler.
+                if vm.has_function("onServerListerConnect"):
+                    self._run(vm, "onServerListerConnect")
+                elif vm.has_function("universe.onServerListerConnect"):
+                    self._run(vm, "universe.onServerListerConnect")
         return vm
 
     def fetch_weapon(self, wname: str, timeout: float = 3.0) -> Optional[GS2VM]:

@@ -2109,15 +2109,15 @@ def test_mobile_login_construction_props_are_claimed():
         assert ctrl.has(name), name
 
 
-def test_canvas_resize_fires_graalcontrol_onresize_but_not_per_control():
+def test_canvas_resize_fires_graalcontrol_onresize_and_per_control():
     """Login hangs its chat-bar resize off the canvas's fixed name
     (`function GraalControl.onResize(newwidth, newheight)`,
     weapon-Rescripted_Serverlist.txt:2634) -- dispatched across the weapon
-    VMs on canvas resize. Per-control onResize is deliberately NOT fired
-    from the sizing sweep: the reference fires it from EVERY resize
-    (GuiControl.cpp:2615-2618) including script writes, and firing Login's
-    mutually-resizing Serverlist_*Window handlers from only one path
-    live-collapsed Serverlist_Map (see _apply_sizing's comment)."""
+    VMs on canvas resize. Per-control onResize now fires too, from the same
+    resize choke point EVERY path uses (GuiControl.cpp:2615-2618) -- the
+    all-or-nothing lesson from the 2026-07-26 partial-dispatch collapse:
+    the sweep-only firing is gone, replaced by full dispatch with the
+    changed-extent early-outs doing the convergence."""
     rt = ClientGS2()
     gui = rt.gui
     calls = []
@@ -2138,4 +2138,6 @@ def test_canvas_resize_fires_graalcontrol_onresize_but_not_per_control():
     gui.canvas_size = (800, 600)
     gui.on_canvas_resize(1000, 600)
     assert calls == [("graalcontrol.onresize", (1000.0, 600.0))]
-    assert seen == []
+    # the sizing cascade routed through the choke point: width mode grew the
+    # window by the canvas delta and its own onResize fired with the new extent
+    assert seen == [(440.0, 160.0)]

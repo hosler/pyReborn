@@ -44,6 +44,29 @@ class GuiMLTextCtrl(GuiControl):
         #: (width, height) of the last laid-out content -- reflow() reports
         #: the page extents and it can only measure them at paint time
         self._content_extent: Optional[Tuple[float, float]] = None
+        #: [(canvas-space Rect, href)] recorded at draw time, and the href
+        #: pressed by the last mouse-down -- the onURL press/release pair
+        #: (GuiMLTextCtrl.cpp:939-957 press, :1157-1181 release-on-same-link)
+        self._link_rects: List[Tuple[pygame.Rect, str]] = []
+        self._pressed_link: Optional[str] = None
+
+    def _link_at(self, pos) -> Optional[str]:
+        for rect, href in self._link_rects:
+            if rect.collidepoint(pos):
+                return href
+        return None
+
+    def pointer_down(self, manager, pos) -> bool:
+        self._pressed_link = self._link_at(pos)
+        return self._pressed_link is not None
+
+    def pointer_up(self, manager, pos) -> None:
+        pressed, self._pressed_link = self._pressed_link, None
+        if pressed is not None and self._link_at(pos) == pressed:
+            # bare tokens pass through unresolved -- with no page base URL
+            # getAbsoluteLinkURL is the identity (THTMLPage.cpp:278-287;
+            # Login compares `url == "emailcheck"`)
+            self.fire_event("onurl", pressed)
 
     def word_wrap(self) -> bool:
         return to_bool(self._members.get("wordwrap", 1))
@@ -88,6 +111,7 @@ class GuiMLTextCtrl(GuiControl):
         max_w = max(20, r.width) if self.word_wrap() else 0
         y = r.y
         widest = 0
+        self._link_rects = []
         at = getattr(fonts, "at", None)
 
         def seg_font(seg):
@@ -143,6 +167,10 @@ class GuiMLTextCtrl(GuiControl):
                         pygame.draw.line(
                             surf, color, (x, y + line_h - 2),
                             (x + label.get_width(), y + line_h - 2))
+                    if seg.href:
+                        self._link_rects.append((pygame.Rect(
+                            int(x), int(y), label.get_width(),
+                            max(line_h, font.get_height())), seg.href))
                     x += font.size(word + " ")[0]
                 y += line_h
         # autosize so ancestor scroll controls know the content extent
@@ -320,6 +348,7 @@ class GuiTextEditCtrl(GuiTextCtrl):
     truncation come from."""
 
     CTRL_CLASS = "GuiTextEditCtrl"
+    can_key_focus = True
 
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(self)
@@ -454,6 +483,7 @@ class GuiMLTextEditCtrl(GuiMLTextCtrl):
     through GS2GuiManager exactly as for GuiTextEditCtrl."""
 
     CTRL_CLASS = "GuiMLTextEditCtrl"
+    can_key_focus = True
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)

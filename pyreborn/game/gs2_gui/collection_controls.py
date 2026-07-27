@@ -6,7 +6,7 @@ import pygame
 
 from reborn_protocol.gs2 import GS2Object, to_num, to_str
 
-from .base import GuiControl, GuiListRow, _TreeNodeIcon
+from .base import DOUBLE_CLICK_MS, GuiControl, GuiListRow, _TreeNodeIcon
 from .profiles import (
     GuiProfile, _MAX_PARENT_DEPTH, _draw_label, _fill_rect, _font, _profile_fields, _profile_from_fields, _readable_on, _shade,
 )
@@ -282,10 +282,24 @@ class GuiTextListCtrl(GuiControl):
     getSelected*s pair exist at all."""
 
     CTRL_CLASS = "GuiTextListCtrl"
+    can_key_focus = True         # array ctrls take focus on click
+                                 # (GuiArrayCtrl.cpp:477-479)
 
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
-        self.click_at(pos)
+        row = self.row_at(pos)
+        # even click count on the already-selected row activates the cell:
+        # onDblClick(id, text, row) (GuiArrayCtrl::checkMouseSelect,
+        # GuiArrayCtrl.cpp:477-508 -> GuiTextListCtrl::onCellActivated,
+        # GuiTextListCtrl.cpp:798-809)
+        if (row >= 0 and row == self.selected_index
+                and manager._click_count >= 2
+                and manager._click_count % 2 == 0):
+            entry = self.list_rows[row]
+            self.fire_event("ondblclick", entry.get("id"),
+                            to_str(entry.get("text")), float(row))
+        else:
+            self.select_index(row)
         return True
     ROW_H = 18
 
@@ -689,6 +703,7 @@ class GuiTabCtrl(GuiControl):
     the old tab's panel and show the new one's)."""
 
     CTRL_CLASS = "GuiTabCtrl"
+    can_key_focus = True
 
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
@@ -895,6 +910,7 @@ class GuiTreeViewCtrl(GuiControl):
     server (checkServerConnect -> serverwarp)."""
 
     CTRL_CLASS = "GuiTreeViewCtrl"
+    can_key_focus = True
 
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
@@ -903,7 +919,7 @@ class GuiTreeViewCtrl(GuiControl):
             now = pygame.time.get_ticks()
             last_t, last_node = manager._last_tree_click
             manager._last_tree_click = (now, node)
-            if node is last_node and now - last_t <= 400:
+            if node is last_node and now - last_t <= DOUBLE_CLICK_MS:
                 # second click of a double-click: onDblClick (Login:
                 # connect to the clicked server)
                 self.select_node(node, event="ondblclick")

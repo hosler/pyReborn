@@ -199,11 +199,15 @@ def test_dotted_handler_dispatch_and_owner_vm_stamping():
     field.text = "hello"
     assert field.fire_action(field.text) is True
     assert vm.calls == [("globalchat_chatfield.onaction", ("hello",))]
-    # member closure takes precedence over the dotted function
+    # the member closure and the dotted function are SEPARATE catchers and
+    # both run for one event (the reference's self-catch variable fallback
+    # plus the implicit dotted registration -- TScriptSpace.cpp:424-443,
+    # TScript.cpp:1018-1073); the old member-shadows-dotted model is gone
     hits = []
     field.set("onaction", lambda *a: hits.append(a))
     field.fire_action("again")
-    assert hits == [("again",)] and len(vm.calls) == 1
+    assert hits == [("again",)]
+    assert vm.calls[-1] == ("globalchat_chatfield.onaction", ("again",))
 
 
 def test_with_scope_addcontrol_also_stamps_owner(monkeypatch):

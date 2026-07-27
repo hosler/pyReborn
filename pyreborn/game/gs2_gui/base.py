@@ -17,6 +17,26 @@ if TYPE_CHECKING:  # annotation-only; real imports would cycle
     from .skins import _Skin
     from .collection_controls import GuiTreeNode
 
+#: double-click window, ms (GuiCanvas.cpp:1131-1147: same button within
+#: 500 ms increments mouseClickCount, else it resets to 1)
+DOUBLE_CLICK_MS = 500
+
+
+def catcher_identity(vm) -> Any:
+    """A catchevent catcher's stable identity: the runtime (kind, key) the
+    VM files under (ClientGS2 stamps it as _gs2_owner; a joined-class
+    instance resolves to its joiner). Live script updates replace the VM
+    OBJECT under the same key, so registrations must not hold the object --
+    a direct ref would keep executing the replaced bytecode and pin the old
+    VM for the control's lifetime. VMs without a runtime key (test doubles,
+    host-less use) are the identity themselves."""
+    key = getattr(vm, "_gs2_owner", None)
+    return key if isinstance(key, tuple) else vm
+
+
+def _same_catcher(a, b) -> bool:
+    return a is b or (isinstance(a, tuple) and a == b)
+
 
 class _InertDrawable(GS2Object):
     """Stand-in for an engine drawing surface (`ctrl.icon` / `row.icon`):
@@ -78,6 +98,10 @@ class GuiControl(GS2Object):
     #: profile-definition objects (GuiControlProfile) set this True and are
     #: kept out of the render/hit-test tree by the manager
     is_profile = False
+    #: mouse-down makes this control the canvas first responder (buttons per
+    #: profile canKeyFocus, GuiButtonBaseCtrl.cpp:104-117; array/list ctrls
+    #: on click, GuiArrayCtrl.cpp:477-479; text edits). Subclasses opt in.
+    can_key_focus = False
 
     _NUM_ATTRS = ("x", "y", "width", "height")
     _STR_ATTRS = {"text": "text", "name": "ctrl_name"}
@@ -175,6 +199,13 @@ class GuiControl(GS2Object):
         # vm.functions under the dotted name); fire_event falls back to
         # those, which a member-only lookup left permanently dead.
         self._owner_vm = None
+        # catchevent registry: event name (lowercased) -> [[catcher_vm,
+        # handler_name], ...] -- see add_event_catcher/fire_event
+        self._event_catchers: Dict[str, List[list]] = {}
+        # awake = attached to the live render tree (the engine's m_awake);
+        # set by GS2GuiManager's awaken/sleep wiring, gates the lifecycle
+        # and layout events
+        self._awake = False
         # generic list-row model (GuiTextListCtrl/GuiContextMenuCtrl style;
         # distinct from GuiPopUpEditCtrl's own `rows`)
         self.list_rows: List[GuiListRow] = []
@@ -281,12 +312,14 @@ class GuiControl(GS2Object):
         return 0.0
 
     def _m_isfirstresponder(self, *args) -> float:
-        """isFirstResponder(): does this control hold keyboard focus?
-        Login's staff sprite-editor weapon gates its whole key handler on it
+        """isFirstResponder(): does this control hold the canvas first
+        responder (the slot onBecome/onLoseFirstResponder key on -- a
+        focused button must answer 1, not just text edits)? Login's staff
+        sprite-editor weapon gates its whole key handler on it
         (`if (<zoom edit>.isFirstResponder()) return;`), so a missing answer
         read 0 and the editor swallowed every keystroke."""
         return 1.0 if (self._manager is not None
-                       and self._manager._focus is self) else 0.0
+                       and self._manager._first_responder is self) else 0.0
 
     def _m_bringtofront(self, *args) -> float:
         """bringToFront(): raise to the top of the sibling z-order WITHOUT
@@ -386,8 +419,8 @@ class GuiControl(GS2Object):
         -ScriptedRC GUI editor and the serverlist relayouters use it instead
         of four separate property writes."""
         if len(args) >= 4:
-            self.x, self.y = to_num(args[0]), to_num(args[1])
-            self.width, self.height = to_num(args[2]), to_num(args[3])
+            self.resize_control(to_num(args[0]), to_num(args[1]),
+                                to_num(args[2]), to_num(args[3]))
         return 0.0
 
     def _m_seticonsize(self, *args) -> float:
@@ -508,10 +541,18 @@ class GuiControl(GS2Object):
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
         if k in self._NUM_ATTRS:
-            setattr(self, k, to_num(value))
+            value = to_num(value)
+            # same-value early-out at the property setter, one of the two
+            # onResize loop guards (GuiControlProperties.cpp:599-605)
+            if value == getattr(self, k):
+                return
+            rect = {a: getattr(self, a) for a in self._NUM_ATTRS}
+            rect[k] = value
+            self.resize_control(rect["x"], rect["y"],
+                                rect["width"], rect["height"])
             return
         if k == "visible":
-            self.visible = to_bool(value)
+            self.set_visible(to_bool(value))
             return
         if k == "profile":
             # accept a profile OBJECT (`profile = IRC_ScrollProfile;` -- the
@@ -551,15 +592,19 @@ class GuiControl(GS2Object):
                 pair = (self.client_width(), to_num(value))
             if pair is not None:
                 inset = self.client_inset()
-                self.width, self.height = pair[0] + inset[0], pair[1] + inset[1]
+                self.resize_control(self.x, self.y,
+                                    pair[0] + inset[0], pair[1] + inset[1])
             return
         if k in ("position", "extent"):
+            # no setter guard on these two -- resize_control's own
+            # inequality check is the guard (GuiControlProperties.cpp:233-235)
             pair = self._num_pair(value)
             if pair is not None:
                 if k == "position":
-                    self.x, self.y = pair
+                    self.resize_control(pair[0], pair[1],
+                                        self.width, self.height)
                 else:
-                    self.width, self.height = pair
+                    self.resize_control(self.x, self.y, pair[0], pair[1])
         super().set(k, value)
 
     def has(self, key: str) -> bool:
@@ -683,22 +728,239 @@ class GuiControl(GS2Object):
     def pointer_down(self, manager, pos) -> bool:
         return False
 
+    def pointer_up(self, manager, pos) -> None:
+        """Mouse released after a press that started on this control (the
+        release position may be anywhere). Default: nothing."""
+        return None
+
+    # -- layout choke point ----------------------------------------------
+
+    def resize_control(self, x, y, w, h) -> None:
+        """The single resize choke point (GuiControl::resize, FourPlay
+        quattroplay/src/gui/GuiControl.cpp:2575-2619): every script-visible
+        position/extent change funnels through here -- property writes,
+        resize(), the parent cascade, canvas resize, window chrome. The
+        children cascade first, then onMove fires when the position changed
+        and onResize when the extent changed, args = the new values. There
+        is NO re-entrancy flag: the only loop guards are the two
+        value-equality early-outs (property setter + the inequality checks
+        here); corpus onResize handlers resize each other freely and
+        converge purely by fixed point.
+
+        Divergence (documented once, here, for the whole event surface):
+        delivery is SYNCHRONOUS where the reference queues one action per
+        catcher and runs it on the catcher's script tick (TScriptSpace.cpp:
+        1420-1531). To keep synchronous handlers off half-built trees,
+        layout/lifecycle events are elided while the control is not awake --
+        a construction-block `width = ...;` fires nothing, where the queued
+        reference would deliver it after the block."""
+        x, y, w, h = float(x), float(y), float(w), float(h)
+        pos_changed = (x != self.x) or (y != self.y)
+        size_changed = (w != self.width) or (h != self.height)
+        if not pos_changed and not size_changed:
+            return
+        old_w, old_h = self.width, self.height
+        self.x, self.y, self.width, self.height = x, y, w, h
+        if size_changed:
+            for child in list(self.children):
+                child.on_parent_resized(old_w, old_h, w, h)
+        if not self._awake:
+            return
+        if pos_changed:
+            self.fire_event("onmove", x, y)
+        if size_changed:
+            self.fire_event("onresize", w, h)
+
+    def on_parent_resized(self, old_w: float, old_h: float,
+                          new_w: float, new_h: float) -> None:
+        """Torque GuiControl::onParentResized (GuiControl.cpp:2621-2687):
+        apply this control's horizSizing/vertSizing mode to the parent's
+        extent delta and resize only if the rect actually changed -- the
+        child then fires its own events and cascades further. Defaults
+        ("right"/"bottom") anchor to the top-left and change nothing."""
+        dx, dy = new_w - old_w, new_h - old_h
+        if not dx and not dy:
+            return
+        x, y, w, h = self.x, self.y, self.width, self.height
+        hmode = to_str(self._members.get("horizsizing", "")).lower() or "right"
+        vmode = to_str(self._members.get("vertsizing", "")).lower() or "bottom"
+        if hmode == "width":
+            w = max(0.0, w + dx)
+        elif hmode == "left":
+            x += dx
+        elif hmode == "center":
+            x = (new_w - w) / 2.0
+        elif hmode == "relative" and old_w > 0:
+            scale = new_w / old_w
+            x *= scale
+            w *= scale
+        if vmode == "height":
+            h = max(0.0, h + dy)
+        elif vmode == "top":
+            y += dy
+        elif vmode == "center":
+            y = (new_h - h) / 2.0
+        elif vmode == "relative" and old_h > 0:
+            scale = new_h / old_h
+            y *= scale
+            h *= scale
+        self.resize_control(x, y, w, h)
+
+    # -- lifecycle (awake / effective visibility) -------------------------
+
+    def effectively_visible(self) -> bool:
+        """The engine's isActuallyVisible against the LIVE tree: awake AND
+        visible on every node up to a real root (GuiControl.cpp:243-269)."""
+        node: Optional["GuiControl"] = self
+        visited = set()
+        for _ in range(_MAX_PARENT_DEPTH):
+            if node is None or id(node) in visited:
+                return False
+            if not (node._awake and node.visible):
+                return False
+            visited.add(id(node))
+            if node.parent is None:
+                return node._manager is not None and node in node._manager.roots
+            node = node.parent
+        return False
+
+    def set_visible(self, value) -> None:
+        """setVisible (GuiControl.cpp:1288-1306): flip the flag, then fire
+        onShow/onHide only when EFFECTIVE visibility changed -- toggling a
+        control inside a hidden/detached tree fires nothing, and the flag is
+        already updated when the handler runs."""
+        value = bool(value)
+        if value == self.visible:
+            return
+        before = self.effectively_visible()
+        self.visible = value
+        if before != self.effectively_visible():
+            self.notify_visible(value)
+
+    def notify_visible(self, shown: bool) -> None:
+        """notifyVisible (GuiControl.cpp:1309-1332): onShow/onHide (no args)
+        on self FIRST, then recurse into children whose OWN awake+visible
+        flags are set -- top-down."""
+        self.fire_event("onshow" if shown else "onhide")
+        for child in list(self.children):
+            if child._awake and child.visible:
+                child.notify_visible(shown)
+
+    def awaken(self) -> None:
+        """Wake a subtree just attached to the live tree (GuiControl::awaken,
+        GuiControl.cpp:1815-1825 + onWake :1961-1967): onWake fires
+        post-order -- children before self -- and only the attach root's
+        tail passes the effective-visibility check, giving ONE top-down
+        onShow pass. `visible = true` never wakes anything."""
+        self._awaken()
+        if self.effectively_visible():
+            self.notify_visible(True)
+
+    def _awaken(self) -> None:
+        if self._awake or self.is_profile:
+            return
+        for child in list(self.children):
+            child._awaken()
+        self._awake = True
+        self.fire_event("onwake")
+
+    def sleep_subtree(self, ancestors_visible: bool) -> None:
+        """Detach-path teardown (removeObject -> sleep, GuiControl.cpp:
+        1828-1847): children first, in reverse order, firing onHide on each
+        control that was actually visible. Script onSleep is deliberately
+        NEVER fired here: its only two emitters are the canvas content-swap
+        ops (GuiCanvas.cpp:1217-1226, :1472-1483), which have no analog in
+        this model -- ordinary removecontrol/destroy never fires it."""
+        if not self._awake:
+            return
+        for child in reversed(self.children):
+            child.sleep_subtree(ancestors_visible and self.visible)
+        self._awake = False
+        if self.visible and ancestors_visible:
+            self.fire_event("onhide")
+
     def rect(self) -> pygame.Rect:
         ox, oy = self.effective_offset()
         return pygame.Rect(int(self.x + ox), int(self.y + oy),
                            max(0, int(self.width)), max(0, int(self.height)))
 
+    def add_event_catcher(self, event: str, vm, handler_name: str) -> None:
+        """catchevent registration: re-registering the same (catcher, event)
+        pair just replaces the handler name; distinct catcher scripts
+        accumulate -- N weapons can all catch one control's event
+        (TEventCatcherList.cpp:28-56). Entries store the catcher's stable
+        identity (see catcher_identity) and resolve the CURRENT VM at
+        dispatch."""
+        ident = catcher_identity(vm)
+        entries = self._event_catchers.setdefault(event.lower(), [])
+        for entry in entries:
+            if _same_catcher(entry[0], ident):
+                entry[1] = handler_name
+                return
+        entries.append([ident, handler_name])
+
+    def remove_event_catcher(self, event: str, vm) -> None:
+        """ignoreevent: drop this catcher's registration for the event
+        (TScriptSpace.cpp:597-613)."""
+        ident = catcher_identity(vm)
+        entries = self._event_catchers.get(event.lower())
+        if entries:
+            self._event_catchers[event.lower()] = [
+                e for e in entries if not _same_catcher(e[0], ident)]
+
+    def _resolve_catcher_vm(self, ident) -> Any:
+        """The registration's current VM: direct refs pass through; (kind,
+        key) identities resolve against the runtime's live VM table, None
+        when the key no longer resolves (script gone -- caller drops the
+        registration)."""
+        if not isinstance(ident, tuple):
+            return ident
+        if self._manager is not None:
+            return self._manager._resolve_catcher_vm(ident)
+        return None
+
+    def _dispatch_vms(self) -> list:
+        """Every loaded script VM whose dotted `Name.onEvent` functions act
+        as implicit event catchers -- the reference auto-registers them at
+        script install (TScript.cpp:1018-1073); scanning at dispatch time is
+        equivalent and also covers controls created after the script loaded."""
+        seen = set()
+        out = []
+        rt2 = getattr(self._manager, "rt2", None) \
+            if self._manager is not None else None
+        vms = getattr(rt2, "vms", None)
+        if isinstance(vms, dict):
+            for kind in ("weapon", "npc"):
+                for vm in list(vms.get(kind, {}).values()):
+                    if id(vm) not in seen:
+                        seen.add(id(vm))
+                        out.append(vm)
+        if self._owner_vm is not None and id(self._owner_vm) not in seen:
+            out.append(self._owner_vm)
+        return out
+
     def fire_event(self, event: str, *args) -> bool:
-        """Dispatch a control event: a script-assigned member handler first
-        (`onAction = function(){...}` -> a bound vm.call closure, or a
-        catchevent binding), then the dotted same-script function the live
-        servers actually use ("GlobalChat_ChatField.onAction" et al, keyed
-        f"{name}.{event}" in the owning VM's function table). Returns True
-        if a handler ran. Handler argument conventions (disasm-verified on
-        Login's -Serverlist_Chat; params list reversed = call order):
+        """Dispatch a control event through the reference's multi-catcher
+        model (TGraalVar.cpp:2870-2896 routes invokeEvent through the
+        object's event-catcher registry), in three layers that ALL run:
+
+        1. a script-assigned member handler (`onAction = function(){...}` ->
+           a bound vm.call closure) -- the `on<event>`-variable fallback of
+           executeActionSelfCatch (TScriptSpace.cpp:424-443);
+        2. registered catchevent handlers, each called with this control
+           PREPENDED to the event's own args (TScriptSpace.cpp:794-812); an
+           empty handler name means the dotted path below;
+        3. dotted `Name.onEvent` functions in EVERY loaded script VM (not
+           just the constructor's -- two weapons defining the same handler
+           both run).
+
+        Returns True if any handler ran. Delivery is synchronous -- the
+        documented divergence lives on resize_control. Handler argument
+        conventions (disasm-verified on Login's -Serverlist_Chat):
         onAction(text) for a text field, onSelect(entryid, entrytext,
         entryindex), onDblClick(selectedid, selectedtext, selectedrow)."""
         event = event.lower()
+        handled = False
         handler = self.get(event)
         if callable(handler):
             try:
@@ -706,19 +968,36 @@ class GuiControl(GS2Object):
             except Exception:
                 logger.exception("GS2 GUI: %s handler for %s raised",
                                  event, self.ctrl_name or self.CTRL_CLASS)
-            return True
-        vm = self._owner_vm
-        if vm is not None and self.ctrl_name:
-            fname = f"{self.ctrl_name}.{event}".lower()
+            handled = True
+        entries = self._event_catchers.get(event)
+        for entry in list(entries or ()):
+            ident, handler_name = entry
+            if not handler_name:
+                continue           # "" = the dotted-function path below
+            vm = self._resolve_catcher_vm(ident)
+            if vm is None:         # catcher script gone: drop the entry
+                if entry in entries:
+                    entries.remove(entry)
+                continue
             try:
-                if vm.has_function(fname):
-                    vm.call(fname, *args)
-                    return True
+                vm.call(handler_name, self, *args)
             except Exception:
-                logger.exception("GS2 GUI: %s handler for %s raised",
-                                 event, self.ctrl_name)
-                return True
-        return False
+                logger.exception("GS2 GUI: %s catcher %s for %s raised",
+                                 event, handler_name,
+                                 self.ctrl_name or self.CTRL_CLASS)
+            handled = True
+        if self.ctrl_name:
+            fname = f"{self.ctrl_name}.{event}".lower()
+            for vm in self._dispatch_vms():
+                try:
+                    if vm.has_function(fname):
+                        vm.call(fname, *args)
+                        handled = True
+                except Exception:
+                    logger.exception("GS2 GUI: %s handler for %s raised",
+                                     event, self.ctrl_name)
+                    handled = True
+        return handled
 
     def fire_action(self, *args) -> bool:
         """fire_event("onaction") -- kept as the manager/host entry point."""

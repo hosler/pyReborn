@@ -24,15 +24,19 @@ _ML_ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
 
 
 class _MLSegment:
-    __slots__ = ("text", "bold", "italic", "size", "color", "link")
+    __slots__ = ("text", "bold", "italic", "size", "color", "link", "href")
 
-    def __init__(self, text, bold, italic, size, color, link):
+    def __init__(self, text, bold, italic, size, color, link, href=None):
         self.text = text
         self.bold = bold
         self.italic = italic
         self.size = size            # None = profile base size
         self.color = color          # None = profile font color
         self.link = link
+        #: the enclosing <a href=...> attribute value, kept for onURL --
+        #: the engine's THTMLActiveLink indexes exactly this string
+        #: (THTMLPage.cpp:677-685); None outside a link or with no href
+        self.href = href
 
 
 def _ml_parse_color(value: str):
@@ -69,6 +73,7 @@ def parse_mltext(text: str):
     size_stack: List[Optional[int]] = []
     color_stack: List[Optional[Tuple[int, int, int]]] = []
     link_depth = 0
+    href_stack: List[Optional[str]] = []
     ignore_linebreaks = False
 
     def cur_align() -> str:
@@ -91,7 +96,8 @@ def parse_mltext(text: str):
             size_stack[-1] if size_stack else None,
             (_ML_LINK_COLOR if link_depth > 0
              else (color_stack[-1] if color_stack else None)),
-            link_depth > 0))
+            link_depth > 0,
+            (href_stack[-1] if link_depth > 0 and href_stack else None)))
 
     pos = 0
     for m in _ML_TOKEN_RE.finditer(text):
@@ -169,7 +175,18 @@ def parse_mltext(text: str):
                 size_stack.append(fsize)
                 color_stack.append(fcolor)
         elif name == "a":
-            link_depth = max(0, link_depth - 1) if closing else link_depth + 1
+            if closing:
+                link_depth = max(0, link_depth - 1)
+                if href_stack:
+                    href_stack.pop()
+            else:
+                link_depth += 1
+                href = None
+                for chunk in attrs.split():
+                    ak, _, av = chunk.partition("=")
+                    if ak.lower() == "href":
+                        href = av.strip('"').strip("'")
+                href_stack.append(href)
         elif name == "ignorelinebreaks":
             ignore_linebreaks = True
         # anything else (img, table, spans...) is stripped silently

@@ -154,13 +154,16 @@ class GuiWindowCtrl(GuiControl):
             self.visible = False
 
     def minimize_window(self) -> None:
+        """Min/max/restore all resize through the choke point, so onResize
+        fires BEFORE the window event (GuiWindowCtrl.cpp:149-199: each calls
+        resize() and then invokes its own event)."""
         if self.minimized:
             self.restore_window()
             return
         self.standard_bounds = pygame.Rect(
             int(self.x), int(self.y), int(self.width), int(self.height))
         self.minimized = True
-        self.height = float(self.TITLE_H)
+        self.resize_control(self.x, self.y, self.width, float(self.TITLE_H))
         self.fire_event("onminimize")
 
     def maximize_window(self) -> None:
@@ -170,13 +173,17 @@ class GuiWindowCtrl(GuiControl):
         self.standard_bounds = pygame.Rect(
             int(self.x), int(self.y), int(self.width), int(self.height))
         self.maximized = True
-        self.x = self.y = 0.0
         if self.parent is not None:
-            self.width, self.height = self.parent.width, self.parent.height
+            self.resize_control(0.0, 0.0, self.parent.width,
+                                self.parent.height)
         elif self._manager is not None:
+            # a root's Torque parent is the canvas (GuiControl.get("parent")),
+            # so this IS the engine's parent-sized maximize for our roots
             canvas = self._manager.canvas_object()
-            self.width = to_num(canvas.get("width"))
-            self.height = to_num(canvas.get("height"))
+            self.resize_control(0.0, 0.0, to_num(canvas.get("width")),
+                                to_num(canvas.get("height")))
+        # a genuinely parentless window skips the resize but still fires the
+        # event (GuiWindowCtrl.cpp:176-183)
         self.fire_event("onmaximize")
 
     def restore_window(self) -> None:
@@ -184,8 +191,8 @@ class GuiWindowCtrl(GuiControl):
         self.minimized = self.maximized = False
         if changed:
             bounds = self.standard_bounds
-            self.x, self.y = float(bounds.x), float(bounds.y)
-            self.width, self.height = float(bounds.width), float(bounds.height)
+            self.resize_control(float(bounds.x), float(bounds.y),
+                                float(bounds.width), float(bounds.height))
         self.fire_event("onrestore")
 
     def titlebar_rect(self) -> pygame.Rect:
@@ -262,6 +269,7 @@ class GuiButtonBaseCtrl(GuiControl):
     a radio (GuiRadioCtrl.cpp:18-24)."""
 
     CTRL_CLASS = "GuiButtonBaseCtrl"
+    can_key_focus = True         # GuiButtonBaseCtrl.cpp:104-117
 
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
