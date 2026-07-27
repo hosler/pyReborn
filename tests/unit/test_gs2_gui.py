@@ -981,6 +981,23 @@ class TestNewControlMethods:
         tree._m_setselectedbyid(3)
         assert tree.selected_node is node
 
+    def test_tree_node_unset_id_reads_invalid_sentinel(self):
+        """An id the script never assigned reads -1, not unset/0. Login's
+        boot path is `nodes[0].select()` and its onSelect branches on
+        `node.id >= 0`; the auto-selected node is a category folder the live
+        script never ids (its category table is one entry short for the
+        "U " servers), and the real client boots into the login-info panes
+        -- so the untouched id must compare below zero. A script-assigned id
+        still round-trips."""
+        from pyreborn.game.gs2_gui import GuiTreeViewCtrl
+        tree = GuiTreeViewCtrl("Tree")
+        folder = tree._m_addnodebypath("/Some Server", "/")  # parent = "" cat
+        parent = tree.root_nodes[0]
+        assert parent.get("id") == -1.0
+        assert folder.get("id") == -1.0
+        folder.set("id", 5)
+        assert folder.get("id") == 5
+
 
 # =============================================================================
 # 2026-07-24 visual-fidelity round (live Login server): canvas sizing,
@@ -1865,6 +1882,39 @@ def test_password_field_masks_its_text():
     assert edit.text == "hunter2"            # only the rendering is masked
     edit.set("password", False)
     assert edit.get("inputtype") == "default"
+
+
+def test_password_render_fires_no_text_events():
+    """Masking is render-time only: writing the mask through the text setter
+    fired onTextChanged twice per rendered frame -- the second event carrying
+    the REAL password as its argument. The reference fires the event only
+    from setText (GuiTextCtrl.cpp:170-199), never from drawing."""
+    from pyreborn.game.gs2_gui import GuiAccountPasswordCtrl
+    ctrl = GuiAccountPasswordCtrl("PassEdit")
+    events = []
+    ctrl.fire_event = lambda name, *a: events.append((name, a))
+    ctrl.text = "hunter2"
+    assert events == [("ontextchanged", ("hunter2",))]
+    events.clear()
+    surf = pygame.Surface((200, 40))
+    ctrl.x, ctrl.y, ctrl.width, ctrl.height = 0, 0, 150, 22
+    ctrl.draw(surf, _FakeFonts(), None)
+    assert events == [] and ctrl.text == "hunter2" and ctrl.is_password()
+
+
+def test_derived_profile_carries_its_registered_name():
+    """`new IRC_WindowProfile("IRC_WindowLeftProfile") {...}`: the object's
+    script-facing name is the DERIVED profile's own registered name, not the
+    parent classname -- the reference object/string compare row is
+    strcasecmp(var->name, string) (TScriptMachine::compare, asm-verified),
+    so `x == "IRC_WindowLeftProfile"` must hold on the new object."""
+    from pyreborn.game.gs2_gui.factory import make_control
+    prof = make_control("IRC_WindowProfile", "IRC_WindowLeftProfile")
+    assert prof.is_profile
+    assert prof.name == "IRC_WindowLeftProfile"
+    assert prof.parent_profile_name == "irc_windowprofile"
+    anon = make_control("IRC_WindowProfile", None)
+    assert anon.name == "IRC_WindowProfile"
 
 
 def test_window_maximized_is_a_toggle_and_the_methods_are_callable():

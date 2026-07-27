@@ -61,7 +61,14 @@ def make_control(classname: str, ctor_arg: Any) -> GuiControl:
             # records, never visual controls -- Login's -Rescripted/
             # Serverlist declares ~40 of these.
             ctrl = GuiControlProfile(ctor_arg, parent_name=classname)
-            ctrl.name = classname
+            # The object's script-facing name is its own REGISTERED name,
+            # not the parent's: the reference object/string compare row is
+            # strcasecmp(var->name, string) (TScriptMachine::compare
+            # String/Null rows, asm-verified), so `x.profile ==
+            # "IRC_WindowLeftProfile"` must see the derived profile's own
+            # name. Anonymous derivations keep the parent name.
+            ctrl.name = (ctor_arg if isinstance(ctor_arg, str) and ctor_arg
+                         else classname)
             return ctrl
         _log_once(("class", classname.lower()),
                   "GS2 GUI: unknown control class %r, rendering generically", classname)

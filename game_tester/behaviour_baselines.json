@@ -44,13 +44,13 @@
         "frames": 1560,
         "gui": {
           "classes": {
-            "GuiBitmapCtrl": 4,
-            "GuiButtonCtrl": 21,
+            "GuiBitmapCtrl": 3,
+            "GuiButtonCtrl": 20,
             "GuiContextMenuCtrl": 1,
             "GuiControl": 16,
             "GuiFrameSetCtrl": 1,
-            "GuiMLTextCtrl": 7,
-            "GuiScrollCtrl": 8,
+            "GuiMLTextCtrl": 8,
+            "GuiScrollCtrl": 9,
             "GuiStartMenuCtrl": 1,
             "GuiTabCtrl": 4,
             "GuiTaskbar": 1,
@@ -61,16 +61,15 @@
             "GuiWindowCtrl": 6
           },
           "controls": 90,
-          "degenerate": [
-            "serverlist_map"
-          ],
+          "degenerate": [],
           "filled_controls": [
             "chatbar_toggletaskbarbutton",
             "globalchat_chatlabel",
             "globalchat_window",
-            "serverlist_connectbutton",
+            "serverlist_description0",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
+            "serverlist_eventnews",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
             "serverlist_protectquery_protectbutton",
@@ -112,7 +111,7 @@
             "serverlist_test_window"
           ],
           "roots": 11,
-          "text_controls": 31,
+          "text_controls": 32,
           "tree_names": [
             "chatbar",
             "chatbar_toggletaskbarbutton",
@@ -140,7 +139,6 @@
             "guitextlistctrl",
             "item_scroll",
             "serverdescription_scroll",
-            "serverlist_connectbutton",
             "serverlist_description0",
             "serverlist_description1",
             "serverlist_description2",
@@ -153,9 +151,10 @@
             "serverlist_descriptionscroll2",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_eventnews_scroll",
             "serverlist_mainpanel",
             "serverlist_mainpanel_back",
-            "serverlist_map",
             "serverlist_panel",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
@@ -197,7 +196,7 @@
           ]
         },
         "host_calls": {
-          "distinct": 36,
+          "distinct": 33,
           "missing": [],
           "names": [
             "addcontrol",
@@ -213,17 +212,14 @@
             "drawimagestretched",
             "echo",
             "findweapon",
-            "getimgheight",
             "getimgwidth",
             "getnode",
             "hide",
-            "isactuallyvisible",
             "isobject",
             "keydown",
             "lowercase",
             "makefirstresponder",
             "pushtoback",
-            "requestserverinfo",
             "requesttext",
             "requesturl",
             "select",
@@ -237,7 +233,7 @@
             "showtop",
             "sort"
           ],
-          "total": 2969
+          "total": 1623
         },
         "level": "black.nw",
         "logs": {
@@ -262,7 +258,7 @@
             "-serverlist_chat"
           ]
         },
-        "wall_seconds": 25.43,
+        "wall_seconds": 25.46,
         "world": {
           "gs1_scripts": 0,
           "npcs": 1,
@@ -302,7 +298,9 @@
         "required_filled_controls": [
           "serverlist_serverlist",
           "serverlist_taskbar_menu",
-          "globalchat_chatlabel"
+          "globalchat_chatlabel",
+          "serverlist_description0",
+          "serverlist_eventnews"
         ],
         "required_weapon_events": [
           "weapon:-rescripted/irc/login3.oncreated",
@@ -320,7 +318,7 @@
           "-serverlist_chat"
         ]
       },
-      "recorded_at": "2026-07-26T23:10:31.074438+00:00",
+      "recorded_at": "2026-07-27T01:25:26.459306+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"
@@ -368,13 +366,13 @@
         "frames": 1560,
         "gui": {
           "classes": {
-            "GuiBitmapCtrl": 4,
-            "GuiButtonCtrl": 21,
+            "GuiBitmapCtrl": 3,
+            "GuiButtonCtrl": 20,
             "GuiContextMenuCtrl": 1,
             "GuiControl": 16,
             "GuiFrameSetCtrl": 1,
-            "GuiMLTextCtrl": 7,
-            "GuiScrollCtrl": 8,
+            "GuiMLTextCtrl": 8,
+            "GuiScrollCtrl": 9,
             "GuiStartMenuCtrl": 1,
             "GuiTabCtrl": 4,
             "GuiTaskbar": 1,
@@ -385,16 +383,15 @@
             "GuiWindowCtrl": 6
           },
           "controls": 90,
-          "degenerate": [
-            "serverlist_map"
-          ],
+          "degenerate": [],
           "filled_controls": [
             "chatbar_toggletaskbarbutton",
             "globalchat_chatlabel",
             "globalchat_window",
-            "serverlist_connectbutton",
+            "serverlist_description0",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
+            "serverlist_eventnews",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
             "serverlist_protectquery_protectbutton",
@@ -436,7 +433,7 @@
             "serverlist_test_window"
           ],
           "roots": 11,
-          "text_controls": 31,
+          "text_controls": 32,
           "tree_names": [
             "chatbar",
             "chatbar_toggletaskbarbutton",
@@ -464,7 +461,6 @@
             "guitextlistctrl",
             "item_scroll",
             "serverdescription_scroll",
-            "serverlist_connectbutton",
             "serverlist_description0",
             "serverlist_description1",
             "serverlist_description2",
@@ -477,9 +473,10 @@
             "serverlist_descriptionscroll2",
             "serverlist_descriptiontab",
             "serverlist_descriptionwindow",
+            "serverlist_eventnews",
+            "serverlist_eventnews_scroll",
             "serverlist_mainpanel",
             "serverlist_mainpanel_back",
-            "serverlist_map",
             "serverlist_panel",
             "serverlist_protectquery",
             "serverlist_protectquery_cancelbutton",
@@ -521,7 +518,7 @@
           ]
         },
         "host_calls": {
-          "distinct": 36,
+          "distinct": 33,
           "missing": [],
           "names": [
             "addcontrol",
@@ -537,17 +534,14 @@
             "drawimagestretched",
             "echo",
             "findweapon",
-            "getimgheight",
             "getimgwidth",
             "getnode",
             "hide",
-            "isactuallyvisible",
             "isobject",
             "keydown",
             "lowercase",
             "makefirstresponder",
             "pushtoback",
-            "requestserverinfo",
             "requesttext",
             "requesturl",
             "select",
@@ -561,7 +555,7 @@
             "showtop",
             "sort"
           ],
-          "total": 2969
+          "total": 1623
         },
         "level": "onlinestartlocal.nw",
         "logs": {
@@ -586,7 +580,7 @@
             "-serverlist_chat"
           ]
         },
-        "wall_seconds": 25.42,
+        "wall_seconds": 25.47,
         "world": {
           "gs1_scripts": 0,
           "npcs": 2,
@@ -626,7 +620,9 @@
         "required_filled_controls": [
           "serverlist_serverlist",
           "serverlist_taskbar_menu",
-          "globalchat_chatlabel"
+          "globalchat_chatlabel",
+          "serverlist_description0",
+          "serverlist_eventnews"
         ],
         "required_weapon_events": [
           "weapon:-rescripted/irc/login3.oncreated",
@@ -644,7 +640,7 @@
           "-serverlist_chat"
         ]
       },
-      "recorded_at": "2026-07-26T23:14:29.981734+00:00",
+      "recorded_at": "2026-07-27T01:26:41.440819+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"

@@ -434,16 +434,17 @@ class GuiAccountPasswordCtrl(GuiTextEditCtrl):
     """The Login screen's password field (gr_LoginScreen_PassEdit). Same
     edit control, rendered masked -- the reference client never echoes the
     characters, and neither should a client whose credential surface is
-    deliberately inert (see GS2ClientHost.stubbed)."""
+    deliberately inert (see GS2ClientHost.stubbed).
+
+    Masking is a RENDER-TIME substitution only (is_password() drives the
+    base _draw_self), never a write through the text setter: setText fires
+    onTextChanged, so masking by assignment would fire two script events
+    per rendered frame -- the second carrying the real password."""
 
     CTRL_CLASS = "GuiAccountPasswordCtrl"
 
-    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
-        shown, self.text = self.text, "*" * len(self.text)
-        try:
-            super()._draw_self(surf, fonts, sprite_mgr)
-        finally:
-            self.text = shown
+    def is_password(self) -> bool:
+        return True
 
 
 class GuiMLTextEditCtrl(GuiMLTextCtrl):

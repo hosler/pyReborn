@@ -848,6 +848,21 @@ class GuiTreeNode(GS2Object):
             return self.text
         if k == "level" and k not in self._members:
             return self.level()
+        if k == "id" and k not in self._members:
+            # A node the script never gave an id reads -1 (the invalid-item
+            # sentinel), NOT unset/0. Evidence: Login's serverlist boots via
+            # `Serverlist_ServerList.nodes[0].select()` and its onSelect
+            # gates `node.id >= 0` -> server pane vs showLoginInfo(); the
+            # auto-selected first node is the category folder for the "U "
+            # servers, which the live script's FOUR-entry category table
+            # (no 5th name -- string absent from the live bytecode) never
+            # names or ids. The real client boots into the login-info panes,
+            # so that untouched node's id must compare < 0; with unset->0 we
+            # boot into a serverless "Map" pane instead (a 0x0 bitmap hole
+            # for art no server serves, plus per-tick updateServerMapIcons).
+            # Category folders the script DOES id get -1 assigned anyway
+            # (weapon -Rescripted/Serverlist: `node.id = -1;`).
+            return -1.0
         if k == "select" and not super().has(k):
             return lambda *a: self.tree.select_node(self)
         if k == "addnode" and not super().has(k):
