@@ -421,6 +421,232 @@ def _chk_weapon_truncation(env):
             f"the client lexer normalizes it back. ({script!r})")
 
 
+def _chk_freezeplayer(env):
+    import time
+    remaining = env.gs1._freeze_until - time.monotonic()
+    _expect(0.0 < remaining <= 1.5,
+            f"freezeplayer 1.5 arms a monotonic deadline at most 1.5s out "
+            f"(remaining={remaining:.3f})")
+
+
+def _chk_unfreezeplayer(env):
+    import time
+    _expect(env.gs1._freeze_until <= time.monotonic(),
+            "unfreezeplayer should clear pending freeze time")
+
+
+def _chk_disableweapons(env):
+    _expect(env.gs1.weapons_enabled is False,
+            "disableweapons should clear weapons_enabled flag")
+
+
+def _chk_enableweapons(env):
+    _expect(env.gs1.weapons_enabled is True,
+            "enableweapons should restore weapons_enabled flag")
+
+
+def _chk_setplayerdir(env):
+    _expect(env.client.player.direction == 1,
+            f"setplayerdir left must face the player left=1 "
+            f"(got {env.client.player.direction})")
+
+
+def _chk_setplayerprop_nickname(env):
+    _expect(env.client.player.nickname == "NewNick",
+            f"setplayerprop #n sets nickname (got {env.client.player.nickname!r})")
+
+
+def _chk_setplayerprop_head(env):
+    _expect(env.client.player.head_image == "custom_head.png",
+            f"setplayerprop #3 sets head_image (got {env.client.player.head_image!r})")
+
+
+def _chk_setplayerprop_body(env):
+    _expect(env.client.player.body_image == "custom_body.png",
+            f"setplayerprop #8 sets body_image (got {env.client.player.body_image!r})")
+
+
+def _chk_sethead(env):
+    # NB the value is deliberately DIFFERENT from setplayerprop_head's:
+    # the suite is one live session, so asserting the same image would pass
+    # vacuously off that earlier case's leftover state (which is exactly how
+    # this row originally "passed" with no sethead handler in the engine).
+    _expect(env.client.player.head_image == "qa_sethead.png",
+            f"sethead sets head_image (got {env.client.player.head_image!r})")
+
+
+def _chk_setsword(env):
+    _expect(env.client.player.sword_image == "custom_sword.png",
+            f"setsword sets sword_image, power arg discarded "
+            f"(got {env.client.player.sword_image!r})")
+
+
+def _chk_setshield(env):
+    _expect(env.client.player.shield_image == "custom_shield.png",
+            f"setshield sets shield_image, power arg discarded "
+            f"(got {env.client.player.shield_image!r})")
+
+
+def _chk_setskincolor(env):
+    # 3 (not 0): the pygserver account default is [0,0,0,0,0], so asserting
+    # 0 could never distinguish an implementation from a no-op.
+    cols = env.client.player.colors or []
+    _expect(len(cols) > 0 and cols[0] == 3,
+            f"setskincolor 3 sets colors slot 0 (skin) (got {cols!r})")
+
+
+def _chk_setcoatcolor(env):
+    cols = env.client.player.colors or []
+    _expect(len(cols) > 1 and cols[1] == 2,
+            f"setcoatcolor 2 sets colors slot 1 (coat) (got {cols!r})")
+
+
+def _chk_showimg_basic(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("image") == "sword.png",
+            f"showimg 1 should record layer image name (got {imgs!r})")
+
+
+def _chk_showimg2_z(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("image") == "sword.png",
+            f"showimg2 must record the layer image (got {imgs!r})")
+    _expect(imgs[1].get("z") == 5.0,
+            f"showimg2's 5th arg is a z coordinate and must be stored (got {imgs!r})")
+
+
+def _chk_changeimgvis(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("vis") == 3,
+            f"changeimgvis 1,3 should set vis layer (got {imgs!r})")
+
+
+def _chk_changeimgpart(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("part") == (0, 0, 16, 16),
+            f"changeimgpart 1 should set crop rect tuple (got {imgs!r})")
+
+
+def _chk_changeimgzoom(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("zoom") == 2.0,
+            f"changeimgzoom 1 should set scale factor (got {imgs!r})")
+
+
+def _chk_changeimgcolors(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("colors") == (1.0, 0.5, 0.0, 0.8),
+            f"changeimgcolors 1 should set RGBA tuple (got {imgs!r})")
+
+
+def _chk_changeimgmode(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("mode") == 2,
+            f"changeimgmode 1 should set blend mode (got {imgs!r})")
+
+
+def _chk_showtext(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("text") == "Hello",
+            f"showtext 1 should record text content (got {imgs!r})")
+
+
+def _chk_showtext2(env):
+    imgs = env.npc().get("imgs") or {}
+    _expect(1 in imgs and imgs[1].get("text") == "World",
+            f"showtext2 1 should record the text (got {imgs!r})")
+    _expect(imgs[1].get("z") == 1.5 and "zoom" not in imgs[1],
+            "showtext2's 4th arg is a Z coordinate (FP 'idddsss' setz), not a "
+            f"zoom — zoom only ever comes from changeimgzoom (got {imgs!r})")
+
+
+def _chk_tokenize(env):
+    _expect(env.npc_this().get("tok_count") == 3.0,
+            f"tokenize 'a b c' sets tokenscount to 3 (got {env.npc_this().get('tok_count')})")
+
+
+def _chk_playerbombs(env):
+    _expect(env.client.player.bombs == 8,
+            f"playerbombs=8 updates player bomb count (got {env.client.player.bombs})")
+
+
+def _chk_playerarrows(env):
+    _expect(env.client.player.arrows == 12,
+            f"playerarrows=12 updates player arrow count (got {env.client.player.arrows})")
+
+
+def _chk_playerrupees(env):
+    _expect(env.client.player.rupees == 50,
+            f"playerrupees=50 updates player rupee count (got {env.client.player.rupees})")
+
+
+def _chk_setimg(env):
+    _expect(env.npc().get("image") == "house.png",
+            f"setimg updates NPC image property (got {env.npc().get('image')!r})")
+
+
+def _chk_setimgpart(env):
+    _expect(env.npc().get("image") == "house.png" and env.npc().get("imagepart") == (0, 0, 32, 32),
+            f"setimgpart updates NPC image and part (got {env.npc()!r})")
+
+
+def _chk_drawoverplayer(env):
+    _expect(env.npc().get("draw_layer") == "over",
+            f"drawoverplayer sets draw_layer='over' (got {env.npc().get('draw_layer')!r})")
+
+
+def _chk_drawunderplayer(env):
+    _expect(env.npc().get("draw_layer") == "under",
+            f"drawunderplayer sets draw_layer='under' (got {env.npc().get('draw_layer')!r})")
+
+
+def _chk_destroy(env):
+    _expect(env.npc().get("visible") is False or env.npc_id not in env.client.npcs,
+            "destroy flags visible=False or removes the NPC from active entities")
+
+
+def _chk_lay(env):
+    # AND, not OR: the engine's contract is BOTH the PLI_ITEMADD report and
+    # the client.items registry entry (the same store PLO_ITEMADD fills) at
+    # the NPC's feet. The original OR also named a nonexistent
+    # game.ground_items attr that only short-circuiting kept from raising.
+    from reborn_protocol.constants import PLI
+    _expect(PLI.ITEMADD in env.wire_ids(),
+            f"lay must report the drop via PLI_ITEMADD (wire={env.wire_ids()!r})")
+    items = getattr(env.client, "items", None) or {}
+    _expect((float(NPC_X), float(NPC_Y)) in items,
+            f"and register the item at the NPC's feet in client.items (got {items!r})")
+
+
+def _chk_canbecarried(env):
+    _expect(env.npc_this().get("ran") == 1.0, "fixture script must have run")
+    _expect(env.npc().get("canbecarried") is None,
+            "pinned: no canbecarried handler — flag when the carry mechanic lands")
+
+
+def _chk_canbepushed(env):
+    _expect(env.npc_this().get("ran") == 1.0, "fixture script must have run")
+    _expect(env.npc().get("canbepushed") is None,
+            "pinned: no canbepushed handler — flag when the push mechanic lands")
+
+
+def _chk_setzoomeffect(env):
+    # The original row pinned this as "missing" by probing npc['zoomeffect']
+    # — the wrong key. The handler exists and stores 'zoom_effect'
+    # (_cmd_setzoomeffect), which render_entities.py:1299-1327 scales NPC
+    # draws by; tests/unit/test_live_engine_regressions.py pins the same.
+    _expect(env.npc().get("zoom_effect") == 1.5,
+            f"setzoomeffect 1.5 stores npc['zoom_effect'] "
+            f"(got {env.npc().get('zoom_effect')!r})")
+
+
+def _chk_setchargender(env):
+    _expect(env.npc_this().get("ran") == 1.0, "fixture script must have run")
+    npc = env.npc()
+    _expect("ismale" not in npc and "gender" not in npc,
+            "pinned: setchargender ignored — FP stores an ismale bool")
+
+
 CASES: List[ClientCase] = [
     # ---- blocking footprints ---------------------------------------------
     ClientCase(
@@ -659,6 +885,217 @@ CASES: List[ClientCase] = [
         "build_npc_weapon_add applies the mangling since 2026-07-27 — this "
         "row was a pinned truncation divergence until then",
         _chk_weapon_truncation, channel="none"),
+    # ---- player & input state ---------------------------------------------
+    ClientCase(
+        "freezeplayer_timer", "freezeplayer N sets freezetime in seconds",
+        "FP TInitStatics.cpp:3369-3382 (scriptfun_gsfunctionsclient_freezeplayer)",
+        _chk_freezeplayer,
+        script="if (playerenters) { freezeplayer 1.5; }"),
+    ClientCase(
+        "unfreezeplayer_clears", "unfreezeplayer clears pending freeze time",
+        "FP TClient.cpp:3211-3215 (scriptfun_client_unfreezeplayer)",
+        _chk_unfreezeplayer,
+        script="if (playerenters) { freezeplayer 2.0; unfreezeplayer; }"),
+    ClientCase(
+        "disableweapons_flag", "disableweapons disables player weapons",
+        "FP TInitStatics.cpp:3253-3257 (scriptfun_gsfunctionsclient_disableweapons)",
+        _chk_disableweapons,
+        script="if (playerenters) { disableweapons; }"),
+    ClientCase(
+        "enableweapons_flag", "enableweapons restores weapon ability after disableweapons",
+        "FP TInitStatics.cpp:3287-3291 (scriptfun_gsfunctionsclient_enableweapons)",
+        _chk_enableweapons,
+        script="if (playerenters) { disableweapons; enableweapons; }"),
+    ClientCase(
+        "setplayerdir_cardinal", "setplayerdir converts cardinal names to directions",
+        "FP TInitStatics.cpp:3723-3747 (scriptfun_gsfunctionsclient_setplayerdir)",
+        _chk_setplayerdir,
+        script="if (playerenters) { setplayerdir left; }"),
+    # ---- player appearance & props ----------------------------------------
+    ClientCase(
+        "setplayerprop_nickname", "setplayerprop #n,text updates player nickname",
+        "FP TClient.cpp:4771-4778 (scriptfun_client_setplayerprops applies a "
+        "prop string to the local player); scripting-gs1-commands.md:2162 "
+        "(setplayerprop messagecode,text)",
+        _chk_setplayerprop_nickname,
+        script="if (playerenters) { setplayerprop #n,NewNick; }"),
+    ClientCase(
+        "setplayerprop_head", "setplayerprop #3,image updates player head",
+        "FP TClient.cpp:4771-4778 (scriptfun_client_setplayerprops); "
+        "scripting-gs1-messagecodes.md (#3 = head image)",
+        _chk_setplayerprop_head,
+        script="if (playerenters) { setplayerprop #3,custom_head.png; }"),
+    ClientCase(
+        "setplayerprop_body", "setplayerprop #8,image updates player body",
+        "FP TClient.cpp:4771-4778 (scriptfun_client_setplayerprops); "
+        "scripting-gs1-messagecodes.md (#8 = body image)",
+        _chk_setplayerprop_body,
+        script="if (playerenters) { setplayerprop #8,custom_body.png; }"),
+    ClientCase(
+        "sethead_sprite", "sethead image updates local player head image",
+        "FP TInitStatics.cpp:3711-3715 (scriptfun_gsfunctionsclient_sethead)",
+        _chk_sethead,
+        script="if (playerenters) { sethead qa_sethead.png; }"),
+    ClientCase(
+        "setsword_sprite", "setsword image,power sets the sword image, power discarded",
+        "FP TInitStatics.cpp:3766-3770 (scriptfun_gsfunctionsclient_setsword; "
+        "the int32_t power param is unnamed and unused)",
+        _chk_setsword,
+        script="if (playerenters) { setsword custom_sword.png,0; }"),
+    ClientCase(
+        "setshield_sprite", "setshield image,power sets the shield image, power discarded",
+        "FP TInitStatics.cpp:3749-3753 (scriptfun_gsfunctionsclient_setshield; "
+        "the int32_t power param is unnamed and unused)",
+        _chk_setshield,
+        script="if (playerenters) { setshield custom_shield.png,0; }"),
+    ClientCase(
+        "setskincolor_palette", "setskincolor N updates colors slot 0 (skin)",
+        "FP TInitStatics.cpp:3757 (setskincolor = setcolor(0, color), via :3612)",
+        _chk_setskincolor,
+        script="if (playerenters) { setskincolor 3; }"),
+    ClientCase(
+        "setcoatcolor_palette", "setcoatcolor N updates colors slot 1 (coat)",
+        "FP TInitStatics.cpp:3635 (setcoatcolor = setcolor(1, color), via :3612)",
+        _chk_setcoatcolor,
+        script="if (playerenters) { setcoatcolor 2; }"),
+    # ---- showimg & layer manipulation ------------------------------------
+    ClientCase(
+        "showimg_basic", "showimg index,image,x,y populates layer image record",
+        "FP TServerNPCProperties.cpp:816-824 (scriptfun_servernpc_showimg)",
+        _chk_showimg_basic,
+        script="if (playerenters) { showimg 1,sword.png,10,20; }"),
+    ClientCase(
+        "showimg2_z_coord", "showimg2 index,image,x,y,z sets z coordinate",
+        "FP TServerNPCProperties.cpp:826-834 (scriptfun_servernpc_showimg2, "
+        "\"isddd\": setz(*z) where showimg copies the owner's z)",
+        _chk_showimg2_z,
+        script="if (playerenters) { showimg2 1,sword.png,10,20,5; }"),
+    ClientCase(
+        "changeimgvis_layer", "changeimgvis index,layer sets image visibility layer",
+        "FP TServerNPCProperties.cpp:422-427 (scriptfun_servernpc_changeimgvis)",
+        _chk_changeimgvis,
+        script="if (playerenters) { showimg 1,sword.png,10,20; changeimgvis 1,3; }"),
+    ClientCase(
+        "changeimgpart_crop", "changeimgpart index,x,y,w,h sets crop rect",
+        "FP TServerNPCProperties.cpp:415-420 (scriptfun_servernpc_changeimgpart)",
+        _chk_changeimgpart,
+        script="if (playerenters) { showimg 1,sword.png,10,20; changeimgpart 1,0,0,16,16; }"),
+    ClientCase(
+        "changeimgzoom_scale", "changeimgzoom index,scale sets zoom scale",
+        "FP TServerNPCProperties.cpp:429-434 (scriptfun_servernpc_changeimgzoom)",
+        _chk_changeimgzoom,
+        script="if (playerenters) { showimg 1,sword.png,10,20; changeimgzoom 1,2.0; }"),
+    ClientCase(
+        "changeimgcolors_rgba", "changeimgcolors index,r,g,b,a sets color modulation",
+        "FP TServerNPCProperties.cpp:396-406 (scriptfun_servernpc_changeimgcolors)",
+        _chk_changeimgcolors,
+        script="if (playerenters) { showimg 1,sword.png,10,20; changeimgcolors 1,1.0,0.5,0.0,0.8; }"),
+    ClientCase(
+        "changeimgmode_blend", "changeimgmode index,mode sets blend mode",
+        "FP TServerNPCProperties.cpp:408-413 (scriptfun_servernpc_changeimgmode)",
+        _chk_changeimgmode,
+        script="if (playerenters) { showimg 1,sword.png,10,20; changeimgmode 1,2; }"),
+    ClientCase(
+        "showtext_basic", "showtext index,x,y,font,style,text creates text layer",
+        "FP TServerNPCProperties.cpp:852-860 (scriptfun_servernpc_showtext)",
+        _chk_showtext,
+        script="if (playerenters) { showtext 1,10,20,Arial,,Hello; }"),
+    ClientCase(
+        "showtext2_z_coord", "showtext2 index,x,y,z,font,style,text creates a text layer at z",
+        "FP TServerNPCProperties.cpp:862-870 (scriptfun_servernpc_showtext2, "
+        "\"idddsss\": setz(*z)); scripting-gs1-commands.md:2849",
+        _chk_showtext2,
+        script="if (playerenters) { showtext2 1,10,20,1.5,Arial,,World; }"),
+    # ---- script variables & processing -----------------------------------
+    ClientCase(
+        "tokenize_space", "tokenize str sets tokenscount to count",
+        "FP TScriptMachine.cpp:810-848 (TScriptMachine::tokenizeString fills "
+        "a 3-cell token array; tokenscount is its count)",
+        _chk_tokenize,
+        script="if (playerenters) { tokenize a b c; this.tok_count = tokenscount; }"),
+    ClientCase(
+        "playerbombs_assign", "playerbombs = N updates player bomb count",
+        "FP TServerPlayerProperties.cpp:89-94 (propfun_serverplayer_bombs_w, "
+        "accepts 0..99)",
+        _chk_playerbombs,
+        script="if (playerenters) { playerbombs = 8; }"),
+    ClientCase(
+        "playerarrows_assign", "playerarrows = N updates player arrow count",
+        "FP TServerPlayerProperties.cpp:110-115 (propfun_serverplayer_darts_w "
+        "-> setArrows, accepts 0..99)",
+        _chk_playerarrows,
+        script="if (playerenters) { playerarrows = 12; }"),
+    ClientCase(
+        "playerrupees_assign", "playerrupees = N updates player rupee count",
+        "FP TServerPlayerProperties.cpp:126-131 (propfun_serverplayer_gralats_w "
+        "-> setGralats)",
+        _chk_playerrupees,
+        script="if (playerenters) { playerrupees = 50; }"),
+    # ---- NPC attributes & lifecycle --------------------------------------
+    ClientCase(
+        "setimg_sprite", "setimg image updates NPC image property",
+        "FP TServerNPCProperties.cpp:588-602 (scriptfun_servernpc_setimg)",
+        _chk_setimg,
+        script="if (playerenters) { setimg house.png; }"),
+    ClientCase(
+        "setimgpart_npc", "setimgpart image,x,y,w,h sets NPC image & crop",
+        "FP TServerNPCProperties.cpp:604-630 (scriptfun_servernpc_setimgpart)",
+        _chk_setimgpart,
+        script="if (playerenters) { setimgpart house.png,0,0,32,32; }"),
+    ClientCase(
+        "drawoverplayer_layer", "drawoverplayer sets NPC drawing layer to 1",
+        "FP TServerNPCProperties.cpp:450 (scriptfun_servernpc_drawoverplayer)",
+        _chk_drawoverplayer,
+        script="if (playerenters) { drawoverplayer; }"),
+    ClientCase(
+        "drawunderplayer_layer", "drawunderplayer sets NPC drawing layer under player",
+        "FP TServerNPCProperties.cpp:451 (scriptfun_servernpc_drawunderplayer)",
+        _chk_drawunderplayer,
+        script="if (playerenters) { drawunderplayer; }"),
+    ClientCase(
+        "destroy_npc", "destroy flags NPC for destruction",
+        "FP TServerNPCProperties.cpp:348-356 (scriptfun_servernpc_destroy)",
+        _chk_destroy,
+        script="if (playerenters) { destroy; }"),
+    ClientCase(
+        "lay_item", "lay item drops item on floor",
+        "FP TServerNPCProperties.cpp:489-510 (scriptfun_servernpc_lay)",
+        _chk_lay,
+        script="if (playerenters) { lay bomb; }"),
+    ClientCase(
+        "canbecarried_flag", "canbecarried marks NPC carryable",
+        "FP TServerNPCProperties.cpp:373 (scriptfun_servernpc_canbecarried "
+        "sets a carryable flag on the NPC)",
+        _chk_canbecarried,
+        script="if (playerenters) { canbecarried; this.ran = 1; }",
+        divergence="gs1_client has no canbecarried handler and NPC carrying "
+        "is unmodelled — grab/lift only consults tile liftability "
+        "(game/actions.py _is_tile_liftable), never an NPC flag"),
+    ClientCase(
+        "canbepushed_flag", "canbepushed marks NPC pushable",
+        "FP TServerNPCProperties.cpp:375 (scriptfun_servernpc_canbepushed "
+        "sets a pushable flag on the NPC)",
+        _chk_canbepushed,
+        script="if (playerenters) { canbepushed; this.ran = 1; }",
+        divergence="gs1_client has no canbepushed handler and NPC pushing is "
+        "unmodelled — the push gani is a blocked-movement animation only "
+        "(game/actions.py _update_push_hold), NPCs never displace"),
+    ClientCase(
+        "setzoomeffect_npc", "setzoomeffect zoom stores npc['zoom_effect'] for the renderer",
+        "FP TServerNPCProperties.cpp:674-681 (scriptfun_servernpc_setzoomeffect "
+        "stores the zoom + marks the gani dirty)",
+        _chk_setzoomeffect,
+        script="if (playerenters) { setzoomeffect 1.5; }"),
+    ClientCase(
+        "setchargender_gender", "setchargender gender sets the NPC's ismale bool",
+        "FP TServerNPCProperties.cpp:569-574 (scriptfun_servernpc_setchargender: "
+        "npc->ismale = gender.equalsIgnoreCase(\"male\"))",
+        _chk_setchargender,
+        script="if (playerenters) { setchargender female; this.ran = 1; }",
+        divergence="gs1_client ignores setchargender: no handler in any "
+        "dispatch stage, no ismale/gender key on the NPC dict, and nothing "
+        "in the renderer would consume it (character NPCs composite from "
+        "explicit body/head images)"),
 ]
 
 

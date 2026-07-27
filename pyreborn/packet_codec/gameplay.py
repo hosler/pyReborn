@@ -50,7 +50,9 @@ def build_sword_attack(x: float, y: float, direction: int) -> bytes:
 
     # Sprite/Direction (prop 17 - PLPROP_SPRITE)
     packet.append(17 + 32)
-    packet.append(direction + 32)
+    # Scripts write playerdir as a float; SPRITE is one byte on the wire
+    # (uncoerced this crashed set_animation on Era).
+    packet.append((int(direction) & 3) + 32)
 
     # Position with pixel precision (props 78, 79)
     pixel_x = int(x * 16)
@@ -159,7 +161,9 @@ def build_animation(gani_name: str, x: float, y: float, direction: int) -> bytes
     # 5-byte read overruns the packet and got the session kicked by GServer
     # ("Not enough data to deserialize PropertyArray.").
     packet.append(17 + 32)
-    packet.append(direction + 32)
+    # Scripts write playerdir as a float; SPRITE is one byte on the wire
+    # (uncoerced this crashed set_animation on Era).
+    packet.append((int(direction) & 3) + 32)
 
     # PLPROP_X2 (78) - pixel X position
     pixel_x = int(x * 16)
@@ -254,7 +258,9 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
     # PLPROP_SPRITE (17) - direction (see build_animation: prop 14/ID is
     # 2 bytes and misaligns the server parser if sent with 1 byte).
     packet.append(17 + 32)
-    packet.append(direction + 32)
+    # Scripts write playerdir as a float; SPRITE is one byte on the wire
+    # (uncoerced this crashed set_animation on Era).
+    packet.append((int(direction) & 3) + 32)
 
     if not use_new_format:
         # Classic PLPROP_X (15) / PLPROP_Y (16), half-tiles.

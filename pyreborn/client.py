@@ -853,7 +853,12 @@ class Client:
                 pass
         # Always send local coords (0-63)
         local_x, local_y = world_to_local(self.player.x, self.player.y)
-        data = build_animation(wire_name, local_x, local_y, self.player.direction)
+        # A GS1/GS2 script writing `playerdir` stores a FLOAT; the SPRITE
+        # prop is a single byte (same int-coercion family as update()'s
+        # movement props above) — uncoerced it crashed set_animation on Era
+        # ("'float' object cannot be interpreted as an integer").
+        data = build_animation(wire_name, local_x, local_y,
+                               int(self.player.direction or 0) & 3)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
     def send_hearts(self, hearts: Optional[float] = None) -> bool:

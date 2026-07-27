@@ -1281,6 +1281,14 @@ class GS1ClientHost(Host):
             rec.pop("text_is", None)
         if len(args) >= 4:
             rec["x"], rec["y"] = to_num(args[2]), to_num(args[3])
+        if name == "showimg2" and len(args) >= 5:
+            # showimg2's one extra arg is a Z coordinate, like showani2's:
+            # scriptfun_servernpc_showimg2 ("isddd") does setz(*z) where
+            # showimg copies the owner NPC's z (TServerNPCProperties.cpp:
+            # 816-834; scripting-gs1-commands.md:2707 "showimg2
+            # index,filename,x,y,z"). Bomber's room walls draw with it
+            # (`showimg2 1000+i,eye_wall...,i%64,int(i/64)-7.25,-.25`).
+            rec["z"] = to_num(args[4])
         rec["screen"] = (name == "showimg2")
         rec.setdefault("vis", 4)
 
@@ -1415,14 +1423,21 @@ class GS1ClientHost(Host):
 
     @_gs1_command(_GS1_LAYER_COMMANDS, "showtext2")
     def _cmd_showtext2(self, name, args, ctx, imgs):
-        # showtext2 index,x,y,zoom,font,style,text (lexer 'EEEESSS' —
-        # one more arg than showtext's 'EEESSS', an extra leading
-        # zoom float before font/style/text).
+        # showtext2 index,x,y,z,font,style,text (lexer 'EEEESSS' — one more
+        # arg than showtext's 'EEESSS'). The extra number is a Z COORDINATE,
+        # not a zoom: scriptfun_servernpc_showtext2 ("idddsss") does setz(*z)
+        # where showtext copies the owner's z (TServerNPCProperties.cpp:
+        # 852-870), and the docs spell "showtext2 index,x,y,z,font,style,text"
+        # (scripting-gs1-commands.md:2849). Zoom has its own channel
+        # (changeimgzoom). Storing this arg as "zoom" scaled the text by its
+        # DEPTH — bomber's player name labels (`showtext2 400+t,...,
+        # (t==4),arial,bc,[...]` + `changeimgzoom 400+t,0.75`) drew their 8
+        # outline copies at z=0 => font floor instead of the 0.75 zoom.
         if len(args) < 7:
             return _FALL_THROUGH
         imgs[int(to_num(args[0]))] = {
             "x": to_num(args[1]), "y": to_num(args[2]),
-            "zoom": to_num(args[3]),
+            "z": to_num(args[3]),
             "font": to_str(args[4]), "style": to_str(args[5]),
             "text": to_str(args[6]), "text_is": True, "vis": 4,
             "screen": True,
@@ -2102,6 +2117,56 @@ class GS1ClientHost(Host):
         if not (self.rt.on_setplayerprop and len(args) >= 2):
             return _FALL_THROUGH
         self.rt.on_setplayerprop(to_str(args[0]), to_str(args[1]))
+
+    # FP's client appearance commands are thin wrappers over the local
+    # player's prop slots: sethead -> setHead (TInitStatics.cpp:3711-3715),
+    # setsword/setshield set the image and DISCARD the power arg (:3766-3770
+    # / :3749-3753 — the int32_t parameter is unnamed and unused), and the
+    # set*color family is setcolor(slot, color) with skin 0 / coat 1 /
+    # sleeve 2 / shoe 3 / belt 4 (:3757 / :3635 / :3759 / :3755 / :3633).
+    _APPEARANCE_CODES = {
+        "sethead": "#3", "setsword": "#1", "setshield": "#2",
+        "setskincolor": "#C0", "setcoatcolor": "#C1",
+        "setsleevecolor": "#C2", "setshoecolor": "#C3", "setbeltcolor": "#C4",
+    }
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, *sorted(_APPEARANCE_CODES))
+    def _cmd_player_appearance(self, name, args, ctx, imgs):
+        # Route through the same shell callback the setplayerprop command
+        # uses (game/setup.py on_setplayerprop): #3 sends the head, #1/#2
+        # set the sword/shield image slots, #Cn writes Player.colors. FP's
+        # setcolor writes the colour STRING into the colors array; our
+        # slots hold palette INDICES, so names normalize via _color_name
+        # (accepts either form) and unknown colours are dropped.
+        if not (self.rt.on_setplayerprop and args):
+            return _FALL_THROUGH
+        code = self._APPEARANCE_CODES[name]
+        value = to_str(args[0])
+        if code.startswith("#C"):
+            pal = _color_name(value)
+            if not pal:
+                return
+            value = str(REBORN_PALETTE.index(pal))
+        self.rt.on_setplayerprop(code, value)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setplayerdir")
+    def _cmd_setplayerdir(self, name, args, ctx, imgs):
+        # setplayerdir up|left|down|right|n — turn the LOCAL player
+        # (scriptfun_gsfunctionsclient_setplayerdir, TInitStatics.cpp:
+        # 3723-3747): the four cardinal names map to 0..3; anything else
+        # parses as a number, negatives wrap via 4 - (-n & 3), and the
+        # result masks with & 3 (so setplayerdir -1 faces right).
+        player = getattr(self.rt.client, "player", None)
+        if player is None or not args:
+            return _FALL_THROUGH
+        text = to_str(args[0]).strip().lower()
+        direction = {"up": 0, "left": 1, "down": 2, "right": 3}.get(text)
+        if direction is None:
+            direction = int(to_num(text))
+            if direction < 0:
+                direction = 4 - (-direction & 3)
+            direction &= 3
+        player.direction = direction
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "setmap")
     def _cmd_setmap(self, name, args, ctx, imgs):
