@@ -69,6 +69,27 @@ class GameClient(
         return [name for name in self.client.weapons
                 if not str(name).startswith('-')]
 
+    def selected_weapon_full_index(self) -> int:
+        """Index of the equipped weapon in the FULL client.weapons ordering.
+
+        Script surfaces (`#w`, `selectedweapon`, GS2 selectedweapon) index the
+        player's whole weapon array — hidden "-" system weapons included —
+        while inventory_ui.selected_weapon_idx indexes the FILTERED visible
+        list. Feeding the filtered index straight to the scripts made `#w`
+        answer whatever weapon happened to sit at that slot of the full dict
+        (usually a system weapon), so e.g. GTA's *Clock GUI never opened: its
+        `if (!strequals(#w,*Clock)) this.mode = 0;` re-closed it every tick.
+        """
+        entries = self.weapons
+        if not entries:
+            return -1
+        idx = max(0, min(int(self.inventory_ui.selected_weapon_idx),
+                         len(entries) - 1))
+        try:
+            return list(self.client.weapons).index(entries[idx])
+        except ValueError:
+            return -1
+
     def __init__(self, client: Client):
         self.client = client
         self.running = True
@@ -200,7 +221,7 @@ class GameClient(
 
         # UI components
         self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
-        self.gs1.selected_weapon_index = lambda: self.inventory_ui.selected_weapon_idx
+        self.gs1.selected_weapon_index = self.selected_weapon_full_index
         self.heart_display = HeartDisplay(10, 10)
         self.hud = HUD(self)
 

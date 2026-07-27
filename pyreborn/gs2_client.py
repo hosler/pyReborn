@@ -1712,6 +1712,12 @@ class GS2ClientHost(GS2Host):
         if not weapons:
             return -1.0
         game = getattr(rt2, "game_shell", None)
+        # Full-array index (hidden "-" weapons included): the shell converts
+        # the inventory's filtered index — see
+        # pygame_game.selected_weapon_full_index.
+        conv = getattr(game, "selected_weapon_full_index", None)
+        if conv is not None:
+            return float(conv())
         index = getattr(getattr(game, "inventory_ui", None),
                         "selected_weapon_idx", 0) or 0
         return float(index) if 0 <= index < len(weapons) else -1.0

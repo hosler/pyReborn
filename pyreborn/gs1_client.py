@@ -379,6 +379,16 @@ class GS1ClientHost(Host):
     def _gb_weaponscount(self, name, indices, ctx):
         return float(len(getattr(self.rt.client, "weapons", {}) or {}))
 
+    @_gs1_builtin(_GS1_BUILTINS, "selectedweapon")
+    def _gb_selectedweapon(self, name, indices, ctx):
+        # Index of the equipped weapon in the same full-array ordering
+        # weaponscount/#w(i)/callweapon use; -1 when none (matches the v6
+        # object of the same name, TInitStatics.cpp getters — GS1 scripts use
+        # it too: GTA's -System3 does `callweapon selectedweapon,wweaponfired`
+        # while swimming; as a plain unset flag it resolved to 0 = whatever
+        # weapon was first in the array).
+        return float(self.rt.selected_weapon_index())
+
     @_gs1_builtin(_GS1_BUILTINS, "weaponsenabled")
     def _gb_weaponsenabled(self, name, indices, ctx):
         return bool(self.rt.weapons_enabled)
@@ -780,10 +790,14 @@ class GS1ClientHost(Host):
         y = to_num(args[2]) if len(args) > 2 else None
         rt.on_warp(to_str(args[0]), x, y)
 
-    @_gs1_command(_GS1_PRE_COMMANDS, "freezeplayer")
+    @_gs1_command(_GS1_PRE_COMMANDS, "freezeplayer", "unfreezeplayer")
     def _cmd_freezeplayer(self, name, args, ctx, imgs):
         rt = self.rt
-        secs = to_num(args[0]) if args else 0.5
+        # unfreezeplayer cancels a running freeze early (GTA's magic system
+        # pairs `freezeplayer <cast time>` with it); freezeplayer 0 through
+        # the same path clears both the rt deadline and the game shell's.
+        secs = 0.0 if name == "unfreezeplayer" else (
+            to_num(args[0]) if args else 0.5)
         if rt.on_freezeplayer:
             rt.on_freezeplayer(secs)
         import time as _t
@@ -1086,13 +1100,24 @@ class GS1ClientHost(Host):
         ctx.this_obj["draw_layer"] = ("over" if name == "drawoverplayer"
                                       else "under")
 
-    @_gs1_command(_GS1_NPC_COMMANDS, "dontblock")
+    @_gs1_command(_GS1_NPC_COMMANDS, "dontblock", "dontblocklocal")
     def _cmd_dontblock(self, name, args, ctx, imgs):
+        # dontblocklocal differs only in wire sync (scriptfun_servernpc_
+        # dontblocklocal, TServerNPCProperties.cpp:443 — same blocking field
+        # as dontblock :436); identical client-side.
         npc = ctx.this_obj
         npc_id = getattr(ctx, "_npc_id", 0)
         npc["dontblock"] = True
         self.rt.shapes.pop(npc_id, None)
         self.rt._update_shape_blocks(npc_id, npc, 0, 0, [])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "blockagain", "blockagainlocal")
+    def _cmd_blockagain(self, name, args, ctx, imgs):
+        # inverse of dontblock: restore the NPC's default blocking (collision
+        # reads the dontblock flag; a setshape2-published block set was
+        # already dropped by dontblock and is not resurrected — none of the
+        # live users combine the two)
+        ctx.this_obj["dontblock"] = False
 
     @_gs1_command(_GS1_NPC_COMMANDS, "destroy")
     def _cmd_destroy_npc(self, name, args, ctx, imgs):
@@ -1321,9 +1346,15 @@ class GS1ClientHost(Host):
 
     # -- _GS1_NPC_TAIL_COMMANDS (gate: an NPC dict; last stage) -------------
 
-    @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "hide", "show")
+    @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "hide", "show",
+                  "hidelocal", "showlocal")
     def _cmd_visible(self, name, args, ctx, imgs):
-        ctx.this_obj["visible"] = name == "show"
+        # The *local forms only differ on the wire (visibility change not
+        # synced to other players — scriptfun_servernpc_hidelocal/showlocal,
+        # TServerNPCProperties.cpp:460/:778 vs hide/show :453/:757); for a
+        # client-side renderer they are the same toggle. Live GTA uses
+        # hidelocal 67 times across its weapon scripts.
+        ctx.this_obj["visible"] = name in ("show", "showlocal")
 
     @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "move")
     def _cmd_move(self, name, args, ctx, imgs):

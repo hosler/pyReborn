@@ -186,10 +186,25 @@ def test_dropped_statements_are_reported(caplog):
 
 
 def test_unparseable_scripts_are_reported(caplog):
+    # Junk chars are contained by lexer/parser recovery now (2gta wave: a
+    # single '\' typo used to kill a whole weapon via LexError): the broken
+    # statement is dropped WITH a warning, the prog survives.
     _c, gs1 = _engine({})
     with caplog.at_level(logging.WARNING, logger="pyreborn.gs1_client"):
         gs1.load_script("npc_5", "this.a = #v(;", npc_id=5)
-    assert gs1._progs["npc_5"]["prog"] is None
+    prog = gs1._progs["npc_5"]["prog"]
+    assert prog is not None and prog.body == []
+    assert any("dropped by parse recovery" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_fatal_lex_failures_are_reported(caplog):
+    # A still-fatal lexer state (FUNCTION name with no '(' — how -gr's
+    # C#-style script dies) keeps the old whole-script None + warning path.
+    _c, gs1 = _engine({})
+    with caplog.at_level(logging.WARNING, logger="pyreborn.gs1_client"):
+        gs1.load_script("npc_6", "this.a = random;", npc_id=6)
+    assert gs1._progs["npc_6"]["prog"] is None
     assert any("failed to parse" in r.getMessage() for r in caplog.records)
 
 
