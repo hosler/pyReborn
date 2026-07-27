@@ -172,7 +172,13 @@ class ActionsMixin:
             move_anim = "carry"
         else:
             move_anim = "walk"
-        if self.current_anim_name != move_anim:
+        # The touch dispatch above can hand the player to a script IN THIS
+        # frame (bomber's piano: playertouchsme -> freezeplayer + setani
+        # sen_piano_idle). A frozen player doesn't play walk — and writing it
+        # here would also clobber player_anim.requested_name, killing the
+        # on_file re-assert of a still-downloading scripted gani.
+        if (self.current_anim_name != move_anim
+                and time.time() >= getattr(self, '_frozen_until', 0.0)):
             self.player_anim.set_animation(move_anim, direction)
             self.current_anim_name = move_anim
 
@@ -267,9 +273,18 @@ class ActionsMixin:
         writes `player.x` from the VM never calls move_to, so the server kept us
         in the spawn segment and never streamed the ones we walked into.
         Reuses move_to's wire sequence so "we crossed a seam" has one definition.
-        """
+
+        Gate on in_gmap_segment, NOT is_gmap: is_gmap stays True inside a
+        standalone interior (house/cave) of a gmap world, where player coords
+        are LOCAL 0-63 — reading those as world coords maps every house to
+        grid cell (0,0). Live LTTP 2026-07-26: walking around inside
+        zlttp-linkshouse.nw announced segment (0,0) and the server obligingly
+        warped us to zlttp-i0.nw (the gmap's top-left corner). Latent since
+        07-23 (bomber wave 3) but masked until the level-change
+        default_movement reset was removed, because this probe chain never
+        ran past the first level announce."""
         client = self.client
-        if not getattr(client, 'is_gmap', False) or not client.gmap_grid:
+        if not getattr(client, 'in_gmap_segment', False) or not client.gmap_grid:
             return False
         grid = segment_at(client.x, client.y)
         if grid == getattr(self, '_scripted_gmap_cell', None):

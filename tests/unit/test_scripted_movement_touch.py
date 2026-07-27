@@ -118,49 +118,68 @@ def _counter_handler(has_event=True):
 def test_gs2_only_counter_touch_fires_and_dedupes():
     handler, fired = _counter_handler()
 
-    # Pushing UP with the up-probe row (player y+1) inside the shape row and
-    # the probe columns (x+1, x+2) on solid flag cells 0/1.
-    handler.process_movement(24.5, 17.2, 0)
+    # Pushing UP with the up-probe row (player y+0.5, the reference
+    # touchtestd offsets) inside the shape row and the probe columns
+    # (x+1.05, x+1.95) on solid flag cells 0/1.
+    handler.process_movement(24.5, 18.2, 0)
     assert fired == [10376]
 
     # Held key repeats the probe every frame — must NOT re-fire while the
     # overlap lasts (handlePlayer toggles queue membership).
-    handler.process_movement(24.5, 17.2, 0)
+    handler.process_movement(24.5, 18.2, 0)
     assert fired == [10376]
 
     # Walk away (probe leaves the shape), then push back in: re-fires.
     handler.process_movement(24.5, 20.5, 0)
-    handler.process_movement(24.5, 17.2, 0)
+    handler.process_movement(24.5, 18.2, 0)
     assert fired == [10376, 10376]
 
 
 def test_flush_contact_touches():
     """Scripted movement (classic box top = y+1) rests the player pressed
-    dead against the counter at y=18.0: the up probe lands at y+1 = 19.0 —
-    exactly the shape's exclusive bottom edge. The 1px facing extension in
-    check_touch must make flush contact register (real-client touchtestd
-    extends beyond the box)."""
+    dead against the counter at y=18.0: the box top is at 19.0, exactly the
+    shape's exclusive bottom edge. The reference touchtestd probes reach
+    half a tile PAST the box (up probe at y+0.5 = 18.5, well inside
+    [18, 19)), so flush contact registers with margin."""
     handler, fired = _counter_handler()
     handler.process_movement(24.8, 18.0, 0)
     assert fired == [10376]
 
-    # One half-step farther away must NOT fire.
+    # A half-tile farther away (probe at the exclusive edge) must NOT fire.
     handler2, fired2 = _counter_handler()
     handler2.process_movement(24.8, 18.5, 0)
     assert fired2 == []
 
 
+def test_touch_band_covers_scripted_movement_rest_gap():
+    """The v6 movement script check-then-moves and can rest the player up to
+    speed - 1/16 = 0.24 tiles SHORT of flush (bomber shop misses fired at
+    rest y=X.0 but not X.1 under the old 1-px probe extension). The 0.5-tile
+    touchtestd reach covers the whole rest band...
+    """
+    for rest_gap in (0.0, 0.1, 0.24):
+        handler, fired = _counter_handler()
+        handler.process_movement(24.8, 18.0 + rest_gap, 0)
+        assert fired == [10376], f"touch missed at rest gap {rest_gap}"
+
+    # ...but not an adjacent NPC the player is NOT facing: same position,
+    # facing down — the down probes point away from the counter.
+    handler, fired = _counter_handler()
+    handler.process_movement(24.8, 18.1, 2)
+    assert fired == []
+
+
 def test_setshape2_flag_gaps_are_not_touchable():
     handler, fired = _counter_handler()
-    # Columns 2-5 of the counter are flag-0 (seat gaps): probes at x+1/x+2 =
-    # columns 3.5/4.5 must not touch.
-    handler.process_movement(27.5, 17.2, 0)
+    # Columns 2-5 of the counter are flag-0 (seat gaps): probes at
+    # x+1.05/x+1.95 land in those columns and must not touch.
+    handler.process_movement(27.5, 18.2, 0)
     assert fired == []
 
 
 def test_gs2_npc_without_touch_event_does_not_fire():
     handler, fired = _counter_handler(has_event=False)
-    handler.process_movement(24.5, 17.2, 0)
+    handler.process_movement(24.5, 18.2, 0)
     assert fired == []
 
 

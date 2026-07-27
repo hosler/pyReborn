@@ -18,6 +18,7 @@ which setup wires to ``gs1.trigger_npc_event`` — the one real GS1 engine
 regex-based fallback executor; that only ever diverged from the real engine.
 """
 
+import math
 import os
 import time
 from typing import Dict, List, Tuple, Optional, Set
@@ -25,23 +26,27 @@ from dataclasses import dataclass, field
 
 from .game.constants import PLAYER_STAND_X, PLAYER_STAND_Y
 
-# Player feet/touch geometry, duplicated from pyreborn/game/collision.py
-# (CollisionMixin.PLAYER_FEET_DX/DY, TOUCH_OFFSETS) — that is the source of
-# truth; keep these in sync if it changes. Not imported directly: collision.py
-# already does `from ..npc_handler import NPCHandler`, so importing collision.py
-# from here would be circular.
-#
 # player_x/player_y (as passed to check_touch) are the sprite's TOP-LEFT, same
-# as CollisionMixin's self.client.x/y. Character sprite is 3x3 tiles, but this
-# geometry follows the standing point between the feet, not the shifted box
+# as CollisionMixin's self.client.x/y. The feet point follows the standing
+# point between the feet (shared PLAYER_STAND constants), not the shifted box
 # centre or the wider visual sprite.
 PLAYER_FEET_DX = PLAYER_STAND_X
 PLAYER_FEET_DY = PLAYER_STAND_Y
+# NPC-touch probe points: the reference client's `touchtestd` table verbatim
+# (TPlayer::touchNPCs probes touchtestd[dir] and touchtestd[dir+4] each
+# frame — Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:1792-1831, table at
+# TInitStatics.cpp:1492-1501). Both points sit HALF A TILE beyond the 2x2
+# collision box (x+0.5..2.5, y+1..3) along the facing, which is what lets a
+# touch land from the resting gap a check-then-move movement script leaves
+# (up to speed - 1/16 = 0.24 tiles short on Bomber v6) while staying strictly
+# in front of the player — an adjacent NPC you are not facing is never
+# probed. This table deliberately differs from collision.py's TOUCH_OFFSETS
+# (grab/read reach); it is NPC touch only.
 TOUCH_OFFSETS = {
-    0: [(1.0, 1.0), (2.0, 1.0)],    # up:    both box columns, row above the box
-    1: [(0.0, 2.5), (0.0, 1.5)],    # left:  adjacent column, feet + torso
-    2: [(1.0, 4.0), (2.0, 4.0)],    # down:  both box columns, row below the box
-    3: [(3.0, 2.5), (3.0, 1.5)],    # right: adjacent column, feet + torso
+    0: [(1.05, 0.5), (1.95, 0.5)],    # up
+    1: [(0.0, 2.45), (0.0, 1.55)],    # left
+    2: [(1.95, 3.5), (1.05, 3.5)],    # down
+    3: [(3.0, 1.55), (3.0, 2.45)],    # right
 }
 
 # A character NPC (`showcharacter`) that never ran setshape/setshape2 still has
@@ -73,6 +78,11 @@ class NPCShape:
     width: int  # In tiles
     height: int  # In tiles
     solid_flags: List[int] = field(default_factory=list)  # Per-tile flags (22=solid)
+    # Optional exact point test overriding the rect/flags walk — used for
+    # image-footprint shapes, where gs1.npc_footprint_hit refines the rect
+    # per-pixel by image transparency (the reference touch test resolves to
+    # !isPixelTransparent inside the image rect, TServerNPC::isOnNPC).
+    hit_test: Optional[callable] = None
 
     def get_touchable_tiles(self) -> List[Tuple[int, int]]:
         """Get list of touchable (solid) tile offsets."""
@@ -93,6 +103,8 @@ class NPCShape:
 
     def is_point_inside(self, px: float, py: float) -> bool:
         """Check if point (in tiles) is inside this shape."""
+        if self.hit_test is not None:
+            return bool(self.hit_test(px, py))
         # Relative position
         rx = px - self.x
         ry = py - self.y
@@ -158,15 +170,31 @@ class NPCHandler:
         a 2x2 square on its feet (NPC.h:540-552). Without that, classic
         Bomber's tailor NPC Jonah -- who only calls showcharacter, never
         setshape -- had no entry here at all, so check_touch could never
-        return him and his `playertouchsme` handler never ran. Every other
-        shapeless NPC keeps its zero box (no touch), and this box is TOUCH
-        only: it is not published to gs1's _shape_blocks, so character NPCs
-        stay walk-through as before.
+        return him and his `playertouchsme` handler never ran.
+
+        A shapeless IMAGE NPC is touchable on its image footprint (setimgpart
+        rect, else the image's full size), the same geometry that blocks
+        movement: the reference touch dispatch and the wall test share
+        TServerNPC::isOnNPC (Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:
+        1807-1808 -> TServerNPC.cpp:2093-2196). GTA's touch-say signs and its
+        `if (playertouchsme) {hidelocal; dontblocklocal;}` doors never talked
+        or opened while only script shapes and characters got touch boxes.
+
+        Touch does NOT check the blocking flag (a dontblock'ed NPC still
+        fires playertouchsme when walked over) but an INVISIBLE NPC is
+        untouchable — TServerNPC::isOnNPC bails on !m_visible before any
+        geometry, and the wall path's blocking-flag skip is the wall path's
+        alone. Hence the visibility gate here, and hence rebuilding from
+        scratch on every call so hide/show cycles (GTA's doors re-show on
+        timeout) track: a stale entry for a hidden NPC kept firing its touch.
         """
         shapes = getattr(self.gs1, "shapes", {}) if self.gs1 is not None else {}
+        self.npc_shapes.clear()
         for npc_id, npc_data in self.client.npcs.items():
             self.npc_scripts[npc_id] = npc_data.get('script', '')
 
+            if npc_data.get('visible', True) is False:
+                continue
             geom = shapes.get(npc_id)
             w, h, flags = geom if geom else (0, 0, ())
             if w > 0 and h > 0:
@@ -178,35 +206,40 @@ class NPCHandler:
                     x=float(npc_data.get('x', 0) or 0) + CHARACTER_TOUCH_DX,
                     y=float(npc_data.get('y', 0) or 0) + CHARACTER_TOUCH_DY,
                     width=CHARACTER_TOUCH_TILES, height=CHARACTER_TOUCH_TILES)
+            elif npc_data.get('image'):
+                # getattr guard: unit stubs stand in for gs1 with a bare
+                # `.shapes` holder.
+                image_rect = getattr(self.gs1, 'npc_image_rect', None)
+                rect = image_rect(npc_data) if image_rect is not None else None
+                if rect is not None:
+                    rx, ry, rw, rh = rect
+                    hit = self.gs1.npc_footprint_hit
+                    self.npc_shapes[npc_id] = NPCShape(
+                        x=rx, y=ry,
+                        width=int(math.ceil(rw)), height=int(math.ceil(rh)),
+                        hit_test=(lambda px, py, _n=npc_data, _h=hit:
+                                  _h(_n, px, py)))
 
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.
 
-        Test points are the feet point plus the per-direction touch points
-        ahead of the player — the same geometry collision.py's CollisionMixin
-        uses for movement-triggered interactions (chests/signs/doors), so NPC
-        touch agrees with everything else that probes "what's in front of the
-        player" instead of using its own hand-rolled player box.
+        Test points are the feet point plus the reference client's two
+        per-direction `touchtestd` probe points (see TOUCH_OFFSETS above).
+        collision.py's CollisionMixin keeps its own, different offsets for
+        grab/read interactions (chests/signs/doors) — NPC touch follows the
+        NPC-touch oracle, not that table.
         """
         touched = []
 
+        # The reference probes reach half a tile beyond the collision box
+        # along the facing (see TOUCH_OFFSETS above), so both flush contact
+        # against a bottom-exclusive setshape2 rect AND the <= 0.24-tile
+        # resting gap a check-then-move movement script leaves are inside a
+        # faced NPC's footprint with margin — no epsilon extension needed
+        # (this replaces the old 1/16-tile flush-contact hack).
         test_points = [(player_x + PLAYER_FEET_DX, player_y + PLAYER_FEET_DY)]
         test_points += [(player_x + ox, player_y + oy)
                          for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
-        # Boundary-contact counts as touching: the reference client's touch
-        # test extends a couple of PIXELS beyond the collision box in the
-        # facing direction. Our up-probe row is exactly the box top (y+1),
-        # and a setshape2 rect is bottom-exclusive — so a player pressed
-        # dead against a shape (Bomber v6's queue counter stops scripted
-        # movement at probe_y == shape_bottom exactly) sampled 19.0 against
-        # [18,19) and never touched. Add the probes pushed 1px (1/16 tile)
-        # deeper along the facing so flush contact registers.
-        eps = 1.0 / 16.0
-        fdx, fdy = {0: (0.0, -eps), 1: (-eps, 0.0),
-                    2: (0.0, eps), 3: (eps, 0.0)}.get(player_dir, (0.0, 0.0))
-        if fdx or fdy:
-            test_points += [(player_x + ox + fdx, player_y + oy + fdy)
-                            for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
 
         for npc_id, shape in self.npc_shapes.items():
             for tx, ty in test_points:
@@ -220,7 +253,15 @@ class NPCHandler:
         """Process player movement and trigger touch events.
 
         Call this after the player moves to check for NPC collisions.
+        Refreshes the shape snapshot first (when a real GS1 engine is
+        attached): touch geometry tracks live NPC state (script-moved
+        positions, hide/show cycles like GTA's doors, late-arriving GS2
+        setshape2), and callers on the default-movement path historically
+        only snapshotted at level load. The walk is a cheap per-NPC dict
+        pass. Harnesses that hand-build npc_shapes with no gs1 keep them.
         """
+        if self.gs1 is not None:
+            self.update_npcs()
         touched_now = set(self.check_touch(new_x, new_y, direction))
 
         # Find newly touched NPCs (ones we weren't touching before)

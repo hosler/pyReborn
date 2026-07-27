@@ -11,6 +11,7 @@ import pygame
 from reborn_protocol.coords import local_to_world, segment_origin
 
 from ..gani import AnimationState
+from ..npc_handler import CHARACTER_IMAGE
 from ..player import Player
 from ..sprites import palette_name_to_index
 from .assets import render_outlined_text
@@ -295,7 +296,10 @@ class EntityRenderMixin(FrameContextMixin):
         if part and len(part) >= 4 and part[3] > 0:
             return part[3] / TILE_SIZE
         image = npc.get('image')
-        if image and not npc.get('gani', npc.get('animation')):
+        if (image and image != CHARACTER_IMAGE
+                and not npc.get('gani', npc.get('animation'))):
+            # CHARACTER_IMAGE ('#c#') is the showcharacter marker, not a
+            # sheet; a character is the default 3-tile gani canvas below.
             sprite = self.sprite_mgr.load_sheet(image)
             if sprite is not None:
                 return sprite.get_height() / TILE_SIZE
@@ -334,7 +338,11 @@ class EntityRenderMixin(FrameContextMixin):
         if part and len(part) >= 4 and part[2] > 0 and part[3] > 0:
             return float(part[2]), float(part[3])
         image = npc.get('image')
-        if image and not npc.get('gani', npc.get('animation')):
+        if (image and image != CHARACTER_IMAGE
+                and not npc.get('gani', npc.get('animation'))):
+            # CHARACTER_IMAGE ('#c#') is the showcharacter marker, not a
+            # sheet — a character composites on the default gani canvas, so
+            # the fallback extent below is the right size for it.
             sprite = self.sprite_mgr.load_sheet(image)
             if sprite is not None:
                 return sprite.get_size()
@@ -1193,6 +1201,15 @@ class EntityRenderMixin(FrameContextMixin):
             gani_name, gani_params = self._split_npc_gani(gani_name)
         image_name = npc.get('image')
         is_character = npc.get('is_character')
+        if not is_character and image_name == CHARACTER_IMAGE:
+            # A server that runs `showcharacter` itself streams the literal
+            # image "#c#" as the character marker (GS1Commands.cpp:3049 writes
+            # the prop, NPC.h:484-487 isCharacter; pygserver mirrors it). The
+            # marker is truthy, so without this the static-sprite branch below
+            # tried to load a sheet literally named "#c#" and the NPC stayed
+            # invisible. npc_handler.py keys touch geometry off the same
+            # marker (_is_character_npc).
+            is_character = True
         if not is_character and not image_name and (npc.get('headimage') or npc.get('bodyimage')):
             # is_character is normally set by the client-side GS1 showcharacter
             # builtin (gs1_client.py), but pygserver now runs level scripts

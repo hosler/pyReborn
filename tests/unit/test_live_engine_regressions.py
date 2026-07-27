@@ -20,6 +20,8 @@ def test_bare_players_tiles_and_value_builtins():
             "x": 8, "y": 9},
     }
     client.tiles = list(range(4096))
+    client._current_level_name = "seg.nw"
+    client._tiles_level_name = "seg.nw"
     gs1 = ClientGS1(client)
     rt = ClientGS2(client, gs1)
 
@@ -30,9 +32,12 @@ def test_bare_players_tiles_and_value_builtins():
     assert rt.host.get_object("playerdir") == 3
     tiles = rt.host.get_object("tiles")
     assert tiles[3][2] == float(2 * 64 + 3)
+    # 2026-07-26: tiles[] became a LIVE gmap-aware board view (see
+    # test_board_scripting.py) -- identity is stable while the world shape
+    # holds, and reads follow a board swap instead of needing a rebuild.
     assert rt.tiles_view() is tiles
     client.tiles = [1] * 4096
-    assert rt.tiles_view() is not tiles
+    assert tiles[3][2] == 1.0
     assert rt.host.get_object("missing_value") is None
     assert gs1._host.get_builtin(
         "missing_value", [], rt._gs1_ctx(None)) is UNSET

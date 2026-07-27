@@ -37,6 +37,9 @@ def format_sign_text(text: str) -> str:
     - ``#u/#d/#l/#r/#A/...`` button symbols -> readable names.
     - ``#i(image[,x,y,w,h])`` inline images aren't drawn in the text box ->
       dropped (a leading empty ``#i()`` line collapses away via the strip).
+    - ``#b`` is a line break (same translation packet_codec's parse_say2
+      already applies on the wire); done FIRST so a ``#K(35)``-escaped ``#``
+      followed by a literal ``b`` can't be misread as a break.
     """
     def _chr_escape(m):
         try:
@@ -51,6 +54,7 @@ def format_sign_text(text: str) -> str:
         except ValueError:
             return m.group(0)
 
+    text = text.replace('#b', '\n')
     text = re.sub(r'#K\((\d+)\)', _chr_escape, text)
     text = re.sub(r'#k\((\d+)\)', _key_escape, text)
     text = re.sub(r'#i\([^)]*\)', '', text)

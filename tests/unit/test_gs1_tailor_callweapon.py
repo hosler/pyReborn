@@ -91,12 +91,25 @@ def test_client_side_showcharacter_also_counts_as_a_character():
     assert 7 in handler.npc_shapes
 
 
-def test_shapeless_plain_npc_still_has_no_touch_box():
-    # The blast radius of the box above: everything that is not a character
-    # keeps the old "no shape, no touch" behaviour.
-    handler = _handler({7: {"x": 16.0, "y": 12.0, "image": "sign.png"},
-                        8: {"x": 20.0, "y": 20.0, "image": "-"}})
-    assert handler.npc_shapes == {}
+def test_shapeless_image_npc_gets_its_image_footprint_touch_box():
+    # A shapeless IMAGE NPC is touchable on its image footprint (the same
+    # geometry that blocks movement): reference touch dispatch and wall test
+    # share TServerNPC::isOnNPC. The stub gs1 here has no npc_image_rect, so
+    # no box; with the real engine attached the box appears (2x2 default for
+    # an unsized image).
+    handler = _handler({7: {"x": 16.0, "y": 12.0, "image": "sign.png"}})
+    assert handler.npc_shapes == {}   # stub gs1: no image-rect provider
+
+    c = _client()
+    c.entities.npcs[7] = {"x": 16.0, "y": 12.0, "image": "sign.png"}
+    gs1 = ClientGS1(c)
+    handler = NPCHandler(c)
+    handler.gs1 = gs1
+    handler.update_npcs()
+    shape = handler.npc_shapes[7]
+    assert (shape.x, shape.y, shape.width, shape.height) == (16.0, 12.0, 2, 2)
+    assert shape.is_point_inside(16.5, 12.5)
+    assert not shape.is_point_inside(18.5, 12.5)
 
 
 def test_script_shape_still_wins_over_the_character_box():
@@ -106,9 +119,12 @@ def test_script_shape_still_wins_over_the_character_box():
     assert (shape.x, shape.y, shape.width, shape.height) == (16.0, 12.0, 4, 3)
 
 
-def test_character_box_is_touch_only_not_solid():
-    # Deliberately NOT published to gs1's blocking cells: character NPCs stay
-    # walk-through, exactly as before this box existed.
+def test_character_box_is_solid_too():
+    # The character box BLOCKS as well as touches: TServerNPC::isOnNPC's
+    # character path is the same 2x2 rect at +(0.5, 1.0) the wall test walks
+    # (TServerNPC.cpp:2106-2112), and the level wall test asks NPCs before
+    # the board (TServerLevel::isOnWall). It never goes through the
+    # setshape cell store, though — that stays script-shape-only.
     c = _client()
     c.entities.npcs[7] = {"x": 16.0, "y": 12.0, "image": "#c#"}
     gs1 = ClientGS1(c)
@@ -117,7 +133,10 @@ def test_character_box_is_touch_only_not_solid():
     handler.update_npcs()
     assert 7 in handler.npc_shapes
     assert gs1._shape_blocks == set()
-    assert gs1.is_wall(16.5, 13.0) is False
+    assert gs1.is_wall(16.5, 13.0) is True    # inside the 2x2 feet box
+    assert gs1.is_wall(16.0, 12.0) is False   # sprite corner, outside the box
+    # ...and the probing NPC itself is excluded from its own onwall()
+    assert gs1.is_wall(16.5, 13.0, exclude_npc=7) is False
 
 
 def test_walking_into_a_character_npc_dispatches_playertouchsme():

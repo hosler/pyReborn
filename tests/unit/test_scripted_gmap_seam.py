@@ -125,6 +125,24 @@ def test_default_movement_worlds_are_untouched():
     assert PacketID.PLI_LEVELWARP not in c.sent_packets
 
 
+def test_inside_a_house_local_coords_announce_nothing():
+    """is_gmap stays True inside a standalone interior (house/cave) of a gmap
+    world, but player coords there are LOCAL — the probe must not read them
+    as world. Live regression (LTTP 2026-07-26): moving inside
+    zlttp-linkshouse.nw announced grid cell (0,0) and the server warped the
+    player to the gmap's top-left segment."""
+    c = _client()
+    h = _Harness(c)
+    c._current_level_name = "linkshouse.nw"    # interior: not a grid member
+    c.tiles = c.levels.setdefault("linkshouse.nw", [0] * 4096)
+    c.player.x, c.player.y = 30.5, 38.0
+    h._check_scripted_link_warp()
+    c.player.x, c.player.y = 30.5, 37.5        # local step ≠ segment (0,0)
+    h._check_scripted_link_warp()
+    assert PacketID.PLI_LEVELWARP not in c.sent_packets
+    assert c._current_level_name == "linkshouse.nw"
+
+
 def test_non_gmap_worlds_are_untouched():
     c = _client()
     c.gmap_width = c.gmap_height = 0

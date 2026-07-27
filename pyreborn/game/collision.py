@@ -323,6 +323,21 @@ class CollisionMixin:
         if self._chest_blocks(x, y):
             return True
 
+        # NPC footprints: the reference wall test asks the level's NPCs
+        # before the board (TServerLevel::isOnWall -> TServerNPC::isOnNPC),
+        # so a visible image NPC blocks with its image footprint until
+        # dontblock, a character NPC with its 2x2 feet box, and setshape
+        # cells with their published geometry. The full oracle-derived rule
+        # (visibility, dontblock/blockagain, setimgpart, pixel-transparency
+        # refinement) lives in gs1_client.ClientGS1.npc_blocks_at.
+        gs1 = getattr(self, 'gs1', None)
+        if gs1 is not None:
+            try:
+                if gs1.npc_blocks_at(x, y):
+                    return True
+            except Exception:
+                pass
+
         tile_id = self._get_tile_at(x, y)
         return self._is_tile_blocking(tile_id)
     def _chest_blocks(self, x: float, y: float) -> bool:

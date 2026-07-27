@@ -32,7 +32,9 @@ from reborn_protocol.gs2 import (
     GS2VM, GS2Host, GS2Object, NOT_HANDLED, casefold as gs2_casefold,
     to_bool, to_num, to_str,
 )
-from .gs1_client import PLAYER_ATTR
+from .gs1_client import (
+    PLAYER_ATTR, board_tile_read, board_tile_write, board_world_dims,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,11 @@ SAVE_LINES_CACHE_MAX_BYTES = 5 * 1024 * 1024
 # 1/120 s at :171), so a self-rearming setTimer(0.01) ticks at frame rate --
 # which is what sizes CadavreTest's cog spin and -Test_Movement's walk.
 TIMER_RESOLUTION = 1.0 / 120.0
+# settimer(v)/this.timeout = v at or below this CANCELS the pending timer —
+# the reference setTimeout deactivates for values <= 0.0001
+# (TScriptSpace::setTimeout, Preagonal/FourPlay/quattroplay/src/
+# TScriptSpace.cpp:121-129). Mirrors gs1_client._TIMEOUT_CANCEL.
+_TIMER_CANCEL = 0.0001
 TIMER_BACKLOG_CAP = 0.25
 PENDING_EVENT_CAP = 16
 # Ceiling on scheduleevent() arms in flight across every script (a runaway
@@ -795,11 +802,17 @@ class _ThisObject(GS2Object):
     def set(self, key: str, value: Any) -> None:
         if key.lower() == "timeout":
             # same floor as the settimer() builtin (see TIMER_RESOLUTION)
-            # so this.timeout = 0.01 loops tick at frame rate too
+            # so this.timeout = 0.01 loops tick at frame rate too.
+            # `timeout = 0` (or anything <= 0.0001) CANCELS the pending
+            # timer instead of arming an immediate fire — the reference
+            # engine's setTimeout deactivates it (TScriptSpace::setTimeout,
+            # Preagonal/FourPlay/quattroplay/src/TScriptSpace.cpp:121-129);
+            # storing 0.0 here re-fired onTimeout next frame forever.
             v = to_num(value)
-            if 0.0 < v < TIMER_RESOLUTION:
-                v = TIMER_RESOLUTION
-            self._rt2._timeouts[self._vm_key] = max(0.0, v)
+            if v <= _TIMER_CANCEL:
+                self._rt2._timeouts.pop(self._vm_key, None)
+                return
+            self._rt2._timeouts[self._vm_key] = max(v, TIMER_RESOLUTION)
             return
         super().set(key, value)
 
@@ -936,6 +949,26 @@ class _NpcThisObject(_ThisObject):
                 npc = None
         return npc if isinstance(npc, dict) else None
 
+    def _npc_id(self):
+        """The client.npcs key this VM's record lives under — the same id
+        render_entities iterates with, so speech-bubble entries keyed on it
+        actually reach this NPC's draw."""
+        cl = self._rt2.client
+        if cl is None:
+            return None
+        npcs = getattr(cl, "npcs", {})
+        key = self._vm_key[1]
+        if key in npcs:
+            return key
+        if isinstance(key, str):
+            try:
+                ikey = int(key)
+            except (TypeError, ValueError):
+                return None
+            if ikey in npcs:
+                return ikey
+        return None
+
     def has(self, key: str) -> bool:
         k = key.lower()
         if k in _NPC_THIS_ATTR or k in ("colors", "color"):
@@ -999,6 +1032,21 @@ class _NpcThisObject(_ThisObject):
                     mark = getattr(self._rt2.client, "_mark_npc_pos_snap", None)
                     if mark is not None:
                         mark(npc)
+                elif attr == "message":
+                    # `this.chat = "Yes?"` is how a GS2 NPC speaks (bomber v6
+                    # Isaac 10333, gani sen_grab). Storing it on the dict
+                    # alone is silent — the renderer's bubble reads
+                    # npc_chat_texts (render_entities._render_npc), fed for
+                    # GS1 by the say/message command via rt.on_say (setup.py's
+                    # on_say). Feed the same store from this write path.
+                    # Numbers settle to text with GS2's rule (to_str), the
+                    # same as any other GS2 value becoming display text.
+                    text = value if isinstance(value, str) else to_str(value)
+                    npc[attr] = text
+                    say = getattr(self._rt2.gs1, "on_say", None)
+                    npc_id = self._npc_id()
+                    if say is not None and npc_id is not None:
+                        say(npc_id, text)
                 else:
                     npc[attr] = value if isinstance(value, str) else to_num(value)
                 return
@@ -1155,6 +1203,47 @@ class _LevelObject(GS2Object):
             # live level is neither, so the write is a no-op there too.
             return
         super().set(key, value)
+
+
+class _BoardTilesColumn(list):
+    """One column of the live `tiles[]` view (see ClientGS2.tiles_view).
+
+    A real list subclass so every VM op that gates on isinstance(list)
+    (OP_ARRAY / OP_ARRAY_ASSIGN / OP_ARRAY_MULTIDIM*) accepts it, but the
+    element storage is the CLIENT BOARD: reads and writes route through the
+    gmap-aware helpers in gs1_client, so world coords hit the owning
+    segment's board and a write patches the real board (collision) plus the
+    renderer's cached segment surface -- not a detached snapshot. The base
+    list stays empty; __len__ supplies the world height so the VM's bounds
+    checks and its extend-on-grow path stay in-range without materializing
+    placeholder rows."""
+
+    __slots__ = ("_rt2", "_x", "_h")
+
+    def __init__(self, rt2: "ClientGS2", x: int, height: int):
+        super().__init__()
+        self._rt2 = rt2
+        self._x = x
+        self._h = height
+
+    def __len__(self) -> int:
+        return self._h
+
+    def __bool__(self) -> bool:
+        return self._h > 0
+
+    def __iter__(self):
+        return (self[i] for i in range(self._h))
+
+    def __getitem__(self, y):
+        if isinstance(y, slice):
+            return [self[i] for i in range(*y.indices(self._h))]
+        v = board_tile_read(self._rt2.client, self._x, y)
+        return 0.0 if v is None else v
+
+    def __setitem__(self, y, value):
+        if not isinstance(y, slice):
+            board_tile_write(self._rt2.client, self._x, y, to_num(value))
 
 
 # ---------------------------------------------------------------------------
@@ -2457,12 +2546,15 @@ class GS2ClientHost(GS2Host):
     @_gs2_builtin(_GS2_BARE, "settimer")
     def _bi_settimer(self, vm, name, args, obj):
         # Floor at the reference client's 120Hz update tick; see
-        # TIMER_RESOLUTION.
+        # TIMER_RESOLUTION. settimer(0) CANCELS (same rule as
+        # `this.timeout = 0` — see _ThisObject.set and the
+        # TScriptSpace::setTimeout citation there).
         rt2 = self.rt2
         v = to_num(args[0]) if args else 0.0
-        if 0.0 < v < TIMER_RESOLUTION:
-            v = TIMER_RESOLUTION
-        rt2._timeouts[rt2._timeout_key(vm)] = max(0.0, v)
+        if v <= _TIMER_CANCEL:
+            rt2._timeouts.pop(rt2._timeout_key(vm), None)
+            return 0.0
+        rt2._timeouts[rt2._timeout_key(vm)] = max(v, TIMER_RESOLUTION)
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "join")
@@ -3024,7 +3116,7 @@ class ClientGS2:
         # onPlayerEnters bookkeeping: which VMs got it for the current level
         self._entered_level: Optional[str] = None
         self._entered_vms: set = set()
-        self._tiles_source = None
+        self._tiles_view_key = None   # (world_w, world_h) the view was built for
         self._tiles_view = None
         self._weapons_signature = None
         self._weapons_view = []
@@ -3489,15 +3581,19 @@ class ClientGS2:
                 for e in (getattr(client, "active_explosions", None) or [])]
 
     def tiles_view(self) -> list:
-        tiles = getattr(self.client, "tiles", None) if self.client else None
-        if tiles is not self._tiles_source:
-            self._tiles_source = tiles
-            self._tiles_view = [
-                [float(tiles[y * 64 + x])
-                 if tiles is not None and y * 64 + x < len(tiles) else 0.0
-                 for y in range(64)]
-                for x in range(64)
-            ]
+        """Live gmap-aware `tiles[]`: tiles[x][y] (and tiles[x,y]) in the
+        SCRIPT frame -- world tiles while standing on a gmap segment (LTTP's
+        -Player/Movement indexes 0..width*64), local 0..63 in a standalone
+        level. Columns are _BoardTilesColumn views routing straight to the
+        client board both ways; the old code here snapshotted one 64x64
+        local board, so world coords indexed out to None and every write
+        mutated a detached copy. Rebuilt only when the world's shape
+        changes (gmap <-> house); reads/writes are live regardless."""
+        w, h = board_world_dims(self.client)
+        if self._tiles_view is None or self._tiles_view_key != (w, h):
+            self._tiles_view_key = (w, h)
+            self._tiles_view = [_BoardTilesColumn(self, x, h)
+                                for x in range(w)]
         return self._tiles_view
 
     def find_image(self, vm, index: int):

@@ -19,6 +19,7 @@ import os
 import sys
 import traceback
 
+from reborn_protocol.coords import level_index, segment_at, world_to_local
 from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.lexer import tokenize
@@ -64,15 +65,158 @@ class GS1NoBoard(Exception):
     the furniture alone; the event re-runs once the board has arrived.
     """
 
+
+# ---------------------------------------------------------------------------
+# Script-visible board access -- tiles[] reads/writes and updateboard -- shared
+# by BOTH engines (GS1's `tiles[x,y]` builtin below, GS2's tiles_view in
+# gs2_client.py). Coordinates are in the SCRIPT frame: world tiles while
+# standing on a gmap segment (LTTP's -Player/Movement indexes 0..width*64),
+# plain local 0..63 in a standalone level (houses, classic servers) -- the
+# same frame split every other client-side probe (tiletype, onwall, playerx)
+# already uses. Frame math comes from reborn_protocol.coords per house rules.
+# ---------------------------------------------------------------------------
+
+def _board_locate(client, x, y):
+    """Resolve script-frame tile coords -> (level_name, lx, ly, grid).
+
+    level_name is None when the coords land outside the world (or in a hole
+    of the gmap grid); grid is the (gx, gy) segment on a gmap, None in a
+    standalone level."""
+    if client is None:
+        return None, 0, 0, None
+    tx, ty = int(math.floor(x)), int(math.floor(y))
+    if getattr(client, "in_gmap_segment", False) and getattr(client, "gmap_grid", None):
+        grid = segment_at(tx, ty)
+        level = client.gmap_grid.get(grid)
+        if not level:
+            return None, tx, ty, grid
+        lx, ly = world_to_local(tx, ty)
+        return level, int(lx), int(ly), grid
+    if 0 <= tx < 64 and 0 <= ty < 64:
+        return getattr(client, "_current_level_name", "") or None, tx, ty, None
+    return None, tx, ty, None
+
+
+def _board_list(client, level_name):
+    """The 4096-entry tile list backing `level_name`, or None. Same resolution
+    order as the renderer's _segment_tiles (client.levels cache first, then
+    the active client.tiles) -- Client._apply_board_modify patches both."""
+    levels = getattr(client, "levels", None) or {}
+    board = levels.get(level_name)
+    if board is None and level_name == getattr(client, "_tiles_level_name", ""):
+        board = getattr(client, "tiles", None)
+    return board if board is not None and len(board) >= 4096 else None
+
+
+def board_world_dims(client):
+    """(width, height) of the script-frame board in tiles: the whole gmap
+    while standing on a segment, one level otherwise."""
+    if client is not None and getattr(client, "in_gmap_segment", False):
+        w = int(getattr(client, "gmap_width", 0) or 0)
+        h = int(getattr(client, "gmap_height", 0) or 0)
+        if w > 0 and h > 0:
+            return w * 64, h * 64
+    return 64, 64
+
+
+def board_tile_read(client, x, y):
+    """tiles[x,y] read. None = unanswerable (outside the world, or that
+    segment's board never streamed); callers pick their engine's miss value."""
+    level, lx, ly, _grid = _board_locate(client, x, y)
+    if level is None:
+        return None
+    board = _board_list(client, level)
+    if board is None:
+        return None
+    return float(board[level_index(lx, ly)])
+
+
+def board_tile_write(client, x, y, tile_id) -> bool:
+    """tiles[x,y] = id. Routes through Client._apply_board_modify (the same
+    path a PLO_BOARDMODIFY server delta takes), so the write hits the REAL
+    board -- client.levels + active client.tiles, hence collision -- and then
+    the on_board_modify callback, which the pygame client wires to the
+    renderer's per-segment surface patcher. Off-world / board-less writes are
+    dropped (matching a server delta for a level we don't have)."""
+    level, lx, ly, grid = _board_locate(client, x, y)
+    if level is None or _board_list(client, level) is None:
+        return False
+    info = {"layer": 0, "x": lx, "y": ly, "width": 1, "height": 1,
+            "tiles": [max(0, int(to_num(tile_id))) & 0xFFF]}
+    if grid is not None:
+        info["map_x"], info["map_y"] = grid
+    client._apply_board_modify(level, info)
+    cb = getattr(client, "on_board_modify", None)
+    if cb:
+        cb(info)
+    return True
+
+
+def board_update_region(client, x, y, w, h) -> None:
+    """`updateboard x,y,width,height` -- re-blit the rect from current board
+    data. Oracle: GServer-v2 GS1Commands.cpp:3560-3575 (fn_updateboard /
+    fn_updateboard2): exactly this argument order, each value clamped at 0,
+    the rect handed to Level::updateBoard for a region redraw; updateboard2
+    additionally saves the level server-side, which has no client-side
+    meaning, so both spellings redraw here. Scripts edit tiles[] first and
+    then call this to publish the change (LTTP's CheckTiles bush slash);
+    board_tile_write already patches the renderer per write, so this is the
+    idempotent region form -- and the only path that repaints edits made
+    behind the callback's back."""
+    if client is None:
+        return
+    cb = getattr(client, "on_board_modify", None)
+    if cb is None:
+        return
+    x0 = max(0, int(math.floor(x)))
+    y0 = max(0, int(math.floor(y)))
+    ww, wh = board_world_dims(client)
+    x1 = min(x0 + max(0, int(math.floor(w))), ww)
+    y1 = min(y0 + max(0, int(math.floor(h))), wh)
+    if x1 <= x0 or y1 <= y0:
+        return
+    on_gmap = bool(getattr(client, "in_gmap_segment", False)
+                   and getattr(client, "gmap_grid", None))
+    targets = []
+    if on_gmap:
+        for gy in range(y0 // 64, (y1 - 1) // 64 + 1):
+            for gx in range(x0 // 64, (x1 - 1) // 64 + 1):
+                level = client.gmap_grid.get((gx, gy))
+                if not level:
+                    continue
+                targets.append((level, (gx, gy),
+                                max(x0, gx * 64) - gx * 64,
+                                max(y0, gy * 64) - gy * 64,
+                                min(x1, (gx + 1) * 64) - gx * 64,
+                                min(y1, (gy + 1) * 64) - gy * 64))
+    else:
+        level = getattr(client, "_current_level_name", "") or None
+        if level:
+            targets.append((level, None, x0, y0, x1, y1))
+    for level, grid, lx0, ly0, lx1, ly1 in targets:
+        board = _board_list(client, level)
+        if board is None:
+            continue
+        tiles = [board[level_index(tx, ty)]
+                 for ty in range(ly0, ly1) for tx in range(lx0, lx1)]
+        info = {"layer": 0, "x": lx0, "y": ly0,
+                "width": lx1 - lx0, "height": ly1 - ly0, "tiles": tiles}
+        if grid is not None:
+            info["map_x"], info["map_y"] = grid
+        cb(info)
+
+
 # player-prefixed builtin -> attribute on the pyReborn Player
 PLAYER_ATTR = {**A_CLASS_PLAYER_ATTR, "playeraccount": "account"}
 # unprefixed builtin -> key on the client NPC dict (the NPC running the script)
 NPC_ATTR = dict(A_CLASS_NPC_ATTR)
 # command -> NPC dict key it writes (so the renderer reflects the change).
 # Image commands are handled explicitly in _dispatch (they also manage the
-# imagepart sub-rect), so they're not listed here.
+# imagepart sub-rect), so they're not listed here. NB `setani` is NOT here:
+# it always targets the LOCAL PLAYER, even from an NPC script (see
+# _cmd_setani) — only `setcharani` is the NPC-targeting form.
 _NPC_WRITE = {
-    "setani": "gani", "setcharani": "gani", "setnick": "nickname",
+    "setcharani": "gani", "setnick": "nickname",
 }
 
 # setcharprop / setplayerprop message-code target -> NPC dict key. These mirror
@@ -113,6 +257,17 @@ _NOOP = frozenset({
 # movement step, 0.3 tiles on Bomber v6) minus the 1/16 the scripts already
 # shave off their probe extents: 0.3 - 1/16 = 0.2375.
 _ONWALL2_EDGE_TOL = 0.25
+
+# `timeout = v` with v at or below this cancels the pending timeout instead of
+# arming it — TScriptSpace::setTimeout deactivates the timer for any value
+# <= 0.0001 (Preagonal/FourPlay/quattroplay/src/TScriptSpace.cpp:121-129).
+_TIMEOUT_CANCEL = 0.0001
+
+# Default footprint for an image NPC whose texture size is unknown (image not
+# loaded / headless host): 32x32 pixels = 2x2 tiles, the reference engine's
+# fallback for an unsized texture (TParticleData::pixelsize,
+# Preagonal/FourPlay/quattroplay/src/TParticleData.cpp:155-163).
+_DEFAULT_IMAGE_PX = 32
 
 
 # ---------------------------------------------------------------------------
@@ -496,17 +651,19 @@ class GS1ClientHost(Host):
 
     @_gs1_builtin(_GS1_BUILTINS, "tiles")
     def _gb_tiles(self, name, indices, ctx):
-        # tiles[x,y] — the level board tile id at (x,y); read-only. The room
-        # editor reads this for wall detection (tiles[x,y] in {0x278,0x939}).
-        # Off-board indices answer 0 (a real "nothing there"); a MISSING or
-        # stale board refuses to answer at all — see GS1NoBoard.
+        # tiles[x,y] — the board tile id at (x,y), gmap-aware: world coords
+        # on a gmap segment, local 0..63 in a standalone level (see
+        # _board_locate). The room editor reads this for wall detection
+        # (tiles[x,y] in {0x278,0x939}); writes route through set_builtin
+        # below. Off-board indices answer 0 (a real "nothing there"); a
+        # MISSING or stale board refuses to answer at all — see GS1NoBoard.
         if not self.rt.board_ready():
             raise GS1NoBoard("tiles[] read before the level board arrived")
-        tiles = self.rt.client.tiles
         if len(indices) >= 2:
-            x, y = int(indices[0]), int(indices[1])
-            if 0 <= x < 64 and 0 <= y < 64 and y * 64 + x < len(tiles):
-                return float(tiles[y * 64 + x])
+            v = board_tile_read(self.rt.client,
+                                to_num(indices[0]), to_num(indices[1]))
+            if v is not None:
+                return v
         return 0.0
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
@@ -526,18 +683,37 @@ class GS1ClientHost(Host):
             if 0 <= i < len(slots):
                 slots[i] = float(min(220, max(0, int(to_num(value)))))
             return True
+        # `tiles[x,y] = id` — script board edit, same gmap-aware frame as the
+        # _gb_tiles read above (LTTP's CheckTiles rewrites a slashed bush this
+        # way, then calls updateboard). Handled even when the write lands
+        # off-board/off-world, so a stray write doesn't fall through and
+        # create a plain variable named "tiles".
+        if name == "tiles" and len(indices) >= 2:
+            board_tile_write(self.rt.client, to_num(indices[0]),
+                             to_num(indices[1]), value)
+            return True
         # `timeout = N` schedules the NPC's `timeout` event N seconds out. Most
         # bomber NPCs drive their logic this way (proximity checks, the room-join
         # processing, animations); the game loop fires it via process_timeouts.
+        # `timeout = 0` CANCELS the pending event: TScriptSpace::setTimeout
+        # (Preagonal/FourPlay/quattroplay/src/TScriptSpace.cpp:121-129) zeroes
+        # and deactivates the timer for any value <= 0.0001. Re-arming at 0
+        # instead turned the classic disable idiom `timeout = 0;` into a
+        # permanent per-frame loop (GTA npc313's trunk-shrink timeout ran
+        # forever, walking its imagepart width negative).
         if name == "timeout":
+            t = to_num(value)
             if isinstance(npc, dict):
-                npc["_timeout"] = max(0.0, to_num(value))
+                npc["_timeout"] = None if t <= _TIMEOUT_CANCEL else t
                 return True
             # weapon context (no NPC): re-arm the weapon's timeout event so its
             # per-frame gameplay loop keeps running (arenaGUI/arenaSYS do this).
             key = getattr(ctx, "_prog_key", None)
             if key is not None:
-                self.rt._weapon_timeouts[key] = max(0.0, to_num(value))
+                if t <= _TIMEOUT_CANCEL:
+                    self.rt._weapon_timeouts.pop(key, None)
+                else:
+                    self.rt._weapon_timeouts[key] = t
                 return True
             return False
         # playerx/playery: the arena weapons drive movement by assigning these.
@@ -671,6 +847,18 @@ class GS1ClientHost(Host):
         # swallowed no-op
         self.rt.weapons_enabled = name == "enableweapons"
 
+    @_gs1_command(_GS1_PRE_COMMANDS, "updateboard", "updateboard2")
+    def _cmd_updateboard(self, name, args, ctx, imgs):
+        # updateboard x,y,width,height — region redraw from board data (see
+        # board_update_region for the oracle citation). GS2 scripts reach
+        # this through the shared GS1-command surface (gs2_client routes any
+        # reborn_protocol.gs1 COMMANDS name here), which is how LTTP's
+        # -Player/Movement publishes its CheckTiles bush edits.
+        if len(args) >= 4:
+            board_update_region(self.rt.client,
+                                to_num(args[0]), to_num(args[1]),
+                                to_num(args[2]), to_num(args[3]))
+
     @_gs1_command(_GS1_PRE_COMMANDS, "addtiledef2")
     def _cmd_addtiledef2(self, name, args, ctx, imgs):
         # addtiledef2 <image>, <level>, <xoffset>, <yoffset> — paste an image
@@ -780,6 +968,38 @@ class GS1ClientHost(Host):
 
     # -- player / game commands (work for weapon scripts too, where there
     # is no NPC object) -----------------------------------------------------
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setani")
+    def _cmd_setani(self, name, args, ctx, imgs):
+        # setani ALWAYS drives the LOCAL PLAYER's gani, even from an NPC
+        # script — setcharani is the NPC-targeting form (GServer-v2
+        # GS1Commands.cpp resolves setani to the player, setcharani to the
+        # npc; the GS2 host's _bi_setani splits the same way). Aliasing both
+        # onto the NPC made bomber-classic's piano vanish on seating: doPlay's
+        # `setani sen_piano_idle,;` replaced the piano NPC's own gani, and
+        # the seated player never showed the playing pose.
+        rt = self.rt
+        if not args:
+            return _FALL_THROUGH
+        joined = ",".join(to_str(a) for a in args).rstrip(",")
+        base = joined.split(",")[0].strip()
+        if not base:
+            return None
+        # Wire prop (other clients + #m); set_animation applies replaceani.
+        send = getattr(rt.client, "set_animation", None)
+        if send is not None:
+            try:
+                send(base)
+            except Exception:
+                pass
+        # Local mirror: the renderer draws the local player from
+        # player_anim/current_anim_name, which only the built-in input path
+        # updates — the pygame shell wires on_setani (game/setup.py) to
+        # reflect the scripted gani (params ride along: a gani's PLAYSOUND
+        # is routinely a PARAMn token).
+        if rt.on_setani:
+            rt.on_setani(joined)
+        return None
 
     @_gs1_command(_GS1_PRE_COMMANDS, "setlevel2", "setlevel")
     def _cmd_setlevel(self, name, args, ctx, imgs):
@@ -1105,18 +1325,23 @@ class GS1ClientHost(Host):
         # dontblocklocal differs only in wire sync (scriptfun_servernpc_
         # dontblocklocal, TServerNPCProperties.cpp:443 — same blocking field
         # as dontblock :436); identical client-side.
-        npc = ctx.this_obj
-        npc_id = getattr(ctx, "_npc_id", 0)
-        npc["dontblock"] = True
-        self.rt.shapes.pop(npc_id, None)
-        self.rt._update_shape_blocks(npc_id, npc, 0, 0, [])
+        #
+        # Sets ONLY the not-blocking flag. The reference command writes one
+        # boolean (TServerNPCProperties.cpp:436-446) and leaves the shape
+        # geometry alone, so `blockagain` restores blocking with the shape
+        # intact, and the shape stays available to TOUCH tests (which ignore
+        # the blocking flag — see npc_blocks_at's rule derivation). The old
+        # code here popped rt.shapes and the published cells, which made
+        # blockagain a no-op and killed touch on any dontblock'ed NPC.
+        ctx.this_obj["dontblock"] = True
 
     @_gs1_command(_GS1_NPC_COMMANDS, "blockagain", "blockagainlocal")
     def _cmd_blockagain(self, name, args, ctx, imgs):
-        # inverse of dontblock: restore the NPC's default blocking (collision
-        # reads the dontblock flag; a setshape2-published block set was
-        # already dropped by dontblock and is not resurrected — none of the
-        # live users combine the two)
+        # inverse of dontblock: clears the same flag
+        # (scriptfun_servernpc_blockagain/blockagainlocal,
+        # TServerNPCProperties.cpp:358-371). Blocking queries read the flag
+        # live, so the NPC's footprint (shape cells or image rect) resumes
+        # blocking immediately — GTA's doors re-arm this way on timeout.
         ctx.this_obj["dontblock"] = False
 
     @_gs1_command(_GS1_NPC_COMMANDS, "destroy")
@@ -1371,7 +1596,8 @@ class GS1ClientHost(Host):
         if name == "onwall":
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
-            return bool(self.rt.is_wall(x, y))
+            return bool(self.rt.is_wall(
+                x, y, exclude_npc=getattr(ctx, "_npc_id", None)))
         if name == "onwall2":
             # onwall2(x, y[, width, height]) — the GS2/v6 4-arg rect form
             # (used by -Test_Movement's CheckWall probes) tests every tile
@@ -1401,6 +1627,7 @@ class GS1ClientHost(Host):
             # before.
             xf = to_num(args[0]) if args else 0.0
             yf = to_num(args[1]) if len(args) > 1 else 0.0
+            _self_id = getattr(ctx, "_npc_id", None)
             if len(args) >= 4:
                 import math as _m
                 w = min(max(to_num(args[2]), 0.0), 8.0)
@@ -1410,10 +1637,11 @@ class GS1ClientHost(Host):
                 y1 = max(y0, int(_m.ceil(yf + h - _ONWALL2_EDGE_TOL)) - 1)
                 for ty in range(y0, y1 + 1):
                     for tx in range(x0, x1 + 1):
-                        if self.rt.is_wall(tx, ty):
+                        if self.rt.is_wall(tx, ty, exclude_npc=_self_id):
                             return True
                 return False
-            return bool(self.rt.is_wall(int(xf), int(yf)))
+            return bool(self.rt.is_wall(int(xf), int(yf),
+                                        exclude_npc=_self_id))
         if name in ("onwater", "onwater2"):
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
@@ -1981,6 +2209,18 @@ class ClientGS1:
         # only knows one 64x64 level, so inside a gmap every probe lands
         # outside 0..63 and answers "not a wall".
         self.tile_source = None
+        # optional (image_name) -> (w_px, h_px) or None, wired to the pygame
+        # sprite manager. Sizes an image NPC's default blocking/touch
+        # footprint; an unset hook or unknown image falls back to
+        # _DEFAULT_IMAGE_PX square (the engine's unsized-texture default).
+        self.image_size_source = None
+        # optional (image_name, px, py) -> bool/None: is that image pixel
+        # opaque (None = unknown, treated opaque)? The reference footprint is
+        # per-pixel — a wall/touch probe inside the image rect resolves to
+        # !isPixelTransparent (TServerNPC::isOnNPC, Preagonal/FourPlay/
+        # quattroplay/src/TServerNPC.cpp:2158-2196) — so a mostly-transparent
+        # decoration only blocks where its art actually is.
+        self.image_opaque_source = None
         # optional () -> (x, y) giving the mouse cursor in WORLD TILE coords,
         # wired to the pygame client's camera (game/input.py). Unset (headless
         # harnesses) answers the player's own position, which makes
@@ -2014,6 +2254,7 @@ class ClientGS1:
         self.on_stopmusic = None
         self.on_say = None
         self.on_say2 = None
+        self.on_setani = None
         self.on_message = None
         self.on_setmap = None
         self.on_movement_changed = None
@@ -2163,10 +2404,19 @@ class ClientGS1:
         self.drop_level_weapon_layers()  # GS1 weapon layers are re-drawn per level
         self._coros.clear()             # abandon suspended scripts from old level
         self._active_coro_keys.clear()
-        # Normal movement is the per-level default; the arena weapon disables it
-        # again on its playerenters. Prevents getting stuck if we leave the arena
-        # without the weapon's enabledefmovement running.
-        self.default_movement = True
+        # default_movement is deliberately NOT reset here: dis/enabledefmovement
+        # is PLAYER-scoped state, not level-scoped. In the reference client the
+        # only setDefaultMovement(true) resets are session boundaries — leaving
+        # the server (TPlayer::resetAttributes, FourPlay quattroplay
+        # src/TPlayer.cpp:1549, called from TServerList.cpp:265), entering/
+        # restarting one (TPlayer::loadStartLevel, src/TPlayer.cpp:5573) and
+        # server-side player init (TServerPlayer.cpp:239) — never a level
+        # change. A per-level reset here silently re-enabled native movement on
+        # LTTP, whose GS2 -Player/Movement calls disabledefmovement ONCE in
+        # onCreated: the first level announce turned the flag back on, gating
+        # off the whole scripted-movement probe chain (seam announces, link
+        # warps) and double-driving movement. Our session boundary is a fresh
+        # ClientGS1 (one per GameClient per server connection).
 
     def drop_level_weapon_layers(self):
         """Clear weapon showimg layer stores on a level change — EXCEPT the
@@ -2322,7 +2572,12 @@ class ClientGS1:
             col, row = i % w, i // w
             cell = (ax + col, ay + row)
             types[cell] = ttype
-            if ttype == 22:
+            # A shape cell WALLS at type >= 20, not just 22: the reference
+            # wall test on a shape-2 NPC is getTileType(x, y) >= 20
+            # (TServerNPC::isOnNPC, Preagonal/FourPlay/quattroplay/src/
+            # TServerNPC.cpp:2199-2213; board walltile uses the same > 0x13
+            # threshold, TServerLevel.cpp:742).
+            if ttype >= 20:
                 mine.add(cell)
         if mine:
             self._shape_blocks |= mine
@@ -2354,6 +2609,151 @@ class ClientGS1:
         level's NPCs are asked before the board, and the first non-zero answer
         wins. Callers apply the board fallback for anything <= 1."""
         return self._shape_types.get((int(math.floor(x)), int(math.floor(y))), 0)
+
+    # -- NPC blocking footprints (image NPCs, characters, shape cells) ------
+    #
+    # Rule derived from the reference client (Preagonal/FourPlay/quattroplay/
+    # src): the level wall test asks its NPCs before the board
+    # (TServerLevel::isOnWall, TServerLevel.cpp:2642-2654 — NPCs, bombs,
+    # chests, players, then the board tile; it is a plain OR, so order does
+    # not change the answer), and the player's own movement collision runs
+    # through exactly that test (TPlayer::movementAction, TPlayer.cpp:
+    # 7515-7519). Per NPC (TServerNPC::isOnNPC, TServerNPC.cpp:2093-2226):
+    #
+    # - an INVISIBLE NPC (hide/hidelocal/destroy) never blocks and never
+    #   touches (:2095), nor does one zoomed to 0 (:2099).
+    # - the not-blocking flag (dontblock/dontblocklocal set it, blockagain
+    #   clears it — TServerNPCProperties.cpp:358-371, 436-446) exempts the
+    #   NPC from WALL tests only; touch tests ignore the flag. The flag's
+    #   polarity is pinned by TServerNPC::isOnWall marking ITSELF
+    #   not-blocking around its own level wall probe so a script's onwall()
+    #   can't collide with its own NPC (TServerNPC.cpp:2288-2313) — which
+    #   only works if wall tests skip flagged NPCs. (The decompile's
+    #   `!ignoreBlocking` at :2097 renders that store dead, i.e. the
+    #   negation is a decompiler artifact.)
+    # - a CHARACTER NPC's box is 2x2 tiles at +(0.5, 1.0) (TServerNPC.cpp:
+    #   2106-2112; GServer-v2 NPC.h:544-551 agrees: translate(8,16),
+    #   {32,32}).
+    # - a setshape type-1 NPC blocks its w x h pixel box; a setshape2 array
+    #   cell blocks at type >= 20 (both handled by the shape-cell path).
+    # - anything else visible blocks its IMAGE footprint: the setimgpart
+    #   rect if set, else the image's full size — UNCAPPED (TServerNPC::
+    #   pixelsize, TServerNPC.cpp:1993-2014: shape > imgpart > texture
+    #   size) — refined per-pixel by image transparency (:2158-2196) via
+    #   the image_opaque_source hook where the art is loaded. No image at
+    #   all -> no footprint (:2130-2132).
+    #
+    # Local script constructs never block: weapon showimg layers and
+    # effects are not NPCs (they live in _weapon_imgs / npc['imgs'], not
+    # client.npcs), and this walk only sees server NPCs.
+
+    @staticmethod
+    def _npc_solid(npc) -> bool:
+        """The gate isOnNPC applies before any geometry on a WALL test:
+        visible, blocking flag intact, not zoomed away."""
+        if npc.get("visible", True) is False or npc.get("dontblock"):
+            return False
+        z = npc.get("zoom_effect")
+        if z is not None and to_num(z) == 0.0:
+            return False
+        return True
+
+    def _shape_cell_blocks(self, x, y, exclude_npc=None) -> bool:
+        """Does a setshape/setshape2 blocking cell cover (x, y), owned by an
+        NPC that is currently solid? The flat _shape_blocks set answers the
+        cheap membership test; the owner walk applies the per-NPC
+        visible/dontblock gate (the flag no longer edits the cell sets, so
+        blockagain can restore them — see _cmd_dontblock)."""
+        cell = (int(math.floor(x)), int(math.floor(y)))
+        if cell not in self._shape_blocks:
+            return False
+        npcs = getattr(self.client, "npcs", {}) if self.client else {}
+        for nid, cells in self._shape_block_owners.items():
+            if nid == exclude_npc:
+                continue
+            if cell in cells:
+                npc = npcs.get(nid)
+                if not isinstance(npc, dict) or self._npc_solid(npc):
+                    return True
+        return False
+
+    def npc_image_rect(self, npc):
+        """World-tile footprint rect (x, y, w, h) of a shapeless NPC, or None.
+
+        Character NPCs get the implicit 2x2 box on their feet; an image NPC
+        covers its setimgpart rect if set, else its image's full size
+        (image_size_source; unknown -> the 2x2 engine default). Tiles are
+        pixels / 16. Visibility/blocking gates are the CALLER's business —
+        touch uses this same rect without them."""
+        if not isinstance(npc, dict):
+            return None
+        if npc.get("is_character") or npc.get("image") == "#c#":
+            nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+            return (nx + 0.5, ny + 1.0, 2.0, 2.0)
+        image = npc.get("image") or ""
+        if not image:
+            return None
+        part = npc.get("imagepart")
+        if part:
+            w_px, h_px = part[2], part[3]
+        else:
+            size = None
+            if self.image_size_source is not None:
+                try:
+                    size = self.image_size_source(image)
+                except Exception:
+                    size = None
+            w_px, h_px = size if size else (_DEFAULT_IMAGE_PX,
+                                            _DEFAULT_IMAGE_PX)
+        if w_px <= 0 or h_px <= 0:
+            return None
+        nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+        return (nx, ny, w_px / 16.0, h_px / 16.0)
+
+    def npc_footprint_hit(self, npc, x, y) -> bool:
+        """Is world point (x, y) inside `npc`'s footprint (rect, refined by
+        image transparency where the art is loaded)? No solidity gating —
+        shared by wall tests (which add _npc_solid) and touch (which only
+        requires visibility)."""
+        rect = self.npc_image_rect(npc)
+        if rect is None:
+            return False
+        rx, ry, rw, rh = rect
+        if not (rx <= x < rx + rw and ry <= y < ry + rh):
+            return False
+        if (self.image_opaque_source is None or npc.get("is_character")
+                or npc.get("image") == "#c#"):
+            return True
+        part = npc.get("imagepart")
+        px = int((x - rx) * 16) + (int(part[0]) if part else 0)
+        py = int((y - ry) * 16) + (int(part[1]) if part else 0)
+        try:
+            opaque = self.image_opaque_source(npc.get("image"), px, py)
+        except Exception:
+            opaque = None
+        return opaque is not False
+
+    def npc_blocks_at(self, x, y, exclude_npc=None) -> bool:
+        """Does any NPC WALL the world point (x, y)? (See the rule derivation
+        above.) Consulted by is_wall (script onwall/onwall2 probes and
+        scripted movement) and by the pygame client's movement collision
+        (game/collision.py _is_blocked_at). `exclude_npc` — see is_wall."""
+        if self._shape_cell_blocks(x, y, exclude_npc=exclude_npc):
+            return True
+        cl = self.client
+        if cl is None:
+            return False
+        for npc_id, npc in getattr(cl, "npcs", {}).items():
+            if npc_id == exclude_npc or not isinstance(npc, dict):
+                continue
+            geom = self.shapes.get(npc_id)
+            if geom and geom[0] > 0 and geom[1] > 0:
+                continue    # shape overrides the image footprint (pixelsize)
+            if not self._npc_solid(npc):
+                continue
+            if self.npc_footprint_hit(npc, x, y):
+                return True
+        return False
 
     def tile_at(self, x, y):
         """Tile id under world coordinate (x, y), or None when no board
@@ -2389,11 +2789,17 @@ class ClientGS1:
             name = getattr(self.client, "_current_level_name", "") or ""
         return tilestype_for_level(name)
 
-    def is_wall(self, x, y):
+    def is_wall(self, x, y, exclude_npc=None):
         """Collision test at world tile (x, y) for onwall(). Checks the level
-        board under (x, y) (a blocking tile id), plus any dynamic collision
-        rects set via setshape2 (the arena's falling sudden-death choc
-        blocks)."""
+        board under (x, y) (a blocking tile id), plus NPC footprints — shape
+        cells (setshape/setshape2, e.g. the arena's falling sudden-death choc
+        blocks) and visible blocking image/character NPCs, matching
+        TServerLevel::isOnWall's NPC leg (see npc_blocks_at).
+
+        `exclude_npc`: the CALLING NPC's id, so a script's own onwall()
+        probe never collides with its own footprint — the reference marks
+        the probing NPC not-blocking for the duration (TServerNPC::isOnWall,
+        Preagonal/FourPlay/quattroplay/src/TServerNPC.cpp:2288-2313)."""
         tile = self.tile_at(x, y)
         if tile is not None:
             try:
@@ -2404,8 +2810,7 @@ class ClientGS1:
         elif self.tile_source is not None:
             # tile_source resolved nothing: off the world (its own -1 case).
             return True
-        # dynamic shapes (setshape2) recorded as world-tile blocking cells
-        return (int(x), int(y)) in self._shape_blocks
+        return self.npc_blocks_at(x, y, exclude_npc=exclude_npc)
 
     def is_water_at(self, x, y):
         """Water test at world tile (x, y) for onwater() — deep or shallow."""

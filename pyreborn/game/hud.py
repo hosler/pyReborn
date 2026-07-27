@@ -254,6 +254,14 @@ class StatsPanel(Widget):
             self.game.client.weapons,
             self.game.inventory_ui.selected_weapon_idx,
             self.game.sprite_mgr)
+        if weapon is None and image:
+            # The weapon HAS an icon image, it just isn't downloaded yet —
+            # fetch it through the once-only asset path (on_file caches it
+            # into the shared sprite cache resolve_weapon_indicator loads
+            # from) so the slot upgrades from the text fallback to the real
+            # art when it lands. Text stays only for weapons with no icon or
+            # a server-side failed file.
+            self.game._request_asset(image)
         slot = pygame.Rect(6 + panel_w - 43, 12, 36, 36)
         pygame.draw.rect(surf, theme.SLOT_BG, slot, border_radius=4)
         pygame.draw.rect(surf, theme.EMERALD_DEEP, slot, 1, border_radius=4)

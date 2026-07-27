@@ -71,7 +71,28 @@ class RenderMixin(FrameContextMixin):
         # Check if animation finished and needs setback
         if self.player_anim.is_finished():
             setback = self.player_anim.get_setback()
-            if self.client.player.hearts <= 0 and self.current_anim_name == "dead":
+            anim = self.player_anim
+            requested = getattr(anim, 'requested_name', None)
+            if (requested and getattr(anim, 'gani', None) is not None
+                    and requested != anim.gani.name):
+                # A scripted gani (GS1 setani -> setup.py on_setani) was asked
+                # for but is still downloading, so the anim state is playing a
+                # STALE gani; its finish must not stomp the request back to
+                # idle (which also overwrites requested_name, so the download
+                # arriving could no longer re-assert it — bomber's piano
+                # sen_piano_idle lost this race every first seating).
+                pass
+            elif (not setback
+                  and self.current_anim_name ==
+                      getattr(self, '_scripted_player_ani', None)):
+                # A script-set player gani with no SETBACKTO holds its final
+                # frame until the script (or real movement) changes it —
+                # bomber's piano seats you in sen_piano_idle, a single-frame
+                # pose, and the reference client keeps it up between notes.
+                # Any other writer (walk/sword/...) changes current_anim_name
+                # away from the scripted name, which disarms this hold.
+                pass
+            elif self.client.player.hearts <= 0 and self.current_anim_name == "dead":
                 # A finished death gani holds its final frame until the
                 # respawn path resets to idle — falling back to idle here
                 # stood the corpse up (and any later hurt re-played the

@@ -211,10 +211,18 @@ class SetupMixin:
             """Put up to five non-empty initial-message lines in chat."""
             self.chat_seq += append_start_message(self.chat_messages, text)
 
-        # Keep each decoded field as an explicit line in the shared dialogue.
+        # PLO_RPGWINDOW (179) is the server's login greeting in practice
+        # (GServer-v2 PlayerClient.cpp sends "Welcome to <name>." + credits
+        # right before PLO_STARTMESSAGE). The real classic client shows it
+        # non-modally; routing it into our modal sign dialog gated all input
+        # at login (input.py's dialogue_text check) until the player noticed
+        # and dismissed it. Put it in the chat log like the startmessage.
+        # Real sign dialogs (level signs, PLO_SAY2) stay modal — see
+        # actions.py / on_say2.
         def on_rpg_window(lines):
             if lines:
-                self._show_dialogue("\n".join(lines))
+                self.chat_seq += append_start_message(
+                    self.chat_messages, "\n".join(lines))
 
         def on_file(filename: str, data: bytes):
             """Cache a downloaded asset. Images go to the sprite cache, ganis to
@@ -242,6 +250,20 @@ class SetupMixin:
                         name, self.gani_parser.parse_content(data.decode('latin-1'), name))
                 except Exception:
                     pass
+                # A scripted player gani (GS1 setani -> on_setani below) may
+                # have been asked for before it was downloaded; the anim
+                # state remembers the ask in requested_name — re-assert it so
+                # the pose pops in on arrival (NPCs get this for free from
+                # the per-frame render re-assert; the player path is
+                # transition-driven).
+                anim = getattr(self, 'player_anim', None)
+                if (anim is not None and anim.requested_name == name
+                        and (anim.gani is None or anim.gani.name != name)):
+                    try:
+                        anim.set_animation(name)
+                        self.current_anim_name = name
+                    except Exception:
+                        pass
             elif self.sound_mgr.is_music(filename):
                 if filename == getattr(self, '_pending_music', None):
                     self._pending_music = None
@@ -469,9 +491,16 @@ class SetupMixin:
             self._current_music_name = None
             self._pending_music = None
 
-        # Say/chat callback - sets NPC speech bubble
+        # Say/chat callback - sets NPC speech bubble. Fed by the GS1
+        # say/message command AND by a GS2 NPC's `this.chat = ...` write
+        # (gs2_client._NpcThisObject.set). Empty text clears the bubble
+        # immediately (setting chat to "" is how scripts stop speaking)
+        # rather than letting the stale bubble ride out its timeout.
         def on_say(npc_id, message):
-            self.npc_chat_texts[npc_id] = (message, time.time())
+            if message:
+                self.npc_chat_texts[npc_id] = (message, time.time())
+            else:
+                self.npc_chat_texts.pop(npc_id, None)
 
         def on_say2(text):
             self._show_dialogue(text, classic_font=True)
@@ -479,6 +508,40 @@ class SetupMixin:
         # Show message callback (dialogue box)
         def on_message(text):
             self._show_dialogue(text)
+
+        # setani from ANY GS1 script targets the LOCAL PLAYER (setcharani is
+        # the NPC form — gs1_client._cmd_setani). Mirror the scripted gani
+        # into the state the renderer draws (player_anim/current_anim_name),
+        # which only the built-in input path otherwise updates. `joined` is
+        # the raw comma-joined `ani,param1,...` form; set_animation splits
+        # the params off itself so PARAMn sound/sprite tokens resolve.
+        def on_setani(joined):
+            base = joined.split(',')[0].strip()
+            if not base:
+                return
+            # Marks the ani as script-owned: render.py's finished-animation
+            # chain holds a setback-less scripted gani on its final frame
+            # instead of auto-idling (disarmed as soon as any other writer
+            # changes current_anim_name away from this name).
+            self._scripted_player_ani = base
+            try:
+                direction = int(self.client.player.direction) & 3
+            except (TypeError, ValueError):
+                direction = 2
+            try:
+                self.player_anim.set_animation(base, direction,
+                                               params=joined.split(',')[1:])
+                self.current_anim_name = base
+            except Exception:
+                pass
+            # The scripted gani may not be downloaded yet (bomber's
+            # sen_piano_idle) — fetch it through the once-only asset path;
+            # the on_file gani branch above re-asserts it when it lands.
+            try:
+                if self.gani_parser.parse(base) is None:
+                    self._request_asset(base + '.gani')
+            except Exception:
+                pass
 
         # Set effect callback (Tier 3d) - fullscreen tint drawn under the HUD,
         # over the world (see game/render_effects.py _render_screen_tint,
@@ -593,6 +656,7 @@ class SetupMixin:
         self.gs1.on_stopmusic = on_stopmusic
         self.gs1.on_say = on_say
         self.gs1.on_say2 = on_say2
+        self.gs1.on_setani = on_setani
         self.gs1.on_message = on_message
         self.gs1.on_freezeplayer = on_freezeplayer
         self.gs1.on_toweapons = on_toweapons
@@ -672,6 +736,35 @@ class SetupMixin:
         # (guarded: unit harnesses mix SetupMixin in without CollisionMixin,
         # and the GS1 host's own single-level fallback is right for them.)
         self.gs1.tile_source = getattr(self, "_get_tile_at", None)
+
+        # Image-NPC footprints (blocking + touch) size themselves off the
+        # actual art and are refined by per-pixel transparency where it is
+        # loaded — see gs1_client.ClientGS1.npc_blocks_at for the
+        # oracle-derived rule. Without the opaque probe a mostly-transparent
+        # decoration (glows, lamp halos) would wall off its whole rect.
+        sprite_mgr = getattr(self, "sprite_mgr", None)
+        if sprite_mgr is not None:
+            def _npc_image_size(name, _sm=sprite_mgr):
+                sheet = _sm.load_sheet(name)
+                return sheet.get_size() if sheet is not None else None
+
+            def _npc_image_opaque(name, px, py, _sm=sprite_mgr):
+                sheet = _sm.load_sheet(name)
+                if sheet is None:
+                    return None            # unknown art: caller treats opaque
+                w, h = sheet.get_size()
+                if not (0 <= px < w and 0 <= py < h):
+                    return False           # off the art: transparent
+                c = sheet.get_at((int(px), int(py)))
+                if c.a == 0:
+                    return False
+                ck = sheet.get_colorkey()  # gif palette transparency
+                if ck is not None and (c.r, c.g, c.b) == tuple(ck[:3]):
+                    return False
+                return True
+
+            self.gs1.image_size_source = _npc_image_size
+            self.gs1.image_opaque_source = _npc_image_opaque
 
         # A sword swing connected with a level NPC (client.py _sword_hit_npcs):
         # fire `washit` on it, same as the real client (scripting-gs1-events.md).
