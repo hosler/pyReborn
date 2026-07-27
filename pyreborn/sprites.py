@@ -13,6 +13,7 @@ import os
 # Pygame import is optional - only needed when actually used
 try:
     import pygame
+    from .mng import MNGAnimation, decode_mng
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
@@ -143,6 +144,7 @@ class SpriteManager:
         # stale ones evicted from the front once the matching _MAX_CACHED_*
         # bound is exceeded (see _evict_lru).
         self.sheet_cache: "OrderedDict[str, pygame.Surface]" = OrderedDict()
+        self.animation_cache: "OrderedDict[str, MNGAnimation]" = OrderedDict()
         # Names whose DOWNLOADED bytes failed to decode. A cached None in
         # sheet_cache only means "not on local disk (yet)" — it must NOT stop
         # load_bytes from decoding the file once it arrives from the server, or
@@ -205,7 +207,7 @@ class SpriteManager:
         # Check cache (a cached None is a remembered miss — see below)
         if name in self.sheet_cache:
             self.sheet_cache.move_to_end(name)
-            return self.sheet_cache[name]
+            return self._display_sheet(name)
 
         # Find file
         file_path = self.find_file(name)
@@ -219,12 +221,16 @@ class SpriteManager:
 
         # Load image
         try:
-            surface = pygame.image.load(str(file_path))
-            # Convert for faster blitting, preserve alpha
-            if surface.get_alpha() is not None or name.endswith('.png'):
-                surface = surface.convert_alpha()
+            if name.lower().endswith('.mng'):
+                animation = decode_mng(file_path.read_bytes())
+                surface = self._cache_animation(name, animation)
             else:
-                surface = surface.convert()
+                surface = pygame.image.load(str(file_path))
+            # Convert for faster blitting, preserve alpha
+            surface = self._convert_surface(
+                surface, surface.get_alpha() is not None
+                or name.lower().endswith(('.png', '.mng')),
+            )
             self.sheet_cache[name] = surface
             self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
@@ -237,6 +243,51 @@ class SpriteManager:
     def has_sheet(self, name: str) -> bool:
         """True if `name` is loaded in the cache (a cached None miss is not)."""
         return self.sheet_cache.get(name) is not None
+
+    def get_animation(self, name: str) -> Optional[MNGAnimation]:
+        """Return decoded animation metadata, loading the asset if necessary."""
+        if name not in self.sheet_cache:
+            self.load_sheet(name)
+        return self.animation_cache.get(name)
+
+    def get_static_sheet(self, name: str) -> Optional[pygame.Surface]:
+        """Return frame zero for animated assets and the normal static image."""
+        if name not in self.sheet_cache:
+            self.load_sheet(name)
+        return self.sheet_cache.get(name)
+
+    def _cache_animation(self, name: str, animation: MNGAnimation):
+        frames = tuple(self._convert_surface(frame, True) for frame in animation.frames)
+        animation = MNGAnimation(
+            animation.width, animation.height, animation.ticks_per_second,
+            frames, animation.frame_delays, animation.used_static_fallback,
+        )
+        self.animation_cache[name] = animation
+        self._evict_lru(self.animation_cache, _MAX_CACHED_SHEETS)
+        return frames[0]
+
+    @staticmethod
+    def _convert_surface(surface, preserve_alpha):
+        if pygame.display.get_surface() is None:
+            return surface
+        if preserve_alpha or surface.get_alpha() is not None:
+            return surface.convert_alpha()
+        return surface.convert()
+
+    def _display_sheet(self, name: str):
+        """Select the current timed frame; ordinary cached data remains frame 0."""
+        animation = self.animation_cache.get(name)
+        if animation is None or len(animation.frames) < 2:
+            return self.sheet_cache.get(name)
+        total = sum(animation.frame_delays)
+        if total <= 0:
+            return animation.frames[0]
+        elapsed = (pygame.time.get_ticks() / 1000.0) % total
+        for frame, delay in zip(animation.frames, animation.frame_delays):
+            if elapsed < delay:
+                return frame
+            elapsed -= delay
+        return animation.frames[-1]
 
     def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:
         """Load a sprite sheet from in-memory bytes (e.g. a file downloaded from
@@ -251,11 +302,14 @@ class SpriteManager:
             return None
         import io
         try:
-            surface = pygame.image.load(io.BytesIO(data), name)
-            if surface.get_alpha() is not None or name.endswith('.png'):
-                surface = surface.convert_alpha()
+            if name.lower().endswith('.mng'):
+                surface = self._cache_animation(name, decode_mng(data))
             else:
-                surface = surface.convert()
+                surface = pygame.image.load(io.BytesIO(data), name)
+            surface = self._convert_surface(
+                surface, surface.get_alpha() is not None
+                or name.lower().endswith(('.png', '.mng')),
+            )
             self.sheet_cache[name] = surface
             self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
@@ -283,7 +337,7 @@ class SpriteManager:
         """
         # Check sprite cache
         cache_key = (sheet_name, x, y, width, height)
-        if cache_key in self.sprite_cache:
+        if sheet_name not in self.animation_cache and cache_key in self.sprite_cache:
             self.sprite_cache.move_to_end(cache_key)
             return self.sprite_cache[cache_key]
 
@@ -317,8 +371,9 @@ class SpriteManager:
 
             # Create subsurface
             sprite = sheet.subsurface((x, y, width, height)).copy()
-            self.sprite_cache[cache_key] = sprite
-            self._evict_lru(self.sprite_cache, _MAX_CACHED_SPRITES)
+            if sheet_name not in self.animation_cache:
+                self.sprite_cache[cache_key] = sprite
+                self._evict_lru(self.sprite_cache, _MAX_CACHED_SPRITES)
             return sprite
         except Exception as e:
             print(f"Error extracting sprite from {sheet_name} at ({x},{y},{width},{height}): {e}")
@@ -415,6 +470,7 @@ class SpriteManager:
     def clear_cache(self):
         """Clear all cached sprites and sheets."""
         self.sheet_cache.clear()
+        self.animation_cache.clear()
         self.sprite_cache.clear()
         self._recolor_sheet_cache.clear()
         self._recolor_sprite_cache.clear()
