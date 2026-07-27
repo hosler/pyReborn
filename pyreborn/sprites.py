@@ -152,6 +152,10 @@ class SpriteManager:
         # forever. Only a real bytes-decode failure belongs here.
         self._undecodable_bytes: set = set()
         self.sprite_cache: "OrderedDict[Tuple[str, int, int, int, int], pygame.Surface]" = OrderedDict()
+        # Original 8-bit (indexed) surfaces, stashed before display conversion
+        # strips the palette. setbackpal needs both the tileset's index data
+        # and the pal file's palette; anything not palettized never lands here.
+        self._raw8_cache: "OrderedDict[str, pygame.Surface]" = OrderedDict()
         # Tier 2a: palette-swapped body sheets/sprites, cached per (image,
         # colors-tuple) so a re-render doesn't re-run the pixel remap.
         self._recolor_sheet_cache: "OrderedDict[Tuple[str, Tuple[int, ...]], Optional[pygame.Surface]]" = OrderedDict()
@@ -226,6 +230,7 @@ class SpriteManager:
                 surface = self._cache_animation(name, animation)
             else:
                 surface = pygame.image.load(str(file_path))
+                self._stash_raw8(name, surface)
             # Convert for faster blitting, preserve alpha
             surface = self._convert_surface(
                 surface, surface.get_alpha() is not None
@@ -265,6 +270,23 @@ class SpriteManager:
         self.animation_cache[name] = animation
         self._evict_lru(self.animation_cache, _MAX_CACHED_SHEETS)
         return frames[0]
+
+    def _stash_raw8(self, name: str, surface) -> None:
+        """Keep the pre-conversion surface when it's palettized (8-bit)."""
+        try:
+            if surface.get_bitsize() == 8:
+                self._raw8_cache[name] = surface
+                self._evict_lru(self._raw8_cache, _MAX_CACHED_SHEETS)
+        except Exception:
+            pass
+
+    def get_raw8(self, name: str):
+        """The original 8-bit surface for `name` (palette intact), loading the
+        file if it hasn't been touched yet; None for truecolor images or
+        misses. Used by TilesetManager's setbackpal palette swap."""
+        if name not in self.sheet_cache:
+            self.load_sheet(name)
+        return self._raw8_cache.get(name)
 
     @staticmethod
     def _convert_surface(surface, preserve_alpha):
@@ -306,6 +328,7 @@ class SpriteManager:
                 surface = self._cache_animation(name, decode_mng(data))
             else:
                 surface = pygame.image.load(io.BytesIO(data), name)
+                self._stash_raw8(name, surface)
             surface = self._convert_surface(
                 surface, surface.get_alpha() is not None
                 or name.lower().endswith(('.png', '.mng')),
@@ -519,6 +542,14 @@ class TilesetManager:
         self.full_tiledefs: List[Tuple[str, str, int]] = []
         # Player's current level, lowercased -- selects which defs apply.
         self.current_level = ""
+        # GS1 `setbackpal <file>`: name of an indexed image whose 256-entry
+        # PALETTE replaces the tileset's (GTA's underwaterpal/dusk/moonpal +
+        # the *Clock weapon's seasonal grayscale). "" = stock palette. Like
+        # tiledefs, it persists across level changes until a script changes
+        # it. Only applies when the base tileset itself is palettized -- a
+        # truecolor tileset has no indices to remap (documented limitation;
+        # every classic sheet incl. pics1.png is indexed).
+        self.backpal = ""
         self._composed_sheet: Optional[pygame.Surface] = None
         self._composed_sheet_valid = False
 
@@ -590,6 +621,33 @@ class TilesetManager:
             self.clear_cache()
         return changed
 
+    def set_backpal(self, image: str) -> bool:
+        """Set (or clear, with "") the setbackpal palette source. Returns
+        whether anything changed; a change drops the extracted-tile and
+        composed-sheet caches so the next draw re-derives them."""
+        image = (image or "").strip()
+        if image == self.backpal:
+            return False
+        self.backpal = image
+        self.clear_cache()
+        return True
+
+    def _palettized_base(self, base_name: str) -> Optional[pygame.Surface]:
+        """The base sheet with the backpal file's palette applied: both must
+        still exist as 8-bit surfaces (SpriteManager stashes those before
+        display conversion). None = can't swap (missing/truecolor), caller
+        falls back to the stock sheet."""
+        raw = self.sprite_mgr.get_raw8(base_name)
+        pal = self.sprite_mgr.get_raw8(self.backpal)
+        if raw is None or pal is None:
+            return None
+        try:
+            swapped = raw.copy()
+            swapped.set_palette(pal.get_palette())
+            return self.sprite_mgr._convert_surface(swapped, True)
+        except Exception:
+            return None
+
     def _get_composed_sheet(self) -> Optional[pygame.Surface]:
         """Build the active sheet from its base and applicable pastes."""
         if self._composed_sheet_valid:
@@ -608,7 +666,9 @@ class TilesetManager:
                 base_name = image
                 best_prefix_length = len(prefix)
 
-        base = self.sprite_mgr.load_sheet(base_name)
+        base = self._palettized_base(base_name) if self.backpal else None
+        if base is None:
+            base = self.sprite_mgr.load_sheet(base_name)
         if base is None:
             self._composed_sheet = None
             self._composed_sheet_valid = True
@@ -638,8 +698,10 @@ class TilesetManager:
             pygame.Surface or None
         """
         if tileset is None:
-            if any(self._applies(prefix)
-                   for _, prefix, _, _ in self.tiledefs):
+            # backpal routes through the composed-sheet path too: the palette
+            # swap happens on the whole sheet, not per extracted tile.
+            if self.backpal or any(self._applies(prefix)
+                                   for _, prefix, _, _ in self.tiledefs):
                 cache_key = ("<composed>", tile_id)
                 if cache_key in self.tile_cache:
                     return self.tile_cache[cache_key]

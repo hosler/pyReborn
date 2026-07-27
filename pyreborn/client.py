@@ -89,6 +89,8 @@ from .packets import (
     build_update_file,
     build_bomb_add,
     build_bomb_del,
+    build_explosion_add,
+    build_item_add,
     build_arrow_add,
     build_horse_del,
     build_firespy,
@@ -841,6 +843,17 @@ class Client:
         self._note_position_sent()
         return True
 
+    def send_hit_objects(self, power: float, x: float, y: float) -> bool:
+        """Report a scripted hit probe (PLI_HITOBJECTS) at level-local
+        (x, y) — the GS1 `hitobjects` wire half; the server runs its own hit
+        detection there (fires serverside NPCs' washit). Same builder the
+        sword swing uses."""
+        if not self.connected or not self._authenticated:
+            return False
+        from .packets import build_hit_objects
+        return self._protocol.send_packet(
+            PacketID.PLI_HITOBJECTS, build_hit_objects(power, x, y))
+
     def attack_player(self, victim_id: int, damage: float = 0.5,
                       knockback_x: int = 0, knockback_y: int = 0) -> bool:
         """
@@ -1542,7 +1555,8 @@ class Client:
         return self._protocol.send_packet(PacketID.PLI_HORSEADD, data)
 
     def put_bomb(self, x: Optional[float] = None, y: Optional[float] = None,
-                power: int = 1, timer_ms: int = 3050) -> bool:
+                power: int = 1, timer_ms: int = 3050,
+                consume_ammo: bool = True) -> bool:
         """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time; the server
         expects 50ms increments already counted down by ~200ms client-side, so
         this converts it the same way (see build_bomb_add).
@@ -1552,10 +1566,13 @@ class Client:
         to fire at 0 bombs, decrements locally, and reports the new
         BOMBSCOUNT. pygserver additionally decrements server-side and echoes
         the authoritative count via PLO_PLAYERPROPS - that echo is an absolute
-        value equal to our prediction, so the two don't double-decrement."""
+        value equal to our prediction, so the two don't double-decrement.
+
+        consume_ammo=False is the GS1 `putbomb` path: a script-spawned bomb
+        is a free level projectile, not a shot from the player's bag."""
         if not self.connected or not self._authenticated:
             return False
-        if self.player.bombs <= 0:
+        if consume_ammo and self.player.bombs <= 0:
             logger.debug("put_bomb: no bombs left, not firing")
             return False
         if x is None:
@@ -1564,7 +1581,7 @@ class Client:
             y = self.player.y
         data = build_bomb_add(x, y, power, timer_ms)
         ok = self._protocol.send_packet(PacketID.PLI_BOMBADD, data)
-        if ok:
+        if ok and consume_ammo:
             self.player.bombs -= 1
             self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
                                        build_bomb_count(self.player.bombs))
@@ -1576,6 +1593,24 @@ class Client:
             return False
         data = build_bomb_del(x, y)
         return self._protocol.send_packet(PacketID.PLI_BOMBDEL, data)
+
+    def send_explosion(self, radius: int, x: float, y: float,
+                       power: int = 1) -> bool:
+        """Report a client-scripted explosion (PLI_EXPLOSION; GS1
+        putexplosion/putexplosion2). Coordinates are localized to the current
+        segment like every other GCHAR-position packet."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_explosion_add(radius, *world_to_local(x, y), power)
+        return self._protocol.send_packet(PacketID.PLI_EXPLOSION, data)
+
+    def send_item_add(self, x: float, y: float, item_id: int) -> bool:
+        """Drop a level item (PLI_ITEMADD; GS1 lay/lay2). The server relays a
+        PLO_ITEMADD to the rest of the level."""
+        if not self.connected or not self._authenticated:
+            return False
+        data = build_item_add(*world_to_local(x, y), item_id)
+        return self._protocol.send_packet(PacketID.PLI_ITEMADD, data)
 
     def shoot_arrow(self, x: Optional[float] = None, y: Optional[float] = None,
                     direction: Optional[int] = None, sprite: int = 0,

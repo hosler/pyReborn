@@ -237,7 +237,11 @@ class SetupMixin:
                 tm = self.tileset_mgr
                 if (any(img == filename for img, _, _, _ in tm.tiledefs)
                         or any(img == filename
-                               for img, _, _ in tm.full_tiledefs)):
+                               for img, _, _ in tm.full_tiledefs)
+                        # the setbackpal palette file just arrived: recompose
+                        # so the swap actually shows (set_backpal ran before
+                        # the download finished)
+                        or filename == tm.backpal):
                     tm.clear_cache()
                     self.world_surface = None
             elif ext == 'gani':
@@ -657,6 +661,53 @@ class SetupMixin:
         # putleaps type,x,y -> debris burst (render_effects owns frames+sound)
         self.gs1.on_putleaps = (lambda leap_type, x, y:
                                 self._spawn_leaps(leap_type, x, y))
+
+        # -- scripted combat family (GS1 putbomb/explosions/setbackpal) ----
+        # putbomb -> the same active_bombs registry local/remote bombs use
+        # (render_effects.py runs the fuse, burst, sound and bush-break).
+        def on_putbomb(power, x, y, fuse_s):
+            self.active_bombs.append({
+                'x': float(x), 'y': float(y), 'time': time.time(),
+                'fuse_time': max(0.05, float(fuse_s)),
+                'power': max(1, int(power)), 'exploded': False,
+                'source': 'script',
+            })
+
+        # removebomb (silent pickup) / explodebomb (burst now)
+        def on_removebomb(bomb, explode):
+            if explode:
+                self._detonate_bomb(bomb)
+                return
+            try:
+                self.active_bombs.remove(bomb)
+            except ValueError:
+                pass
+
+        # putexplosion's presentation half (the damage/washit/wire half is
+        # client-level, gs1_client._spawn_explosion): boom + shake + bushes.
+        def on_putexplosion(power, radius, x, y):
+            self.sound_mgr.play("explode.wav")
+            self._start_camera_shake(x, y)
+            self._break_bushes_in_blast(x, y, max(1, int(power)))
+
+        def on_setbackpal(image):
+            image = (image or "").strip()
+            if not image:
+                return
+            changed = self.tileset_mgr.set_backpal(image)
+            # pal files are server assets (GTA's underwaterpal.png & co);
+            # _request_asset dedupes the fetch across the per-level re-issues.
+            if not self.sprite_mgr.has_sheet(image):
+                self._request_asset(image)
+            if changed:
+                self.world_surface = None
+
+        self.gs1.on_putbomb = on_putbomb
+        self.gs1.on_removebomb = on_removebomb
+        self.gs1.on_putexplosion = on_putexplosion
+        self.gs1.on_setbackpal = on_setbackpal
+        # bombs[] index order = the shell's placement-ordered registry
+        self.gs1.bombs_source = lambda: self.active_bombs
         self.gs1.on_say = on_say
         self.gs1.on_say2 = on_say2
         self.gs1.on_setani = on_setani

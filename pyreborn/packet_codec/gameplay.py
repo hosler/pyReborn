@@ -1001,6 +1001,37 @@ def build_bomb_del(x: float, y: float) -> bytes:
     return builder.build()
 
 
+def build_explosion_add(radius: int, x: float, y: float, power: int = 1) -> bytes:
+    """Build PLI_EXPLOSION (27) - a client-scripted explosion (GS1
+    putexplosion/putexplosion2).
+
+    Format (GServer-v2 msgPLI_EXPLOSION, PlayerClientPackets.cpp:840-847):
+    {GUChar radius}{GUChar x*2}{GUChar y*2}{GUChar power}. x/y are level-local
+    tiles at half-tile precision. The server relays it level-wide as
+    PLO_EXPLOSION with our player id prepended.
+    """
+    builder = PacketBuilder()
+    builder.write_gchar(max(0, int(radius)) & 0x7F)
+    builder.write_gchar(int(x * 2))
+    builder.write_gchar(int(y * 2))
+    builder.write_gchar(max(0, int(power)) & 0x7F)
+    return builder.build()
+
+
+def build_item_add(x: float, y: float, item_id: int) -> bytes:
+    """Build PLI_ITEMADD (12) - drop a level item (GS1 lay/lay2).
+
+    Format (GServer-v2 msgPLI_ITEMADD, PlayerClientPackets.cpp:345-349):
+    {GUChar x*2}{GUChar y*2}{GUChar item_id}. x/y are level-local tiles at
+    half-tile precision; item_id is the LevelItemType (LEVEL_ITEM_NAMES).
+    """
+    builder = PacketBuilder()
+    builder.write_gchar(int(x * 2))
+    builder.write_gchar(int(y * 2))
+    builder.write_gchar(max(0, int(item_id)) & 0x7F)
+    return builder.build()
+
+
 def parse_arrow_add(data: bytes) -> dict:
     """
     Parse PLO_ARROWADD (19).

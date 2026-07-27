@@ -287,6 +287,36 @@ _BADDY_DEFAULT_IMAGE = (
 _BADDY_DEFAULT_POWER = (2, 3, 4, 3, 2, 1, 1, 6, 12, 8)
 
 
+def _push_dir(target_x, target_y, from_x, from_y):
+    """Normalized knockback direction for the hit family: target position
+    minus the hit's (fromx, fromy), unit length (GS1Commands.cpp fn_hitnpc/
+    fn_hitcompu compute exactly this). (0, 0) when no source was given or the
+    hit is dead-centre."""
+    if from_x is None or from_y is None:
+        return 0.0, 0.0
+    dx = float(target_x) - float(from_x)
+    dy = float(target_y) - float(from_y)
+    length = math.hypot(dx, dy)
+    if not length:
+        return 0.0, 0.0
+    return dx / length, dy / length
+
+
+# item NAME -> LevelItemType id for lay/lay2 (the parser hands the name
+# through as a SpecialLit ITEM string). Same table the wire/renderer use
+# (packets.LEVEL_ITEM_NAMES); imported lazily and memoized because packets
+# pulls in the whole codec package.
+_ITEM_ID_CACHE: dict = {}
+
+
+def _item_ids() -> dict:
+    if not _ITEM_ID_CACHE:
+        from .packets import LEVEL_ITEM_NAMES
+        _ITEM_ID_CACHE.update(
+            {iname: iid for iid, iname in LEVEL_ITEM_NAMES.items()})
+    return _ITEM_ID_CACHE
+
+
 def _baddy_type_from_name(value) -> int:
     """Baddy name/id -> BaddyType id, the reference resolution order
     (LevelBaddy::getBaddyTypeFromString, LevelBaddy.cpp:44-66): name
@@ -439,6 +469,19 @@ class GS1ClientHost(Host):
         # npcs[i].x / npcs[i].save[j] / ... -> the i-th NPC in the level.
         if name.startswith("npcs."):
             return self._npc_array_attr(name.split(".", 1)[1], indices)
+        # bombs[i].x/y/power/time and explos[i].x/y/power/radius -- the level
+        # projectile arrays (scripting-gs1-variables.md "Bombs"; GTA reads
+        # both: ffort1.nw's conveyor re-lays `bombs[this.i].power` and
+        # uwwatershrine.nw branches on `explos[this.i].power`).
+        if name.startswith("bombs."):
+            return self._bomb_array_attr(name.split(".", 1)[1], indices)
+        if name.startswith("explos."):
+            return self._explo_array_attr(name.split(".", 1)[1], indices)
+        # compus[i].x/y/power/mode/dir/type -- the classic baddies array
+        # (scripting-gs1-variables.md "Baddies"); GTA's hitcompu callers
+        # branch on `compus[this.i].y`/`.mode` before striking.
+        if name.startswith("compus."):
+            return self._compu_array_attr(name.split(".", 1)[1], indices)
         return UNSET
 
     def _npc_ids(self):
@@ -467,6 +510,73 @@ class GS1ClientHost(Host):
         npc = self.rt.client.npcs.get(ids[i])
         if isinstance(npc, dict) and attr in NPC_ATTR:
             return _num_or_str(npc.get(NPC_ATTR[attr], 0))
+        return 0.0
+
+    def _bomb_list(self):
+        """Live bombs in bombs[] index order (see rt.bombs_source)."""
+        src = self.rt.bombs_source
+        if src is not None:
+            try:
+                return [b for b in (src() or []) if not b.get("exploded")]
+            except Exception:
+                return []
+        cl = self.rt.client
+        return list(getattr(cl, "bombs", {}).values()) if cl else []
+
+    def _explo_list(self):
+        """Active explosions in explos[] index order (client-level registry,
+        shared with the PLO_EXPLOSION handler and the renderer)."""
+        cl = self.rt.client
+        return list(getattr(cl, "active_explosions", []) or []) if cl else []
+
+    def _baddy_ids(self):
+        """Baddy ids in compus[] index order: like npcs[], the server allocates
+        them in level order, so the sorted ids reproduce the array."""
+        cl = self.rt.client
+        if cl is None:
+            return []
+        return sorted(getattr(cl, "baddies", {}) or {})
+
+    def _bomb_array_attr(self, attr, indices):
+        bombs = self._bomb_list()
+        i = int(indices[0]) if indices else 0
+        if not 0 <= i < len(bombs):
+            return 0.0
+        b = bombs[i]
+        if attr == "time":
+            # seconds until it explodes. Shell bombs carry a placement stamp
+            # + fuse; a wire-echo dict only has the total timer.
+            import time as _t
+            if "fuse_time" in b:
+                return max(0.0, float(b.get("time", 0))
+                           + float(b.get("fuse_time", 0)) - _t.time())
+            return float(b.get("timer_ms", 0)) / 1000.0
+        if attr in ("x", "y", "power"):
+            return to_num(b.get(attr, 0))
+        return 0.0
+
+    def _explo_array_attr(self, attr, indices):
+        explos = self._explo_list()
+        i = int(indices[0]) if indices else 0
+        if not 0 <= i < len(explos):
+            return 0.0
+        if attr in ("x", "y", "power", "radius"):
+            return to_num(explos[i].get(attr, 0))
+        return 0.0
+
+    def _compu_array_attr(self, attr, indices):
+        ids = self._baddy_ids()
+        i = int(indices[0]) if indices else 0
+        if not 0 <= i < len(ids):
+            return 0.0
+        baddy = self.rt.client.baddies.get(ids[i])
+        if not isinstance(baddy, dict):
+            return 0.0
+        key = {"dir": "direction", "headdir": "direction"}.get(attr, attr)
+        if key in ("x", "y", "power", "mode", "type", "direction"):
+            return to_num(baddy.get(key, 0))
+        if key == "image":
+            return to_str(baddy.get("image", ""))
         return 0.0
 
     # -- _GS1_PLAYER_BUILTINS (gate: the client has a local player) ---------
@@ -587,6 +697,18 @@ class GS1ClientHost(Host):
     @_gs1_builtin(_GS1_BUILTINS, "npcscount")
     def _gb_npcscount(self, name, indices, ctx):
         return float(len(self._npc_ids()))
+
+    @_gs1_builtin(_GS1_BUILTINS, "bombscount")
+    def _gb_bombscount(self, name, indices, ctx):
+        return float(len(self._bomb_list()))
+
+    @_gs1_builtin(_GS1_BUILTINS, "exploscount")
+    def _gb_exploscount(self, name, indices, ctx):
+        return float(len(self._explo_list()))
+
+    @_gs1_builtin(_GS1_BUILTINS, "compuscount")
+    def _gb_compuscount(self, name, indices, ctx):
+        return float(len(self._baddy_ids()))
 
     @_gs1_builtin(_GS1_BUILTINS, "save")
     def _gb_save(self, name, indices, ctx):
@@ -1060,10 +1182,21 @@ class GS1ClientHost(Host):
         # hitobjects power,x,y — client-side sword-hit emulation (see
         # npcserver.md "Emulating sword hits"): fire `washit` on NPCs and hurt
         # baddies at that (level-local) point, same effects as a real sword
-        # swing (client.py _sword_hit_npcs/_sword_hit_baddies).
+        # swing (client.py _sword_hit_npcs/_sword_hit_baddies). The reference
+        # ALSO reports the probe to the server (FourPlay's hitobjects calls
+        # sendWeaponHit alongside the local weaponHits, TInitStatics.cpp:
+        # 3409-3423) so serverside-scripted NPCs get their washit too —
+        # mirrored here with the same PLI_HITOBJECTS the sword swing sends.
         if len(args) < 3:
             return _FALL_THROUGH
-        self.rt.hit_objects_at(to_num(args[1]), to_num(args[2]), to_num(args[0]))
+        power, x, y = to_num(args[0]), to_num(args[1]), to_num(args[2])
+        self.rt.hit_objects_at(x, y, power)
+        cl = self.rt.client
+        if cl is not None:
+            try:
+                cl.send_hit_objects(power, x, y)
+            except Exception:
+                pass
 
     @_gs1_command(_GS1_PRE_COMMANDS, "setminimap")
     def _cmd_setminimap(self, name, args, ctx, imgs):
@@ -1083,6 +1216,25 @@ class GS1ClientHost(Host):
     def _cmd_resetfocus(self, name, args, ctx, imgs):
         if self.rt.on_setfocus:
             self.rt.on_setfocus(None, None)
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "setbackpal")
+    def _cmd_setbackpal(self, name, args, ctx, imgs):
+        # setbackpal filename -- swap the tileset's 256-color palette for the
+        # one carried by `filename` (scripting-gs1-commands.md:1715). GTA's
+        # underwater/dusk/moon levels re-issue it on playerenters and the
+        # *Clock weapon flips grayscale/seasonal palettes globally; the pal
+        # files are tiny indexed PNGs whose PALETTE is the payload
+        # (underwaterpal.png is 32x32 with a full 256-entry palette).
+        # Client-local render state, persisting across levels until the next
+        # call -- `setbackpal pics1.png` restores stock because that file
+        # carries the stock palette. Applied by TilesetManager.set_backpal
+        # via the shell callback.
+        rt = self.rt
+        if not (args and rt.on_setbackpal):
+            return _FALL_THROUGH
+        fname = to_str(args[0]).strip()
+        if fname:
+            rt.on_setbackpal(fname)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "toweapons")
     def _cmd_toweapons(self, name, args, ctx, imgs):
@@ -1522,6 +1674,300 @@ class GS1ClientHost(Host):
             return _FALL_THROUGH
         try:
             rt.client.kill_all_baddies()
+        except Exception:
+            pass
+
+    # -- scripted combat family (hurt/hit*/bombs/explosions/items) ----------
+
+    def _hurt_local_player(self, halfhearts, from_x=None, from_y=None):
+        """Apply floor(halfhearts) half-hearts to the LOCAL player, clamped to
+        [0, max_hearts]. GS1Commands.cpp fn_hurt floors the argument; GTA also
+        HEALS through this path (`hurt -3` fountains, `hitplayer 0,-2,...`),
+        so negatives raise hearts up to the cap. Damage goes through
+        client.respond_to_hurt -- the exact path a wire PLO_HURTPLAYER takes
+        (hearts + hurt gani + CURPOWER props report) -- and then the on_hurt
+        callback so the shell's flash/sound/death presentation fires; a heal
+        sends a bare CURPOWER update (client.send_hearts)."""
+        cl = self.rt.client
+        player = self._player
+        if cl is None or player is None:
+            return
+        hh = math.floor(to_num(halfhearts))
+        old = float(getattr(player, "hearts", 0) or 0)
+        maxh = float(getattr(player, "max_hearts", 3) or 3)
+        new = min(maxh, max(0.0, old - hh / 2.0))
+        if hh >= 0:
+            try:
+                cl.respond_to_hurt(old - new)
+            except Exception:
+                pass
+            player.hearts = new
+            cb = getattr(cl, "on_hurt", None)
+            if cb:
+                try:
+                    cb(0, old - new, 0, from_x or 0, from_y or 0)
+                except Exception:
+                    pass
+        else:
+            player.hearts = new
+            try:
+                cl.send_hearts()
+            except Exception:
+                pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hurt")
+    def _cmd_hurt(self, name, args, ctx, imgs):
+        # hurt halfhearts -- hurts the CURRENT player (scripting-gs1-
+        # commands.md "hurt"; fn_hurt GS1Commands.cpp:1423-1442 floors the
+        # arg and routes it to hitPlayer with the player's own stand point
+        # as the source, i.e. no knockback direction).
+        if not args:
+            return _FALL_THROUGH
+        self._hurt_local_player(to_num(args[0]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hitplayer")
+    def _cmd_hitplayer(self, name, args, ctx, imgs):
+        # hitplayer index,halfhearts,fromx,fromy -- players[index], where
+        # players[0] is the LOCAL player (host._player_list order, the
+        # classic client's own convention: FourPlay's hitplayer applies the
+        # local branch directly, TInitStatics.cpp:3447-3464, computing the
+        # push from (fromx,fromy) to the stand point). A remote player is
+        # relayed as PLI_HURTPLAYER (msgPLI_HURTPLAYER forwards it to the
+        # victim only), same as a sword hit.
+        rt = self.rt
+        if len(args) < 2 or rt.client is None:
+            return _FALL_THROUGH
+        idx = int(to_num(args[0]))
+        hh = to_num(args[1])
+        fx = to_num(args[2]) if len(args) > 2 else None
+        fy = to_num(args[3]) if len(args) > 3 else None
+        if idx == 0:
+            self._hurt_local_player(hh, fx, fy)
+            return
+        others = list(getattr(rt.client, "players", {}) or {})
+        if not 1 <= idx <= len(others):
+            return
+        pid = others[idx - 1]
+        target = rt.client.players.get(pid) or {}
+        dx, dy = _push_dir(target.get("x", 0), target.get("y", 0), fx, fy)
+        try:
+            rt.client.attack_player(
+                pid, damage=max(0.0, math.floor(hh) / 2.0),
+                knockback_x=int(dx * 2), knockback_y=int(dy * 2))
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hitcompu")
+    def _cmd_hitcompu(self, name, args, ctx, imgs):
+        # hitcompu index,halfhearts,fromx,fromy -- compus[index] (the baddy
+        # array; scripting-gs1-commands.md). Same resolution as a sword hit
+        # on a baddy: the level leader applies damage + broadcasts the
+        # result, anyone else sends PLI_BADDYHURT for the leader to resolve
+        # (client._leader_apply_baddy_damage docstring has the full relay
+        # story).
+        rt = self.rt
+        if len(args) < 2 or rt.client is None:
+            return _FALL_THROUGH
+        ids = self._baddy_ids()
+        idx = int(to_num(args[0]))
+        if not 0 <= idx < len(ids):
+            return
+        bid = ids[idx]
+        hh = max(0, math.floor(to_num(args[1])))
+        baddy = rt.client.baddies.get(bid) or {}
+        dx, dy = _push_dir(baddy.get("x", 0), baddy.get("y", 0),
+                           to_num(args[2]) if len(args) > 2 else None,
+                           to_num(args[3]) if len(args) > 3 else None)
+        try:
+            if rt.client.is_leader:
+                rt.client._leader_apply_baddy_damage(bid, hh)
+            else:
+                rt.client.hurt_baddy(bid, damage=hh / 2.0,
+                                     hurt_dx=dx, hurt_dy=dy)
+        except Exception:
+            pass
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hitnpc")
+    def _cmd_hitnpc(self, name, args, ctx, imgs):
+        # hitnpc index,halfhearts,fromx,fromy -- npcs[index]: decrement its
+        # power, put a character NPC in the hurt gani, fire washit --
+        # fn_hitnpc (GS1Commands.cpp:1327-1368) does exactly these three.
+        rt = self.rt
+        if len(args) < 2 or rt.client is None:
+            return _FALL_THROUGH
+        ids = self._npc_ids()
+        idx = int(to_num(args[0]))
+        if not 0 <= idx < len(ids):
+            return
+        npc = rt.client.npcs.get(ids[idx])
+        if not isinstance(npc, dict):
+            return
+        hh = math.floor(to_num(args[1]))
+        npc["power"] = max(0.0, to_num(npc.get("power", 0)) - hh)
+        if npc.get("gani"):
+            # only character NPCs animate a hurt (fn_hitnpc's isCharacter()
+            # gate); scripts normally setcharani themselves right after.
+            npc["gani"] = "hurt"
+        rt.trigger_npc_event(ids[idx], "washit")
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "putbomb")
+    def _cmd_putbomb(self, name, args, ctx, imgs):
+        # putbomb power,x,y -- a scripted level bomb (power 1 normal /
+        # 2 superbomb / 3 joltbomb, scripting-gs1-commands.md). Local spawn
+        # via on_putbomb (the shell's active_bombs registry, classic 3s
+        # fuse -- msgPLI_BOMBADD's own comment pins the 3s total) + wire
+        # PLI_BOMBADD so the rest of the level sees it; consume_ammo=False
+        # because a script bomb never spends the player's bag. On water the
+        # reference spawns a splash instead of a bomb but still informs the
+        # server (TServerLevel::putBomb asm: isOnWater -> putLeaps type 5).
+        rt = self.rt
+        if len(args) < 3:
+            return _FALL_THROUGH
+        power = max(0, min(3, int(to_num(args[0]))))
+        x, y = to_num(args[1]), to_num(args[2])
+        if rt.client is not None:
+            try:
+                rt.client.put_bomb(x, y, power, consume_ammo=False)
+            except Exception:
+                pass
+        if rt.is_water_at((x + 1) % 64, (y + 1) % 64):
+            if rt.on_putleaps:
+                rt.on_putleaps(5, x, y)
+            return
+        if rt.on_putbomb:
+            rt.on_putbomb(power, x, y, 3.0)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "explodebomb", "removebomb")
+    def _cmd_removebomb(self, name, args, ctx, imgs):
+        # explodebomb index / removebomb index -- bombs[index]. Both take
+        # the bomb off the level and tell the server (PLI_BOMBDEL;
+        # msgPLI_BOMBDEL relays and removes it); explodebomb bursts it now
+        # (the reference routes it into the same explodeBomb the fuse uses,
+        # TInitStatics.cpp:3322-3334), removebomb is the silent pickup.
+        rt = self.rt
+        if not args:
+            return _FALL_THROUGH
+        bombs = self._bomb_list()
+        idx = int(to_num(args[0]))
+        if not 0 <= idx < len(bombs):
+            return
+        bomb = bombs[idx]
+        bx, by = to_num(bomb.get("x", 0)), to_num(bomb.get("y", 0))
+        if rt.client is not None:
+            try:
+                rt.client.remove_bomb(*world_to_local(bx, by))
+            except Exception:
+                pass
+            # keep the wire-echo registry consistent for headless callers
+            reg = getattr(rt.client, "bombs", None)
+            if isinstance(reg, dict):
+                reg.pop((bx, by), None)
+        if rt.on_removebomb:
+            rt.on_removebomb(bomb, name == "explodebomb")
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "putexplosion", "putexplosion2")
+    def _cmd_putexplosion(self, name, args, ctx, imgs):
+        # putexplosion radius,x,y (power 1) / putexplosion2
+        # power,radius,x,y (scripting-gs1-commands.md; pygserver's
+        # gs1/commands/combat.py _explode splits the args the same way).
+        rt = self.rt
+        if name == "putexplosion2":
+            if len(args) < 4:
+                return _FALL_THROUGH
+            power, radius = int(to_num(args[0])), int(to_num(args[1]))
+            x, y = to_num(args[2]), to_num(args[3])
+        else:
+            if len(args) < 3:
+                return _FALL_THROUGH
+            power, radius = 1, int(to_num(args[0]))
+            x, y = to_num(args[1]), to_num(args[2])
+        self._spawn_explosion(power, radius, x, y)
+
+    def _spawn_explosion(self, power, radius, x, y):
+        """Client-authoritative scripted explosion: draw it, damage the LOCAL
+        player if covered, fire washit on covered NPCs, and send
+        PLI_EXPLOSION (the server relays PLO_EXPLOSION to everyone else, who
+        each run this same resolution for their own player). The hitbox is a
+        BOX with an INCLUSIVE boundary and the damage is `power` hearts =
+        power*2 half-hearts -- pinned by pygserver's tests/test_gs1_audience
+        (audience.GS1_EXPLOSION_PLAYERS) and _explode's apply_damage call."""
+        rt, cl = self.rt, self.rt.client
+        if cl is not None:
+            try:
+                cl.send_explosion(radius, x, y, power)
+            except Exception:
+                pass
+            explos = getattr(cl, "active_explosions", None)
+            if explos is not None:
+                import time as _t
+                explos.append({"x": x, "y": y, "radius": radius,
+                               "power": power, "time": _t.time()})
+            px = getattr(cl, "x", None)
+            py = getattr(cl, "y", None)
+            if (px is not None and py is not None
+                    and abs(float(px) - x) <= radius
+                    and abs(float(py) - y) <= radius):
+                self._hurt_local_player(power * 2, x, y)
+            for npc_id, npc in list(getattr(cl, "npcs", {}).items()):
+                if not isinstance(npc, dict):
+                    continue
+                if npc.get("visible", True) is False or npc.get("dontblock"):
+                    continue
+                if (abs(to_num(npc.get("x", 0)) - x) <= radius
+                        and abs(to_num(npc.get("y", 0)) - y) <= radius):
+                    rt.trigger_npc_event(npc_id, "washit")
+        if rt.on_putexplosion:
+            rt.on_putexplosion(power, radius, x, y)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "removeexplo")
+    def _cmd_removeexplo(self, name, args, ctx, imgs):
+        # removeexplo index -- drop explos[index]. Purely local: there is no
+        # PLI op for explosion removal (constants.py has none); each client
+        # culls its own effect list, like the reference's per-client explo
+        # array.
+        rt = self.rt
+        if not args or rt.client is None:
+            return _FALL_THROUGH
+        explos = getattr(rt.client, "active_explosions", None)
+        idx = int(to_num(args[0]))
+        if explos is not None and 0 <= idx < len(explos):
+            explos.pop(idx)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "lay", "lay2")
+    def _cmd_lay(self, name, args, ctx, imgs):
+        # lay itemname (at the NPC's feet) / lay2 itemname,x,y
+        # (scripting-gs1-commands.md; the parser hands itemname through as
+        # its literal string). The item lands in client.items -- the same
+        # registry PLO_ITEMADD fills, so rendering/pickup treat it exactly
+        # like a server drop -- and PLI_ITEMADD tells the server, which
+        # relays it level-wide (msgPLI_ITEMADD).
+        rt = self.rt
+        if not args or rt.client is None:
+            return _FALL_THROUGH
+        item = to_str(args[0]).strip().lower()
+        item_id = _item_ids().get(item)
+        if item_id is None:
+            try:
+                item_id = int(float(item))
+            except (TypeError, ValueError):
+                return
+        if name == "lay2":
+            if len(args) < 3:
+                return _FALL_THROUGH
+            x, y = to_num(args[1]), to_num(args[2])
+        else:
+            npc = ctx.this_obj if isinstance(ctx.this_obj, dict) else None
+            if npc is not None:
+                x, y = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+            else:
+                x = float(getattr(rt.client, "x", 0))
+                y = float(getattr(rt.client, "y", 0))
+        items = getattr(rt.client, "items", None)
+        if items is not None:
+            from .packets import LEVEL_ITEM_NAMES
+            items[(x, y)] = LEVEL_ITEM_NAMES.get(item_id, f"item{item_id}")
+        try:
+            rt.client.send_item_add(x, y, item_id)
         except Exception:
             pass
 
@@ -2439,6 +2885,22 @@ class ClientGS1:
         self.on_tiledef = None
         self.on_seteffect = None
         self.on_putleaps = None
+        # scripted-combat family (putbomb/putexplosion/setbackpal wave):
+        # on_putbomb(power, x, y, fuse_s)   -- spawn a level bomb visual
+        # on_removebomb(bomb, explode)      -- drop bombs[i]; explode=True is
+        #                                      explodebomb (burst now)
+        # on_putexplosion(power, radius, x, y) -- burst visual/sound/bushes
+        # on_setbackpal(filename)           -- tileset palette swap
+        self.on_putbomb = None
+        self.on_removebomb = None
+        self.on_putexplosion = None
+        self.on_setbackpal = None
+        # () -> ordered list of live bomb dicts ({'x','y','power','time',
+        # 'fuse_time'}). The pygame shell wires this to its active_bombs
+        # registry (game/render_effects.py), which holds BOTH local and wire
+        # bombs in placement order -- that order is the script-visible
+        # bombs[] index. Headless fallback: the wire-echo dict client.bombs.
+        self.bombs_source = None
         # attachplayertoobj state: {'npc_id', 'last_x', 'last_y'} or None.
         # last_* is the NPC's position when we last propagated its movement
         # to the player (see the delta step in process_timeouts).
