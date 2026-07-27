@@ -172,6 +172,39 @@ _BUILTIN_PROFILE_FIELDS: Dict[str, Dict[str, Any]] = {
         "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
         "fillcolorhl": _BLUE_HL, "fontsize": 16, "fontstyle": "b",
     },
+    # The remaining GuiBlue* engine builtins Login's Options window
+    # references (blue variants of the base profiles above; same skin art).
+    "guibluetabprofile": {
+        "fillcolor": (24, 48, 112, 224), "bordercolor": _BLUE_HL,
+        "fontcolor": _PALE_TEXT, "fillcolorhl": _BLUE_HL,
+        "fontsize": 14, "fontstyle": "b", "align": "center",
+        "bitmap": "guiblue_tab.png",
+    },
+    "guibluescrollprofile": {
+        "fillcolor": (16, 32, 80, 216), "bordercolor": _BLUE_HL,
+        "bitmap": "guiblue_scroll.png",
+    },
+    "guibluetextlistprofile": {
+        "fontcolor": _PALE_TEXT, "fillcolorhl": _BLUE_HL, "fontsize": 16,
+    },
+    "guibluecheckboxprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": _PALE_TEXT, "fontsize": 16,
+    },
+    "guibluesliderprofile": {
+        "fillcolor": (16, 32, 80, 216), "bordercolor": _BLUE_HL,
+        "fillcolorhl": _BLUE_HL,
+    },
+    "guibluepopupmenuprofile": {
+        "fillcolor": (16, 32, 96, 240), "bordercolor": _BLUE_HL,
+        "fontcolor": (255, 255, 255), "fillcolorhl": _BLUE_HL,
+    },
+    "guibluetexteditprofile": {
+        "fillcolor": (_BLUE_FILL[0], _BLUE_FILL[1], _BLUE_FILL[2], 255),
+        "bordercolor": _BLUE_HL, "fontcolor": (255, 255, 255),
+        "fillcolorhl": _BLUE_HL, "fontsize": 16,
+        "bitmap": "guiblue_textedit.png",
+    },
 }
 
 _DEFAULT_GUIPROFILE = GuiProfile(

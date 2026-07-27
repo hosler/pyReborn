@@ -21,7 +21,7 @@ from .popup_controls import (
 from .profiles import GuiControlProfile, _log_once
 from .text_controls import (
     GuiAccountPasswordCtrl, GuiMLTextCtrl, GuiMLTextEditCtrl, GuiProgressCtrl,
-    GuiScrollCtrl, GuiTextEditCtrl,
+    GuiScrollCtrl, GuiSliderCtrl, GuiTextEditCtrl, GuiTextEditSliderCtrl,
 )
 from .basic_controls import GuiButtonBaseCtrl  # noqa: F401  - kept: original import block (star-import consumers rely on it)
 from .collection_controls import GuiTreeNode, _TreeNodeIcon  # noqa: F401  - kept: original import block (star-import consumers rely on it)
@@ -38,6 +38,7 @@ _CONTROL_CLASSES: Dict[str, type] = {
         GuiAccountPasswordCtrl, GuiMLTextEditCtrl, GuiProgressCtrl,
         GuiBitmapButtonCtrl, GuiPopUpMenuCtrl, GuiDrawingPanel,
         GuiFrameSetCtrl, GuiContextMenuCtrl, GuiStretchCtrl,
+        GuiSliderCtrl, GuiTextEditSliderCtrl,
     )
 }
 

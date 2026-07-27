@@ -491,6 +491,72 @@ class GuiMLTextEditCtrl(GuiMLTextCtrl):
         self.max_len = 65536
 
 
+class GuiSliderCtrl(GuiControl):
+    """Horizontal value slider (Login's Options sound/volume rows). Absent
+    from the FourPlay build (mobile), so the surface is the Torque standard:
+    `range` = "min max", `ticks`, `value`; dragging/clicking sets value and
+    fires onAction."""
+
+    CTRL_CLASS = "GuiSliderCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
+        {"range", "ticks", "value"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.width, self.height = 120.0, 20.0
+        self.value = 0.0
+
+    def slider_range(self) -> Tuple[float, float]:
+        pair = self._num_pair(self._members.get("range", "0 1"))
+        return pair if pair is not None else (0.0, 1.0)
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "value":
+            return float(self.value)
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "value":
+            lo, hi = self.slider_range()
+            self.value = max(min(lo, hi), min(max(lo, hi), to_num(value)))
+            return
+        super().set(key, value)
+
+    def pointer_down(self, manager, pos) -> bool:
+        manager._set_focus(None)
+        r = self.rect()
+        if r.width > 8:
+            lo, hi = self.slider_range()
+            frac = min(1.0, max(0.0, (pos[0] - r.x - 4) / (r.width - 8)))
+            self.set("value", lo + frac * (hi - lo))
+            self.fire_action()
+        return True
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        prof = self.resolve_profile()
+        r = self.rect()
+        track = pygame.Rect(r.x + 4, r.centery - 2, max(1, r.width - 8), 4)
+        _fill_rect(surf, prof.bg if prof.bg is not None else _BLUE_FILL, track)
+        pygame.draw.rect(surf, prof.border[:3], track, 1)
+        lo, hi = self.slider_range()
+        span = (hi - lo) or 1.0
+        frac = min(1.0, max(0.0, (self.value - lo) / span))
+        tx = track.x + int(frac * track.width)
+        thumb = pygame.Rect(tx - 4, r.centery - 7, 8, 14)
+        _fill_rect(surf, prof.title_bg, thumb)
+        pygame.draw.rect(surf, prof.border[:3], thumb, 1)
+
+
+class GuiTextEditSliderCtrl(GuiTextEditCtrl):
+    """Numeric edit with spinner semantics (Torque standard; not in the
+    FourPlay build). Rendered as the edit; `range`/`increment`/`format`
+    are claimed so construction writes land."""
+
+    CTRL_CLASS = "GuiTextEditSliderCtrl"
+    _TORQUE_PROPS = GuiTextEditCtrl._TORQUE_PROPS | frozenset(
+        {"range", "increment", "format"})
+
+
 class GuiProgressCtrl(GuiControl):
     """Horizontal progress bar. `progress` is 0..1 (Login's IRC_Installer
     drives three of them off the update-package byte counts); the label, if

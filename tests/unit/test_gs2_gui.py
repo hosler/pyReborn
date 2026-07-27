@@ -2141,3 +2141,56 @@ def test_canvas_resize_fires_graalcontrol_onresize_and_per_control():
     # the sizing cascade routed through the choke point: width mode grew the
     # window by the canvas delta and its own onResize fired with the new extent
     assert seen == [(440.0, 160.0)]
+
+
+class TestOptionsWindowRegressions:
+    """Login's Options window construction (gbf/bytecode/login/
+    _Serverlist_Options.gs2bc.gs2) -- the 2026-07-27 start-menu wave."""
+
+    def setup_method(self):
+        self.rt2 = ClientGS2()
+        self.gui = self.rt2.gui
+
+    def test_detached_control_parent_reads_null(self):
+        """`if (parent == null)` gates the window's whole first-time sizing
+        block INSIDE the construction with-block; the canvas stand-in must
+        only answer for ATTACHED roots or `extent = {460, 440}` is skipped
+        and the window opens 76px tall."""
+        win = self.gui.create_control("GuiWindowCtrl", "OptWin")
+        assert win.get("parent") is None          # detached: no parent yet
+        self.gui.addcontrol(win)
+        parent = win.get("parent")
+        assert parent is not None                 # attached root: the canvas
+        assert parent.get("clientwidth") > 0
+
+    def test_named_new_replaces_a_vivified_plain_global(self):
+        """The reference's createObject REPLACES a plain script variable
+        holding the name -- members migrate, the binding becomes the engine
+        object (TScriptMachine.cpp:1135-1157). Options' tab onSelect writes
+        `Opt*Pane2D.visible` BEFORE the panes exist, vivifying plain
+        globals that otherwise shadow the real controls in every later
+        lookup (the pane with-blocks then leaked geometry onto the
+        window)."""
+        from reborn_protocol.gs2 import GS2Object
+        plain = GS2Object(name="OptPane")
+        plain.set("visible", 0.0)
+        self.rt2.globals_store["optpane"] = plain
+        pane = self.gui.create_control("GuiControl", "OptPane")
+        self.gui.addcontrol(pane)
+        assert self.rt2.globals_store["optpane"] is pane   # binding replaced
+        assert pane.visible is False                       # members migrated
+        # engine objects are NEVER replaced -- same-name new reuses (see
+        # create_control's reuse path), so the binding stays the control
+        again = self.gui.create_control("GuiControl", "OptPane")
+        assert again is pane
+        assert self.rt2.globals_store["optpane"] is pane
+
+    def test_tab_getselectedrow_answers_the_row_number(self):
+        from pyreborn.game.gs2_gui import GuiTabCtrl
+        tab = GuiTabCtrl("OptDialogTab")
+        assert tab._m_getselectedrow() == -1.0
+        tab._m_addrow(0, "General")
+        tab._m_addrow(1, "Sound")
+        tab._m_setselectedrow(1)
+        assert tab._m_getselectedrow() == 1.0
+        assert tab.get("getselectedrow")() == 1.0     # script-callable

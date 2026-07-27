@@ -265,12 +265,18 @@ class GuiControl(GS2Object):
         if k == "parent" and k not in self._members:
             if self.parent is not None:
                 return self.parent
-            # a root control's Torque parent is the canvas itself --
-            # updateChatBarSize does `ChatBar.parent.clientwidth` on a
+            # an ATTACHED root control's Torque parent is the canvas itself
+            # -- updateChatBarSize does `ChatBar.parent.clientwidth` on a
             # control added straight to GraalControl; None here read as 0
-            # and sized the chat bar to nothing
-            return (self._manager.canvas_object()
-                    if self._manager is not None else None)
+            # and sized the chat bar to nothing. A DETACHED control (under
+            # construction, not yet addcontrol'd) has no parent: Login's
+            # Options weapon gates its whole first-time sizing block on
+            # `if (parent == null)` inside the construction with-block, and
+            # answering the canvas there skipped `extent = {460, 440}` --
+            # the window opened 76px tall with every pane overflowing it.
+            if self._manager is not None and self in self._manager.roots:
+                return self._manager.canvas_object()
+            return None
         if k in self._METHOD_NAMES and not super().has(k):
             return getattr(self, "_m_" + k)
         if k == "icon" and k not in self._members:

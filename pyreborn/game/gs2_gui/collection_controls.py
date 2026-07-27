@@ -710,12 +710,21 @@ class GuiTabCtrl(GuiControl):
         self.click_at(pos)
         return True
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"setselectedrow", "setselectedbyid"})
+        {"setselectedrow", "setselectedbyid", "getselectedrow"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
         self.width, self.height = 200.0, 22.0
         self.selected_index = -1
+
+    def _m_getselectedrow(self, *args) -> float:
+        """getSelectedRow() -> the selected row NUMBER, -1 when none --
+        Login's Options rebuilds its tab strip with `temp.oldsel =
+        getSelectedRow(); clearRows(); ...; setSelectedRow(max(0,
+        temp.oldsel))` (gbf/bytecode/login/_Serverlist_Options.gs2bc.gs2:
+        177-195); unanswered, the bare with-scope call was an unknown
+        function."""
+        return float(self.selected_index)
 
     def _m_clearrows(self, *args) -> float:
         # same reset-selection-on-clearRows contract as GuiTextListCtrl

@@ -685,3 +685,66 @@ def test_host_surface_reports_control_subclass_methods():
     assert "addnodebypath" in control_method_names()
     assert "addnodebypath" not in GuiControl._METHOD_NAMES
     assert isinstance(GuiTreeViewCtrl("t").get("addnodebypath"), object)
+
+
+# -- 2026-07-27 start-menu functionality wave ------------------------------
+
+def test_findfiles_answers_the_empty_array():
+    """findfiles(pattern, recursive) (TFileScripting.cpp:469 {'o',"si"}):
+    no client-install tree to enumerate, so the honest answer is [] --
+    Login's Options lists *.wba window styles with it and falls back to its
+    hardcoded entries. Unanswered it was an unknown function AND, being
+    string-typed downstream, iterated garbage."""
+    rt = ClientGS2()
+    assert call(rt, "findfiles", ["*.wba", 1]) == []
+
+
+def test_string_method_call_fetches_the_unloaded_weapon(monkeypatch):
+    """`"-Serverlist_Options".showOptions()` with the weapon NOT loaded:
+    the host's string branch consults the client-install stand-in
+    (fetch_weapon) -- the whole Login start menu drives other weapons this
+    way (weapon-Rescripted_Serverlist.txt:2938-2957). Only method calls
+    reach the branch, so isobject()/bare reads can never trigger a fetch."""
+    rt = ClientGS2()
+    ran = []
+
+    class _WVM:
+        def has_function(self, name):
+            return name == "showoptions"
+
+        def call(self, name, *args):
+            ran.append((name, args))
+            return 1.0
+
+    fetched = []
+
+    def fake_fetch(wname, timeout=3.0):
+        fetched.append(wname)
+        vm = _WVM()
+        rt.vms["weapon"][wname.lower()] = vm
+        return vm
+
+    monkeypatch.setattr(rt, "fetch_weapon", fake_fetch)
+    assert call(rt, "showoptions", ["x"], obj="-Serverlist_Options") == 1.0
+    assert fetched == ["-Serverlist_Options"]
+    assert ran == [("showoptions", ("x",))]
+    # second call: already loaded, no re-fetch
+    call(rt, "showoptions", ["y"], obj="-Serverlist_Options")
+    assert fetched == ["-Serverlist_Options"]
+
+
+def test_slider_controls_route_and_clamp():
+    """GuiSliderCtrl/GuiTextEditSliderCtrl (Login Options' sound rows;
+    absent from the FourPlay build, Torque-standard surface): real classes
+    instead of the generic-fallback warning."""
+    from pyreborn.game.gs2_gui import make_control
+    slider = make_control("GuiSliderCtrl", "Vol")
+    assert slider.CTRL_CLASS == "GuiSliderCtrl"
+    slider.set("range", "0 100")
+    slider.set("value", 250)
+    assert slider.get("value") == 100.0
+    slider.set("value", -5)
+    assert slider.get("value") == 0.0
+    edit = make_control("GuiTextEditSliderCtrl", "Num")
+    assert edit.CTRL_CLASS == "GuiTextEditSliderCtrl"
+    assert edit.has("range") and edit.has("increment") and edit.has("format")

@@ -136,11 +136,13 @@ class GS2GuiManager:
                                 and existing in self.roots):
                             self.roots.remove(existing)
                     self._construction_stack.append(existing)
+                self._adopt_plain_global(existing)
                 return existing
         ctrl = make_control(classname, ctor_arg)
         ctrl._manager = self
         if ctrl.ctrl_name:
             self._named[ctrl.ctrl_name.lower()] = ctrl
+            self._adopt_plain_global(ctrl)
             # adopt catchevent registrations made before this control existed
             pending = self._pending_catchers.pop(ctrl.ctrl_name.lower(), None)
             if pending:
@@ -155,6 +157,35 @@ class GS2GuiManager:
             self._construction_stack[-1].add_child(ctrl)
         self._construction_stack.append(ctrl)
         return ctrl
+
+    def _adopt_plain_global(self, ctrl: GuiControl) -> None:
+        """The reference's createObject REPLACES a plain script variable
+        already holding the new object's name: the variable is removed from
+        universe vars, the fresh engine object adopts its members
+        (copyVarsFrom) and takes over the binding (TScriptMachine.cpp:
+        1135-1157) -- engine objects are never replaced (that is the reuse
+        path above). Without this, Login's Options tab fires onSelect
+        during construction, whose `Opt*Pane2D.visible` writes vivify plain
+        globals BEFORE the panes exist; those then shadow the real controls
+        in every later name lookup, and the pane with-blocks leak their
+        geometry onto the enclosing window (76px-tall Options)."""
+        store = getattr(self.rt2, "globals_store", None)
+        if store is None or not ctrl.ctrl_name:
+            return
+        key = ctrl.ctrl_name.lower()
+        prev = store.get(key)
+        if prev is None or prev is ctrl:
+            return
+        if isinstance(prev, GuiControl) or type(prev) is not GS2Object:
+            # a non-plain-object global (another engine object, a scalar):
+            # the engine only replaces plain VARIABLES; scalars are Var-type
+            # too and get deleted with the binding
+            if not isinstance(prev, GS2Object):
+                store[key] = ctrl
+            return
+        for member, value in list(prev._members.items()):
+            ctrl.set(member, value)
+        store[key] = ctrl
 
     def addcontrol(self, ctrl: Any, owner_vm: Any = None) -> None:
         if isinstance(ctrl, str):

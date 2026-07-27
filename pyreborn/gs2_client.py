@@ -1949,13 +1949,19 @@ class GS2ClientHost(GS2Host):
                 return handler(self, vm, name, args, obj)
             # ("-Serverlist_Options").showOptions() -- a method call on a
             # string that NAMES a weapon script dispatches to that weapon's
-            # public function (the reference engine's weapon-as-object form;
-            # Login uses it for -ScriptedRC, -Serverlist_Options and
-            # -ShopGlobal). Only already-loaded weapons are considered:
-            # resolving one would mean a findweapon-style server fetch on
-            # every unknown string method, which is neither free nor obviously
-            # wanted.
+            # public function (the reference resolves the string literal
+            # through the universe vars, where installed weapons live --
+            # TScriptStackEntry::makeProperty's String case; Login's whole
+            # start menu drives -Serverlist_Options, -Rescripted/-F2LogWindow,
+            # -ShopGlobal and -ScriptedRC this way). A weapon that is not
+            # loaded is fetched over the PLI_UPDATESCRIPT channel, this
+            # client's stand-in for the client install (see fetch_weapon) --
+            # safe to do from here because ONLY method calls reach this
+            # branch: isobject()/bare-name reads never trigger a fetch, and
+            # a name the server does not answer is negative-cached.
             wvm = rt2.vms["weapon"].get(obj.lower())
+            if wvm is None:
+                wvm = rt2.fetch_weapon(obj)
             if wvm is not None and wvm.has_function(name):
                 return wvm.call(name, *args)
         # Other list methods (add/addarray/size/clear/index/sortbyvalue)
@@ -2942,6 +2948,16 @@ class GS2ClientHost(GS2Host):
         if not dot:
             return leaf if name == "extractfilebase" else ""
         return base if name == "extractfilebase" else dot + ext
+
+    @_gs2_builtin(_GS2_BARE, "findfiles")
+    def _bi_findfiles(self, vm, name, args, obj):
+        # findfiles(pattern, recursive) -> array of matching client-install
+        # files (TFileScripting.cpp:469 {'o', "si"} -> body :246). This
+        # client has no install tree to enumerate (and scripts must not be
+        # able to walk the user's disk), so the honest answer is the empty
+        # array -- Login's Options lists *.wba window styles with it and
+        # falls back to its hardcoded entries when the loop yields nothing.
+        return []
 
     @_gs2_builtin(_GS2_BARE, "fileexists")
     def _bi_fileexists(self, vm, name, args, obj):
