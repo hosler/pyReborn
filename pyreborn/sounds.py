@@ -151,13 +151,37 @@ class SoundManager:
 
         # Load sound
         try:
-            sound = pygame.mixer.Sound(str(file_path))
+            sound = self._decode(open(file_path, "rb").read())
             self.sound_cache[name] = sound
             return sound
         except Exception as e:
             print(f"Error loading sound {name}: {e}")
             self._sound_failed.add(name)
             return None
+
+    @staticmethod
+    def _decode(data: bytes) -> "pygame.mixer.Sound":
+        """Decode sound bytes, unwrapping MPEG-in-WAV.
+
+        Servers ship .wav files whose RIFF fmt tag is MPEG Layer 3
+        (wFormatTag 0x0055); SDL_mixer's WAV parser rejects those with
+        "MPEG formats not supported" even though it decodes the same
+        payload as a raw MP3 stream, so hand it the bare data chunk.
+        """
+        if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+            pos, fmt_tag, payload = 12, None, None
+            while pos + 8 <= len(data):
+                cid = data[pos:pos + 4]
+                size = int.from_bytes(data[pos + 4:pos + 8], "little")
+                body = data[pos + 8:pos + 8 + size]
+                if cid == b"fmt " and size >= 2:
+                    fmt_tag = int.from_bytes(body[:2], "little")
+                elif cid == b"data":
+                    payload = body
+                pos += 8 + size + (size & 1)
+            if fmt_tag in (0x0050, 0x0055) and payload:
+                return pygame.mixer.Sound(io.BytesIO(payload))
+        return pygame.mixer.Sound(io.BytesIO(data))
 
     def _request(self, name: str):
         """Ask the server for a sound we don't have, once per name."""
@@ -182,7 +206,7 @@ class SoundManager:
         if not self._initialized:
             return None
         try:
-            sound = pygame.mixer.Sound(io.BytesIO(data))
+            sound = self._decode(data)
         except Exception as e:
             print(f"Error loading sound {name}: {e}")
             self._sound_failed.add(name)
