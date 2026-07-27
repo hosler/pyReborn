@@ -74,6 +74,12 @@ class Prefs:
     minimap_visible: bool = True
     zoom: float = 1.0
 
+    # Last appearance selected by the player. Each field is optional so login
+    # can restore only properties the server omitted from its initial props.
+    appearance_head: Optional[str] = None
+    appearance_body: Optional[str] = None
+    appearance_colors: Optional[list] = None
+
     # -- persistence ------------------------------------------------------
 
     @classmethod
@@ -150,4 +156,14 @@ class Prefs:
     def remember_window_size(self, w: int, h: int) -> None:
         self.window_w = int(w)
         self.window_h = int(h)
+        self.save()
+
+    def remember_appearance(self, *, head=None, body=None, colors=None) -> None:
+        """Persist whichever appearance fields were supplied."""
+        if head is not None:
+            self.appearance_head = str(head)
+        if body is not None:
+            self.appearance_body = str(body)
+        if colors is not None:
+            self.appearance_colors = [int(value) for value in colors]
         self.save()

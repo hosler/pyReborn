@@ -7,6 +7,7 @@ Works with pygame.mixer.
 
 import io
 import math
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -54,6 +55,10 @@ class SoundManager:
         # from here, so a sound that arrives from the server later is not
         # permanently written off by the miss that requested it.
         self._sound_failed = set()
+        # One missed trigger per filename, retried if its downloaded sample
+        # arrives promptly. Entries are (monotonic time, replay kind, args).
+        self._pending_samples = {}
+        self.pending_sample_ttl = 10.0
 
         # Optional "fetch this from the server" hook, called at most once per
         # missing name (see load). Servers publish their sound folder as
@@ -184,7 +189,22 @@ class SoundManager:
             return None
         self._sound_failed.discard(name)
         self.sound_cache[name] = sound
+        pending = self._pending_samples.pop(name, None)
+        if pending is not None:
+            requested_at, kind, args = pending
+            if time.monotonic() - requested_at <= self.pending_sample_ttl:
+                if kind == 'play':
+                    self.play(name, *args)
+                else:
+                    self.play_positional(*args)
         return sound
+
+    def _remember_pending(self, name: str, kind: str, args: tuple) -> None:
+        """Remember only the first recent missed trigger for each filename."""
+        now = time.monotonic()
+        pending = self._pending_samples.get(name)
+        if pending is None or now - pending[0] > self.pending_sample_ttl:
+            self._pending_samples[name] = (now, kind, args)
 
     def play(self, name: str, volume: float = 1.0, pitch: float = 1.0) -> bool:
         """
@@ -203,6 +223,7 @@ class SoundManager:
 
         sound = self.load(name)
         if not sound:
+            self._remember_pending(name, 'play', (volume, pitch))
             return False
 
         try:
@@ -262,6 +283,8 @@ class SoundManager:
 
         sound = self.load(filename)
         if not sound:
+            self._remember_pending(
+                filename, 'positional', (sound_info, dx - off_x, dy - off_y))
             return False
 
         try:

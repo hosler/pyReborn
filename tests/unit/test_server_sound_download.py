@@ -111,6 +111,42 @@ class TestOnFileRouting:
         assert game.sound_mgr.load("sen_mallet.wav") is not None
         assert game.sound_mgr.play("sen_mallet.wav") is True
 
+    def test_a_missed_sample_replays_when_downloaded(self, game, monkeypatch):
+        played = []
+        monkeypatch.setattr(
+            game.sound_mgr, 'play',
+            lambda name, volume=1.0, pitch=1.0:
+            played.append((name, volume, pitch)) or True)
+        game.sound_mgr._pending_samples["fresh.wav"] = (
+            __import__('time').monotonic(), 'play', (0.4, 1.0))
+
+        game.client.on_file("fresh.wav", _silent_wav_bytes())
+
+        assert played == [("fresh.wav", 0.4, 1.0)]
+        assert "fresh.wav" not in game.sound_mgr._pending_samples
+
+    def test_missing_sample_trigger_is_remembered_and_deduped(self, game):
+        game.sound_mgr.play("not_here.wav", volume=0.4)
+        first = game.sound_mgr._pending_samples["not_here.wav"]
+        game.sound_mgr.play("not_here.wav", volume=0.8)
+
+        assert game.sound_mgr._pending_samples["not_here.wav"] == first
+        assert first[1:] == ('play', (0.4, 1.0))
+
+    def test_an_expired_sample_is_dropped_without_replay(self, game, monkeypatch):
+        played = []
+        monkeypatch.setattr(game.sound_mgr, 'play',
+                            lambda *args, **kwargs: played.append(args) or True)
+        game.sound_mgr._pending_samples["stale.wav"] = (
+            __import__('time').monotonic()
+            - game.sound_mgr.pending_sample_ttl - 0.1,
+            'play', (1.0, 1.0))
+
+        game.client.on_file("stale.wav", _silent_wav_bytes())
+
+        assert played == []
+        assert "stale.wav" not in game.sound_mgr._pending_samples
+
     def test_ogg_still_goes_to_the_music_path(self, game, monkeypatch):
         """The boundary of the MUSIC_EXTS/SAMPLE_EXTS split (sounds.py:285):
         .ogg is a streaming format, so a downloaded track must reach

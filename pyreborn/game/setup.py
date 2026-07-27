@@ -738,6 +738,17 @@ class SetupMixin:
                 self.local_chat_text = value
                 self.local_chat_time = time.time()
                 self.client.player.chat = value
+            elif code == '#3':
+                self.client.send_head_image(value)
+            elif code == '#8':
+                self.client.send_body_image(value)
+            elif code.startswith('#C') and code[2:].isdigit():
+                index = int(code[2:])
+                colors = list(self.client.player.colors)
+                if 0 <= index < self.client._colors_len:
+                    colors.extend([0] * (self.client._colors_len - len(colors)))
+                    colors[index] = int(float(value))
+                    self.client.send_colors(colors)
             elif code in _PLAYER_PROP:
                 setattr(self.client.player, _PLAYER_PROP[code], value)
             # other codes (#P1-#P30 gattribs, ...) not modelled yet — ignore

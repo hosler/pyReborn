@@ -24,6 +24,7 @@ MAX_LARGE_FILE_SIZE = 256 * 1024 * 1024
 LARGE_FILE_SIZE_SLACK = 64 * 1024
 
 from reborn_protocol import BDPROP, BDMODE
+from reborn_protocol.props import PLAYER_PROPS, encode_value
 from reborn_protocol.coords import (
     LEVEL_SIZE, in_level_bounds, level_index, local_coord, local_to_world,
     segment_at, segment_origin, world_to_local,
@@ -100,6 +101,7 @@ from .packets import (
     build_update_script,
     build_update_gani,
     build_update_class,
+    parse_player_props,
 )
 # Importing the package registers every @handles handler; PACKET_HANDLERS is
 # the complete inbound-packet dispatch table (see _handle_packet).
@@ -200,6 +202,7 @@ class Client:
             self._protocol = Protocol(host, port, version)
 
         self.player = Player()
+        self._login_appearance_applied = False
 
     # =========================================================================
     # Connection
@@ -214,6 +217,7 @@ class Client:
         # see example_pygame.py's F8 server-switch loop — so this is
         # defensive, not load-bearing).
         self._authenticated = False
+        self._login_appearance_applied = False
         if self.input_frozen:
             self.input_frozen = False
             if self.on_fullstop:
@@ -501,6 +505,80 @@ class Client:
         self.player.chat = message
         data = build_player_chat(message)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
+
+    def _send_appearance_prop(self, prop_id: int, value) -> bool:
+        """Send one appearance property through the normal player-props path."""
+        if not self.connected or not self._authenticated:
+            return False
+        payload = bytes([prop_id + 32]) + encode_value(
+            PLAYER_PROPS[prop_id], value, colors_len=self._colors_len)
+        return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, payload)
+
+    @staticmethod
+    def _remember_appearance(**fields) -> None:
+        try:
+            from .prefs import Prefs
+            Prefs.load().remember_appearance(**fields)
+        except OSError:
+            pass
+
+    def send_head_image(self, head_image=None) -> bool:
+        """Set and send PLPROP_HEADIMAGE (a preset int or custom filename)."""
+        value = self.player.head_image if head_image is None else head_image
+        sent = self._send_appearance_prop(11, value)
+        if sent:
+            self.player.head_image = (
+                f"head{value}.png" if isinstance(value, int) else str(value))
+            self._remember_appearance(head=self.player.head_image)
+        return sent
+
+    def send_body_image(self, body_image=None) -> bool:
+        """Set and send PLPROP_BODYIMAGE."""
+        value = self.player.body_image if body_image is None else str(body_image)
+        sent = self._send_appearance_prop(35, value)
+        if sent:
+            self.player.body_image = value
+            self._remember_appearance(body=value)
+        return sent
+
+    def send_colors(self, colors=None) -> bool:
+        """Set and send PLPROP_COLORS using the negotiated server width."""
+        value = list(self.player.colors if colors is None else colors)
+        sent = self._send_appearance_prop(13, value)
+        if sent:
+            self.player.colors = value[:self._colors_len]
+            self._remember_appearance(colors=self.player.colors)
+        return sent
+
+    def _apply_login_appearance(self, server_props: dict) -> None:
+        """Restore saved look fields absent from the first server props packet."""
+        if self._login_appearance_applied:
+            return
+        self._login_appearance_applied = True
+        try:
+            from .prefs import Prefs
+            prefs = Prefs.load()
+        except OSError:
+            return
+
+        server_values = {}
+        if 'head_image' in server_props:
+            server_values['head'] = self.player.head_image
+        elif prefs.appearance_head is not None:
+            self.send_head_image(prefs.appearance_head)
+        if 'body_image' in server_props:
+            server_values['body'] = self.player.body_image
+        elif prefs.appearance_body is not None:
+            self.send_body_image(prefs.appearance_body)
+        if 'colors' in server_props:
+            server_values['colors'] = self.player.colors
+        elif prefs.appearance_colors is not None:
+            self.send_colors(prefs.appearance_colors)
+        if server_values:
+            try:
+                prefs.remember_appearance(**server_values)
+            except OSError:
+                pass
 
     def sword_attack(self, direction: Optional[int] = None) -> bool:
         """
@@ -2318,9 +2396,17 @@ class Client:
         A handler returning handlers.STOP consumes the packet outright and
         suppresses that hook.
         """
+        login_appearance = None
+        if packet_id == PacketID.PLO_PLAYERPROPS and not self._authenticated:
+            # The handler performs the authoritative parse and records any
+            # width fallback/error diagnostics; this look-ahead is only for
+            # deciding which appearance fields the server supplied.
+            login_appearance = parse_player_props(data, self._colors_len)
         handler = PACKET_HANDLERS.get(packet_id)
         if handler is not None and handler(self, data) is STOP:
             return
+        if login_appearance is not None and self._authenticated:
+            self._apply_login_appearance(login_appearance)
 
         # Custom handler
         if packet_id in self.on_packet:
