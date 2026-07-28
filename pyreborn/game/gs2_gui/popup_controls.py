@@ -43,6 +43,11 @@ class GuiPopUpEditCtrl(GuiControl):
         self.rows.append((row_id, to_str(text)))
         return float(len(self.rows) - 1)
 
+    def get(self, key: str) -> Any:
+        if key.lower() == "rows":
+            return self.rows
+        return super().get(key)
+
     # popup rows are (id, text) pairs with their own draw path -- keep the
     # base class's generic list-row methods from shadowing them
     def _m_addrow(self, *args):
@@ -214,6 +219,11 @@ class GuiPopUpMenuCtrl(GuiPopUpEditCtrl):
     them."""
 
     CTRL_CLASS = "GuiPopUpMenuCtrl"
+    # -Playerlist's status popup writes both in its construction block
+    # (B/_Playerlist.gs2bc.gs2:471-495); stored claims, no behavior -- the
+    # popup overlay already sizes itself.
+    _TORQUE_PROPS = GuiPopUpEditCtrl._TORQUE_PROPS | frozenset(
+        {"maxpopupheight", "scrollprofile"})
 
 
 class GuiFrameSetCtrl(GuiControl):
@@ -403,4 +413,3 @@ class GuiContextMenuCtrl(GuiPopUpEditCtrl):
         if len(args) >= 2:
             self.x, self.y = to_num(args[0]), to_num(args[1])
         return self._m_showtop()
-

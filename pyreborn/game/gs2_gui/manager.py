@@ -115,6 +115,16 @@ class GS2GuiManager:
 
     # -- construction --------------------------------------------------------
 
+    def register_native_control(self, classname: str, name: str) -> GuiControl:
+        """Register a client-owned control without attaching it to the canvas."""
+        existing = self._named.get(name.lower())
+        if existing is not None:
+            return existing
+        ctrl = make_control(classname, name)
+        ctrl._manager = self
+        self._named[name.lower()] = ctrl
+        return ctrl
+
     def create_control(self, classname: str, ctor_arg: Any) -> GuiControl:
         # Named `new` REUSES a live same-named engine object: the reference
         # looks the name up in universe->vars and returns the EXISTING
@@ -410,12 +420,17 @@ class GS2GuiManager:
 
     def set_first_responder(self, ctrl: Optional[GuiControl]) -> None:
         """GuiCanvas::setFirstResponder (GuiCanvas.cpp:1411-1433): on change,
-        `onFirstResponderChanges(new)` on the universe object -- this model
-        has no universe, so that one is skipped -- then onLoseFirstResponder
-        on the old control and onBecomeFirstResponder on the new."""
+        `onFirstResponderChanges(new)` on the universe object (routed
+        through the runtime's weapon/NPC event dispatch -- -Playerlist's
+        search overlay dismisses itself on it, B/_Playerlist.gs2bc.gs2:
+        2906-2922), then onLoseFirstResponder on the old control and
+        onBecomeFirstResponder on the new."""
         if ctrl is self._first_responder:
             return
         old, self._first_responder = self._first_responder, ctrl
+        trigger = getattr(self.rt2, "trigger_event", None)
+        if trigger is not None:
+            trigger("onFirstResponderChanges", ctrl)
         if old is not None:
             old.fire_event("onlosefirstresponder")
         if ctrl is not None:
@@ -783,7 +798,10 @@ class GS2GuiManager:
             return self._on_wheel(event)
         if event.type == pygame.KEYDOWN:
             self._fire_key_script(event, "onkeydown")
-            return self._on_keydown(event)
+            consumed = self._on_keydown(event)
+            if not consumed:
+                self._fire_universe_key(event)
+            return consumed
         if event.type == pygame.KEYUP:
             self._fire_key_script(event, "onkeyup")
             return False
@@ -891,6 +909,35 @@ class GS2GuiManager:
             fr.fire_event(name, keycode, text, 1.0)
         else:
             self.fire_unbound_event("graalcontrol", name, keycode, text, 1.0)
+
+    def _fire_universe_key(self, event) -> None:
+        """Universe onControlKeyDown(keycode, keytext, scancode, window) for
+        a key no GUI control consumed -- the F2/F7 window togglers'
+        engine-side feed (official handlers: B/_F2LogWindow.gs2bc.gs2:
+        240-257, B/_Playerlist.gs2bc.gs2:685-702, both disasm-corrected:
+        `keycode==113/118 || (window=="<own window>" && keycode==27)`).
+
+        The reference fires it from the OS-window key pump with the
+        detached window's name, `""` for the main window (TWindow.cpp:
+        339-348 fires the literal ""; the name-passing arm is inferred from
+        the scripts' window== branches). This client renders everything
+        internally, so window is ALWAYS "" here -- which keeps the Esc arms
+        correctly dead and the F-key arms live. Also fires the GS1-style
+        raw-keyboard onKeyPressed(keycode, keytext, scancode) the
+        -Rescripted/-F2LogWindow shim's F4/F6 extras hang off
+        (weapon-Rescripted_-F2LogWindow.txt:114-135)."""
+        rt2 = self.rt2
+        trigger = getattr(rt2, "trigger_event", None)
+        if trigger is None:
+            return
+        vk = vk_from_pygame(event.key)
+        if not vk:
+            return
+        keycode = float(full_modifier_key(vk, getattr(event, "mod", 0)))
+        text = getattr(event, "unicode", "") or ""
+        scancode = float(getattr(event, "scancode", 0) or 0)
+        trigger("onControlKeyDown", keycode, text, scancode, "")
+        trigger("onKeyPressed", keycode, text, scancode)
 
     def _on_mouse_down(self, pos) -> bool:
         if self._open_popup is not None:

@@ -310,6 +310,17 @@ class GuiTextListCtrl(GuiControl):
     #: compare equal to every literal, so they answer even when unset.
     _SORT_ORDER_NAMES = ("sortascending", "sortdescending")
     _SORT_MODE_NAMES = ("", "sortbyvalue", "lexical", "sortbyextension")
+    #: The MOBILE enum parser accepts only the spellings above, strict
+    #: equality -- but the Login scripts write the DESKTOP vocabulary
+    #: ("descending"/"value"/"ascending"/"name",
+    #: B/_Playerlist.gs2bc.gs2:380-402), which the desktop build evidently
+    #: accepts. Both vocabularies are honored, normalized to the mobile
+    #: names (windows spec §4.4; the desktop alias set is inferred from the
+    #: corpus writes, not seen in code).
+    _SORT_ENUM_ALIASES = {"ascending": "sortascending",
+                          "descending": "sortdescending",
+                          "value": "sortbyvalue", "name": "lexical",
+                          "extension": "sortbyextension"}
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -550,6 +561,11 @@ class GuiTextListCtrl(GuiControl):
         text = to_str(row.get("text"))
         if text == "-":
             return False                      # separator row
+        # `active = false` rows are unselectable (reference row property,
+        # GuiTextListEntryProperties.cpp:171-188); unset means active
+        active = self._row_member(row, "active")
+        if active is not None and not to_num(active):
+            return False
         self.selected_index = index
         self.fire_event("onselect", row.get("id"), text, float(index))
         return True
@@ -595,6 +611,60 @@ class GuiTextListCtrl(GuiControl):
                             reverse=True)
         return 0.0
 
+    @staticmethod
+    def _row_member(row, key, default=None):
+        """A row member WITHOUT materializing: GuiListRow.get() creates an
+        inert drawable for any missing name (its with-scope contract), so
+        engine-side reads must go straight to the dict. A name a script
+        merely READ has already materialized as an _InertDrawable -- that is
+        still UNSET here, or to_num'ing the placeholder (0.0) would turn a
+        read of `row.active` into `active = false` (unselectable + dimmed)."""
+        value = row._members.get(key)
+        if value is None or isinstance(value, _InertDrawable):
+            return default
+        return value
+
+    def _m_sort(self, *args) -> float:
+        """sort(): the engine row compare (GuiTextListCtrl_rowscompare,
+        FourPlay quattroplay/src/gui/GuiTextListCtrl.cpp:45-84):
+        `sortGroup` difference first, direction = groupSortOrder; a tie
+        falls to the mode compare -- sortbyvalue: `sortValue` then `id`;
+        lexical (default): case-insensitive text -- with direction =
+        sortOrder applied to THAT result only. This is the -Playerlist
+        band model: group headers pin bands via sortgroup, `sortvalue =
+        timevar2` + descending puts most-recently-seen first within a
+        band. (sortbyextension sorts by hint file extension; no corpus
+        list uses it -- it falls back to lexical here.)"""
+        group_dir = -1.0 if to_str(self.get("groupsortorder")) \
+            == "sortdescending" else 1.0
+        row_dir = -1.0 if to_str(self.get("sortorder")) \
+            == "sortdescending" else 1.0
+        by_value = to_str(self.get("sortmode")) == "sortbyvalue"
+        member = self._row_member
+
+        def compare(left, right):
+            diff = to_num(member(left, "sortgroup", 0.0)) \
+                - to_num(member(right, "sortgroup", 0.0))
+            if diff:
+                return diff * group_dir
+            if by_value:
+                diff = to_num(member(left, "sortvalue", 0.0)) \
+                    - to_num(member(right, "sortvalue", 0.0))
+                if not diff:
+                    diff = to_num(member(left, "id", 0.0)) \
+                        - to_num(member(right, "id", 0.0))
+            else:
+                lt = to_str(member(left, "text", "")).casefold()
+                rt = to_str(member(right, "text", "")).casefold()
+                diff = -1.0 if lt < rt else (1.0 if lt > rt else 0.0)
+            return diff * row_dir
+
+        import functools
+        self.list_rows.sort(key=functools.cmp_to_key(compare))
+        # selected CELLS stay positional across the qsort, exactly like the
+        # reference (GuiArrayCtrl's selection list is untouched by sort)
+        return 0.0
+
     def _m_findtext(self, *args) -> float:
         """findText(text) -> the matching row's INDEX, or -1.
 
@@ -610,6 +680,8 @@ class GuiTextListCtrl(GuiControl):
 
     def get(self, key: str) -> Any:
         k = key.lower()
+        if k == "iconwidth":
+            return float(self.icon_w)
         # Properties the reference computes rather than stores
         # (GuiTextListCtrlProperties.cpp:407-411): `selectedrow` and
         # `selectedid` are the property spellings of the two getters above,
@@ -635,6 +707,8 @@ class GuiTextListCtrl(GuiControl):
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
+        if k == "iconwidth":
+            return
         if k == "allowmultipleselections":
             self.allow_multiple_selections = bool(to_num(value))
             return
@@ -645,12 +719,16 @@ class GuiTextListCtrl(GuiControl):
             self._m_setselectedbyid(value)
             return
         if k in ("sortorder", "groupsortorder", "sortmode"):
-            # The writers only accept a member of the enum, by name or by
-            # index, and ignore anything else (:117-122, parseEnumValue
-            # :27-39). Store the NAME so the reader round-trips.
+            # The mobile writers only accept a member of the enum, by name
+            # or by index, and ignore anything else (:117-122,
+            # parseEnumValue :27-39) -- but the Login corpus writes the
+            # desktop spellings (see _SORT_ENUM_ALIASES), so those are
+            # folded in first. Store the canonical NAME so the reader
+            # round-trips.
             names = (self._SORT_MODE_NAMES if k == "sortmode"
                      else self._SORT_ORDER_NAMES)
             text = to_str(value)
+            text = self._SORT_ENUM_ALIASES.get(text.lower(), text)
             for index, name in enumerate(names):
                 if text == name or text == str(index):
                     super().set(k, name)
@@ -669,6 +747,9 @@ class GuiTextListCtrl(GuiControl):
          "insertrow", "removerow", "removerowbyid", "setrowbyid",
          "setrowactivebyid", "makevisible", "makevisiblebyid"})
 
+    def has(self, key: str) -> bool:
+        return key.lower() == "iconwidth" or super().has(key)
+
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         # keep our height in sync with content so ancestor GuiScrollCtrl
         # clipping/scrolling covers every row
@@ -686,7 +767,16 @@ class GuiTextListCtrl(GuiControl):
                 pygame.draw.line(surf, prof.border[:3],
                                  (rr.x + 4, rr.centery), (rr.right - 4, rr.centery))
                 continue
+            # row.flickering blinks the row (waiting-PM rows in the player
+            # list set it with flickertime 0.5s); row.active=false renders
+            # dimmed (the reference's fontColorNA) and is unselectable
+            active = self._row_member(row, "active")
+            if to_num(self._row_member(row, "flickering", 0.0)) \
+                    and (pygame.time.get_ticks() // 500) % 2:
+                continue
             fg = prof.fg
+            if active is not None and not to_num(active):
+                fg = _shade(fg, 0.55)
             if index in self.selected_rows:   # every selected cell, not [0]
                 _fill_rect(surf, prof.title_bg, rr)
                 fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
@@ -710,7 +800,8 @@ class GuiTabCtrl(GuiControl):
         self.click_at(pos)
         return True
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"setselectedrow", "setselectedbyid", "getselectedrow"})
+        {"setselectedrow", "setselectedbyid", "getselectedrow",
+         "getselectedid"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -725,6 +816,32 @@ class GuiTabCtrl(GuiControl):
         177-195); unanswered, the bare with-scope call was an unknown
         function."""
         return float(self.selected_index)
+
+    def _m_getselectedid(self, *args):
+        """getSelectedID() -> the selected row's ID, -1 when none -- the F2
+        log window keys its unread badges on
+        `F2LogWindow_Tab.getSelectedID()` (B/_F2LogWindow.gs2bc.gs2:
+        229-236) and -Playerlist filters by tab id the same way."""
+        if 0 <= self.selected_index < len(self.list_rows):
+            return self.list_rows[self.selected_index].get("id")
+        return -1.0
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        # property spellings of the two getters (same derived-read model as
+        # GuiTextListCtrl's)
+        if k == "selectedrow":
+            return float(self.selected_index)
+        if k == "selectedid":
+            return self._m_getselectedid()
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "selectedrow":
+            self.select_index(int(to_num(value)))
+            return
+        super().set(key, value)
 
     def _m_clearrows(self, *args) -> float:
         # same reset-selection-on-clearRows contract as GuiTextListCtrl

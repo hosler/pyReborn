@@ -14,6 +14,7 @@ from .image_controls import (
     GuiBitmapButtonCtrl, GuiBitmapCtrl, GuiCheckBoxCtrl, GuiRadioCtrl,
     GuiShowImgCtrl,
 )
+from .pm_controls import GuiPMCtrl, GuiPMEditCtrl, GuiPMHistoryCtrl
 from .popup_controls import (
     GuiContextMenuCtrl, GuiFrameSetCtrl, GuiPopUpEditCtrl, GuiPopUpMenuCtrl,
     GuiStretchCtrl,
@@ -39,6 +40,8 @@ _CONTROL_CLASSES: Dict[str, type] = {
         GuiBitmapButtonCtrl, GuiPopUpMenuCtrl, GuiDrawingPanel,
         GuiFrameSetCtrl, GuiContextMenuCtrl, GuiStretchCtrl,
         GuiSliderCtrl, GuiTextEditSliderCtrl,
+        # native PM window panes the -Playerlist weapon instantiates
+        GuiPMCtrl, GuiPMEditCtrl, GuiPMHistoryCtrl,
     )
 }
 

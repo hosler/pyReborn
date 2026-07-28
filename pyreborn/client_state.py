@@ -99,7 +99,10 @@ class SessionState:
 
         # Misc server state (populated by the corresponding PLO handlers).
         self.global_flags: Dict[str, str] = {}   # PLO_FLAGSET: server-wide flags
-        self.staff_guilds: List[str] = []   # PLO_STAFFGUILDS
+        # PLO_STAFFGUILDS: None = never sent (client defaults apply for
+        # isadmin), a list -- INCLUDING an empty one -- is server-authoritative
+        # (see gs2_client._is_admin_guild)
+        self.staff_guilds: Optional[List[str]] = None
         self.status_list: List[str] = []    # PLO_STATUSLIST (selectable statuses)
         self.server_message = ""            # PLO_STARTMESSAGE (MOTD)
         self.server_text = ""               # PLO_SERVERTEXT (last text answer)
@@ -264,6 +267,14 @@ class EntityState:
         # Other players: maps player_id -> player dict with x, y, nickname, account, etc.
         # This is the IN-LEVEL set (from PLO_OTHERPLPROPS), used for rendering.
         self.players: Dict[int, dict] = {}
+        # GLOBAL roster of every player id seen via PLO_OTHERPLPROPS this
+        # session -- the engine's `allplayers` (TGameEnvironment::allplayers,
+        # fed by scriptfun_client_setotherplayerprops, FourPlay
+        # TClient.cpp:3076-3160). Unlike `players`, entries survive level
+        # leaves and cross-level updates; they are only removed by the
+        # DISCONNECT prop (51) or PLO_DELPLAYER. Includes the id>=16000
+        # externals/channel pseudo-players the serverlist-chat leg pushes.
+        self.all_players: Dict[int, dict] = {}
         # Server-wide online roster from PLO_ADDPLAYER/PLO_DELPLAYER: the server
         # dumps everyone on login and announces joins/leaves. Maps id -> dict
         # with account/nickname/level/etc.

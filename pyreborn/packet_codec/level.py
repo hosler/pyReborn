@@ -260,6 +260,7 @@ _NPC_PROP_HANDLERS = {
     # attribution the client gets - see client.py's PLO_NPCPROPS handler.
     41: _set('gmaplevelx'),
     42: _set('gmaplevely'),
+    50: _set_text('name'),
     75: _set('x'),
     76: _set('y'),
     77: _set('z'),
@@ -568,5 +569,4 @@ def parse_board_heights(data: bytes) -> dict:
         heights.append(whole + frac)
     return {'map_x': map_x, 'map_y': map_y, 'block_x': block_x, 'block_y': block_y,
             'block_width': cols, 'block_height': rows, 'heights': heights}
-
 

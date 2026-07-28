@@ -38,7 +38,7 @@ from pyreborn.gs2_client import ClientGS2
 from pyreborn.game.gs2_gui import (
     GS2GuiManager, GuiBitmapCtrl, GuiButtonCtrl, GuiCheckBoxCtrl,
     GuiPopUpEditCtrl, GuiRadioCtrl, GuiShowImgCtrl, GuiTextCtrl,
-    GuiTextEditCtrl, GuiWindowCtrl,
+    GuiTextEditCtrl, GuiTextListCtrl, GuiWindowCtrl,
 )
 
 pygame.init()
@@ -480,6 +480,50 @@ def test_real_compiler_end_to_end():
     assert vm.this.get("clicked") == 1.0
 
 
+_PARENT_SCOPE_SCRIPT = """
+function onCreated() {
+  new GuiControl(temp.detached) {
+    width = parent == null ? 23 : 99;
+  }
+  new GuiWindowCtrl(temp.win) {
+    width = 321;
+    height = 111;
+    new GuiControl(temp.child) {
+      width = parent == null ? 17 : 99;
+    }
+  }
+  showgui(temp.win);
+  with (temp.child) {
+    width = parent.clientwidth - 7;
+    parent = 0;
+    height = parent.clientheight - 5;
+  }
+}
+"""
+
+
+@pytest.mark.skipif(GS2TEST is None, reason="gs2test compiler binary not built "
+                    "(see reborn-protocol/tests/tools/build_gs2test.sh)")
+def test_attached_parent_with_scope_is_read_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "parent_scope.gs2"
+        out = Path(tmp) / "parent_scope.gs2bc"
+        src.write_text(_PARENT_SCOPE_SCRIPT)
+        result = subprocess.run([GS2TEST, str(src), "-o", str(out)],
+                                capture_output=True, text=True, timeout=30)
+        assert out.exists(), result.stderr
+        blob = out.read_bytes()
+
+    rt2 = ClientGS2()
+    assert rt2.load_bytecode("npc", 2, blob) is not None
+    detached, win = rt2.gui.roots
+    child = win.children[0]
+    assert child.width == win.client_width() - 7
+    assert child.height == win.client_height() - 5
+    assert child.parent is win
+    assert detached.width == 23
+
+
 class TestReviewRegressions:
     """Regressions from the adversarial review of the initial GUI layer."""
 
@@ -734,6 +778,17 @@ class TestPopUpEdit:
         host.call_builtin(None, "clear", [], obj=extra)
         assert extra.rows == []
         assert extra.text == ""
+
+    def test_rows_member_uses_popup_storage(self):
+        assert self.popup.get("rows") is self.popup.rows
+
+
+def test_text_list_iconwidth_is_read_only():
+    control = GuiTextListCtrl("list")
+    assert control.has("iconwidth")
+    assert control.get("iconwidth") == 0.0
+    control.set("iconwidth", 12)
+    assert control.get("iconwidth") == 0.0
 
 
 # =============================================================================

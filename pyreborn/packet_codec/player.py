@@ -19,11 +19,25 @@ def parse_rawdata(data: bytes) -> int:
 # a correct parse from a corrupted one.
 
 # Same wire contract, but an empty CURCHAT still reaches its handler here so the
-# chat bubble can be cleared (see StreamPolicy.handle_empty).
+# chat bubble can be cleared (see StreamPolicy.handle_empty). DISCONNECT (51)
+# is a Wire.VOID prop whose PRESENCE is the payload -- the server's "this
+# player logged out" notification (GServer-v2 Player.cpp:362 sends
+# PLO_OTHERPLPROPS >> id >> DISCONNECT to every client; the reference client's
+# setProperties case for it tears the player down and setotherplayerprops then
+# fires onPlayerLogout) -- so it must reach its handler despite decoding to
+# None.
+# ...and one more ordering exemption: the external/pseudo-player packets
+# (irc channels, cross-server PM players) are hand-built as ACCOUNTNAME(34),
+# NICKNAME(0), PLAYERLISTCATEGORY(81) -- non-ascending -- by BOTH GServer-v2
+# emitters (PlayerRequestText.cpp:170, PlayerExternalPlayers.cpp:182-184) and
+# by the live Login servers (2026-07-28 capture: id 16000, 34 then 0 then
+# 81), so a prop following ACCOUNTNAME may restart the ordering. The strict
+# rule stopped the parse after the account and silently dropped the nick and
+# the category flags of every pseudo-player.
 _OTHER_STREAM = StreamPolicy(
     table=PLAYER_PROPS, max_prop_id=83, require_ascending=True,
-    ascending_exempt=frozenset({50}), check_alignment=True,
-    handle_empty=frozenset({12}))
+    ascending_exempt=frozenset({34, 50}), check_alignment=True,
+    handle_empty=frozenset({12, 51}))
 
 # Props another player's PLO_OTHERPLPROPS surfaces. Deliberately not the same
 # set or the same keys as _SELF_PROP_HANDLERS below: this describes somebody
@@ -51,10 +65,26 @@ _OTHER_PROP_HANDLERS = {
     # build_player_left; GServer-v2 sends the same shape). Without capturing it,
     # departed players linger forever in the level roster as ghosts.
     50: _set('joinleave'),
+    # DISCONNECT: payload-less logout marker (see _OTHER_STREAM's handle_empty
+    # note) -- distinct from joinleave==0, which is only a LEVEL leave.
+    51: lambda props, value: props.__setitem__('disconnect', True),
+    # PLAYERLISTSTATUS: the numeric status-icon index every server oracle we
+    # have emits (GServer-v2 PlayerProps.cpp:904 PropertyNumeric<GBYTE1>).
+    # NB the v6 mobile client instead reads prop 53 as a short STRING into
+    # its `message` slot (FourPlay TServerPlayer.cpp PLPROP_PSTATUSMSG case);
+    # no server in the tree sends that form, so the validated gbyte width is
+    # kept and the waiting-PM `message` surface is fed from
+    # PLO_PRIVATEMESSAGE instead (gs2_client.pm_received).
+    53: _set('playerlist_status'),
     75: _set('os_type'),
     76: _set('codepage'),
     78: _set('x'),
     79: _set('y'),
+    # PLAYERLISTCATEGORY bit-flags: 1=isexternal 2=ischannel 4=ischanneluser
+    # 8=ischannelopen (FourPlay TServerPlayer.cpp:1940-1954). Kept raw here;
+    # gs2_client's roster wrapper decodes the bits.
+    81: _set('playerlist_flags'),
+    82: _set('communityname'),
     **_gattrib_handlers(),
 }
 

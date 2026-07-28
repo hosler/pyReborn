@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 
+import pytest
+
 from reborn_protocol.gs2 import GS2Object
 
 from game_tester.server_crawl import classify_host_call
 from pyreborn.client import Client
+from pyreborn.game.gs2_gui import GuiControl
 from pyreborn.packets import PacketID
 from pyreborn.gs2_client import ClientGS2, GS2ClientHost
 import pyreborn.gs2_client as gs2_client_module
@@ -155,7 +158,14 @@ def test_findimg_returns_script_object():
     rt = ClientGS2(gs1=SimpleNamespace(_host=host))
     image = call(rt, "findimg", [8])
     assert isinstance(image, GS2Object) and image.get("image") == "icon.png"
-    assert call(rt, "findimg", [9]) == 0.0
+    # a MISS materializes an empty layer record: live particle content
+    # configures emitters on virgin indices (eradev2 era_partyhouse.nw:495
+    # even hideimg()s first), so findimg must never answer 0.0 there --
+    # an empty record draws nothing until it's given content
+    created = call(rt, "findimg", [9])
+    assert isinstance(created, GS2Object) and 9 in layers
+    assert call(rt, "findimg", [9]) is created
+    assert created.get("image") == ""
 
 
 def test_documented_stubs_are_classified_separately():
@@ -186,7 +196,9 @@ def test_documented_stubs_are_classified_separately():
         # native platform toggles
         "adventure_startofflinemode", "adventure_setallowedsocketsconnect",
         "adventure_setfullscreen", "adventure_setchat",
-        "createsmartphoneui", "mouselock",
+        "adventure_opendefaultviewer", "adventure_setallowrecordbyscript",
+        "adventure_quit",
+        "createsmartphoneui", "mouselock", "mouseunlock",
         # serverlist connect-through (pyReborn joins from its own browser)
         "connecttoselectedserver", "serverdirectconnect", "startscriptedrc",
         "initserverlist", "requestserverinfo", "selectservercategory",
@@ -204,6 +216,34 @@ def test_documented_stubs_are_classified_separately():
             GS2ClientHost._PATCHER_STUB_VALUES.get(name, 0.0)
 
 
+def test_read_only_mode_globals_stay_false():
+    rt = ClientGS2()
+    for name in ("isgraalplugin", "isgraal3d"):
+        assert rt.host.get_object(name) == 0.0
+        rt.globals_store[name] = 1.0
+        assert rt.host.get_object(name) == 0.0
+        assert name not in rt.globals_store
+
+
+def test_hasfunction_probes_loaded_weapons_and_object_members(monkeypatch):
+    rt = ClientGS2()
+    owner = SimpleNamespace(
+        has_function=lambda name: name.lower() == "getguistyle")
+    rt.vms["weapon"]["-serverlist"] = owner
+    assert call(rt, "hasfunction", ["GETGUISTYLE"], "-Serverlist") == 1.0
+    monkeypatch.setattr(rt, "fetch_weapon",
+                        lambda name: pytest.fail("must not fetch"))
+    assert call(rt, "hasfunction", ["missing"], "-Unloaded") == 0.0
+
+    obj = GS2Object()
+    obj.set("callback", 4.0)
+    obj.script_vms.append(SimpleNamespace(
+        has_public_function=lambda name: name.lower() == "open"))
+    assert call(rt, "hasfunction", ["CALLBACK"], obj) == 1.0
+    assert call(rt, "hasfunction", ["OPEN"], obj) == 1.0
+    assert call(rt, "hasfunction", ["closed"], obj) == 0.0
+
+
 def test_patcher_stubs_answer_with_terminating_values():
     """IRC_Installer polls the update-package counters in a progress loop;
     an all-zero answer for getPackagesDownloadComplete() spins forever."""
@@ -213,6 +253,77 @@ def test_patcher_stubs_answer_with_terminating_values():
     assert call(rt, "getdownloadedupdatepackagesize") == 0.0
     assert call(rt, "isdownloadingfiles") == 0.0
     assert call(rt, "getdownloadingpackage") == ""
+
+
+def test_control_bindings_round_trip_with_display_text():
+    rt = ClientGS2()
+    original = call(rt, "adventure_getcontrolbinding", [0, 0])
+    assert original.get("key") == 38.0
+    assert original.get("keytext") == "UP"
+    call(rt, "adventure_setcontrolbinding", [0, 0, 65])
+    changed = call(rt, "adventure_getcontrolbinding", [0, 0])
+    assert changed.get("key") == 65.0
+    assert changed.get("keytext") == "A"
+
+
+def test_resolution_list_contains_current_window_size():
+    rt = ClientGS2()
+    rt.game_shell = SimpleNamespace(
+        screen=SimpleNamespace(get_size=lambda: (1111, 777)))
+    resolutions = call(rt, "getresolutionlist", [0])
+    assert isinstance(resolutions, list)
+    assert "1111x777" in resolutions
+    assert all(isinstance(item, str) and "x" in item
+               for item in resolutions)
+
+
+def test_volume_updates_track_script_preferences_and_live_audio():
+    applied = []
+    rt = ClientGS2()
+    rt.game_shell = SimpleNamespace(
+        sound_mgr=SimpleNamespace(set_volume=applied.append))
+    rt.globals_store["$pref::audio::mp3volume"] = 0.35
+    call(rt, "adventure_updatemp3volume")
+    assert rt._volume_settings["$pref::audio::mp3volume"] == 0.35
+    assert applied == [0.35]
+
+
+def test_quit_and_external_viewer_are_inert():
+    rt = ClientGS2()
+    assert call(rt, "adventure_quit") == 0.0
+    assert call(rt, "adventure_opendefaultviewer", ["/tmp", 0]) == 0.0
+
+
+def test_options_dialog_is_pre_registered_and_pushes_and_pops():
+    rt = ClientGS2()
+    dialog = rt.host.get_object("OptionsDlg2D")
+    assert isinstance(dialog, GuiControl)
+    assert not dialog.visible
+    call(rt, "pushdialog", [dialog])
+    assert dialog.visible and rt.gui.roots[-1] is dialog
+    call(rt, "popdialog", [dialog])
+    assert not dialog.visible
+
+
+def test_lighting_global_write_updates_renderer_flag():
+    rt = ClientGS2()
+    rt.game_shell = SimpleNamespace(_day_night_enabled=False)
+    rt.globals_store["lighteffectsenabled"] = 1.0
+    assert rt.game_shell._day_night_enabled is True
+    assert rt.globals_store["lighteffectsenabled"] == 1.0
+    rt.globals_store["lighteffectsenabled"] = 0.0
+    assert rt.game_shell._day_night_enabled is False
+
+
+def test_update_package_queries_return_stable_shaped_objects():
+    rt = ClientGS2()
+    base = call(rt, "getbasepackage")
+    assert base.get("filename") == "basepackage.gupd"
+    assert base.get("platform") == "any"
+    assert base.get("packages") == []
+    package = call(rt, "getupdatepackage", ["optional.gupd"])
+    assert package is call(rt, "getupdatepackage", ["optional.gupd"])
+    assert package.get("server").get("filecount") == 0.0
 
 
 def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
@@ -226,6 +337,10 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         "gettextheight", "md5", "extractfilename", "extractfilebase",
         "extractfileext", "fileexists", "pushdialog", "popdialog",
         "bringtofront", "isfullscreenmode", "scheduleevent", "cancelevents",
+        "adventure_getcontrolbinding", "adventure_setcontrolbinding",
+        "adventure_getapplicationfolder", "adventure_updatemidivolume",
+        "adventure_updatemp3volume", "adventure_updateradiovolume",
+        "getresolutionlist", "getupdatepackage", "getbasepackage",
         # 2026-07-24 Zelda-corpus gaps (see test_gs2_zelda_host_gaps.py)
         "findnearestplayers", "findnearestplayer", "getstringkeys",
         "getcallstack", "isinclass", "leave",
@@ -235,7 +350,7 @@ def test_all_gap_calls_remain_classified_as_implemented_or_stubbed():
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented"
     for name in GS2ClientHost.stubbed:
         assert classify_host_call(name, surface, set(GS2ClientHost.stubbed)) == "implemented_stub"
-    assert len(real | set(GS2ClientHost.stubbed)) == 93
+    assert len(real | set(GS2ClientHost.stubbed)) == 106
 
 
 def test_addcontrol_still_adds_to_gui_root():

@@ -199,7 +199,7 @@ structural invariants alone would NOT have caught them.
 
 `python -m game_tester --gs1-client` pins the CLIENT-side GS1 engine
 (`pyreborn/gs1_client.py` running in the real Client + GameClient + NPCHandler
-stack, SDL dummy) against the decompiled reference client. Each of the ~37
+stack, SDL dummy) against the decompiled reference client. Each of the 73
 rows in `game_tester/gs1_client_conformance.py` is an executable transcription
 of one FourPlay citation (`Preagonal/FourPlay/quattroplay/src/...` file:line
 in the row), covering footprint blocking/dontblock, touchtestd touch,

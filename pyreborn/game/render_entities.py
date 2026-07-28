@@ -1480,6 +1480,11 @@ class EntityRenderMixin(FrameContextMixin):
                     self._render_showimg_rec(rec)
                 elif rec.get('poly'):
                     self._render_showpoly_rec(rec)
+                emitter = rec.get('emitter')
+                if emitter is not None:
+                    # live particles ride their layer's pass/stratum
+                    # (render_effects._render_layer_emitter)
+                    self._render_layer_emitter(rec, emitter)
             except Exception:
                 pass  # a bad layer must never break the frame
 

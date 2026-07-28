@@ -25,6 +25,55 @@ from .registry import STOP, handles
 # NPC delete packet ID not in PacketID class yet
 PLO_NPCDEL = 29
 
+#: Props whose arrival marks the reference's `playerListChanged` flag, i.e.
+#: fires universe.onPlayerChanges on an already-known player (FourPlay
+#: TServerPlayer.cpp setProperties: NICKNAME :1581, ACCOUNTNAME :1821,
+#: RATING-change :1840, prop-81 external :1952, COMMUNITYNAME :1959; the
+#: rating prop has no handler in _OTHER_PROP_HANDLERS so it cannot appear
+#: here).
+_ROSTER_CHANGE_KEYS = frozenset(
+    ('nickname', 'account', 'playerlist_flags', 'communityname'))
+
+
+def _update_global_roster(client, player_id, props):
+    """Maintain the session-global `all_players` roster and fire the engine's
+    universe events through the attached GS2 host.
+
+    Mirrors scriptfun_client_setotherplayerprops (FourPlay
+    TClient.cpp:3076-3160): first sighting of an id adds it to allplayers and
+    fires onPlayerLogin(other, id); the DISCONNECT prop removes it and fires
+    onPlayerLogout; a roster-relevant prop update on a known player fires
+    onPlayerChanges. Level leaves (joinleave==0) and cross-level updates do
+    NOT touch this roster -- leaving your level is not logging out.
+
+    Returns True when this packet was a logout (caller stops processing: the
+    packet carries nothing but the DISCONNECT marker)."""
+    roster = getattr(client, 'all_players', None)
+    if roster is None:
+        return False
+    host = getattr(client, 'gs2_host', None)
+    if props.get('disconnect'):
+        record = roster.pop(player_id, None)
+        left_level = client.players.pop(player_id, None) is not None
+        if left_level and client.on_player_left:
+            client.on_player_left(player_id)
+        if record is not None and host is not None:
+            host.roster_player_removed(player_id, record)
+        return True
+    is_new = player_id not in roster
+    record = roster.setdefault(player_id, {})
+    for key, value in props.items():
+        if value is None:
+            record.pop(key, None)
+        else:
+            record[key] = value
+    if host is not None:
+        if is_new:
+            host.roster_player_added(player_id)
+        elif any(key in props for key in _ROSTER_CHANGE_KEYS):
+            host.roster_player_changed(player_id)
+    return False
+
 
 @handles(PacketID.PLO_PLAYERPROPS)
 def handle_player_props(client, data):
@@ -74,6 +123,11 @@ def handle_player_props(client, data):
                 props['y'] = local_coord(props['y'])
 
     client.player.update_from_props(props)
+    if 'animation' in props:
+        host = getattr(client, 'gs2_host', None)
+        if host is not None:
+            host.note_gani(("local", getattr(client.player, "id", 0)),
+                           props['animation'], force=True)
 
     # First props packet means we're authenticated
     if not client._authenticated:
@@ -133,6 +187,16 @@ def handle_del_player(client, data):
     info = client.player_list.pop(pid, None)
     if info is not None and client.on_del_player:
         client.on_del_player(pid, info)
+    # Some server paths announce a logout only this way (the RC-flavored
+    # roster); if the id is also in the global allplayers roster, that is a
+    # logout there too. GServer-v2's client path sends the DISCONNECT prop
+    # as well, in which case the roster entry is already gone and this is a
+    # no-op.
+    record = getattr(client, 'all_players', {}).pop(pid, None)
+    if record is not None:
+        host = getattr(client, 'gs2_host', None)
+        if host is not None:
+            host.roster_player_removed(pid, record)
 
 
 @handles(PacketID.PLO_BADDYPROPS)
@@ -223,6 +287,10 @@ def handle_npc_props(client, data):
             # in from wherever a stale same-id visual entry sits.
             client._mark_npc_pos_snap(props)
             client.npcs[npc_id] = props
+        if 'gani' in props:
+            host = getattr(client, 'gs2_host', None)
+            if host is not None:
+                host.note_gani(("npc", npc_id), props['gani'], force=True)
 
 
 @handles(PacketID.PLO_SHOWIMGNPC)
@@ -286,6 +354,20 @@ def handle_other_player_props(client, data):
         data, client._colors_len, client.prop_parse_diagnostics)
     if props and 'id' in props:
         player_id = props['id']
+        # Session-global roster + universe events first: the level-roster
+        # logic below early-returns for leaves/cross-level updates, and
+        # those must still keep `allplayers` current.
+        if _update_global_roster(client, player_id, props):
+            return STOP           # pure logout notification, nothing to merge
+        # An EXTERNAL player (prop-81 bit 1: another server's player, a
+        # channel, or a channel member injected by the serverlist-chat leg)
+        # is never in our level -- keep pseudo-players out of the in-level
+        # roster the renderer/QA hit-tests iterate. The flag may only be on
+        # the roster record (prop 81 isn't repeated on every update).
+        roster_rec = getattr(client, 'all_players', {}).get(player_id, {})
+        if int(roster_rec.get('playerlist_flags') or 0) & 1:
+            client.players.pop(player_id, None)
+            return STOP
         # JOINLEAVELVL=0 is the server's "this player left your
         # level" notification — drop them from the level roster
         # (they'd otherwise linger as a ghost at their last position).
@@ -360,6 +442,10 @@ def handle_other_player_props(client, data):
         else:
             client.players[player_id] = {k: v for k, v in props.items()
                                         if v is not None}
+        if 'ani' in props:
+            host = getattr(client, 'gs2_host', None)
+            if host is not None:
+                host.note_gani(("player", player_id), props['ani'], force=True)
 
 
 @handles(PacketID.PLO_NPCMOVED)

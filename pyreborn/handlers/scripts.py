@@ -102,6 +102,12 @@ def handle_load_script(client, data):
         if info['bytecode']:
             kind = info['type'] if info['type'] in client.gs2_bytecode else 'class'
             client.gs2_bytecode[kind][info['name']] = info['bytecode']
+            if kind == 'class' and client.gs1_host is not None:
+                try:
+                    client.gs1_host.receive_class_source(
+                        info['name'], info['bytecode'])
+                except Exception:
+                    pass
             if client.on_gs2_bytecode:
                 client.on_gs2_bytecode(kind, info['name'], info['bytecode'])
         elif info['type'] == 'weapon':

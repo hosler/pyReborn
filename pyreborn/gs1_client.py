@@ -20,7 +20,8 @@ import sys
 import traceback
 
 from reborn_protocol.coords import level_index, segment_at, world_to_local
-from reborn_protocol.gs1.runtime import Host, UNSET, VarStore, Context
+from reborn_protocol.gs1.runtime import Host, NAMESPACES, UNSET, VarStore, Context
+from reborn_protocol.gs1 import ast
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
@@ -28,6 +29,8 @@ from reborn_protocol.gs1.values import gs1_int, to_num, to_str
 from reborn_protocol.gs1.host_shared import (
     A_CLASS_NPC_ATTR, A_CLASS_PLAYER_ATTR, host_value, tokens_count,
 )
+from reborn_protocol.gs2 import GS2Object
+from .particles import ParticleEmitter
 from .sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
 from .tiletypes import (
     TileType, get_tile_type, tilestype_for_level, type_is_blocking,
@@ -246,6 +249,7 @@ _NOOP = frozenset({
     "timereverywhere", "enablefeatures",
     "noplayerkilling",
     "setcursor", "sleep",
+    "savelog2", "setletters", "timershow",
     "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
@@ -268,6 +272,52 @@ _TIMEOUT_CANCEL = 0.0001
 # fallback for an unsized texture (TParticleData::pixelsize,
 # Preagonal/FourPlay/quattroplay/src/TParticleData.cpp:155-163).
 _DEFAULT_IMAGE_PX = 32
+
+
+class _GS1ObjectRef:
+    """Live player/NPC handle used as a GS1 with-target."""
+
+    gs1_with_members = True
+
+    _remote_write_logs: set = set()
+    _PLAYER_MEMBERS = {
+        **{k.removeprefix("player"): v for k, v in PLAYER_ATTR.items()},
+        **PLAYER_ATTR,
+        "x": "x", "y": "y", "dir": "direction", "id": "id",
+        "account": "account", "nickname": "nickname", "chat": "chat",
+    }
+
+    def __init__(self, kind, target, *, writable=True, label=""):
+        self.kind = kind
+        self.target = target
+        self.writable = writable
+        self.label = label
+
+    def get(self, name):
+        table = NPC_ATTR if self.kind == "npc" else self._PLAYER_MEMBERS
+        if name not in table:
+            return UNSET
+        attr = table[name]
+        if isinstance(self.target, dict):
+            return _num_or_str(self.target.get(attr, 0))
+        return _num_or_str(getattr(self.target, attr, 0))
+
+    def set(self, name, value):
+        table = NPC_ATTR if self.kind == "npc" else self._PLAYER_MEMBERS
+        if name not in table:
+            return False
+        if not self.writable:
+            log_key = self.label.lower()
+            if log_key not in self._remote_write_logs:
+                self._remote_write_logs.add(log_key)
+                logger.debug("ignored GS1 write to remote player %s", self.label)
+            return True
+        attr = table[name]
+        if isinstance(self.target, dict):
+            self.target[attr] = value
+        else:
+            setattr(self.target, attr, value)
+        return True
 
 # Classic baddy ("compus") tables for putcomp/putnewcomp, from GServer-v2:
 # names + spider->octopus alias, LevelBaddy.h:26-47 (BaddyType/BaddyNames);
@@ -432,6 +482,46 @@ class GS1ClientHost(Host):
                             "chat": op.get("chat", "")})
         return out
 
+    # -- era with-scope host-object members --------------------------------
+    @staticmethod
+    def _with_member_get(obj, name, indices):
+        """Resolve a (possibly dotted) member path against a with-scoped host
+        object; UNSET when any hop is unclaimed. Indices are consumed in path
+        order (`particles[0].lifetime` arrives as name "particles.lifetime",
+        indices [0] -- same flattening as `npcs[i].save[j]`)."""
+        if isinstance(obj, _GS1ObjectRef):
+            return obj.get(name)
+        cur = obj
+        idx = list(indices or [])
+        for part in name.split("."):
+            if not isinstance(cur, GS2Object):
+                return UNSET
+            cur = cur.get(part)
+            if cur is None:
+                return UNSET
+            while idx and isinstance(cur, list):
+                i = int(to_num(idx.pop(0)))
+                if not 0 <= i < len(cur):
+                    return UNSET
+                cur = cur[i]
+        return cur
+
+    @classmethod
+    def _with_member_set(cls, obj, name, value, indices) -> bool:
+        if isinstance(obj, _GS1ObjectRef):
+            return obj.set(name, value)
+        parts = name.split(".")
+        if len(parts) > 1:
+            parent = cls._with_member_get(obj, ".".join(parts[:-1]), indices)
+            if not isinstance(parent, GS2Object):
+                return False
+            parent.set(parts[-1], value)
+            return True
+        # single name: a with-scope write lands on the with target (vivifying
+        # an unclaimed member, same as the reference's innermost-with rule)
+        obj.set(parts[0], value)
+        return True
+
     # -- built-in attribute access ----------------------------------------
     def get_builtin(self, name, indices, ctx):
         """Read a GS1 built-in variable. Registry-driven: three stages, each a
@@ -441,6 +531,16 @@ class GS1ClientHost(Host):
         on to the ordinary flag/var lookup -- `statsoff` uses that
         deliberately, so a handler may return it too.
         """
+        # era new-GS1 with-scope: `with (findimg(200)) { with (emitter)
+        # {...} }` sets this_obj to a HOST OBJECT (_LayerImage / particle
+        # objects, flagged gs1_with_members); its claimed members shadow
+        # everything, like the innermost with-target does in the reference.
+        # Unclaimed names fall through to the normal stages.
+        this_obj = getattr(ctx, "this_obj", None)
+        if getattr(this_obj, "gs1_with_members", False):
+            v = self._with_member_get(this_obj, name, indices)
+            if v is not UNSET:
+                return v
         player = self._player
         npc = ctx.this_obj
         if player is not None:
@@ -821,6 +921,11 @@ class GS1ClientHost(Host):
         return 0.0
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
+        # era with-scope writes on a host object -- see get_builtin
+        this_obj = getattr(ctx, "this_obj", None)
+        if getattr(this_obj, "gs1_with_members", False):
+            if self._with_member_set(this_obj, name, value, indices):
+                return True
         npc = ctx.this_obj
         # Bare `save[i] = n` — the running NPC's persistent slots. Without this
         # the write reached VarStore.set(None, "save", ...), which drops an
@@ -975,6 +1080,11 @@ class GS1ClientHost(Host):
         # visible commands. Membership is the _NOOP set, which other modules
         # read.
         return None
+
+    @_gs1_command(_GS1_PRE_COMMANDS, "join")
+    def _cmd_join(self, name, args, ctx, imgs):
+        if args:
+            self.rt.join_class(ctx, to_str(args[0]))
 
     @_gs1_command(_GS1_PRE_COMMANDS, "showstats")
     def _cmd_showstats(self, name, args, ctx, imgs):
@@ -2258,6 +2368,33 @@ class GS1ClientHost(Host):
         # Predicate functions return real bools (upstream returns bool
         # GameValues); floats would read false in conditions — see the
         # truthiness note in get_builtin.
+        #
+        # era with-scope method surface first: a bare `addlocalmodifier(...)`
+        # inside `with (emitter) {...}` is a method call on the with target
+        # (same innermost-with rule as the member bridge in get_builtin).
+        hook = getattr(getattr(ctx, "this_obj", None), "gs1_method", None)
+        if hook is not None:
+            res = hook(name.lower(), args)
+            if res is not NotImplemented:
+                return res
+        lowered = name.lower()
+        if lowered in ("getplayer", "findplayer"):
+            return self._object_ref(args, "player")
+        if lowered in ("getnpc", "findnpc"):
+            return self._object_ref(args, "npc")
+        if name == "findimg" and ctx is not None:
+            # era new-GS1 particle scripts reach the layer/emitter objects
+            # this way (`with (findimg(200)) { with (emitter) {...} }`,
+            # eradev2 particle_smoke.txt:14). Shared resolver with the GS2
+            # host so both engines see ONE record and ONE emitter.
+            table = self._layer_store(ctx)
+            if table is None:
+                return UNSET
+            from .gs2_client import layer_image_get
+            owner = getattr(ctx, "this_obj", None)
+            owner = owner if isinstance(owner, dict) else None
+            return layer_image_get(
+                table, int(to_num(args[0])) if args else 0, owner)
         if name == "onwall":
             x = int(to_num(args[0])) if args else 0
             y = int(to_num(args[1])) if len(args) > 1 else 0
@@ -2318,6 +2455,31 @@ class GS1ClientHost(Host):
             # gates sitting (3), sleeping (4/5) and ledge-jumps (21) on it.
             return self.rt.tile_type_at(to_num(args[0]) if args else 0.0,
                                         to_num(args[1]) if len(args) > 1 else 0.0)
+        if name in ("imgwidth", "imgheight", "getimgwidth", "getimgheight"):
+            filename = to_str(args[0]).strip('"') if args else ""
+            size = None
+            if filename and self.rt.image_size_source is not None:
+                try:
+                    size = self.rt.image_size_source(filename)
+                except Exception:
+                    size = None
+            if not size:
+                return 0.0
+            return float(size[0] if name in ("imgwidth", "getimgwidth")
+                         else size[1])
+        if name in ("textheight", "gettextheight"):
+            zoom = to_num(args[0]) if args else 1.0
+            return 16.0 * (zoom if zoom > 0 else 1.0)
+        if name == "degtorad":
+            return (to_num(args[0]) if args else 0.0) * math.pi / 180.0
+        if name == "makevar":
+            dynamic = to_str(args[0]).strip('"') if args else ""
+            namespace, dot, key = dynamic.partition(".")
+            scope = NAMESPACES.get(namespace) if dot else None
+            if scope is None:
+                key = dynamic
+            value = ctx.vars.get(scope, key)
+            return 0.0 if value is UNSET else value
         if name == "textwidth":
             # textwidth(zoom, font, style, text) — approximate: Reborn text is
             # ~8px/char at zoom 1 (scripts do int((textwidth(...)+7)/8) to get
@@ -2343,6 +2505,8 @@ class GS1ClientHost(Host):
             wname = to_str(args[0]).lower() if args else ""
             weapons = getattr(self.rt.client, "weapons", {}) or {}
             return any(str(w).lower() == wname for w in weapons)
+        if name in ("testcompu", "testbomb", "testexplo"):
+            return self._test_projectile_at(name, args)
         if name == "testnpc":
             return self._test_at(args, players=False)
         if name == "testplayer":
@@ -2395,6 +2559,64 @@ class GS1ClientHost(Host):
             if x <= px <= x + width and y <= py <= y + height:
                 return float(index)
         return miss
+
+    def _object_ref(self, args, kind):
+        wanted = to_str(args[0]).strip('"').lower() if args else ""
+        if not wanted:
+            return 0.0
+        if kind == "player":
+            candidates = []
+            if self._player is not None:
+                candidates.append((self._player, True))
+            candidates.extend(
+                (player, False) for player in
+                (getattr(self.rt.client, "players", {}) or {}).values()
+                if isinstance(player, dict)
+            )
+            for player, writable in candidates:
+                values = (
+                    player.get("account", player.get("account_name", ""))
+                    if isinstance(player, dict)
+                    else getattr(player, "account_name",
+                                 getattr(player, "account", "")),
+                    player.get("nickname", "") if isinstance(player, dict)
+                    else getattr(player, "nickname", ""),
+                    player.get("id", "") if isinstance(player, dict)
+                    else getattr(player, "id", ""),
+                )
+                if any(to_str(value).lower() == wanted for value in values):
+                    return _GS1ObjectRef(
+                        "player", player, writable=writable,
+                        label=to_str(values[0]) or wanted)
+            return 0.0
+        client = self.rt.client
+        for npc_id, npc in (getattr(client, "npcs", {}) or {}).items():
+            if not isinstance(npc, dict):
+                continue
+            values = (npc.get("name", ""), npc.get("nickname", ""),
+                      npc.get("id", npc_id), npc_id)
+            if any(to_str(value).lower() == wanted for value in values):
+                return _GS1ObjectRef("npc", npc)
+        return 0.0
+
+    def _test_projectile_at(self, name, args):
+        if len(args) < 2:
+            return -1.0
+        x, y = to_num(args[0]), to_num(args[1])
+        if name == "testcompu":
+            objects = [
+                (item_id, item) for item_id, item in
+                (getattr(self.rt.client, "baddies", {}) or {}).items()
+            ]
+        elif name == "testbomb":
+            objects = list(enumerate(self._bomb_list()))
+        else:
+            objects = list(enumerate(self._explo_list()))
+        for item_id, item in objects:
+            if (abs(to_num(item.get("x", 0)) - x) <= 1.0
+                    and abs(to_num(item.get("y", 0)) - y) <= 1.0):
+                return float(item_id)
+        return -1.0
 
     @staticmethod
     def _char_rect(x, y):
@@ -2834,6 +3056,10 @@ class ClientGS1:
         self.scripts: dict = {}        # name -> raw code (back-compat)
         self._progs: dict = {}         # name -> entry dict
         self._parse_cache: dict = {}   # source text -> parsed Program (or None)
+        self._gs1_classes: dict = {}
+        self._pending_class_joins: dict = {}
+        self._requested_classes: set = set()
+        self._rejected_class_payloads: set = set()
         self._PARSE_CACHE_MAX = 512
         # npc_id -> (width, height, flags) recorded when setshape/setshape2 runs.
         # The NPC touch handler reads collision geometry from here.
@@ -3042,6 +3268,68 @@ class ClientGS1:
                               and npc_id in getattr(self.client, "npcs", {})),
             "scopes": {"this": {}, "thiso": {}, "local": {}},
         }
+
+    def join_class(self, ctx, class_name):
+        """Merge a fetched GS1 class into the program that issued ``join``."""
+        cname = class_name.strip().lower()
+        key = getattr(ctx, "_prog_key", None)
+        entry = self._progs.get(key)
+        if not cname or entry is None:
+            return False
+        joined = entry.setdefault("joined_classes", set())
+        if cname in joined:
+            return True
+        class_prog = self._gs1_classes.get(cname)
+        if class_prog is not None:
+            entry["prog"] = ast.Program(
+                list(entry["prog"].body) + list(class_prog.body))
+            joined.add(cname)
+            return True
+        waiters = self._pending_class_joins.setdefault(cname, set())
+        waiters.add(key)
+        if cname not in self._requested_classes and self.client is not None:
+            self._requested_classes.add(cname)
+            try:
+                self.client.request_class_bytecode(class_name)
+            except Exception:
+                pass
+        return False
+
+    def receive_class_source(self, class_name, source):
+        """Supply a class response and complete every pending GS1 join."""
+        cname = to_str(class_name).strip().lower()
+        if not cname:
+            return False
+        if isinstance(source, bytes):
+            if b"\x00" in source:
+                if cname not in self._rejected_class_payloads:
+                    self._rejected_class_payloads.add(cname)
+                    logger.warning(
+                        "ignored non-source GS1 class payload for %s", cname)
+                self._requested_classes.discard(cname)
+                return False
+            try:
+                source = source.decode("latin-1")
+            except Exception:
+                self._requested_classes.discard(cname)
+                return False
+        prog = self._parse_cached("class_" + cname, to_str(source))
+        if prog is None:
+            self._requested_classes.discard(cname)
+            return False
+        self._gs1_classes[cname] = prog
+        completed = []
+        for key in self._pending_class_joins.pop(cname, set()):
+            entry = self._progs.get(key)
+            if entry is None or cname in entry.setdefault("joined_classes", set()):
+                continue
+            entry["prog"] = ast.Program(
+                list(entry["prog"].body) + list(prog.body))
+            entry["joined_classes"].add(cname)
+            completed.append(entry)
+        for entry in completed:
+            self._run(entry, "created")
+        return True
 
     def recv_flag(self, name, value):
         """Route a PLO_FLAGSET wire flag into the right GS1 scope: player
@@ -3686,6 +3974,30 @@ class ClientGS1:
                 self._run(entry, "timeout")
             else:
                 self._weapon_timeouts[key] = t
+        self.advance_layer_emitters(dt)
+
+    def advance_layer_emitters(self, dt):
+        """Step every layer record's particle emitter (pyreborn/particles.py)
+        -- this per-frame hook is the client's stand-in for the reference's
+        per-draw TParticleEmitter::process, and running it here (not in the
+        renderer) keeps the state model advancing for headless embedders.
+        Emitters live only on layer records, so the NPC img stores plus
+        _weapon_imgs cover them all; GS2-created emitters share these same
+        records."""
+        stores = list(self._weapon_imgs.values())
+        for npc in (getattr(self.client, "npcs", {}) or {}).values():
+            if isinstance(npc, dict):
+                imgs = npc.get("imgs")
+                if imgs:
+                    stores.append(imgs)
+        for store in stores:
+            for rec in list(store.values()):
+                emitter = rec.get("emitter") if isinstance(rec, dict) else None
+                if isinstance(emitter, ParticleEmitter):
+                    try:
+                        emitter.advance(dt)
+                    except Exception as e:
+                        _report_gs1_error("particle emitter", e)
 
     def fire_projectile(self, params):
         """A projectile arrived: fire `actionprojectile2` across all scripts with

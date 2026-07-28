@@ -179,6 +179,11 @@ def test_npc_sword_and_shield_images_do_not_desync_the_stream():
     assert parse_npc_props(with_images)['nickname'] == "Guard"
 
 
+def test_npc_name_property_is_retained_for_getnpc():
+    data = gint3(5) + gchar(50) + gstring("Lamp")
+    assert parse_npc_props(data)["name"] == "Lamp"
+
+
 def test_npc_script_is_a_gshort_length_string():
     script = "if (playerenters) { }"
     data = (gint3(5)

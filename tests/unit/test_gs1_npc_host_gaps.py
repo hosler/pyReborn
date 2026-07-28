@@ -27,6 +27,7 @@ import pytest
 
 from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1
+from reborn_protocol.gs1.runtime import Context, VarStore
 
 from .bomber_room0_fixture import load_capture, load_flags, load_scripts
 
@@ -198,12 +199,131 @@ def test_unparseable_scripts_are_reported(caplog):
                for r in caplog.records)
 
 
+def test_join_requests_late_class_and_completes_once():
+    c, gs1 = _engine({5: "join Lamp; if (timeout) { classTick(); }"})
+    gs1.trigger_npc_event(5, "created")
+    requests = [packet for packet in c._protocol.sent if packet[0] == 161]
+    assert len(requests) == 1
+    assert gs1.receive_class_source(
+        "Lamp", "function classTick() { this.lit += 1; }")
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["lit"] == 1.0
+    gs1.trigger_npc_event(5, "created")
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["lit"] == 2.0
+    assert len([packet for packet in c._protocol.sent if packet[0] == 161]) == 1
+
+
+def test_binary_join_response_is_rejected_and_can_be_requested_again():
+    c, gs1 = _engine({5: "join Lamp; if (created) { this.runs += 1; }"})
+    gs1.trigger_npc_event(5, "created")
+    assert not gs1.receive_class_source("Lamp", b"\x00\x00\x00\x02junk")
+    assert "lamp" not in gs1._gs1_classes
+    assert "lamp" not in gs1._requested_classes
+    assert "lamp" in gs1._pending_class_joins
+
+    gs1.trigger_npc_event(5, "created")
+    requests = [packet for packet in c._protocol.sent if packet[0] == 161]
+    assert len(requests) == 2
+
+
+def test_late_join_refires_created_for_joining_script():
+    _c, gs1 = _engine({
+        5: "join Lamp; if (created) { this.createdruns += 1; }"
+    })
+    gs1.trigger_npc_event(5, "created")
+    assert _this(gs1, 5)["createdruns"] == 1.0
+    assert gs1.receive_class_source("Lamp", "function lampReady() {}")
+    assert _this(gs1, 5)["createdruns"] == 2.0
+
+
+def test_missing_join_class_is_a_safe_no_op():
+    _c, gs1 = _engine({5: "join Missing; if (timeout) { this.alive += 1; }"})
+    gs1.trigger_npc_event(5, "created")
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["alive"] == 1.0
+
+
+def test_with_getplayer_writes_the_live_player():
+    c, gs1 = _engine({5: 'if (timeout) { with (getplayer("player")) { x = 22; } }'})
+    c.player.account_name = "player"
+    gs1.trigger_npc_event(5, "timeout")
+    assert c.player.x == 22.0
+
+
+def test_remote_getplayer_reads_live_record_drops_writes_and_falls_through():
+    c, gs1 = _engine({
+        5: ('if (timeout) { with (getplayer("bob")) {'
+            ' this.before=x; x=99; this.after=x; this.mouse=mousex;'
+            ' timeout=0.5; } }')
+    })
+    c.players[7] = {"id": 7, "account": "bob", "nickname": "Bob",
+                    "x": 33.0, "y": 9.0}
+    gs1.mouse_world_source = lambda: (12, 13)
+    gs1.trigger_npc_event(5, "timeout")
+
+    assert _this(gs1, 5)["before"] == 33.0
+    assert _this(gs1, 5)["after"] == 33.0
+    assert _this(gs1, 5)["mouse"] == 12.0
+    assert c.players[7]["x"] == 33.0
+    assert gs1._weapon_timeouts["npc_5"] == pytest.approx(0.5)
+
+
+def test_makevar_accepts_read_only_namespace_aliases():
+    _c, gs1 = _engine({})
+    ctx = Context(gs1._host, VarStore(
+        scopes={"client": {"seed": "client-value"},
+                "server": {"seed": "server-value"}}))
+    assert gs1._host.call_function(
+        "makevar", ["clientr.seed"], ctx) == "client-value"
+    assert gs1._host.call_function(
+        "makevar", ["serverr.seed"], ctx) == "server-value"
+
+
+def test_image_dimensions_and_misc_functions():
+    _c, gs1 = _engine({
+        5: 'if (timeout) { this.w=imgwidth("lamp.png");'
+           'this.h=getimgheight("lamp.png"); this.r=degtorad(180);'
+           'this.t=textheight(2,"font","b","x"); this.seed=9;'
+           'this.m=makevar("this.seed"); }'
+    })
+    gs1.image_size_source = lambda name: (24, 40) if name == "lamp.png" else None
+    gs1.trigger_npc_event(5, "timeout")
+    assert (_this(gs1, 5)["w"], _this(gs1, 5)["h"]) == (24.0, 40.0)
+    assert _this(gs1, 5)["r"] == pytest.approx(3.141592653589793)
+    assert _this(gs1, 5)["t"] == 32.0
+    assert _this(gs1, 5)["m"] == 9.0
+
+
+def test_projectile_and_baddy_position_probes():
+    c, gs1 = _engine({
+        5: "if (timeout) { this.c=testcompu(4,5); this.b=testbomb(6,7);"
+           "this.e=testexplo(8,9); }"
+    })
+    c.baddies[12] = {"x": 4.0, "y": 5.0}
+    gs1.bombs_source = lambda: [{"x": 6.0, "y": 7.0}]
+    c.active_explosions = [{"x": 8.0, "y": 9.0}]
+    gs1.trigger_npc_event(5, "timeout")
+    assert (_this(gs1, 5)["c"], _this(gs1, 5)["b"],
+            _this(gs1, 5)["e"]) == (12.0, 0.0, 0.0)
+
+
+def test_misc_commands_are_explicit_safe_noops():
+    _c, gs1 = _engine({
+        5: 'if (timeout) { savelog2 "chan","line"; setletters "font.png";'
+           'timershow; this.after=1; }'
+    })
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["after"] == 1.0
+
+
 def test_fatal_lex_failures_are_reported(caplog):
-    # A still-fatal lexer state (FUNCTION name with no '(' — how -gr's
-    # C#-style script dies) keeps the old whole-script None + warning path.
+    # A still-fatal lexer state (a char V mode never admits, lexer.py:765)
+    # keeps the whole-script None + warning path. NB a FUNCTION name with
+    # no '(' is no longer fatal — it re-emits as an identifier now.
     _c, gs1 = _engine({})
     with caplog.at_level(logging.WARNING, logger="pyreborn.gs1_client"):
-        gs1.load_script("npc_6", "this.a = random;", npc_id=6)
+        gs1.load_script("npc_6", "set this.a^b;", npc_id=6)
     assert gs1._progs["npc_6"]["prog"] is None
     assert any("failed to parse" in r.getMessage() for r in caplog.records)
 

@@ -841,6 +841,9 @@ class Client:
             return False
 
         self.player.animation = gani_name
+        gs2 = getattr(self, "gs2_host", None)
+        if gs2 is not None:
+            gs2.note_gani(("local", getattr(self.player, "id", 0)), gani_name)
         # GS1 `replaceani` substitution (wired by the pygame client): the wire
         # prop must carry the replaced name so other clients play the level's
         # ani (and their NPC scripts see it via #m), like a real client.
@@ -2737,6 +2740,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'npc_moves': ('entities', 'npc_moves'),
     'players': ('entities', 'players'),
     'player_list': ('entities', 'player_list'),
+    'all_players': ('entities', 'all_players'),
     'items': ('entities', 'items'),
     'baddies': ('entities', 'baddies'),
     'weapons': ('entities', 'weapons'),

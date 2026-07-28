@@ -36,6 +36,22 @@ from .constants import (
 from .frame_context import FrameContext, FrameContextMixin
 
 
+def _q_dim(v: int) -> int:
+    """Quantize a scaled particle dimension for the surface-cache key
+    (exact below 32 px, then <=1/16-relative steps): a continuously
+    interpolating zoom/stretch modifier otherwise lands on a fresh (w, h)
+    every frame, misses the cache each time and thrashes the 400-entry cap."""
+    if v < 32:
+        return v
+    step = 1 << (v.bit_length() - 5)
+    return v - (v % step)
+
+
+def _pc255(v: float) -> int:
+    """0..1 colour channel to a clamped 0..255 byte."""
+    return max(0, min(255, int(v * 255)))
+
+
 def day_night_tint(minute_of_day):
     """Return the ambient overlay tint for a minute in the daily cycle."""
     minute = minute_of_day % 1440
@@ -635,6 +651,111 @@ class EffectsRenderMixin(FrameContextMixin):
             if now - leaf['time'] < self.LEAF_DURATION - 1e-9
         ]
         return self.leaf_particles
+
+    # -- GS2 particle emitters (pyreborn/particles.py state model) ----------
+
+    #: cached finished particle surfaces, keyed by everything that changes
+    #: their pixels (quantized tint/alpha/rotation so the key space is small)
+    _PARTICLE_CACHE_CAP = 400
+    #: per-emitter draw cap; the SIM cap is particles.SIM_PARTICLE_CAP
+    _PARTICLE_DRAW_CAP = 1000
+
+    def _render_layer_emitter(self, rec: dict, emitter) -> None:
+        """Draw a layer emitter's live particles, in the pass/stratum its
+        owner record occupies (called per record from _render_npc_layers).
+        Simulation is advanced by gs1.advance_layer_emitters, not here --
+        this is a pure state consumer. World-band particle coords are tiles
+        (drawn at y - z, TParticleEmitter::fastDraw quattroplay/src/
+        TParticleEmitter.cpp:919), GUI-band coords are screen pixels;
+        particle `mode` >= 2 is the additive blend family (drawMode
+        premultiply, :956-961)."""
+        particles = getattr(emitter, 'particles', None)
+        if not particles:
+            return
+        from ..particles import ParticleEmitter
+        if not isinstance(emitter, ParticleEmitter):
+            return
+        gui = self._layer_is_gui(rec)
+        scale = 1.0 if gui else self.camera.scale
+        owner = rec.get('_owner')
+        if rec.get('attachtoowner') and isinstance(owner, dict):
+            wx = float(owner.get('world_x', owner.get('x', 0.0)) or 0.0)
+            wy = float(owner.get('world_y', owner.get('y', 0.0)) or 0.0)
+            base = (wx, wy) if gui else self.camera.world_to_screen(wx, wy)
+        else:
+            base = self._layer_pos(rec)
+        attach = emitter.get('attachposition') != 0.0
+        rx = float(rec.get('x', 0.0) or 0.0)
+        ry = float(rec.get('y', 0.0) or 0.0)
+        rz = float(rec.get('z', 0.0) or 0.0)
+        zoom_base = 1.0 if gui else self.camera.scale / float(TILE_SIZE)
+        # firstinfront draws newest on top (default); painter's order
+        ordered = (particles if emitter.get('firstinfront') != 0.0
+                   else list(reversed(particles)))
+        frame = self._frame_context()
+        cache = getattr(self, '_particle_surf_cache', None)
+        if cache is None:
+            cache = self._particle_surf_cache = {}
+        for p in ordered[:self._PARTICLE_DRAW_CAP]:
+            image = p.image
+            if not image:
+                continue
+            sheet = self.sprite_mgr.load_sheet(image)
+            if sheet is None:
+                self._request_asset(image)
+                continue
+            w = _q_dim(max(1, int(sheet.get_width()
+                                  * zoom_base * p.zoom * p.stretchx)))
+            h = _q_dim(max(1, int(sheet.get_height()
+                                  * zoom_base * p.zoom * p.stretchy)))
+            additive = p.mode >= 2
+            rq = min(16, max(0, int(p.red * 16)))
+            gq = min(16, max(0, int(p.green * 16)))
+            bq = min(16, max(0, int(p.blue * 16)))
+            aq = min(16, max(0, int(p.alpha * 16)))
+            rot = int(math.degrees(p.rotation) / 15.0) * 15 if p.rotation else 0
+            key = (image, w, h, rq, gq, bq, aq, additive, rot)
+            surf = cache.get(key)
+            if surf is None:
+                surf = (sheet if (w, h) == sheet.get_size()
+                        else pygame.transform.scale(sheet, (w, h)))
+                r, g, b, a = rq / 16.0, gq / 16.0, bq / 16.0, aq / 16.0
+                if additive:
+                    # fold colour-alpha AND per-pixel alpha into RGB: BLEND_ADD
+                    # ignores alpha (same trap as additive showimg layers)
+                    if not surf.get_flags() & pygame.SRCALPHA:
+                        surf = surf.convert_alpha()
+                    surf = surf.premul_alpha()
+                    surf.fill((_pc255(r * a), _pc255(g * a), _pc255(b * a),
+                               255), special_flags=pygame.BLEND_RGB_MULT)
+                elif (rq, gq, bq) != (16, 16, 16) or aq != 16:
+                    surf = surf.copy()
+                    if (rq, gq, bq) != (16, 16, 16):
+                        surf.fill((_pc255(r), _pc255(g), _pc255(b), 255),
+                                  special_flags=pygame.BLEND_RGB_MULT)
+                    if aq != 16:
+                        surf.set_alpha(_pc255(a))
+                if rot:
+                    surf = pygame.transform.rotate(surf, rot)
+                if len(cache) > self._PARTICLE_CACHE_CAP:
+                    cache.clear()
+                cache[key] = surf
+            px, py, pz = p.x, p.y, p.z
+            if not attach:
+                px -= rx
+                py -= ry
+                pz -= rz
+            sx = base[0] + px * scale
+            sy = base[1] + (py - pz) * scale
+            if rot:
+                sx -= (surf.get_width() - w) / 2.0
+                sy -= (surf.get_height() - h) / 2.0
+            if additive:
+                if not frame.defer_light(surf, sx, sy):
+                    self.screen.blit(surf, (int(sx), int(sy)),
+                                     special_flags=pygame.BLEND_ADD)
+            else:
+                self.screen.blit(surf, (int(sx), int(sy)))
 
     def _render_leaf_particles(self):
         now = time.time()

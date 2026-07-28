@@ -35,8 +35,20 @@ def handle_showimg(client, data):
 def handle_private_message(client, data):
     # PLO_PRIVATEMESSAGE (37) - private message received
     pm_info = parse_private_message(data)
-    if pm_info and client.on_pm:
+    if not pm_info:
+        return
+    if client.on_pm:
         client.on_pm(pm_info.get('from_id', 0), pm_info.get('message', ''))
+    # Engine leg: stash the waiting-PM text on the sender's persistent
+    # roster wrapper (so pmswaiting()/ismasspm() answer truthfully) and
+    # fire universe.onPM(other) -- the -Playerlist weapon's flash/resort
+    # handler. Message set BEFORE the event fires, per the reference's
+    # relog-preservation code (FourPlay TClient.cpp:3096-3105).
+    host = getattr(client, 'gs2_host', None)
+    if host is not None:
+        host.pm_received(pm_info.get('from_id', 0),
+                         pm_info.get('type', ''),
+                         pm_info.get('message', ''))
 
 
 @handles(PacketID.PLO_SAY2)

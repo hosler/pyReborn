@@ -4,7 +4,7 @@ from typing import Any, Tuple
 
 import pygame
 
-from reborn_protocol.gs2 import to_bool, to_num, to_str
+from reborn_protocol.gs2 import GS2_NULL, to_bool, to_num, to_str
 
 from .base import GuiControl
 from .profiles import _draw_border, _draw_label, _fill_rect, _font, _shade
@@ -71,8 +71,20 @@ class GuiWindowCtrl(GuiControl):
         self.maximized = False
         self.standard_bounds = pygame.Rect(0, 0, 100, 200)
 
+    # Full desktop GuiWindowCtrl claim set. The reference window property
+    # table is GuiWindowCtrlProperties.cpp:202-224 (resizewidth/resizeheight/
+    # cancollapse/closecommand/edgesnap/buttonoffset/tile/...); dockable,
+    # istoolwindow, stayontop, isexternal and minsize are DESKTOP-only names
+    # the Login -Playerlist/-F2LogWindow construction blocks write
+    # (B/_Playerlist.gs2bc.gs2:312-333) -- with-block writes are
+    # existence-gated, so every one must be claimed or it silently lands on
+    # temps. All are stored booleans/values with no behavior: this client
+    # renders every window internally (isexternal never detaches), which
+    # degrades exactly like the official mobile client.
     _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
-        {"maximized", "minimized"})
+        {"maximized", "minimized", "dockable", "istoolwindow", "stayontop",
+         "minsize", "resizewidth", "resizeheight", "cancollapse",
+         "closecommand", "edgesnap", "buttonoffset"})
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
         {"close", "minimize", "maximize", "restore"})
 
@@ -81,7 +93,18 @@ class GuiWindowCtrl(GuiControl):
         if k in ("canclose", "canminimize", "canmaximize", "canmove",
                  "closequery", "destroyonhide", "maximized", "minimized"):
             return 1.0 if getattr(self, k) else 0.0
+        if k == "externalwindow" and k not in self._members:
+            # The detached-OS-window handle (desktop-only; §1 of the
+            # windows spec). Always-internal rendering answers GS2 null --
+            # every corpus site null-guards it
+            # (B/_Playerlist.gs2bc.gs2:126) -- but the NAME must be
+            # answered here so the read is object-typed null rather than
+            # an unresolved 0.0.
+            return GS2_NULL
         return super().get(k)
+
+    def has(self, key: str) -> bool:
+        return key.lower() == "externalwindow" or super().has(key)
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()

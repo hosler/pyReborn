@@ -55,11 +55,20 @@ class _InertDrawable(GS2Object):
 
 
 class GuiListRow(GS2Object):
-    """One addRow() result: text/id members plus an inert `icon` drawing
-    surface (scripts do `with (row) { icon.clearAll(); ... }`)."""
+    """One addRow() result: text/id members plus an `icon` drawing surface
+    (scripts do `with (row) { icon.clearAll(); ... }`). The icon is a
+    RECORDING panel (same _TreeNodeIcon recorder tree nodes use) so the
+    painted image name renders and `isclear` answers truthfully -- the F2
+    log window's unread badge draws only `if (row.icon.isclear)`
+    (B/_F2LogWindow.gs2bc.gs2:229-236; isclear is a real read-only
+    TDrawingPanel property, Q/src/TDrawingPanelProperties.cpp:101,174).
+    Other unknown members stay inert no-op callables."""
+
+    __slots__ = ("icon_image",)
 
     def __init__(self, text: str, row_id: Any):
         super().__init__(name="row")
+        self.icon_image = ""
         self.set("text", text)
         self.set("id", row_id)
 
@@ -67,7 +76,10 @@ class GuiListRow(GS2Object):
         k = key.lower()
         v = super().get(k)
         if v is None and k not in self._members:
-            v = self._members[k] = _InertDrawable(name=f"row.{k}")
+            if k == "icon":
+                v = self._members[k] = _TreeNodeIcon(self)
+            else:
+                v = self._members[k] = _InertDrawable(name=f"row.{k}")
         return v
 
     def has(self, key: str) -> bool:
@@ -279,6 +291,11 @@ class GuiControl(GS2Object):
             return None
         if k in self._METHOD_NAMES and not super().has(k):
             return getattr(self, "_m_" + k)
+        if k == "rows" and k not in self._members:
+            # the row-model array, indexable from script:
+            # `PlayerList_List.rows[selectedrow].icon` / the F2 tab's
+            # unread-badge loop both address rows positionally
+            return self.list_rows
         if k == "icon" and k not in self._members:
             # engine drawing surface (`with (button) { icon.drawimage(...) }`)
             # -- records the painted image name into self.icon_image so the
@@ -547,6 +564,8 @@ class GuiControl(GS2Object):
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
+        if k == "parent":
+            return
         if k in self._NUM_ATTRS:
             value = to_num(value)
             # same-value early-out at the property setter, one of the two
@@ -616,7 +635,7 @@ class GuiControl(GS2Object):
 
     def has(self, key: str) -> bool:
         k = key.lower()
-        return (k in self._NUM_ATTRS or k == "visible" or k == "icon"
+        return (k in self._NUM_ATTRS or k in ("visible", "icon", "parent")
                 or k == "profile"
                 or k in self._STR_ATTRS or k in self._EVENT_MEMBERS
                 or k in self._TORQUE_PROPS or super().has(k))
@@ -1059,10 +1078,14 @@ class _TreeNodeIcon(GS2Object):
 
     def get(self, key: str) -> Any:
         k = key.lower()
-        if k in ("drawimage", "drawimagestretched"):
+        if k in ("drawimage", "drawimagestretched", "drawimagerectangle"):
             def _draw(*args, _node=self._node, _k=k):
-                # drawimage(x, y, image) / drawimagestretched(x,y,w,h, image, ...)
-                idx = 2 if _k == "drawimage" else 4
+                # drawimage(x, y, image) / drawimagestretched(x,y,w,h,
+                # image, ...) / drawimagerectangle(x, y, image, sx, sy,
+                # w, h) -- the last is how -Playerlist stamps its group
+                # fold arrows and waiting-PM badges from sprite sheets
+                # (B/_Playerlist.gs2bc.gs2:1497-1506)
+                idx = 4 if _k == "drawimagestretched" else 2
                 if len(args) > idx:
                     _node.icon_image = to_str(args[idx])
                 return 0.0
@@ -1072,6 +1095,11 @@ class _TreeNodeIcon(GS2Object):
                 _node.icon_image = ""
                 return 0.0
             return _clear
+        if k == "isclear":
+            # read-only TDrawingPanel property (TDrawingPanelProperties.
+            # cpp:101,174): nothing painted since the last clear
+            return 0.0 if to_str(getattr(self._node, "icon_image", "")) \
+                else 1.0
         v = super().get(k)
         return v if v is not None else (lambda *a: 0.0)
 

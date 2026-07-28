@@ -150,12 +150,19 @@ def test_lowercase_uppercase_builtins():
 def test_findplayerbyid_roster_lookup():
     client = SimpleNamespace(
         player=SimpleNamespace(id=5, account="me", nickname="Me", x=3.0, y=4.0),
+        x=3.0, y=4.0,
         players={16000: {"account": "irc:#graal", "nickname": "#graal (1,0)",
                          "x": 0, "y": 0}})
     rt = ClientGS2(client)
     hit = rt.host.call_builtin(None, "findplayerbyid", [16000])
     assert hit.get("account") == "irc:#graal"
+    # PERSISTENT wrappers, not snapshots (windows spec section 5): the local
+    # hit is the very object `player` resolves to, and a remote id hands
+    # back the same per-id object every call -- -Playerlist stamps state
+    # onto these and expects to see it again.
+    assert hit is rt.host.call_builtin(None, "findplayerbyid", [16000])
     me = rt.host.call_builtin(None, "findplayerbyid", [5])
+    assert me is rt.player_object
     assert me.get("account") == "me" and me.get("x") == 3.0
     assert rt.host.call_builtin(None, "findplayerbyid", [42]) == 0.0
 
