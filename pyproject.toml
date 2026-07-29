@@ -60,7 +60,9 @@ exclude = ["tests*"]  # exclude packages matching these glob patterns (["tests*"
 [tool.setuptools.package-data]
 # Ship the data files the client loads at runtime (tile-type table, corrections,
 # bundled font, and the theme's emblem/logo art).
-pyreborn = ["*.json", "*.dat", "assets/*.ttf", "assets/*.png"]
+# setuptools package-data globs do NOT recurse - assets/*.png does not match
+# assets/baddies/*.png, so each subdirectory needs its own entry.
+pyreborn = ["*.json", "*.dat", "assets/*.ttf", "assets/*.png", "assets/baddies/*.png"]
 
 [tool.black]
 line-length = 88

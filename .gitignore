@@ -169,7 +169,11 @@ examples/games/assets/
 examples/games/*/assets/
 cache/
 pyreborn/raw_files_cache/
-pyreborn/assets/
+# NOT pyreborn/assets/ - that is shipped package data (tilesets, font, emblem,
+# baddy sheets), not a download cache. It used to be ignored wholesale, so the
+# 14 files in it had to be force-added and anything added later was silently
+# skipped by `git add` - which is exactly how pics1.png went missing from the
+# repo while sitting on one developer's disk.
 
 # Proprietary game content (not for public release)
 examples/games/reborn_modern/assets/
