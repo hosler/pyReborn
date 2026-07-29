@@ -49,9 +49,6 @@ examples = [
 "Source" = "https://github.com/openreborn/pyReborn"
 "Documentation" = "https://github.com/openreborn/pyReborn/blob/main/README.md"
 
-[project.scripts]
-pyreborn-test = "tests.bots.comprehensive_test_bot:main"
-
 [tool.setuptools.dynamic]
 version = {attr = "pyreborn.__version__"}
 

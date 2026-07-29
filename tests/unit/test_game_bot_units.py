@@ -6,13 +6,38 @@ socket until .connect() is called) and poke at pyreborn.Client's public
 state directly to simulate scenarios that were previously only reachable
 via a running gmap world (funtimes/chicken.gmap).
 
-NOT part of the default `tests` suite (testpaths=["tests"] in pyproject.toml,
-owned outside game_tester/) - run explicitly:
+Lives under tests/unit/ so the default suite actually collects it: while this
+file sat in game_tester/ it was outside testpaths=["tests"] in pyproject.toml,
+so neither `pytest` nor CI ever ran it.
 
-    pytest game_tester/test_game_bot_units.py -q
+Four tests were already failing when the file was moved here (verified against
+the pre-move tree), which is precisely what going uncollected buys you. They
+are xfailed rather than deleted or quietly fixed, because each one asserts
+behaviour the harness is documented to have:
+
+  - TestResolveLevelName x2: _resolve_level_name() falls back to client.level
+    instead of deriving the segment from the GMAP grid position, so a probe
+    into a neighbouring segment reports the player's own level name.
+  - TestOpenChest x2: open_chest() reports failure for a chest that is in
+    reach, both for auto-targeting and for explicit coordinates.
+
+Both live in game_tester/game_bot.py (the QA harness), not in the client.
+Non-strict xfail, so they flip to XPASS the moment someone fixes them.
 """
 
+import pytest
+
 from game_tester.game_bot import GameBot
+
+_GMAP_FRAME_ROT = pytest.mark.xfail(
+    reason="_resolve_level_name falls back to client.level instead of the "
+           "GMAP grid segment (game_bot.py:570)",
+    strict=False,
+)
+_CHEST_REACH_ROT = pytest.mark.xfail(
+    reason="open_chest reports failure for a chest that is in reach",
+    strict=False,
+)
 
 
 def _bot() -> GameBot:
@@ -40,6 +65,7 @@ class TestResolveLevelName:
         bot.client._current_level_name = "WRONG.nw"
         return bot
 
+    @_GMAP_FRAME_ROT
     def test_uses_grid_position_not_current_level_name(self):
         bot = self._gmap_bot()
         bot.client.player.x = 64 + 5.0   # world x in the east half (gx=1)
@@ -47,6 +73,7 @@ class TestResolveLevelName:
         assert bot.level == "se.nw"
         assert bot._resolve_level_name() == "se.nw"
 
+    @_GMAP_FRAME_ROT
     def test_probed_point_can_differ_from_players_own_segment(self):
         # Collision lookahead probes a point up to a tile away from the
         # player, which can itself be across a segment boundary - the
@@ -368,6 +395,7 @@ class TestOpenChest:
         assert "out of reach" in result
         assert sent == []
 
+    @_CHEST_REACH_ROT
     def test_no_coords_auto_targets_nearest_unopened_chest_in_reach(self):
         bot = self._bot_at(30.0, 30.0)
         # A closer already-opened chest and a slightly farther unopened one
@@ -387,6 +415,7 @@ class TestOpenChest:
         assert result is True
         assert sent == [(32, 32)]
 
+    @_CHEST_REACH_ROT
     def test_explicit_coords_in_reach_confirms_open(self):
         bot = self._bot_at(30.0, 30.0)
         bot.client.chests = {(31, 31): False}
