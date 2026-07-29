@@ -1,0 +1,26 @@
+# QA fixture authored for this suite, not server content.
+GANI0001
+SPRITE 0 sprites.png 0 0 24 12 shadow
+SPRITE 40 ATTR1 0 0 32 32 attribute up
+SPRITE 41 ATTR1 32 0 32 32 attribute left
+SPRITE 42 ATTR1 64 0 32 32 attribute down
+SPRITE 43 ATTR1 96 0 32 32 attribute right
+SPRITE 100 HEAD 0 0 32 32 head up
+SPRITE 101 HEAD 0 32 32 32 head left
+SPRITE 102 HEAD 0 64 32 32 head down
+SPRITE 103 HEAD 0 96 32 32 head right
+SPRITE 200 BODY 0 0 32 32 body up
+SPRITE 201 BODY 32 0 32 32 body left
+SPRITE 202 BODY 64 0 32 32 body down
+SPRITE 203 BODY 96 0 32 32 body right
+
+DEFAULTATTR1 hat0.png
+DEFAULTHEAD head19.png
+DEFAULTBODY body.png
+
+ANI
+0 12 34, 200 8 16, 100 8 2, 40 0 -16
+0 12 34, 201 8 16, 101 8 2, 41 0 -16
+0 12 34, 202 8 16, 102 8 2, 42 0 -16
+0 12 34, 203 8 16, 103 8 2, 43 0 -16
+ANIEND

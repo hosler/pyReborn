@@ -1,0 +1,16 @@
+# QA fixture authored for this suite, not server content.
+GANI0001
+SPRITE 10 qa_marker.png 0 0 2 2 marker
+SPRITE 50 qa_body.png 0 0 32 32 default body
+SPRITE 56 qa_body.png 32 0 32 32 selected body
+SPRITE 105 PARAM2 0 0 32 32 default decal
+SPRITE 112 PARAM2 32 0 32 32 selected decal
+
+SINGLEDIRECTION
+DEFAULTPARAM1 50
+DEFAULTPARAM2 qa_decal.png
+DEFAULTPARAM3 105
+
+ANI
+PARAM1 8 17, PARAM3 8 17, 10 8 17
+ANIEND

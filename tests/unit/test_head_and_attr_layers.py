@@ -38,7 +38,7 @@ from pyreborn.player import Player
 
 pygame.init()
 
-BOMBER_IDLE = Path(__file__).resolve().parents[1] / "fixtures" / "eye_bomber_idle0.gani"
+QA_ATTR_LAYERS = Path(__file__).resolve().parents[1] / "fixtures" / "qa_attr_layers.gani"
 
 
 def _headgif_packet(payload: bytes) -> bytes:
@@ -83,7 +83,7 @@ def test_gattribs_land_on_the_player():
 def _attr_images(equipment):
     """Which images _resolve_gani_layers picks for Bomber's idle gani."""
     parser = GaniParser()
-    gani = parser.parse_file(BOMBER_IDLE)
+    gani = parser.parse_file(QA_ATTR_LAYERS)
     assert gani is not None and gani.defaults.get("ATTR1") == "hat0.png"
 
     anim = AnimationState(parser)

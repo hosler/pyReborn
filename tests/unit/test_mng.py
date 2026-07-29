@@ -1,5 +1,4 @@
 import io
-from pathlib import Path
 import struct
 import zlib
 
@@ -7,9 +6,6 @@ import pygame
 
 from pyreborn.mng import decode_mng
 from pyreborn.sprites import SpriteManager
-
-
-_REAL_LAMP = Path(__file__).parents[1] / "fixtures" / "bluelampani.mng"
 
 
 def _chunk(kind, payload=b""):
@@ -56,8 +52,18 @@ def test_decode_two_full_png_frames():
     assert animation.frames[1].get_at((0, 0))[:3] == (0, 0, 255)
 
 
-def test_decode_repository_lamp_sample():
-    animation = decode_mng(_REAL_LAMP.read_bytes())
+def test_decode_constructed_three_frame_sample():
+    mhdr = struct.pack(">7I", 32, 64, 1000, 3, 3, 0, 1)
+    fram_100 = b"\x01\0\x01\x00\x00\x00" + struct.pack(">I", 100)
+    fram_1 = b"\x01\0\x01\x00\x00\x00" + struct.pack(">I", 1)
+    data = (
+        b"\x8aMNG\r\n\x1a\n" + _chunk(b"MHDR", mhdr)
+        + _chunk(b"FRAM", fram_100) + _png_chunks((255, 0, 0, 255))
+        + _chunk(b"FRAM", fram_1) + _png_chunks((0, 255, 0, 255))
+        + _chunk(b"FRAM", fram_1) + _png_chunks((0, 0, 255, 255))
+        + _chunk(b"MEND")
+    )
+    animation = decode_mng(data)
     assert (animation.width, animation.height) == (32, 64)
     assert animation.ticks_per_second == 1000
     assert len(animation.frames) == 3

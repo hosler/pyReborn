@@ -1,0 +1,13 @@
+# QA fixture authored for this suite, not server content.
+GANI0001
+SPRITE 0 qa_marker.png 0 0 2 2 placeholder
+
+SINGLEDIRECTION
+
+SCRIPT
+this.on = 1;
+SCRIPTEND
+
+ANI
+0 12 36
+ANIEND

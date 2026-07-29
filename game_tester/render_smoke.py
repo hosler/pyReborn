@@ -221,31 +221,23 @@ def _t1d(game, c1, c2):
     assert all(t == 0 for t in tiles)
 
 
-# Real Bomber Arena gani fixtures - used below to prove the PARAMn frame-token
-# substitution and embedded-SCRIPT fallback against actual server assets rather
-# than a synthetic stand-in.
-#
-# These used to be read out of cache/bomber_arena/assets, which is a gitignored
-# runtime download cache: the fixtures were never actually checked in, so this
-# smoke test silently depended on whatever the last live session happened to
-# leave on disk and broke outright on a cache wipe. They now live in a tracked
-# fixtures dir instead.
-_BOMBER_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "fixtures", "bomber_arena")
+# Suite-authored fixtures prove PARAMn frame-token substitution and the
+# embedded-SCRIPT fallback without depending on downloaded server assets.
+_QA_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fixtures")
 
 
-@check("tier1e_bomber_arena_bomb_param_substitution")
+@check("tier1e_gani_param_token_substitution")
 def _t1e(game, c1, c2):
-    # eye_bomber_bomb.gani (Bomber Arena's DrawBomb()) picks its body/decal
-    # sprite via "PARAM1"/"PARAM3" frame tokens instead of literal sprite ids,
-    # and its decal image via a SPRITE whose layer is the literal "PARAM2"
-    # (see gani.py's _parse_frame_line and render_entities.py's
-    # _render_animated_entity). Without support for either, the bomb's body
-    # and decal silently vanish and only the fuse spark (a literal sprite id)
-    # draws.
-    path = os.path.join(_BOMBER_ASSETS, "eye_bomber_bomb.gani")
+    # This authored fixture picks its body/decal sprites via "PARAM1"/"PARAM3"
+    # frame tokens instead of literal sprite ids, and its decal image via a
+    # SPRITE whose layer is the literal "PARAM2" (see gani.py's
+    # _parse_frame_line and render_entities.py's _render_animated_entity).
+    # Without support for either, the body and decal silently vanish and only
+    # the marker sprite (a literal sprite id) draws.
+    path = os.path.join(_QA_FIXTURES, "qa_param_tokens.gani")
     gani = game.gani_parser.parse_file(Path(path))
-    assert gani is not None, "eye_bomber_bomb.gani should parse"
+    assert gani is not None, "qa_param_tokens.gani should parse"
     assert gani.has_script is False, "this gani has no embedded SCRIPT block"
 
     frame = gani.get_frame(0, 0)
@@ -275,16 +267,15 @@ def _t1e(game, c1, c2):
     game._render_animated_entity(0, 0, anim, equip)  # must not raise
 
 
-@check("tier1f_bomber_arena_explosion_script_fallback")
+@check("tier1f_gani_embedded_script_fallback")
 def _t1f(game, c1, c2):
-    # eye_bomber_expl.gani's own ANI frames are a near-blank placeholder -
-    # the real visual is an embedded SCRIPT block (light/particle showimg
-    # calls) this engine doesn't execute. _render_showani_rec must detect
-    # that (has_script) and substitute a synthesized burst rather than
-    # drawing nothing.
-    path = os.path.join(_BOMBER_ASSETS, "eye_bomber_expl.gani")
+    # This authored fixture's ANI frame is a near-blank placeholder; the
+    # intended visual is represented by an embedded SCRIPT block this engine
+    # doesn't execute. _render_showani_rec must detect that (has_script) and
+    # substitute a synthesized burst rather than drawing nothing.
+    path = os.path.join(_QA_FIXTURES, "qa_script_fallback.gani")
     gani = game.gani_parser.parse_file(Path(path))
-    assert gani is not None, "eye_bomber_expl.gani should parse"
+    assert gani is not None, "qa_script_fallback.gani should parse"
     assert gani.has_script is True, "expected the embedded SCRIPT block to be flagged"
 
     rec = {'x': 21.0, 'y': 21.0, 'gani': gani.name, 'params': [1.2, 0.0]}
