@@ -1961,13 +1961,15 @@ class EntityRenderMixin(FrameContextMixin):
             alpha_frac = coloreffect[3] if coloreffect else 1.0
             mult = _c255(min(alpha_frac, self._LIGHT_ADDITIVE_ALPHA_CAP / 255.0))
             key = (id(sprite), mult, True)
-            light_sprite = cache.get(key)
-            if light_sprite is None:
+            entry = cache.get(key)
+            if entry is not None and entry[0] is sprite:
+                light_sprite = entry[1]
+            else:
                 light_sprite = sprite.copy()
                 light_sprite.fill((mult, mult, mult, 255), special_flags=pygame.BLEND_RGB_MULT)
                 if len(cache) > 300:
                     cache.clear()
-                cache[key] = light_sprite
+                cache[key] = (sprite, light_sprite)
             # Position - place light sprite with top-left at NPC position.
             # User testing confirmed this positioning is correct for light
             # effects. The additive blit is DEFERRED to after the seteffect/
@@ -1985,14 +1987,16 @@ class EntityRenderMixin(FrameContextMixin):
             # this one is unaffected by the BLEND_ADD alpha quirk above.
             alpha = int(coloreffect[3] * 255) if coloreffect else None
             key = (id(sprite), alpha, False)
-            light_sprite = cache.get(key)
-            if light_sprite is None:
+            entry = cache.get(key)
+            if entry is not None and entry[0] is sprite:
+                light_sprite = entry[1]
+            else:
                 light_sprite = sprite.copy()
                 if alpha is not None:
                     light_sprite.set_alpha(alpha)
                 if len(cache) > 300:
                     cache.clear()
-                cache[key] = light_sprite
+                cache[key] = (sprite, light_sprite)
             self.screen.blit(light_sprite, (x, y))
 
     def _resolve_gani_layers(self, anim: AnimationState, frame, equipment: dict) -> list:
@@ -2031,9 +2035,9 @@ class EntityRenderMixin(FrameContextMixin):
         # different sprite layouts per direction (facing up vs down) - the
         # important thing being memoized is (gani, direction, frame index).
         key = (id(anim.gani), anim.direction, anim.frame, equipment_key)
-        resolved = cache.get(key)
-        if resolved is not None:
-            return resolved
+        entry = cache.get(key)
+        if entry is not None and entry[0] is anim.gani:
+            return entry[1]
 
         resolved = []
         for raw_sprite_id, ox, oy in frame.sprites:
@@ -2123,7 +2127,7 @@ class EntityRenderMixin(FrameContextMixin):
 
         if len(cache) > 2000:
             cache.clear()
-        cache[key] = resolved
+        cache[key] = (anim.gani, resolved)
         return resolved
 
     def _render_animated_entity(self, x: float, y: float, anim: AnimationState,

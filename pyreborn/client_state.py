@@ -340,6 +340,7 @@ class FileTransfers:
         self.failed_files: set = set()  # Files that failed to download
         self.file_attempts: Dict[str, int] = {}
         self.uptodate_files: set = set()  # Files confirmed unchanged by the server
+        self.cache_index: Optional[Dict[str, int]] = None
 
         # Large file transfer (PLO_LARGEFILESTART/SIZE/...FILE.../END): files
         # over 32000 bytes arrive as repeated PLO_FILE chunks (each carrying
@@ -349,6 +350,7 @@ class FileTransfers:
         self.large_file_discarding: Optional[str] = None
         self.large_file_buffer: bytearray = bytearray()
         self.large_file_expected_size: int = 0
+        self.large_file_modtime: int = 0
 
 
 class ScriptTransport:

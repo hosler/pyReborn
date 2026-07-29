@@ -559,6 +559,38 @@ result = BugDetector.check_tiles_valid(client)
 - **Account:** Use your server account credentials
 - **Version:** 6.037 (or 2.22 for older protocol)
 
+## Where assets live
+
+**Game art is not committed to this repo.** `pyreborn/assets/` is gitignored, so
+a fresh clone has almost nothing in it and the client must work with it empty.
+`pyreborn/asset_paths.py` owns the three tiers — don't hand-roll paths or
+lowercase names anywhere else:
+
+| Tier | Location | What |
+|---|---|---|
+| bundled | `pyreborn/assets/` | whatever art happens to be installed locally |
+| user content | `~/.local/share/pyreborn/content/` (`$PYREBORN_CONTENT_DIR`) | base art a server assumes you already have |
+| download cache | `~/.cache/pyreborn/servers/{host}_{port}/` (`$PYREBORN_CACHE_DIR`) | everything the server sends, + `index.json` of modtimes |
+
+The middle tier exists because the original client shipped base art **built in**,
+so servers only publish their own custom content and are under no obligation to
+serve `pics1.png`, player ganis, `sprites.png`, `body.png`, `head0.png` or the
+`COMMON_SOUNDS`. If those are missing the client renders an invisible player and
+nothing errors. Populate that directory from your own game install.
+
+The download cache is **advisory**: any IO error degrades to memory-only. It is
+revalidated with `PLI_UPDATEFILE`/`PLO_FILEUPTODATE` rather than trusting mtime,
+and `PLO_UPDATEPACKAGEISUPDATED` (187) drops a stale entry mid-session.
+
+Two traps this replaced, both of which cost a real outage:
+- There used to be a `cache/` directory *inside the checkout* that nothing in
+  the client ever wrote. It was populated out of band, so `rm -rf cache/` took
+  the tileset with it and a fresh clone never had one at all.
+- Asset names are keyed through `normalize_asset_name()` (basename +
+  lowercase). Servers descend from a Windows client and send mixed casing; on
+  Linux `Body.png` and `body.png` were two cache entries, two downloads and two
+  surfaces, with the requested/failed bookkeeping split so neither deduped.
+
 ## Running the tests
 
 Use **`/usr/bin/python3.13`**. The system `python3` is 3.14 and lacks

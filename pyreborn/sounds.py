@@ -11,6 +11,9 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .asset_paths import normalize_asset_name
+from .sprites import find_asset_file
+
 # Pygame import is optional - only needed when actually used
 try:
     import pygame
@@ -94,22 +97,7 @@ class SoundManager:
 
     def find_file(self, name: str) -> Optional[Path]:
         """Find a sound file by name in search paths."""
-        for search_path in self.search_paths:
-            # Check direct path
-            full_path = search_path / name
-            if full_path.exists():
-                return full_path
-
-            # Check subdirectories
-            for subdir in self.subdirs:
-                if subdir:
-                    sub_path = search_path / subdir / name
-                else:
-                    sub_path = search_path / name
-                if sub_path.exists():
-                    return sub_path
-
-        return None
+        return find_asset_file(self.search_paths, self.subdirs, name)
 
     def load(self, name: str) -> Optional[pygame.mixer.Sound]:
         """
@@ -121,7 +109,8 @@ class SoundManager:
         Returns:
             pygame.mixer.Sound or None if not found
         """
-        if not self.enabled:
+        name = normalize_asset_name(name)
+        if not self.enabled or not name:
             return None
 
         if name in self._sound_failed:
@@ -180,6 +169,7 @@ class SoundManager:
 
     def _request(self, name: str):
         """Ask the server for a sound we don't have, once per name."""
+        name = normalize_asset_name(name)
         if self.file_requester is None or name in self._requested:
             return
         self._requested.add(name)
@@ -195,7 +185,8 @@ class SoundManager:
         failed-lookup record for the name, which is what the request that
         fetched these bytes left behind.
         """
-        if not self.enabled or not data:
+        name = normalize_asset_name(name)
+        if not self.enabled or not name or not data:
             return None
         self.initialize()
         if not self._initialized:
@@ -220,6 +211,7 @@ class SoundManager:
 
     def _remember_pending(self, name: str, kind: str, args: tuple) -> None:
         """Remember only the first recent missed trigger for each filename."""
+        name = normalize_asset_name(name)
         now = time.monotonic()
         pending = self._pending_samples.get(name)
         if pending is None or now - pending[0] > self.pending_sample_ttl:
@@ -339,7 +331,8 @@ class SoundManager:
         Downloaded music is written to a temp file because SDL_mixer's MIDI
         backend loads by path, not from a file object.
         """
-        if not self.enabled or not self.music_enabled:
+        name = normalize_asset_name(name)
+        if not self.enabled or not self.music_enabled or not name:
             return False
         self.initialize()
         if not self._initialized:

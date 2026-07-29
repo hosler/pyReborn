@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 import re
 
+from .asset_paths import normalize_asset_name
+from .sprites import find_asset_file
+
 # Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
 # per-segment surface cache and sprites.py's sheet/sprite caches. A real
 # session's distinct ganis (player/NPC/baddy/weapon animations) rarely
@@ -130,43 +133,37 @@ class GaniParser:
 
     def find_file(self, name: str) -> Optional[Path]:
         """Find a gani file by name in search paths."""
-        # Add .gani extension if not present
+        name = normalize_asset_name(name)
         if not name.endswith('.gani'):
             name = name + '.gani'
-
-        for search_path in self.search_paths:
-            # Check direct path
-            full_path = search_path / name
-            if full_path.exists():
-                return full_path
-            # Check in ganis subdirectory
-            ganis_path = search_path / "ganis" / name
-            if ganis_path.exists():
-                return ganis_path
-
-        return None
+        return find_asset_file(self.search_paths, ['', 'ganis'], name)
 
     def put_cache(self, name: str, gani: Optional[Gani]):
         """Store a parsed gani under `name` (bare, no .gani suffix expected)
         and evict the least-recently-used entry if that pushes the cache over
         _MAX_CACHED_GANIS. Used both by parse() below and by callers that
         parse server-streamed gani bytes directly (game/setup.py's on_file)."""
+        name = normalize_asset_name(name).removesuffix(".gani")
         self.cache[name] = gani
         while len(self.cache) > _MAX_CACHED_GANIS:
             self.cache.popitem(last=False)
 
     def parse(self, name: str) -> Optional[Gani]:
         """Parse a gani file by name, using cache if available."""
-        # Check cache
-        cache_key = name.replace('.gani', '')
+        normalized_name = normalize_asset_name(name)
+        cache_key = normalized_name.removesuffix('.gani')
         if cache_key in self.cache:
             self.cache.move_to_end(cache_key)
             return self.cache[cache_key]
 
         # Find file
-        file_path = self.find_file(name)
+        file_path = self.find_file(normalized_name)
         if not file_path:
-            filename = name if name.endswith('.gani') else name + '.gani'
+            filename = (
+                normalized_name
+                if normalized_name.endswith('.gani')
+                else normalized_name + '.gani'
+            )
             data = self.fetch_bytes(filename) if self.fetch_bytes is not None else None
             if data is not None:
                 try:
@@ -188,7 +185,9 @@ class GaniParser:
         try:
             with open(file_path, 'r', encoding='latin-1') as f:
                 content = f.read()
-            return self.parse_content(content, file_path.stem)
+            return self.parse_content(
+                content, normalize_asset_name(file_path.name).removesuffix(".gani")
+            )
         except Exception as e:
             print(f"Error parsing gani {file_path}: {e}")
             return None
@@ -608,6 +607,7 @@ class AnimationState:
             parts = [p.strip() for p in name.split(',')]
             name = parts[0]
             params = parts[1:]
+        name = normalize_asset_name(name).removesuffix(".gani")
         params_changed = False
         if params is not None:
             params = list(params)

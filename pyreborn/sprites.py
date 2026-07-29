@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import os
 
+from .asset_paths import normalize_asset_name
+
 # Pygame import is optional - only needed when actually used
 try:
     import pygame
@@ -80,9 +82,40 @@ def strip_tiledef_image(name: str) -> str:
     """Return the lowercase basename stored for a tile definition; the reference
     uses the last file separator (TFiles.cpp:392-404,610-620).
     """
+    return normalize_asset_name(name)
+
+
+_DIRECTORY_NAME_CACHE: Dict[Path, Dict[str, str]] = {}
+
+
+def find_asset_file(
+    search_paths: List[Path], subdirs: List[str], name: str
+) -> Optional[Path]:
+    """Find a normalized asset, with a cached case-insensitive fallback."""
+    name = normalize_asset_name(name)
     if not name:
-        return ""
-    return name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        return None
+    for search_path in search_paths:
+        for subdir in subdirs:
+            directory = search_path / subdir if subdir else search_path
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
+            names = _DIRECTORY_NAME_CACHE.get(directory)
+            if names is None:
+                try:
+                    names = {
+                        entry.name.lower(): entry.name
+                        for entry in directory.iterdir()
+                        if entry.is_file()
+                    }
+                except OSError:
+                    names = {}
+                _DIRECTORY_NAME_CACHE[directory] = names
+            real_name = names.get(name)
+            if real_name is not None:
+                return directory / real_name
+    return None
 
 
 def palette_index_to_rgb(index) -> Tuple[int, int, int]:
@@ -182,22 +215,7 @@ class SpriteManager:
 
     def find_file(self, name: str) -> Optional[Path]:
         """Find a sprite image file by name in search paths."""
-        for search_path in self.search_paths:
-            # Check direct path
-            full_path = search_path / name
-            if full_path.exists():
-                return full_path
-
-            # Check subdirectories
-            for subdir in self.subdirs:
-                if subdir:
-                    sub_path = search_path / subdir / name
-                else:
-                    sub_path = search_path / name
-                if sub_path.exists():
-                    return sub_path
-
-        return None
+        return find_asset_file(self.search_paths, self.subdirs, name)
 
     def load_sheet(self, name: str) -> Optional[pygame.Surface]:
         """
@@ -209,12 +227,12 @@ class SpriteManager:
         Returns:
             pygame.Surface or None if not found
         """
+        name = normalize_asset_name(name)
         if name in self.sheet_cache:
             self.sheet_cache.move_to_end(name)
             return self._display_sheet(name)
         if name in self._missing_sheets:
-            data = self.fetch_bytes(name) if self.fetch_bytes is not None else None
-            return self.load_bytes(name, data) if data is not None else None
+            return None
 
         # Find file
         file_path = self.find_file(name)
@@ -249,16 +267,19 @@ class SpriteManager:
 
     def has_sheet(self, name: str) -> bool:
         """True if `name` is loaded in the cache (a cached None miss is not)."""
+        name = normalize_asset_name(name)
         return self.sheet_cache.get(name) is not None
 
     def get_animation(self, name: str) -> Optional[MNGAnimation]:
         """Return decoded animation metadata, loading the asset if necessary."""
+        name = normalize_asset_name(name)
         if name not in self.sheet_cache:
             self.load_sheet(name)
         return self.animation_cache.get(name)
 
     def get_static_sheet(self, name: str) -> Optional[pygame.Surface]:
         """Return frame zero for animated assets and the normal static image."""
+        name = normalize_asset_name(name)
         if name not in self.sheet_cache:
             self.load_sheet(name)
         return self.sheet_cache.get(name)
@@ -286,6 +307,7 @@ class SpriteManager:
         """The original 8-bit surface for `name` (palette intact), loading the
         file if it hasn't been touched yet; None for truecolor images or
         misses. Used by TilesetManager's setbackpal palette swap."""
+        name = normalize_asset_name(name)
         if name not in self.sheet_cache:
             self.load_sheet(name)
         return self._raw8_cache.get(name)
@@ -316,6 +338,7 @@ class SpriteManager:
     def load_bytes(self, name: str, data: bytes) -> Optional[pygame.Surface]:
         """Load a sprite sheet from in-memory bytes (e.g. a file downloaded from
         the server) and cache it under `name`, so load_sheet(name) finds it."""
+        name = normalize_asset_name(name)
         # Already known to be undecodable (some bomber assets, e.g.
         # eye_bomb_blackhole*.png, arrive as non-image data) — don't re-decode
         # or re-log every time the server re-sends them. A plain cached-None in
@@ -375,6 +398,7 @@ class SpriteManager:
         Returns:
             pygame.Surface or None if sheet not found
         """
+        sheet_name = normalize_asset_name(sheet_name)
         # Check sprite cache
         cache_key = (sheet_name, x, y, width, height)
         if sheet_name not in self.animation_cache and cache_key in self.sprite_cache:
@@ -452,6 +476,7 @@ class SpriteManager:
         Cached per (sheet_name, colors-tuple); returns None if the base sheet
         isn't loaded yet (cache-the-miss - retried once it downloads, same
         policy as load_sheet)."""
+        sheet_name = normalize_asset_name(sheet_name)
         if not colors or len(colors) < 5:
             return None
         key = (sheet_name, self._colors_key(colors))
@@ -481,6 +506,7 @@ class SpriteManager:
         """Like get_sprite(), but drawn from the colors-recolored sheet. Falls
         back to the plain (uncoloured) sprite if colors isn't a usable 5-value
         sequence, so callers can pass a possibly-None `colors` unconditionally."""
+        sheet_name = normalize_asset_name(sheet_name)
         if not colors or len(colors) < 5:
             return self.get_sprite(sheet_name, x, y, width, height)
 
@@ -633,7 +659,7 @@ class TilesetManager:
         """Set (or clear, with "") the setbackpal palette source. Returns
         whether anything changed; a change drops the extracted-tile and
         composed-sheet caches so the next draw re-derives them."""
-        image = (image or "").strip()
+        image = normalize_asset_name(image)
         if image == self.backpal:
             return False
         self.backpal = image
@@ -705,6 +731,8 @@ class TilesetManager:
         Returns:
             pygame.Surface or None
         """
+        if tileset is not None:
+            tileset = normalize_asset_name(tileset)
         if tileset is None:
             # backpal routes through the composed-sheet path too: the palette
             # swap happens on the whole sheet, not per extracted tile.
@@ -737,6 +765,7 @@ class TilesetManager:
             if best_prefix_length < 0:
                 tileset = self.default_tileset
 
+        tileset = normalize_asset_name(tileset)
         cache_key = (tileset, tile_id)
         if cache_key in self.tile_cache:
             return self.tile_cache[cache_key]
@@ -789,7 +818,7 @@ class TilesetManager:
             tileset = self.default_tileset
 
         # Just load the sheet - tiles will be cached on demand
-        self.sprite_mgr.load_sheet(tileset)
+        self.sprite_mgr.load_sheet(normalize_asset_name(tileset))
 
     def clear_cache(self):
         """Clear extracted tiles and the lazily composed sheet."""

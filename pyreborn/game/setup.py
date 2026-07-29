@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from .. import asset_paths
+from ..asset_paths import normalize_asset_name
 from ..sprites import strip_tiledef_image
 from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
 
@@ -79,23 +81,11 @@ class SetupMixin:
 
     def _setup_asset_paths(self) -> List[Path]:
         """Setup asset search paths."""
-        base_path = PACKAGE_DIR  # pyreborn/ — independent of this module's location
-        paths = [
-            base_path / "assets",
-            base_path.parent / "cache",
-            base_path.parent / "cache" / "levels" / f"{self.client.host}_{self.client.port}",
+        return [
+            PACKAGE_DIR / "assets",
+            asset_paths.user_content_dir(),
+            asset_paths.server_cache_dir(self.client.host, self.client.port),
         ]
-        # Add subdirectories for ganis and sounds
-        extra_paths = []
-        for p in paths:
-            extra_paths.append(p / "ganis")
-            extra_paths.append(p / "sounds")
-            extra_paths.append(p / "bodies")
-            extra_paths.append(p / "heads")
-            extra_paths.append(p / "swords")
-            extra_paths.append(p / "shields")
-            extra_paths.append(p / "baddies")
-        return paths + extra_paths
     def _setup_callbacks(self):
         """Setup client callbacks."""
         # State for the newer render_effects visuals below - initialized here
@@ -216,7 +206,8 @@ class SetupMixin:
             """Cache a downloaded asset. Images go to the sprite cache, ganis to
             the gani parser's cache, one-shot samples to the sound cache; a
             music file we were waiting on starts playing once it arrives."""
-            ext = filename.lower().rsplit('.', 1)[-1]
+            filename = normalize_asset_name(filename)
+            ext = filename.rsplit('.', 1)[-1]
             if ext in ('png', 'gif', 'bmp', 'mng'):
                 self.sprite_mgr.load_bytes(filename, data)
                 # A custom tileset image (addtiledef/addtiledef2) just
@@ -229,14 +220,16 @@ class SetupMixin:
                         # the setbackpal palette file just arrived: recompose
                         # so the swap actually shows (set_backpal ran before
                         # the download finished)
-                        or filename == tm.backpal
+                        or filename == normalize_asset_name(tm.backpal)
                         # the BASE sheet just arrived. Classic (2.x) sessions
                         # switch default_tileset to pics1.png and request it
                         # from the server when there is no local copy
                         # (pygame_game.py); without this the download lands in
                         # the sprite cache but every tile keeps rendering from
                         # the stale surface, so the whole world stays wrong.
-                        or filename == tm.default_tileset):
+                        or filename == normalize_asset_name(
+                            tm.default_tileset
+                        )):
                     self._invalidate_tile_derived_caches()
             elif ext == 'gani':
                 # The server streams gani scripts on demand; cache the parsed

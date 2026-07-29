@@ -6,11 +6,15 @@ Supports both TCP (native Python) and WebSocket (browser via Pyodide).
 In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
+import json
 import logging
 import math
+import os
 import re
+import tempfile
 import time
 import traceback
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,7 @@ from reborn_protocol.coords import (
 
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
+from .asset_paths import normalize_asset_name, server_cache_dir
 # BoundedLRU / MAX_CACHED_* keep their old client.py names for callers and
 # tests that reach for them there (tests/unit/test_security_correctness.py).
 from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
@@ -229,10 +234,12 @@ class Client:
         self._large_file_discarding = None
         self._large_file_buffer = bytearray()
         self._large_file_expected_size = 0
+        self._large_file_modtime = 0
         if full_reset:
             self._pending_files.clear()
             self._failed_files.clear()
             self._file_attempts.clear()
+            self._cache_index = None
 
     def disconnect(self):
         """Disconnect from the server."""
@@ -1831,9 +1838,23 @@ class Client:
         if not self.connected or not self._authenticated:
             return False
 
+        cached_data = self.get_file(filename)
+        cached_modtime = self._cached_file_modtime(filename)
+        if cached_data is not None and cached_modtime is not None:
+            return self.request_file_if_modified(filename, cached_modtime)
+
         self._pending_files.add(filename)
         data = build_wantfile(filename)
         return self._protocol.send_packet(PacketID.PLI_WANTFILE, data)
+
+    def request_file_if_modified(self, filename: str, mod_time: int) -> bool:
+        """Ask the server to send a file only when its cached copy is stale."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        self._pending_files.add(filename)
+        data = build_update_file(filename, mod_time)
+        return self._protocol.send_packet(PacketID.PLI_UPDATEFILE, data)
 
     def get_file(self, filename: str) -> Optional[bytes]:
         """
@@ -1845,11 +1866,113 @@ class Client:
         Returns:
             File data as bytes, or None if not downloaded
         """
-        return self._received_files.get(filename)
+        data = self._received_files.get(filename)
+        if data is not None:
+            return data
+
+        key = normalize_asset_name(filename)
+        if not key:
+            return None
+        try:
+            data = (server_cache_dir(self.host, self.port) / key).read_bytes()
+        except (OSError, ValueError):
+            return None
+        self._received_files[filename] = data
+        return data
 
     def has_file(self, filename: str) -> bool:
         """Check if a file has been downloaded."""
-        return filename in self._received_files
+        return self.get_file(filename) is not None
+
+    def _load_cache_index(self) -> Dict[str, int]:
+        """Load this server's advisory cache metadata once for the session."""
+        if self._cache_index is not None:
+            return self._cache_index
+
+        index = {}
+        try:
+            raw = json.loads(
+                (server_cache_dir(self.host, self.port) / "index.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if isinstance(raw, dict):
+                index = {
+                    str(key): int(value)
+                    for key, value in raw.items()
+                    if normalize_asset_name(str(key)) == str(key)
+                }
+        except (OSError, ValueError, TypeError):
+            pass
+        self._cache_index = index
+        return index
+
+    def _cached_file_modtime(self, filename: str) -> Optional[int]:
+        """Return stored server metadata for a cached file, when available."""
+        key = normalize_asset_name(filename)
+        if not key:
+            return None
+        return self._load_cache_index().get(key)
+
+    @staticmethod
+    def _atomic_cache_write(path: Path, data: bytes) -> None:
+        """Replace one cache file without exposing a partially written copy."""
+        temporary_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as temporary:
+                temporary_name = temporary.name
+                temporary.write(data)
+            os.replace(temporary_name, path)
+            temporary_name = None
+        finally:
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name)
+                except OSError:
+                    pass
+
+    def _store_cached_file(
+        self, filename: str, file_data: bytes, mod_time: int
+    ) -> None:
+        """Persist a completed download, ignoring every cache failure."""
+        key = normalize_asset_name(filename)
+        if not key:
+            return
+        try:
+            directory = server_cache_dir(self.host, self.port)
+            directory.mkdir(parents=True, exist_ok=True)
+            self._atomic_cache_write(directory / key, file_data)
+            index = self._load_cache_index()
+            index[key] = int(mod_time)
+            encoded = json.dumps(index, sort_keys=True).encode("utf-8")
+            self._atomic_cache_write(directory / "index.json", encoded)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _invalidate_cached_file(self, filename: str) -> None:
+        """Discard memory and disk copies after a server update notice."""
+        key = normalize_asset_name(filename)
+        if not key:
+            return
+        for received_name in list(self._received_files):
+            if normalize_asset_name(received_name) == key:
+                self._received_files.pop(received_name, None)
+        try:
+            (server_cache_dir(self.host, self.port) / key).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+        try:
+            index = self._load_cache_index()
+            if key not in index:
+                return
+            index.pop(key, None)
+            directory = server_cache_dir(self.host, self.port)
+            encoded = json.dumps(index, sort_keys=True).encode("utf-8")
+            self._atomic_cache_write(directory / "index.json", encoded)
+        except (OSError, ValueError, TypeError):
+            pass
 
     def is_file_pending(self, filename: str) -> bool:
         """Check if a file download is pending."""
@@ -2685,10 +2808,12 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_failed_files': ('file_transfers', 'failed_files'),
     '_file_attempts': ('file_transfers', 'file_attempts'),
     '_uptodate_files': ('file_transfers', 'uptodate_files'),
+    '_cache_index': ('file_transfers', 'cache_index'),
     '_large_file_pending': ('file_transfers', 'large_file_pending'),
     '_large_file_discarding': ('file_transfers', 'large_file_discarding'),
     '_large_file_buffer': ('file_transfers', 'large_file_buffer'),
     '_large_file_expected_size': ('file_transfers', 'large_file_expected_size'),
+    '_large_file_modtime': ('file_transfers', 'large_file_modtime'),
 
     # --- script / bytecode transport ---------------------------------------
     'gs1_host': ('scripts', 'gs1_host'),

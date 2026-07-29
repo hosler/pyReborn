@@ -5,6 +5,7 @@ PLO_LARGEFILESTART/PLO_LARGEFILEEND).
 
 import logging
 
+from ..asset_paths import normalize_asset_name
 from ..packets import (
     PacketID,
     parse_file,
@@ -36,6 +37,7 @@ def handle_file(client, data):
     if file_info and file_info['filename']:
         filename = file_info['filename']
         file_data = file_info['data']
+        mod_time = file_info['mod_time']
 
         if client._large_file_discarding == filename:
             return
@@ -46,6 +48,8 @@ def handle_file(client, data):
         # server/src/player/Player.cpp Player::sendFile). Append
         # rather than overwrite while a large transfer is in flight.
         if client._large_file_pending == filename:
+            if not client._large_file_buffer:
+                client._large_file_modtime = mod_time
             max_size, size_slack = _large_file_caps()
             new_size = len(client._large_file_buffer) + len(file_data)
             announced_limit = (
@@ -65,6 +69,7 @@ def handle_file(client, data):
                 client._large_file_buffer.extend(file_data)
         else:
             client._received_files[filename] = file_data
+            client._store_cached_file(filename, file_data, mod_time)
             client._pending_files.discard(filename)
             # A downloaded .gmap file is the world grid - parse it.
             if filename.endswith('.gmap'):
@@ -106,6 +111,7 @@ def handle_large_file_start(client, data):
     client._large_file_discarding = None
     client._large_file_buffer = bytearray()
     client._large_file_expected_size = 0
+    client._large_file_modtime = 0
 
 
 @handles(PacketID.PLO_LARGEFILESIZE)
@@ -125,6 +131,7 @@ def handle_large_file_end(client, data):
         client._large_file_discarding = None
         client._large_file_buffer = bytearray()
         client._large_file_expected_size = 0
+        client._large_file_modtime = 0
         return
     pending_filename = client._large_file_pending
     if pending_filename is not None:
@@ -134,10 +141,13 @@ def handle_large_file_end(client, data):
                 "flushing pending transfer",
                 filename, pending_filename)
         file_data = bytes(client._large_file_buffer)
+        mod_time = client._large_file_modtime
         client._large_file_pending = None
         client._large_file_buffer = bytearray()
         client._large_file_expected_size = 0
+        client._large_file_modtime = 0
         client._received_files[pending_filename] = file_data
+        client._store_cached_file(pending_filename, file_data, mod_time)
         client._pending_files.discard(pending_filename)
         if pending_filename.endswith('.gmap'):
             try:
@@ -156,7 +166,19 @@ def handle_file_uptodate(client, data):
     # request_file_if_modified() call with no data transfer.
     filename = parse_file_uptodate(data)
     if filename:
+        client.get_file(filename)
         client._uptodate_files.add(filename)
-        client._pending_files.discard(filename)
+        key = normalize_asset_name(filename)
+        for pending_name in list(client._pending_files):
+            if normalize_asset_name(pending_name) == key:
+                client._pending_files.discard(pending_name)
         if client.on_file_uptodate:
             client.on_file_uptodate(filename)
+
+
+@handles(PacketID.PLO_UPDATEPACKAGEISUPDATED)
+def handle_update_package_is_updated(client, data):
+    """Invalidate a file named by a server-side update notification."""
+    filename = data.decode('latin-1', errors='replace')
+    if filename:
+        client._invalidate_cached_file(filename)

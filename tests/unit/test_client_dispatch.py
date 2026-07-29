@@ -98,6 +98,19 @@ FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
 ]
 
 
+# Packet ids the registry gained AFTER the refactor. The frozen list above is a
+# record of what the old if/elif chain handled, so it must never shrink - but it
+# is not a ceiling, and a genuinely new handler is not a regression. Adding an
+# id here is a deliberate act; forgetting to is what the assertion below catches.
+HANDLED_IDS_ADDED_SINCE_REGISTRY = [
+    # PLO_UPDATEPACKAGEISUPDATED (187). GServer-v2 (server/src/Server.cpp)
+    # pushes this to every client that has seen a file when that file changes
+    # on disk. Handled now so the on-disk asset cache drops its stale copy and
+    # re-fetches; before, mid-session content updates were never picked up.
+    187,
+]
+
+
 def _expected_ids():
     ids = set()
     for name in HANDLED_IDS_BEFORE_REGISTRY:
@@ -132,7 +145,15 @@ def _client():
 # ---------------------------------------------------------------------------
 
 def test_registry_routes_every_previously_handled_packet_id():
-    assert set(PACKET_HANDLERS) == _expected_ids()
+    # Directional on purpose: no previously-handled id may silently drop out,
+    # and any id present but unaccounted for has to be declared above rather
+    # than appearing by accident.
+    missing = _expected_ids() - set(PACKET_HANDLERS)
+    assert not missing, f"handler(s) dropped out of the registry: {sorted(missing)}"
+    undeclared = set(PACKET_HANDLERS) - _expected_ids() - set(HANDLED_IDS_ADDED_SINCE_REGISTRY)
+    assert not undeclared, (
+        "new handler(s) not declared in HANDLED_IDS_ADDED_SINCE_REGISTRY: "
+        f"{sorted(undeclared)}")
 
 
 def test_handled_plo_ids_is_the_registry():
