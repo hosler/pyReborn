@@ -35,6 +35,28 @@ _ROSTER_CHANGE_KEYS = frozenset(
     ('nickname', 'account', 'playerlist_flags', 'communityname'))
 
 
+def _same_gmap_world(client, other_level):
+    """True when `other_level` is part of the gmap we are standing on.
+
+    A gmap is ONE contiguous world: GServer-v2 keeps every segment's players in
+    a single Level and reports the .gmap filename as everyone's CURLEVEL
+    (PlayerClient::getLevelName, server/src/player/PlayerClient.cpp:1148), so
+    players on adjacent segments must stay in the same-level roster. Without
+    this, the plain name comparison above drops every cross-segment props packet
+    and neighbouring players are invisible - which is exactly what
+    `--gmap cross_segment_visibility` was failing on.
+
+    Accepts both spellings because servers differ: the .gmap name itself, and a
+    sibling segment's own .nw name (pygserver historically sent the latter).
+    """
+    if not getattr(client, 'is_gmap', False):
+        return False
+    if other_level == getattr(client, 'gmap_name', None):
+        return True
+    grid = getattr(client, 'gmap_grid', None) or {}
+    return other_level in grid.values()
+
+
 def _update_global_roster(client, player_id, props):
     """Maintain the session-global `all_players` roster and fire the engine's
     universe events through the attached GS2 host.
@@ -385,7 +407,8 @@ def handle_other_player_props(client, data):
         # update naming a different level removes/skips instead.
         other_level = props.get('level')
         if other_level and client._current_level_name and \
-                other_level != client._current_level_name:
+                other_level != client._current_level_name and \
+                not _same_gmap_world(client, other_level):
             client.players.pop(player_id, None)
             return STOP
         # A non-empty CURCHAT prop is another player's chat bubble — the

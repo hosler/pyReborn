@@ -20,7 +20,7 @@ Run: python -m game_tester --gmap
 from __future__ import annotations
 
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
@@ -268,6 +268,43 @@ def test_gmap_cross_segment_chat(bot0: GameBot, bot1: GameBot) -> TestResult:
 # Runner
 # =============================================================================
 
+def _require_gmap_world(bot: GameBot) -> Optional[TestResult]:
+    """Refuse to run the suite against a server that has no gmap loaded.
+
+    Without this the suite is worse than useless: with `gmaps =` unset every
+    warp onto a chicken segment silently fails and both bots stay on the start
+    level, where "can they see each other" and "does chat reach" are trivially
+    TRUE. Three of the six tests then PASS while exercising nothing, and the
+    other three fail with symptoms (grid 0x0, is_gmap False) that read like
+    client bugs. That is how two genuine cross-segment failures stayed hidden.
+
+    Returns a failing TestResult naming the fix, or None when the world is
+    really loaded.
+
+    Note this has to ATTEMPT the entry, not just inspect a freshly connected
+    client: bots log in on a non-gmap start level, so is_gmap is legitimately
+    False until _enter_gmap warps them across. The distinguishing symptom of a
+    missing world is that the warp silently does nothing.
+    """
+    c = bot.client
+    try:
+        _enter_gmap(bot)
+    except Exception:  # noqa: BLE001 - report it as "not loaded" below
+        pass
+    if getattr(c, "is_gmap", False) and getattr(c, "gmap_name", ""):
+        return None
+    return TestResult(
+        "gmap_world_loaded", False, 0.0,
+        f"server at {bot.host}:{bot.port} has no gmap loaded "
+        f"(is_gmap={getattr(c, 'is_gmap', None)}, "
+        f"gmap_name={getattr(c, 'gmap_name', None)!r}, "
+        f"level={c._current_level_name!r}). The default pygserver world has "
+        f"`gmaps =` unset and only 3 levels; start it against a gmap world, "
+        f"e.g. `python run_server.py ../funtimes-pygserver`. Refusing to run "
+        f"the suite, because several of its tests would PASS vacuously.",
+        [_issue("HIGH", "gmap", "no gmap world loaded - suite not run")])
+
+
 def run_gmap_tests(host: str = "localhost", port: int = 14900,
                    accounts: Tuple[str, str] = ("testbot1", "testbot2")
                    ) -> List[TestResult]:
@@ -286,6 +323,11 @@ def run_gmap_tests(host: str = "localhost", port: int = 14900,
         if not bot0.connect():
             return [TestResult("gmap_connect", False, 0.0,
                                f"{a} failed to connect", [])]
+
+        gate = _require_gmap_world(bot0)
+        if gate is not None:
+            return [gate]
+
         for test in (test_gmap_entry, test_gmap_adjacent_streaming,
                      test_gmap_segment_crossing, test_gmap_interior_warp):
             try:

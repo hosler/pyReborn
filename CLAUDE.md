@@ -559,6 +559,35 @@ result = BugDetector.check_tiles_valid(client)
 - **Account:** Use your server account credentials
 - **Version:** 6.037 (or 2.22 for older protocol)
 
+## Which server the tier suites need
+
+The QA suites do NOT all run against the same server world, and running one
+against the wrong world produces misleading results rather than an error.
+
+```bash
+cd pygserver && python run_server.py                      # default world
+python -m game_tester                 # 16/16   base bot QA
+python -m game_tester --tier1         # 2/2     board modify + large file
+python -m game_tester --tier2         # 4/4     bomb/arrow/horse/flag relay
+python -m game_tester --tier3         # 4/4     freeze/say2/triggeraction
+python -m game_tester --tier5         # 5/5     GS2 bytecode transport
+python -m game_tester --gs2           # 6/6
+
+cd pygserver && python run_server.py ../funtimes-pygserver  # gmap world
+python -m game_tester --gmap          # needs `gmaps = chicken.gmap`
+```
+
+`--gmap` refuses to run when the server has no gmap loaded, because it used to
+pass *vacuously*: with `gmaps =` unset every warp onto a segment silently fails,
+both bots stay on the start level, and "can they see each other" / "does chat
+arrive" are trivially true. Three of six tests passed while testing nothing,
+which is how two real cross-segment failures stayed hidden. If you see
+`gmap_world_loaded` fail, you started the wrong world.
+
+`--tier1` provisions its own large-file fixture (generated from a fixed seed)
+into whichever local server world directory it finds. It used to depend on an
+untracked 45000-byte blob that existed on exactly one machine.
+
 ## Where assets live
 
 **Game art is not committed to this repo.** `pyreborn/assets/` is gitignored, so
