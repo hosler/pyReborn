@@ -169,11 +169,11 @@ examples/games/assets/
 examples/games/*/assets/
 cache/
 pyreborn/raw_files_cache/
-# NOT pyreborn/assets/ - that is shipped package data (tilesets, font, emblem,
-# baddy sheets), not a download cache. It used to be ignored wholesale, so the
-# 14 files in it had to be force-added and anything added later was silently
-# skipped by `git add` - which is exactly how pics1.png went missing from the
-# repo while sitting on one developer's disk.
+# Game art stays out of git. Assets are fetched from the server at runtime and
+# land here; the client must therefore work with this directory EMPTY. See
+# on_file in game/setup.py, and render_smoke's tier4c, which pins that a
+# server-supplied base tileset actually takes effect.
+pyreborn/assets/
 
 # Proprietary game content (not for public release)
 examples/games/reborn_modern/assets/
