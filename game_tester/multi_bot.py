@@ -5,7 +5,7 @@ Tests player visibility, PvP combat, and chat between players.
 """
 
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from dataclasses import dataclass
 
 from .game_bot import GameBot, Issue
@@ -70,13 +70,6 @@ class MultiBotTest:
         """Update all bots."""
         for bot in self.bots:
             bot.update(duration / len(self.bots))
-
-    def get_all_issues(self) -> List[Issue]:
-        """Get all issues from all bots."""
-        issues = []
-        for bot in self.bots:
-            issues.extend(bot.issues)
-        return issues
 
     # ========== Visibility Tests ==========
 
@@ -440,22 +433,3 @@ class MultiBotTest:
         results.append(self.run_chat_test())
 
         return results
-
-    def get_summary(self, results: List[MultiTestResult]) -> Dict[str, Any]:
-        """Generate summary from test results."""
-        passed = sum(1 for r in results if r.passed)
-        total = len(results)
-        all_issues = []
-        for r in results:
-            all_issues.extend(r.issues)
-
-        return {
-            "passed": passed,
-            "total": total,
-            "pass_rate": passed / total if total > 0 else 0,
-            "issues": all_issues,
-            "results": [
-                {"name": r.name, "passed": r.passed, "duration": r.duration}
-                for r in results
-            ]
-        }

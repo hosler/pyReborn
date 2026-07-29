@@ -8,7 +8,7 @@ for rendering animated sprites.
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Callable
+from typing import Dict, List, Optional, Tuple, Union
 import re
 
 # Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
@@ -122,11 +122,6 @@ class GaniParser:
         """Initialize parser with optional search paths for gani files."""
         self.search_paths = search_paths or []
         self.cache: "OrderedDict[str, Gani]" = OrderedDict()
-
-    def add_search_path(self, path: Path):
-        """Add a search path for finding gani files."""
-        if path not in self.search_paths:
-            self.search_paths.append(path)
 
     def find_file(self, name: str) -> Optional[Path]:
         """Find a gani file by name in search paths."""
@@ -773,7 +768,6 @@ class MovieActorState:
     chat: str
     params: Dict[str, str]
     sprite: Optional[int] = None
-    file: str = ""
 
 
 class MoviePlaybackState:
@@ -885,7 +879,6 @@ class MoviePlaybackState:
             colors=colors, chat=str(values.get('chat', '')),
             params=params,
             sprite=values.get('sprite') if isinstance(values.get('sprite'), int) else None,
-            file=str(values.get('file', '')),
         )
 
     @staticmethod

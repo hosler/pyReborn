@@ -53,8 +53,6 @@ class MinimapMixin:
         """Build minimap surface from data."""
         if not self.minimap_data:
             return
-        self._minimap_is_bigmap = False  # real PLO_MINIMAP data wins over a bigmap image
-
         # Minimap data is typically a 64x64 or 128x128 grid of color indices
         # Each byte represents a tile's color (0-255 palette index)
         data_len = len(self.minimap_data)
@@ -109,7 +107,6 @@ class MinimapMixin:
             self._request_asset(image)
             return
         self._bigmap_image_name = image
-        self._minimap_is_bigmap = True
         self.bigmap_surface = sheet
         self.minimap_surface = pygame.transform.smoothscale(sheet, self.minimap_size)
 

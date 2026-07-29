@@ -13,8 +13,6 @@ TILE_CORRECTIONS_FILE = PACKAGE_DIR / "tile_corrections.json"
 TILE_SIZE = 16
 SCREEN_WIDTH = 640
 SCREEN_HEIGHT = 480
-TILESET_COLS = 128
-TILESET_ROWS = 32
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
 
 # Classic-engine movement feel (collision.py's corner-assist, actions.py's

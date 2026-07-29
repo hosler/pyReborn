@@ -18,8 +18,6 @@ from typing import Optional, List, Tuple, Callable, Dict
 
 # Import shared protocol components
 from reborn_protocol import (
-    CompressionType,
-    RebornEncryption,
     Gen5Codec,
     Gen4Codec,
     Gen3Codec,

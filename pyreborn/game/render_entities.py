@@ -1995,37 +1995,6 @@ class EntityRenderMixin(FrameContextMixin):
                 cache[key] = light_sprite
             self.screen.blit(light_sprite, (x, y))
 
-    def _light_tint_eraser(self, sprite: pygame.Surface, strength: int) -> pygame.Surface:
-        """Cached alpha-only erase mask for punching a drawaslight NPC's
-        footprint out of the ambient darkness/tint overlay (consumed by
-        render_effects.py's _render_screen_tint via BLEND_RGBA_SUB).
-
-        RGB is zeroed with BLEND_RGBA_MULT so the subtraction only ever
-        reduces the overlay's alpha (brightening that spot) without shifting
-        its tint color - only the sprite's own alpha channel does the
-        erasing, which gives the hole the light's natural soft-edged shape
-        instead of a hard rectangle. `strength` scales that alpha down for a
-        dim/fading coloreffect, same intensity source as the additive glow
-        above.
-
-        Keyed by (sprite identity, strength) and identity-checked like
-        _sprite_with_alpha: a bare id()-keyed cache would serve a stale mask
-        once the sprite manager's LRU evicts and CPython reuses the freed
-        surface's address for an unrelated same-size sprite."""
-        cache = getattr(self, '_light_eraser_cache', None)
-        if cache is None:
-            cache = self._light_eraser_cache = {}
-        key = (id(sprite), strength)
-        entry = cache.get(key)
-        if entry is not None and entry[0] is sprite:
-            return entry[1]
-        eraser = sprite.copy()
-        eraser.fill((0, 0, 0, strength), special_flags=pygame.BLEND_RGBA_MULT)
-        if len(cache) > 300:
-            cache.clear()
-        cache[key] = (sprite, eraser)
-        return eraser
-
     def _resolve_gani_layers(self, anim: AnimationState, frame, equipment: dict) -> list:
         """Resolve frame.sprites -> (image, sprite-rect) per layer, memoized
         per (gani, direction, frame, equipment). This is the expensive part

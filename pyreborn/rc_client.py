@@ -6,7 +6,6 @@ RC (Remote Control) allows staff to administrate the server without being
 in-game. RC clients can manage players, accounts, files, and server settings.
 """
 
-import time
 from typing import Optional, Callable, Dict, List
 
 from .client import Client
@@ -143,17 +142,14 @@ class RCClient(Client):
         self.rc_messages: List[str] = []
 
         # File browser state
-        self.file_folders: List[str] = []
         self.file_current_folder: str = ""
         self.file_list: List[dict] = []
-        self.file_browser_message: str = ""
 
         # Cached server data (populated on request)
         self._server_flags: List[str] = []
         self._server_options: Dict[str, str] = {}
         self._account_list: List[str] = []
         self._folder_config: Dict[str, str] = {}
-        self.max_upload_size = 0  # PLO_RC_MAXUPLOADFILESIZE
 
         # Cached player/account data (populated on request)
         self._last_player_props: Dict = {}
@@ -211,23 +207,6 @@ class RCClient(Client):
         data = build_rc_admin_message(message)
         return self._protocol.send_packet(PacketID.PLI_RC_ADMINMESSAGE, data)
 
-    def private_admin_message(self, player_id: int, message: str) -> bool:
-        """
-        Send a private admin message to a specific player.
-
-        Args:
-            player_id: Target player ID
-            message: Message to send
-
-        Returns:
-            True if packet sent successfully
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_rc_priv_admin_message(player_id, message)
-        return self._protocol.send_packet(PacketID.PLI_RC_PRIVADMINMESSAGE, data)
-
     # =========================================================================
     # Player Management
     # =========================================================================
@@ -266,23 +245,6 @@ class RCClient(Client):
 
         data = build_rc_warp_player(player_id, x, y, level)
         return self._protocol.send_packet(PacketID.PLI_RC_WARPPLAYER, data)
-
-    def get_player_props_by_id(self, player_id: int) -> bool:
-        """
-        Request player properties by ID.
-        Response arrives via PLO_RC_PLAYERPROPSGET packet.
-
-        Args:
-            player_id: Player ID to query
-
-        Returns:
-            True if request sent successfully
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_rc_player_props_get(player_id)
-        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSGET2, data)
 
     def get_player_props_by_name(self, account: str) -> bool:
         """
@@ -563,22 +525,6 @@ class RCClient(Client):
         data = build_rc_filebrowser_end()
         return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_END, data)
 
-    def filebrowser_download(self, filename: str) -> bool:
-        """
-        Request to download a file.
-
-        Args:
-            filename: File to download
-
-        Returns:
-            True if request sent successfully
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_rc_filebrowser_download(filename)
-        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_DOWN, data)
-
     def filebrowser_delete(self, filename: str) -> bool:
         """
         Delete a file.
@@ -595,44 +541,9 @@ class RCClient(Client):
         data = build_rc_filebrowser_delete(filename)
         return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_DELETE, data)
 
-    def filebrowser_rename(self, old_name: str, new_name: str) -> bool:
-        """
-        Rename a file.
-
-        Args:
-            old_name: Current filename
-            new_name: New filename
-
-        Returns:
-            True if request sent successfully
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_rc_filebrowser_rename(old_name, new_name)
-        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_RENAME, data)
-
     # =========================================================================
     # Write-side admin operations (tier 6)
     # =========================================================================
-
-    def set_server_options(self, options_text: str) -> bool:
-        """Replace the server options (PLI_RC_SERVEROPTIONSSET). options_text
-        is the full serveroptions.txt content ('key = value' lines).
-        DESTRUCTIVE: overwrites config - fetch with get_server_options()
-        first and send back the complete text."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_rc_serveroptions_set(options_text)
-        return self._protocol.send_packet(PacketID.PLI_RC_SERVEROPTIONSSET, data)
-
-    def set_folder_config(self, config_text: str) -> bool:
-        """Replace foldersconfig.txt (PLI_RC_FOLDERCONFIGSET). DESTRUCTIVE:
-        overwrites the folder config wholesale."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_rc_folderconfig_set(config_text)
-        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERCONFIGSET, data)
 
     def set_respawn_time(self, seconds: int) -> bool:
         """PLI_RC_RESPAWNSET - deprecated no-op on modern GServer."""
@@ -662,20 +573,10 @@ class RCClient(Client):
         return self._protocol.send_packet(PacketID.PLI_RC_BADDYRESPAWNSET,
                                           build_rc_baddyrespawn_set(seconds))
 
-    def set_player_props(self, player_id: int, world: str = '', props: bytes = b'',
-                         flags=(), chests=(), weapons=()) -> bool:
-        """Replace an online player's account state by id
-        (PLI_RC_PLAYERPROPSSET). DESTRUCTIVE: wholesale-replaces the
-        account's flags/chests/weapons - throwaway accounts only."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_rc_playerprops_set(player_id, world, props, flags, chests, weapons)
-        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSSET, data)
-
     def set_player_props_by_name(self, account: str, world: str = '', props: bytes = b'',
                                  flags=(), chests=(), weapons=()) -> bool:
         """Replace a (possibly offline) account's state by name
-        (PLI_RC_PLAYERPROPSSET2). DESTRUCTIVE - see set_player_props."""
+        (PLI_RC_PLAYERPROPSSET2). DESTRUCTIVE: replaces account state."""
         if not self.connected or not self._authenticated:
             return False
         data = build_rc_playerprops_set2(account, world, props, flags, chests, weapons)
@@ -700,15 +601,6 @@ class RCClient(Client):
             return False
         return self._protocol.send_packet(PacketID.PLI_RC_APPLYREASON,
                                           build_rc_apply_reason(account, reason))
-
-    def set_server_flags(self, flags: dict) -> bool:
-        """Replace ALL server flags (PLI_RC_SERVERFLAGSSET). DESTRUCTIVE:
-        flags not present in the dict are cleared - fetch the current set
-        with get_server_flags() and merge before calling."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_rc_serverflags_set(flags)
-        return self._protocol.send_packet(PacketID.PLI_RC_SERVERFLAGSSET, data)
 
     def reset_player_props(self, account: str) -> bool:
         """Reset an account to defaultaccount (PLI_RC_PLAYERPROPSRESET).
@@ -765,14 +657,6 @@ class RCClient(Client):
         return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_UP, data,
                                           append_newline=False)
 
-    def filebrowser_move(self, destination_dir: str, filename: str) -> bool:
-        """Move a file from the RC's current folder to destination_dir
-        (PLI_RC_FILEBROWSER_MOVE)."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_rc_filebrowser_move(destination_dir, filename)
-        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_MOVE, data)
-
     def npcserver_query(self, message: str = 'location') -> bool:
         """Query the NPC-server (PLI_NPCSERVERQUERY). 'location' requests the
         NC address; the reply arrives as PLO_NPCSERVERADDR."""
@@ -796,14 +680,6 @@ class RCClient(Client):
             return False
         return self._protocol.send_packet(PacketID.PLI_RC_LARGEFILEEND,
                                           build_rc_largefile_end(filename))
-
-    def folder_delete(self, folder: str) -> bool:
-        """Delete an empty folder (PLI_RC_FOLDERDELETE), path relative to the
-        server root."""
-        if not self.connected or not self._authenticated:
-            return False
-        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERDELETE,
-                                          build_rc_folder_delete(folder))
 
     # =========================================================================
     # Packet Handling (Override parent)
@@ -852,7 +728,6 @@ class RCClient(Client):
         # File Browser: Directory List
         if packet_id == PacketID.PLO_RC_FILEBROWSER_DIRLIST:
             info = parse_rc_filebrowser_dirlist(data)
-            self.file_folders = info.get('folders', [])
             return
 
         # File Browser: Directory Contents
@@ -866,7 +741,6 @@ class RCClient(Client):
 
         # File Browser: Message
         if packet_id == PacketID.PLO_RC_FILEBROWSER_MESSAGE:
-            self.file_browser_message = parse_rc_filebrowser_message(data)
             return
 
         # Player Properties (RC format)
@@ -919,7 +793,6 @@ class RCClient(Client):
 
         # Max upload file size (sent during RC login).
         if packet_id == PacketID.PLO_RC_MAXUPLOADFILESIZE:
-            self.max_upload_size = parse_rc_max_upload_size(data)
             return
 
         # Playerlist entry (RC sees players join). Track id -> account so
@@ -939,61 +812,6 @@ class RCClient(Client):
 
         # Defer to parent for all other packets
         super()._handle_packet(packet_id, data)
-
-    # =========================================================================
-    # Properties
-    # =========================================================================
-
-    @property
-    def is_rc(self) -> bool:
-        """Check if connected as RC (based on receiving RC packets)."""
-        return self._is_rc_mode
-
-    @property
-    def server_flags(self) -> List[str]:
-        """Get cached server flags (call get_server_flags() first)."""
-        return self._server_flags
-
-    @property
-    def server_options(self) -> Dict[str, str]:
-        """Get cached server options (call get_server_options() first)."""
-        return self._server_options
-
-    @property
-    def account_list(self) -> List[str]:
-        """Get cached account list (call get_account_list() first)."""
-        return self._account_list
-
-    @property
-    def folder_config(self) -> Dict[str, str]:
-        """Get cached folder config (call get_folder_config() first)."""
-        return self._folder_config
-
-    @property
-    def last_player_props(self) -> Dict:
-        """Get last queried player properties (call get_player_props_by_* first)."""
-        return self._last_player_props
-
-    @property
-    def last_account(self) -> Dict:
-        """Get last queried account details (call get_account() first)."""
-        return self._last_account
-
-    @property
-    def last_player_rights(self) -> Dict:
-        """Get last queried player rights (call get_player_rights() first)."""
-        return self._last_player_rights
-
-    @property
-    def last_player_comments(self) -> Dict:
-        """Get last queried player comments (call get_player_comments() first)."""
-        return self._last_player_comments
-
-    @property
-    def last_player_ban(self) -> Dict:
-        """Get last queried ban status (call get_ban_status() first)."""
-        return self._last_player_ban
-
 
 # =============================================================================
 # Convenience Function

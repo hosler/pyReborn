@@ -41,7 +41,6 @@ class InventoryUI:
     SELECTED_COLOR = theme.MINT
     TEXT_COLOR = theme.TEXT
     LABEL_COLOR = theme.TEXT_DIM
-    STAT_HEART_COLOR = (255, 80, 80)
     STAT_RUPEE_COLOR = theme.MINT
 
     # Layout
@@ -490,7 +489,6 @@ class HeartDisplay:
     HEART_SPACING = 2
     HEART_COLOR = (255, 50, 50)
     HEART_EMPTY_COLOR = (80, 30, 30)
-    HEART_HALF_COLOR = (200, 50, 50)
     HEARTS_PER_ROW = 10
 
     def __init__(self, x: int, y: int):
@@ -539,8 +537,6 @@ class HeartDisplay:
             self._cache_key = key
 
         screen.blit(self._cache, (self.x, self.y))
-
-    OUTLINE_COLOR = (20, 10, 10)
 
     def _draw_heart(self, screen, x: int, y: int, fill: str):
         """Draw a single heart icon (fill = 'full' | 'half' | 'empty')."""

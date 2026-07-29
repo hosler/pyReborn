@@ -36,7 +36,6 @@ class TestReporter:
     Usage:
         reporter = TestReporter()
         reporter.add_result("test_movement", True, 1.5, "Moved 10 tiles")
-        reporter.add_issue("HIGH", "Position desync detected", {...})
         reporter.print_summary()
         reporter.save_json("report.json")
         reporter.save_html("report.html")
@@ -46,7 +45,6 @@ class TestReporter:
     GREEN = '\033[92m'
     RED = '\033[91m'
     YELLOW = '\033[93m'
-    BLUE = '\033[94m'
     RESET = '\033[0m'
     BOLD = '\033[1m'
 
@@ -54,7 +52,6 @@ class TestReporter:
         self.name = name
         self.results: List[TestResult] = []
         self.issues: List[Issue] = []
-        self.screenshots: Dict[str, bytes] = {}
         self.start_time = time.time()
         self.config: Dict[str, Any] = {}
 
@@ -102,24 +99,6 @@ class TestReporter:
         # Also track issues separately
         if normalized:
             self.issues.extend(normalized)
-
-    def add_issue(self, severity: str, description: str,
-                  context: Dict[str, Any] = None, category: str = "general",
-                  screenshot: bytes = None):
-        """Add a standalone issue."""
-        issue = Issue(
-            timestamp=time.time(),
-            severity=severity,
-            category=category,
-            description=description,
-            context=context or {},
-            screenshot=screenshot
-        )
-        self.issues.append(issue)
-
-    def add_screenshot(self, name: str, data: bytes):
-        """Add a screenshot."""
-        self.screenshots[name] = data
 
     # ========== Console Output ==========
 
@@ -377,7 +356,3 @@ class TestReporter:
     def has_failures(self) -> bool:
         """Check if any tests failed."""
         return any(not r.passed for r in self.results)
-
-    def get_high_priority_issues(self) -> List[Issue]:
-        """Get all HIGH severity issues."""
-        return [i for i in self.issues if i.severity == "HIGH"]

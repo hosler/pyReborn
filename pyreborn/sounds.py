@@ -92,11 +92,6 @@ class SoundManager:
             print(f"Warning: Could not initialize sound mixer: {e}")
             self.enabled = False
 
-    def add_search_path(self, path: Path):
-        """Add a search path for finding sound files."""
-        if path not in self.search_paths:
-            self.search_paths.append(path)
-
     def find_file(self, name: str) -> Optional[Path]:
         """Find a sound file by name in search paths."""
         for search_path in self.search_paths:
@@ -417,14 +412,9 @@ class SoundManager:
             except Exception:
                 pass
 
-    def set_enabled(self, enabled: bool):
-        """Enable or disable sound."""
-        self.enabled = enabled
-
     def set_music_enabled(self, enabled: bool):
         """Enable or disable streamed background music (see music_enabled
-        above). Disabling stops whatever's currently playing, mirroring
-        set_enabled's immediate-effect semantics."""
+        above). Disabling stops whatever's currently playing immediately."""
         self.music_enabled = enabled
         if not enabled:
             self.stop_music()
@@ -440,14 +430,6 @@ class SoundManager:
     def clear_cache(self):
         """Clear all cached sounds."""
         self.sound_cache.clear()
-
-    def get_stats(self) -> Dict[str, int]:
-        """Get cache statistics."""
-        return {
-            'sounds_cached': len(self.sound_cache),
-            'enabled': self.enabled,
-        }
-
 
 # Common sound names used in Reborn
 COMMON_SOUNDS = [

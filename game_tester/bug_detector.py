@@ -337,51 +337,6 @@ class BugDetector:
             details={"attacker": attacker_id, "damage": damage}
         )
 
-    # ========== Communication Checks ==========
-
-    @staticmethod
-    def check_chat_echo(sent_message: str,
-                        received: List[Tuple[int, str, float]],
-                        since_time: float = 0) -> CheckResult:
-        """Check if sent chat message was echoed back."""
-        recent = [r for r in received if r[2] >= since_time]
-
-        for player_id, message, timestamp in recent:
-            if sent_message in message:
-                return CheckResult(
-                    passed=True,
-                    message=f"Chat echo received from player {player_id}",
-                    details={"player_id": player_id, "message": message}
-                )
-
-        return CheckResult(
-            passed=False,
-            message=f"Chat not echoed: '{sent_message}'",
-            severity="MEDIUM"
-        )
-
-    @staticmethod
-    def check_pm_delivery(pm_log: List[Tuple[int, str, float]],
-                          expected_from: int,
-                          expected_message: str,
-                          since_time: float = 0) -> CheckResult:
-        """Check if PM was received from expected player."""
-        recent = [p for p in pm_log if p[2] >= since_time]
-
-        for from_id, message, timestamp in recent:
-            if from_id == expected_from and expected_message in message:
-                return CheckResult(
-                    passed=True,
-                    message=f"PM received from player {from_id}",
-                    details={"from": from_id, "message": message}
-                )
-
-        return CheckResult(
-            passed=False,
-            message=f"PM not received from player {expected_from}",
-            severity="MEDIUM"
-        )
-
     # ========== Connection Checks ==========
 
     @staticmethod
@@ -395,45 +350,3 @@ class BugDetector:
             )
 
         return CheckResult(passed=True, message="Connected")
-
-    @staticmethod
-    def check_authenticated(client) -> CheckResult:
-        """Check if client is authenticated."""
-        if not client.authenticated:
-            return CheckResult(
-                passed=False,
-                message="Client not authenticated",
-                severity="HIGH"
-            )
-
-        return CheckResult(
-            passed=True,
-            message=f"Authenticated as {client.player.account}",
-            details={"account": client.player.account}
-        )
-
-    # ========== Composite Checks ==========
-
-    @staticmethod
-    def run_all_checks(client, positions: List[Tuple[float, float, float]] = None,
-                       hurt_log: List = None, chat_log: List = None) -> List[CheckResult]:
-        """Run all applicable checks and return results."""
-        results = []
-
-        # Connection
-        results.append(BugDetector.check_connection(client))
-
-        # Data
-        results.append(BugDetector.check_level_loaded(client))
-        results.append(BugDetector.check_tiles_valid(client))
-        results.append(BugDetector.check_out_of_bounds(client))
-        results.append(BugDetector.check_players_visible(client))
-        results.append(BugDetector.check_npcs_received(client))
-        results.append(BugDetector.check_items_on_ground(client))
-
-        # Position history checks
-        if positions and len(positions) >= 10:
-            results.append(BugDetector.check_stuck_detection(positions))
-            results.append(BugDetector.check_position_discontinuity(positions))
-
-        return results

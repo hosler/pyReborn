@@ -75,7 +75,6 @@ class SessionState:
         # reassembly happens in protocol.py, which re-emits the payload under
         # its real packet id.
         self.raw_data_expected = 0
-        self.raw_buffer = b""
 
         # Server time (from heartbeat)
         self.server_time = 0
@@ -189,7 +188,6 @@ class GmapState:
         self.last_gmap_name = ""
         self.requested_gmap = ""       # .gmap we've already sent a WANTFILE for
         self.bigmap_info: Dict = {}    # PLO_BIGMAP (171): image/levels_file/x/y
-        self.gmap_base_level = ""   # The level player started in when GMAP was loaded
         self.gmap_spawn_x = 0   # GMAP grid x from PLO_PLAYERWARP2
         self.gmap_spawn_y = 0   # GMAP grid y from PLO_PLAYERWARP2
         # Offset between world coordinate grid and GMAP grid
@@ -389,8 +387,6 @@ class Instrumentation:
         # Packet coverage instrumentation (for the QA coverage harness).
         # Maps packet_id -> {'received': n, 'handled': n, 'errors': n, 'last_error': str}
         self.packet_stats: Dict[int, Dict[str, object]] = {}
-        # Capture the most recent error traceback per packet id for debugging.
-        self.packet_trace_enabled = False  # when True, keep raw bytes of each id
         # Packet ids we've already logged a handler-exception warning for, so
         # a persistently-failing packet type doesn't spam the log every frame
         # (the count is still visible in packet_stats[id]['errors']).
@@ -473,7 +469,7 @@ class Callbacks:
         self.on_board_modify: Optional[Callable[[dict], None]] = None
 
         # File-up-to-date callback: handler(filename) - server confirmed our
-        # cached copy (per request_file_if_modified) is current.
+        # cached copy is current.
         self.on_file_uptodate: Optional[Callable[[str], None]] = None
 
         # Entity family callbacks (tier 2).

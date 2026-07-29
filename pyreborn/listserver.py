@@ -114,26 +114,9 @@ class PacketReader:
     def __init__(self, data: bytes):
         self._reader = _SharedPacketReader(data, encoding='cp1252')
 
-    @property
-    def data(self) -> bytes:
-        return self._reader.data
-
-    @property
-    def pos(self) -> int:
-        return self._reader.pos
-
     def read_guchar(self) -> int:
         """Read GUChar (byte - 32)."""
         return self._reader.read_gchar()
-
-    def read_gchar(self) -> int:
-        """Read GChar (signed byte - 32)."""
-        value = self.read_guchar()
-        return value - 256 if value >= 128 else value
-
-    def read_chars(self, length: int) -> str:
-        """Read N bytes as string."""
-        return self._reader.read_string(length)
 
     def read_string(self) -> str:
         """Read length-prefixed string (GUChar length + chars)."""

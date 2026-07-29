@@ -20,7 +20,6 @@ regex-based fallback executor; that only ever diverged from the real engine.
 
 import math
 import os
-import time
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
 
@@ -138,7 +137,6 @@ class NPCHandler:
         self.gs2 = None  # ClientGS2; consulted for bytecode NPCs' touch gate.
         self.npc_shapes: Dict[int, NPCShape] = {}  # npc_id -> shape
         self.npc_scripts: Dict[int, str] = {}  # npc_id -> script
-        self.last_player_pos: Tuple[float, float] = (0, 0)
         self.touched_npcs: Set[int] = set()  # NPCs currently being touched
 
         # Touch event sink. Wired to the GS1 engine (gs1.trigger_npc_event) in
@@ -283,7 +281,6 @@ class NPCHandler:
                     self.on_playertouchsme(npc_id, self.client.npcs.get(npc_id, {}))
 
         self.touched_npcs = touched_now
-        self.last_player_pos = (new_x, new_y)
 
 
 def test_npc_handler():
@@ -351,7 +348,6 @@ play sen_select.wav;
     print("\n=== Testing movement and touch dispatch ===")
     fired = []
     handler.on_playertouchsme = lambda npc_id, npc_data: fired.append(npc_id)
-    handler.last_player_pos = (25, 20)
     handler.touched_npcs = set()
 
     for y in [19, 18, 17]:

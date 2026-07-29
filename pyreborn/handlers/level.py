@@ -288,13 +288,10 @@ def handle_player_warp2(client, data):
         # Check if we're in GMAP mode:
         # 1. Have a gmap grid loaded, OR
         # 2. Level name ends with .gmap, OR
-        # 3. The warp packet itself has non-zero gmap grid coords
         has_gmap_grid = client.gmap_width > 0 and client.gmap_height > 0
         level_is_gmap = client.player.level and client.player.level.endswith('.gmap')
-        warp_has_grid = gmap_x != 0 or gmap_y != 0
 
         # Only use world coords if we have a loaded gmap grid or level is explicitly a .gmap
-        # If just warp_has_grid but no gmap loaded, use local coords
         in_gmap = has_gmap_grid or level_is_gmap
 
         # A level change we announced ourselves (seam crossing, door link)

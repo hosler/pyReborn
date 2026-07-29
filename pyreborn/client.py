@@ -9,7 +9,6 @@ In browser, use proxy_url parameter to connect via WebSocket proxy.
 import logging
 import math
 import re
-import sys
 import time
 import traceback
 from typing import Optional, Dict, List, Tuple
@@ -53,7 +52,6 @@ from .game.constants import (
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
-    PLAYER_STAND_X, PLAYER_STAND_Y,
 )
 from .packets import (
     PacketID,
@@ -1094,24 +1092,6 @@ class Client:
                                                 data) and ok
         return ok
 
-    def send_npc_props(self, npc_id: int, prop_name: str, value: str) -> bool:
-        """
-        Send NPC properties update (char props like #P1, #P2).
-
-        Args:
-            npc_id: NPC ID to update
-            prop_name: Property name (e.g., "P1", "P2", "P3")
-            value: Property value
-
-        Returns:
-            True if packet sent successfully
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        data = build_npc_props(npc_id, prop_name, value)
-        return self._protocol.send_packet(PacketID.PLI_NPCPROPS, data)
-
     def set_flag(self, flag_name: str, flag_value: str = "") -> bool:
         """
         Set a player flag.
@@ -1745,19 +1725,6 @@ class Client:
         data = build_horse_del(x, y)
         return self._protocol.send_packet(PacketID.PLI_HORSEDEL, data)
 
-    def firespy(self, power: int = 1, length: int = 1) -> bool:
-        """Trigger the fire-spy weapon effect (PLI_FIRESPY)."""
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_firespy(power, length)
-        return self._protocol.send_packet(PacketID.PLI_FIRESPY, data)
-
-    def throw_carried(self) -> bool:
-        """Throw whatever object/NPC the player is currently carrying (PLI_THROWCARRIED)."""
-        if not self.connected or not self._authenticated:
-            return False
-        return self._protocol.send_packet(PacketID.PLI_THROWCARRIED, build_throwcarried())
-
     def modify_board(self, x: int, y: int, width: int, height: int, tiles) -> bool:
         """
         Edit a rectangle of the current level's board (PLI_BOARDMODIFY).
@@ -1792,32 +1759,6 @@ class Client:
         data = build_board_modify(x, y, width, height, tiles)
         return self._protocol.send_packet(PacketID.PLI_BOARDMODIFY, data)
 
-    def request_file_if_modified(self, filename: str, mod_time: int = 0) -> bool:
-        """
-        Ask the server whether filename has changed since mod_time
-        (PLI_UPDATEFILE). Replies with PLO_FILE (new/changed - handled the
-        same as request_file) or PLO_FILEUPTODATE (unchanged, see
-        on_file_uptodate / is_file_uptodate).
-
-        Args:
-            filename: name of the file to check
-            mod_time: last known modification time (unix epoch seconds);
-                      0 always forces a fresh download.
-
-        Returns:
-            True if the packet was sent.
-        """
-        if not self.connected or not self._authenticated:
-            return False
-
-        self._pending_files.add(filename)
-        data = build_update_file(filename, mod_time)
-        return self._protocol.send_packet(PacketID.PLI_UPDATEFILE, data)
-
-    def is_file_uptodate(self, filename: str) -> bool:
-        """Check if the server confirmed filename is unchanged (PLO_FILEUPTODATE)."""
-        return filename in self._uptodate_files
-
     def request_weapon_bytecode(self, weapon_name: str) -> bool:
         """Request a weapon's GS2 bytecode (PLI_UPDATESCRIPT). Reply arrives
         as PLO_NPCWEAPONSCRIPT -> client.gs2_bytecode['weapon'][name]."""
@@ -1841,32 +1782,6 @@ class Client:
             return False
         data = build_update_class(class_name, checksum)
         return self._protocol.send_packet(PacketID.PLI_UPDATECLASS, data)
-
-    def request_profile(self, account: str) -> bool:
-        """
-        Request another player's profile (PLI_PROFILEGET). The reply arrives
-        as PLO_PROFILE (see on_profile / client.profiles) - requires the
-        server to be connected to a listserver that knows the account.
-        """
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_profile_get(account)
-        return self._protocol.send_packet(PacketID.PLI_PROFILEGET, data)
-
-    def set_profile(self, name: str = '', age: str = '', gender: str = '',
-                    country: str = '', messenger: str = '', email: str = '',
-                    website: str = '', hangout: str = '', quote: str = '') -> bool:
-        """
-        Update our own profile (PLI_PROFILESET). The server forwards it to the
-        listserver; it silently drops the packet if the embedded account name
-        doesn't match ours (which this method guarantees).
-        """
-        if not self.connected or not self._authenticated:
-            return False
-        data = build_profile_set(self.player.account or '', name, age, gender,
-                                 country, messenger, email, website, hangout,
-                                 quote)
-        return self._protocol.send_packet(PacketID.PLI_PROFILESET, data)
 
     def request_level(self, level_name: str) -> bool:
         """
@@ -1953,7 +1868,6 @@ class Client:
             self._last_gmap_name = self.gmap_name
         self.gmap_name = ""
         self._requested_gmap = ""
-        self._gmap_base_level = ""
         self._gmap_spawn_x = 0
         self._gmap_spawn_y = 0
         self.player.level = level_name
@@ -2003,8 +1917,6 @@ class Client:
                 destination directly instead.
         """
         self.gmap_grid.clear()
-        # Save the current level as the base for position calculations
-        self._gmap_base_level = self._current_level_name
         lines = gmap_data.strip().split('\n')
 
         in_levelnames = False
@@ -2061,7 +1973,6 @@ class Client:
 
         if spawn_pos in self.gmap_grid:
             self._current_level_name = self.gmap_grid[spawn_pos]
-            self._gmap_base_level = self._current_level_name
 
             # Convert player coords to world coords if they're still local
             # (PLAYERWARP2 arrives before GMAP, so coords are local at that point)
@@ -2666,7 +2577,6 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_authenticated': ('session', 'authenticated'),
     '_login_time': ('session', 'login_time'),
     '_raw_data_expected': ('session', 'raw_data_expected'),
-    '_raw_buffer': ('session', 'raw_buffer'),
     '_in_update': ('session', 'in_update'),
     'server_time': ('session', 'server_time'),
     'ghost_mode': ('session', 'ghost_mode'),
@@ -2715,7 +2625,6 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'gmap_name': ('gmap_state', 'gmap_name'),
     '_requested_gmap': ('gmap_state', 'requested_gmap'),
     'bigmap_info': ('gmap_state', 'bigmap_info'),
-    '_gmap_base_level': ('gmap_state', 'gmap_base_level'),
     '_gmap_spawn_x': ('gmap_state', 'gmap_spawn_x'),
     '_gmap_spawn_y': ('gmap_state', 'gmap_spawn_y'),
     '_gmap_offset_x': ('gmap_state', 'gmap_offset_x'),
@@ -2776,7 +2685,6 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
 
     # --- instrumentation ---------------------------------------------------
     'packet_stats': ('instrumentation', 'packet_stats'),
-    '_packet_trace_enabled': ('instrumentation', 'packet_trace_enabled'),
     '_warned_packet_errors': ('instrumentation', 'warned_packet_errors'),
     '_handled_plo_ids': ('instrumentation', 'handled_plo_ids'),
     'prop_parse_diagnostics': ('instrumentation', 'prop_parse_diagnostics'),

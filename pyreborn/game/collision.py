@@ -2,40 +2,19 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
-import time
-import json
 import math
-import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-import pygame
-from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT,
-    K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
-)
+from typing import List, Optional, Tuple
 
 from reborn_protocol.coords import (
     LEVEL_SIZE, gmap_extent, in_level_bounds, level_index, local_coord,
     segment_at,
 )
 
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
-from ..player import Player
 from ..tiletypes import (
     TileType, active_tilestype, get_tile_type, type_is_blocking,
 )
 from .constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CORNER_ASSIST_MAX,
-    parse_npc_visual_effects,
+    MOVE_STEP, CORNER_ASSIST_MAX,
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
@@ -63,18 +42,9 @@ class CollisionMixin:
         Uses the shared threshold predicate (the C# client's style) so the blocking
         rule lives in one place instead of being duplicated as a type set."""
         return type_is_blocking(self._get_corrected_tile_type(tile_id))
-    def _is_tile_water(self, tile_id: int) -> bool:
-        """Check if tile is deep or shallow water, using corrections."""
-        tile_type = self._get_corrected_tile_type(tile_id)
-        return tile_type in (TileType.WATER, TileType.NEAR_WATER)
     def _is_tile_swimming_water(self, tile_id: int) -> bool:
         """Check if tile is deep enough for swimming, using corrections."""
         return self._get_corrected_tile_type(tile_id) == TileType.WATER
-    def _is_tile_chair(self, tile_id: int) -> bool:
-        """Check if tile is a chair, using corrections."""
-        tile_type = self._get_corrected_tile_type(tile_id)
-        return tile_type == TileType.CHAIR
-
     def _effective_tile_type(self, x: float, y: float) -> int:
         """Tile TYPE in force at world (x, y): a script NPC's setshape2 overlay
         first, the board's own type second.

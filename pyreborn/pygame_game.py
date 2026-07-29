@@ -7,25 +7,22 @@ tile_editor). This module wires them together via __init__ and run().
 """
 
 import time
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pygame
 
 from . import Client
-from .gani import GaniParser, AnimationState, direction_from_delta
+from .gani import GaniParser, AnimationState
 from .sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
 from .sounds import SoundManager, preload_common_sounds
 from .inventory_ui import InventoryUI, HeartDisplay
 from .npc_handler import NPCHandler
 from .gs1_client import ClientGS1
 from .gs2_client import ClientGS2
-from .player import Player
 from .prefs import Prefs
-from .tiletypes import TileType, get_tile_type
+from .tiletypes import TileType
 from .game.constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
+    TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
@@ -248,9 +245,6 @@ class GameClient(
 
         # World rendering
         self.world_surface: Optional[pygame.Surface] = None
-        self.last_level_count = 0
-        self.last_level_name = ""  # Track current level for cache invalidation
-        self.known_levels: set = set()  # Track which levels we've seen tiles for
         # Tier 4a: (world_tx, world_ty, tile_id) for water/lava tiles in the
         # current world_surface, rebuilt alongside it - see render_world.py
         # _render_animated_tiles for the shimmer this drives.
@@ -311,7 +305,6 @@ class GameClient(
         # Combat effects - floating damage numbers
         # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
         self.damage_numbers: List[dict] = []
-        self.hurt_flash_time = 0.0  # Time when player was last hurt (for flash effect)
         self.combat_presentation = CombatPresentation()
 
         # Unified local/remote bomb registry.
@@ -334,7 +327,6 @@ class GameClient(
         self._last_ripple_time = 0.0
         self._ripple_surface_cache: Dict[int, pygame.Surface] = {}
 
-        self.active_bomb_explosions: List[dict] = []
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
 
         # Tier 3d: seteffect screen tint - {'r','g','b','a'} 0..255 or None.
@@ -343,7 +335,6 @@ class GameClient(
         # Dialogue box state (for say2/signs)
         self.dialogue_text: Optional[str] = None
         self.dialogue_classic_font: bool = False
-        self.dialogue_time: float = 0.0
         from .game.dialogue import DialoguePager
         self.dialogue_pager = DialoguePager()
 
@@ -374,7 +365,6 @@ class GameClient(
         # Tier 4b: set when minimap_surface was built from a PLO_BIGMAP world
         # image rather than PLO_MINIMAP per-tile data (see game/minimap.py
         # _ensure_bigmap_surface) - changes how the player dot is positioned.
-        self._minimap_is_bigmap = False
         self._bigmap_image_name: Optional[str] = None
 
         # Ghost mode state

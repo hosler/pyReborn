@@ -19,7 +19,6 @@ the tree then the imperative overlays. The tile-editor/debug overlay stays in
 render.py — it is editor UI, not the play HUD.
 """
 
-import time
 from typing import Optional, Tuple
 
 import pygame
@@ -46,8 +45,6 @@ STAT_HEARTS = 32      # hearts row
 STAT_AP = 64          # alignment bar
 STAT_MP = 128         # magic bar
 STAT_MINIMAP = 256    # minimap
-STAT_INVENTORY = 512  # inventory npcs (not drawn by this HUD)
-STAT_PLAYERS = 1024   # players (not gated here; render_entities draws them)
 ALLSTATS = 2047
 _STATS_PANEL_BITS = (STAT_ASD | STAT_ICONS | STAT_RUPEES | STAT_BOMBS
                      | STAT_ARROWS | STAT_HEARTS | STAT_AP | STAT_MP)

@@ -276,53 +276,8 @@ def is_swimming_water(tile_id: int) -> bool:
     return get_tile_type(tile_id) == TileType.WATER
 
 
-def is_swamp(tile_id: int) -> bool:
-    """Check if a tile slows movement."""
-    tile_type = get_tile_type(tile_id)
-    return tile_type in (TileType.SWAMP, TileType.LAVA_SWAMP)
-
-
 def is_damaging(tile_id: int) -> bool:
     """Check if a tile causes damage."""
     tile_type = get_tile_type(tile_id)
     return tile_type in (TileType.LAVA, TileType.LAVA_SWAMP, TileType.HURT_UNDERGROUND)
 
-
-def is_chair(tile_id: int) -> bool:
-    """Check if a tile is a chair (sittable)."""
-    tile_type = get_tile_type(tile_id)
-    return tile_type == TileType.CHAIR
-
-
-def is_liftable(tile_id: int) -> bool:
-    """Check if a tile is a liftable object."""
-    tile_type = get_tile_type(tile_id)
-    return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT, TileType.SIGN)
-
-
-def get_lift_power_required(tile_id: int) -> int:
-    """
-    Get the glove power required to lift a tile.
-
-    Returns:
-        0 = bushes, pots, and post signs (bare-handed) or not liftable
-        1 = rocks (need a glove)
-    """
-    tile_type = get_tile_type(tile_id)
-    if tile_type == TileType.ROCK:
-        return 1
-    return 0
-
-
-def get_liftable_type_name(tile_id: int) -> str:
-    """Get the name of a liftable object type for display."""
-    tile_type = get_tile_type(tile_id)
-    if tile_type == TileType.BUSH:
-        return "bush"
-    elif tile_type == TileType.POT:
-        return "pot"
-    elif tile_type == TileType.ROCK:
-        return "rock"
-    elif tile_type == TileType.SIGN:
-        return "sign"
-    return ""

@@ -174,11 +174,6 @@ class SpriteManager:
         while len(cache) > max_size:
             cache.popitem(last=False)
 
-    def add_search_path(self, path: Path):
-        """Add a search path for finding sprite images."""
-        if path not in self.search_paths:
-            self.search_paths.append(path)
-
     def find_file(self, name: str) -> Optional[Path]:
         """Find a sprite image file by name in search paths."""
         for search_path in self.search_paths:
@@ -499,14 +494,6 @@ class SpriteManager:
         self._recolor_sprite_cache.clear()
         self._colors_key_cache.clear()
 
-    def get_stats(self) -> Dict[str, int]:
-        """Get cache statistics."""
-        return {
-            'sheets_cached': len(self.sheet_cache),
-            'sprites_cached': len(self.sprite_cache),
-        }
-
-
 class TilesetManager:
     """
     Specialized manager for Reborn tilesets.
@@ -515,8 +502,6 @@ class TilesetManager:
     """
 
     TILE_SIZE = 16
-    TILESET_COLS = 128  # Tiles per row in tileset (128 * 16 = 2048 pixels)
-    TILESET_ROWS = 32   # Rows in tileset
 
     def __init__(self, sprite_manager: SpriteManager):
         """Initialize with a sprite manager."""

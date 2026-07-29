@@ -114,9 +114,6 @@ class Camera2D:
         self._bounds = (min_x, min_y, max_x, max_y)
         self._clamp_center()
 
-    def clear_bounds(self):
-        self._bounds = None
-
     # -- transform --------------------------------------------------------
 
     def _recompute(self):

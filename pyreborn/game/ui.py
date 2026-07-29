@@ -227,11 +227,6 @@ class Image(Widget):
         super().__init__(w, h, anchor, offset, visible)
         self.surface = surface
 
-    def set_surface(self, surface):
-        self.surface = surface
-        if surface:
-            self.w, self.h = surface.get_size()
-
     def _draw(self, surf):
         if self.surface:
             surf.blit(self.surface, self.rect.topleft)
@@ -319,7 +314,6 @@ class TextInput(Widget):
         self.radius = radius
         self.focused = False
         self._fonts = None
-        self._blink = 0.0
 
     @property
     def display_text(self):

@@ -90,16 +90,6 @@ class FontManager:
             else self.at(role_or_size, bold)
         return font.render(text, antialias, color)
 
-    def render_outlined(self, role_or_size, text: str, color, *,
-                         outline_color: Tuple[int, int, int] = (0, 0, 0),
-                         outline_width: int = 1,
-                         bold: bool = False) -> pygame.Surface:
-        """Role/size convenience wrapper around :func:`render_outlined_text`."""
-        font = self.get(role_or_size) if isinstance(role_or_size, str) \
-            else self.at(role_or_size, bold)
-        return render_outlined_text(font, text, color, outline_color, outline_width)
-
-
 def render_outlined_text(font: pygame.font.Font, text: str, color,
                           outline_color: Tuple[int, int, int] = (0, 0, 0),
                           outline_width: int = 1) -> pygame.Surface:

@@ -3,10 +3,7 @@
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import time
-import json
-import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pygame
 from pygame.locals import (
@@ -17,18 +14,9 @@ from pygame.locals import (
     K_1, K_2, K_3, K_4, K_5, K_6, K_7
 )
 
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
-from ..player import Player
-from ..tiletypes import TileType, get_tile_type
+from ..tiletypes import TileType
 from .constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CHAT_HISTORY_CAP,
-    parse_npc_visual_effects, pygame_key_to_vk,
+    MOVE_STEP, pygame_key_to_vk,
 )
 
 

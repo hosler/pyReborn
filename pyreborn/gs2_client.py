@@ -4723,14 +4723,6 @@ class ClientGS2:
             return True
         return False
 
-    def trigger_weapon_fired(self, weapon: str) -> bool:
-        """The player used this weapon (D key): onWeaponFired, falling back
-        to the legacy onFired name."""
-        for ev in ("onWeaponFired", "onFired"):
-            if self.trigger_weapon_event(weapon, ev):
-                return True
-        return False
-
     def trigger_npc_event(self, npc_id, event: str, *args) -> bool:
         """Fire an event on one NPC's VM (touch/hit routing from the game
         layer). NPC VM keys keep the id type they arrived with, so try both

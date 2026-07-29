@@ -403,7 +403,7 @@ class TestScenarios:
 
         # Test that swimming state can be checked without error
         try:
-            water_check = bot._check_water_at_position(bot.x + 1.5, bot.y + 2.5)
+            bot._check_water_at_position(bot.x + 1.5, bot.y + 2.5)
             check_works = True
         except Exception as e:
             check_works = False
@@ -537,8 +537,6 @@ class TestScenarios:
         start = time.time()
 
         result = BugDetector.check_items_on_ground(bot.client)
-        has_items = len(bot.items) > 0
-
         return TestResult(
             name="item_detection",
             passed=True,  # Just informational

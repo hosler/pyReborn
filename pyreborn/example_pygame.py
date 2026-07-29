@@ -251,7 +251,6 @@ def main():
             if os.path.exists(cache_path):
                 with open(cache_path) as f:
                     client.load_gmap(f.read())
-                client._gmap_base_level = client._current_level_name
                 print(f"Loaded GMAP: {client.gmap_width}x{client.gmap_height} grid")
 
                 # Request adjacent levels

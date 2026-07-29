@@ -202,11 +202,6 @@ class CoverageReport:
         ok = sum(1 for r in rows if r[6] == "OK")
         return 100.0 * ok / len(rows)
 
-    def unseen_plo(self) -> List[Tuple[int, str]]:
-        """Known PLO types the server never sent this session (need a driver)."""
-        return [(pid, name) for pid, name in sorted(PLO_NAMES.items())
-                if pid not in self.server_out]
-
     def to_dict(self) -> dict:
         return {
             "account": self.account,

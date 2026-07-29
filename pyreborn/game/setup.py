@@ -4,35 +4,11 @@ Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import os
 import time
-import json
-import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
-import pygame
-from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT,
-    K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
-)
-
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import (
-    SpriteManager, TilesetManager, create_placeholder_sprite,
-    create_shadow_sprite, strip_tiledef_image,
-)
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
-from ..player import Player
-from ..tiletypes import TileType, get_tile_type
-from .constants import (
-    PACKAGE_DIR, TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, CHAT_HISTORY_CAP,
-    parse_npc_visual_effects,
-)
+from ..sprites import strip_tiledef_image
+from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
 
 
 # Downloaded audio handled as one-shot samples (mixer.Sound). The streaming
@@ -165,7 +141,6 @@ class SetupMixin:
                 'duration': 1.0,
             })
             # Trigger hurt flash
-            self.hurt_flash_time = time.time()
             self.combat_presentation.hurt(
                 now, dead=self.client.player.hearts <= 0)
 
@@ -596,7 +571,6 @@ class SetupMixin:
         # and re-requested the same files (no-shield.png/bombarena_map.txt on
         # bomber) on each re-entry.
         def on_setminimap(args):
-            self._gs1_minimap = args
             for a in args:
                 if isinstance(a, str) and '.' in a:
                     self._request_asset(a)
@@ -1114,7 +1088,7 @@ class SetupMixin:
         # old level keep ticking (and eventually exploding) on top of the
         # new one.
         for attr in ('active_projectiles', 'thrown_objects', 'active_bombs',
-                     'active_bomb_explosions', 'break_effects',
+                     'break_effects',
                      'leaf_particles', 'water_ripples'):
             effects = getattr(self, attr, None)
             if isinstance(effects, list):

@@ -25,7 +25,7 @@ from reborn_protocol.gs1 import ast
 from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
-from reborn_protocol.gs1.values import gs1_int, to_num, to_str
+from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import (
     A_CLASS_NPC_ATTR, A_CLASS_PLAYER_ATTR, host_value, tokens_count,
 )
@@ -3164,7 +3164,6 @@ class ClientGS1:
         self.on_setani = None
         self.on_message = None
         self.on_setmap = None
-        self.on_movement_changed = None
         self.on_triggeraction = None
         self.on_setplayerprop = None
         self.on_shoot = None

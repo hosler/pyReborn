@@ -3,36 +3,18 @@
 Split from render.py; methods operate on the GameClient instance."""
 
 import time
-import json
 import math
-import re
 import random
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import pygame
-from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT,
-    K_F1, K_F2, K_1, K_2, K_3, K_4, K_5, K_6, K_7
-)
 
 from reborn_protocol.coords import in_level_bounds
 
-from .. import Client
-from ..gani import GaniParser, AnimationState, direction_from_delta
-from ..sprites import SpriteManager, TilesetManager, create_placeholder_sprite, create_shadow_sprite
-from ..sounds import SoundManager, preload_common_sounds
-from ..inventory_ui import InventoryUI, HeartDisplay
-from ..npc_handler import NPCHandler
-from ..player import Player
+from ..gani import AnimationState
 from ..prefs import Prefs
-from ..tiletypes import TileType, get_tile_type
-from .constants import (
-    TILE_CORRECTIONS_FILE, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
-    TILESET_COLS, TILESET_ROWS, MOVE_STEP, parse_npc_visual_effects,
-)
+from ..tiletypes import TileType
+from .constants import TILE_SIZE
 from .frame_context import FrameContext, FrameContextMixin
 
 
@@ -942,29 +924,6 @@ class EffectsRenderMixin(FrameContextMixin):
                 self.screen.blit(chunk, (px - size / 2, py - size / 2))
             active.append(eff)
         self.break_effects = active
-    def _render_server_bombs(self):
-        """Compatibility shim for callers predating the unified registry."""
-        return None
-
-    def _render_server_bomb_explosions(self):
-        """Render the brief flash queued by on_bomb_del (see game/setup.py)."""
-        duration = 0.4
-        now = time.time()
-        active = []
-        for exp in self.active_bomb_explosions:
-            elapsed = now - exp['time']
-            if elapsed < duration:
-                screen_x, screen_y = self.camera.world_to_screen(exp['x'], exp['y'])
-                progress = elapsed / duration
-                radius = int(24 * (0.5 + progress * 0.5))
-                alpha = int(255 * (1.0 - progress))
-                surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-                pygame.draw.circle(surf, (255, 150, 50, alpha), (radius, radius), radius)
-                pygame.draw.circle(surf, (255, 220, 120, alpha), (radius, radius), max(1, int(radius * 0.5)))
-                self.screen.blit(surf, (screen_x - radius, screen_y - radius))
-                active.append(exp)
-        self.active_bomb_explosions = active
-
     _ARROW_DIRECTION_VECTOR = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
 
     def _render_server_arrows(self):
@@ -1026,7 +985,7 @@ class EffectsRenderMixin(FrameContextMixin):
         """Blit a cached darkness/tint overlay to the screen, first punching
         this frame's drawaslight NPC footprints out of it (FrameContext's
         light_sources, filled by render_entities.py's
-        _render_light_sprite/_light_tint_eraser) so a light source genuinely
+        _render_light_sprite) so a light source genuinely
         brightens that spot instead of just glowing additively on top of
         otherwise-unchanged darkness.
 

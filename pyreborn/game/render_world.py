@@ -439,10 +439,6 @@ class WorldRenderMixin:
         """Return the current off/half/full/half ramp step at 300ms cadence."""
         return int(time.time() / self._SHIMMER_PERIOD) % 4
 
-    def _is_shimmer_draw_frame(self) -> bool:
-        """Compatibility predicate: false only for the ramp's base step."""
-        return self._shimmer_ramp_step() != 0
-
     def _render_animated_tiles(self):
         """Tier 4a: redraw just the indexed water/lava tiles every ~300ms with
         a shimmer variant, on top of the already-composited world_surface."""

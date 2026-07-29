@@ -56,7 +56,6 @@ class Player:
 
     # Sitting state
     is_sitting: bool = False
-    sit_direction: int = 2  # Direction player is facing while sitting
 
     # Animation/visual state
     animation: str = "idle"  # Current gani animation name
@@ -189,7 +188,6 @@ class Player:
         if self.is_carrying():
             return False
         self.is_sitting = True
-        self.sit_direction = direction
         return True
 
     def stand_up(self):

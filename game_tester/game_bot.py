@@ -210,8 +210,6 @@ class GameBot:
         self._setup_callbacks()
 
         # State tracking
-        self._last_x = 0.0
-        self._last_y = 0.0
         self._stuck_count = 0
         self._connected = False
         self._stuck_warned = False  # Only warn once when stuck
@@ -232,11 +230,6 @@ class GameBot:
         # overlapping link at the arrival point. See _maybe_follow_link().
         self._was_on_link = False
         self._link_arrival: Optional[Tuple[float, float]] = None
-
-        # Collision settings (match pygame_game.py). Classic-engine spec:
-        # Standing point between the feet; distinct from the shifted box centre.
-        self._feet_offset_x = 1.5
-        self._feet_offset_y = 2.5
 
     def _setup_callbacks(self):
         """Setup client callbacks for tracking."""
@@ -319,8 +312,6 @@ class GameBot:
             return False
 
         self._connected = True
-        self._last_x = self.client.x
-        self._last_y = self.client.y
         self._log_action("connect", {"name": self.name}, True, start)
         return True
 
@@ -954,17 +945,6 @@ class GameBot:
         self._log_action("open_chest", {"x": x, "y": y}, opened_now, start)
         return opened_now
 
-    def pickup_all_items(self) -> int:
-        """Try to pick up all visible items. Returns count picked up."""
-        start = time.time()
-        count = 0
-        for (x, y), item_type in list(self.client.items.items()):
-            if self.walk_to(x, y, timeout=5.0):
-                if self.pickup_item(x, y):
-                    count += 1
-        self._log_action("pickup_all_items", {}, count, start)
-        return count
-
     # ========== Communication ==========
 
     def say(self, message: str) -> bool:
@@ -1176,12 +1156,6 @@ class GameBot:
         if severity:
             return [i for i in self.issues if i.severity == severity]
         return self.issues
-
-    def get_action_log(self, action: Optional[str] = None) -> List[ActionLog]:
-        """Get action log, optionally filtered by action type."""
-        if action:
-            return [a for a in self.action_log if a.action == action]
-        return self.action_log
 
     def clear_tracking(self):
         """Clear all tracking data (issues, logs, callbacks)."""

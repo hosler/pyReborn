@@ -15,7 +15,6 @@ only emitted when the server has a running npc-server (V8/GS2). Without one, the
 weapon-list, weapon-get, level-list and local-npcs queries still work.
 """
 
-import time
 from typing import Optional, Callable, Dict, List
 
 from .client import Client
@@ -93,8 +92,6 @@ class NCClient(Client):
             PacketID.PLO_NC_NPCFLAGS, PacketID.PLO_NC_CLASSGET,
             PacketID.PLO_NC_CLASSADD, PacketID.PLO_NC_CLASSDELETE,
         }
-
-        self._is_nc_mode = False
 
         # Cached query results (populated on response).
         self._weapon_list: List[str] = []
@@ -228,7 +225,6 @@ class NCClient(Client):
         # The first NC packet from the server is PLO_SIGNATURE; NC logins never
         # get PLO_PLAYERPROPS, so latch authentication here.
         if not self._authenticated:
-            self._is_nc_mode = True
             self._authenticated = True
 
         if packet_id == PacketID.PLO_NC_WEAPONLISTGET:
@@ -315,41 +311,12 @@ class NCClient(Client):
     # =========================================================================
 
     @property
-    def is_nc(self) -> bool:
-        return self._is_nc_mode
-
-    @property
-    def weapon_list(self) -> List[str]:
-        return self._weapon_list
-
-    @property
     def level_list(self) -> List[str]:
         return self._level_list
 
     @property
     def last_weapon(self) -> Dict:
         return self._last_weapon
-
-    @property
-    def last_level_dump(self) -> str:
-        return self._last_level_dump
-
-    @property
-    def last_npc_attributes(self) -> List[str]:
-        return self._last_npc_attributes
-
-    @property
-    def last_npc_script(self) -> Dict:
-        return self._last_npc_script
-
-    @property
-    def last_npc_flags(self) -> Dict:
-        return self._last_npc_flags
-
-    @property
-    def last_class(self) -> Dict:
-        return self._last_class
-
 
 def nc_connect(username: str, password: str,
                host: str = "localhost", port: int = 14900,
