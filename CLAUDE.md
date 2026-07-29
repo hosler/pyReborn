@@ -32,7 +32,6 @@ pyreborn/
 ├── sounds.py             # Sound manager
 ├── inventory_ui.py       # Inventory UI overlay
 ├── prefs.py              # ~/.config/pyreborn preferences (0600)
-├── debug_packets.py      # Packet trace/debug helper
 ├── example_pygame.py     # Entry point
 ├── pygame_game.py        # GameClient - composes game/ mixins
 ├── pygame_screens.py     # Login/ServerSelect/browser screens
