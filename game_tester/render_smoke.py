@@ -19,6 +19,7 @@ PYREBORN_TEST_HOST/PYREBORN_TEST_PORT) with testbot1/testbot2 accounts
 """
 
 import os
+import struct
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -556,6 +557,49 @@ def _t4b(game, c1, c2):
     game.client.bigmap_info = {'image': 'does_not_exist_12345.png',
                                'levels_file': '', 'x': 0.0, 'y': 0.0}
     game._ensure_bigmap_surface()  # missing image -> request + no-op, not raise
+
+
+@check("tier4c_base_tileset_download_invalidates_the_world_surface")
+def _t4c(game, c1, c2):
+    # A classic (2.x) session sets default_tileset to pics1.png and asks the
+    # server for it when there is no local copy. That download arrives through
+    # on_file like any other image, and if it does not drop the tile cache the
+    # sheet sits in the sprite cache while every tile keeps rendering off the
+    # stale surface - the entire world draws with the wrong tileset and nothing
+    # errors. Pins the invalidation, not the download.
+    tm = game.tileset_mgr
+    png = (game.client._received_files.get("pics1.png")
+           or _tiny_png())
+    original = tm.default_tileset
+    try:
+        tm.default_tileset = "unit_test_base_sheet.png"
+        game.world_surface = "STALE"
+        game.client.on_file("unit_test_base_sheet.png", png)
+        assert game.world_surface is None, (
+            "base tileset arrived but the world surface was not invalidated")
+
+        # An unrelated image must NOT nuke the cache - that would rebuild the
+        # whole world on every downloaded head/body sprite.
+        game.world_surface = "STALE"
+        game.client.on_file("unrelated_sprite_98765.png", png)
+        assert game.world_surface == "STALE", (
+            "an unrelated image invalidated the world surface")
+    finally:
+        tm.default_tileset = original
+        game.world_surface = None
+
+
+def _tiny_png() -> bytes:
+    """Smallest valid PNG - content is irrelevant, only the on_file path is."""
+    import zlib
+    def chunk(kind, payload):
+        body = kind + payload
+        return (struct.pack(">I", len(payload)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00\x00\x00\x00")
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
 
 
 def main() -> int:

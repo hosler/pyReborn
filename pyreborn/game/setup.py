@@ -69,8 +69,6 @@ class SetupMixin:
             base_path / "assets",
             base_path.parent / "cache",
             base_path.parent / "cache" / "levels" / f"{self.client.host}_{self.client.port}",
-            base_path.parent / "examples" / "games" / "reborn_modern" / "assets" / "levels",
-            base_path.parent / "examples" / "games" / "reborn_modern" / "assets",
         ]
         # Add subdirectories for ganis and sounds
         extra_paths = []
@@ -216,7 +214,14 @@ class SetupMixin:
                         # the setbackpal palette file just arrived: recompose
                         # so the swap actually shows (set_backpal ran before
                         # the download finished)
-                        or filename == tm.backpal):
+                        or filename == tm.backpal
+                        # the BASE sheet just arrived. Classic (2.x) sessions
+                        # switch default_tileset to pics1.png and request it
+                        # from the server when there is no local copy
+                        # (pygame_game.py); without this the download lands in
+                        # the sprite cache but every tile keeps rendering from
+                        # the stale surface, so the whole world stays wrong.
+                        or filename == tm.default_tileset):
                     tm.clear_cache()
                     self.world_surface = None
             elif ext == 'gani':
