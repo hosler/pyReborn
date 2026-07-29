@@ -1979,12 +1979,28 @@ class Client:
         return filename in self._pending_files
 
     def did_file_fail(self, filename: str) -> bool:
-        """Check if a file download failed."""
+        """True once a file has been written off and will not be re-requested.
+
+        A single refusal is NOT enough - see server_refused() if you want to
+        know whether the server said no at all. This is the gate the asset
+        layer checks before re-asking, so it deliberately stays False while
+        retries remain.
+        """
         return filename in self._failed_files
+
+    def server_refused(self, filename: str) -> bool:
+        """True if the server has answered PLO_FILESENDFAILED at least once.
+
+        Distinct from did_file_fail(): this reports the server's answer, that
+        reports our decision to stop asking. A caller diagnosing "why is this
+        asset missing" wants this one - otherwise an explicit refusal is
+        indistinguishable from a request still in flight.
+        """
+        return self._file_attempts.get(filename, 0) > 0
 
     @property
     def failed_files(self) -> set:
-        """Filenames the server has refused to send."""
+        """Filenames written off after exhausting their retry budget."""
         return self._failed_files
 
     def _exit_gmap(self, level_name: str):

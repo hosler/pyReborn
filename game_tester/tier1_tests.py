@@ -57,10 +57,20 @@ def test_large_file_transfer(bot: GameBot) -> TestResult:
 
     data = bot.client.get_file(BIGFILE_NAME)
     if not data:
-        issues.append(_issue("HIGH", "file", "large file never arrived"))
+        # Distinguish the two ways this fails, because they need opposite
+        # fixes: an explicit PLO_FILESENDFAILED means the server does not have
+        # the fixture (put a copy in the server's own world/ - GServer-v2 ships
+        # one, pygserver does not), whereas silence means the transfer itself
+        # is broken. Reporting only did_file_fail() conflated them, and that
+        # sent one debugging session after the framing code when the file was
+        # simply absent.
+        refused = bot.client.server_refused(BIGFILE_NAME)
+        why = ("server refused it (PLO_FILESENDFAILED) - is the fixture in the "
+               "server's world/ directory?" if refused
+               else "no answer from the server - transfer path is broken")
+        issues.append(_issue("HIGH", "file", f"large file never arrived: {why}"))
         return TestResult("large_file_transfer", False, time.time() - start,
-                          f"{BIGFILE_NAME}: no data (failed={bot.client.did_file_fail(BIGFILE_NAME)})",
-                          issues)
+                          f"{BIGFILE_NAME}: no data ({why})", issues)
 
     exact = data == expected
     if not exact:

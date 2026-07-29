@@ -102,3 +102,52 @@ def test_connect_clears_stale_file_transfer_state():
     assert client._pending_files == set()
     assert client._failed_files == set()
     assert client._file_attempts == {}
+
+
+def _failed_packet(filename):
+    return filename.encode("latin-1")
+
+
+def test_server_refused_reports_the_first_refusal_but_did_file_fail_does_not():
+    """The two questions are different and were conflated.
+
+    did_file_fail() gates re-requests, so it must stay False while retries
+    remain. server_refused() reports what the SERVER said. Reporting only the
+    former makes an explicit refusal look identical to a request still in
+    flight - which is exactly how a missing fixture got mistaken for a broken
+    transfer path.
+    """
+    client = _client()
+    name = "absent.png"
+
+    assert not client.server_refused(name)
+    assert not client.did_file_fail(name)
+
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    assert client.server_refused(name), "first refusal must be visible"
+    assert not client.did_file_fail(name), "still retryable after one refusal"
+
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    assert not client.did_file_fail(name), "still retryable after two"
+
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    assert client.did_file_fail(name), "written off once the budget is spent"
+    assert name in client.failed_files
+
+
+def test_a_file_that_eventually_arrives_clears_its_strikes():
+    """A transient refusal must not leave the name one failure from write-off."""
+    client = _client()
+    name = "flaky.png"
+
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    assert client._file_attempts.get(name) == 2
+
+    client._handle_packet(PacketID.PLO_FILE, _file_packet(name, b"bytes"))
+    assert client.get_file(name) == b"bytes"
+    assert not client.server_refused(name), "strikes should reset on success"
+
+    # A later refusal starts from zero rather than immediately writing it off.
+    client._handle_packet(PacketID.PLO_FILESENDFAILED, _failed_packet(name))
+    assert not client.did_file_fail(name)

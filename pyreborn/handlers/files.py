@@ -18,6 +18,11 @@ from .registry import handles
 
 logger = logging.getLogger(__name__)
 
+# How many PLO_FILESENDFAILED answers a name absorbs before it is written off
+# for the session. One transient refusal used to poison an asset permanently,
+# with nothing logged; three strikes with a warning each is the compromise.
+_MAX_FILE_ATTEMPTS = 3
+
 
 def _large_file_caps():
     """(absolute cap, announced-size slack) for an in-flight large transfer.
@@ -71,6 +76,9 @@ def handle_file(client, data):
             client._received_files[filename] = file_data
             client._store_cached_file(filename, file_data, mod_time)
             client._pending_files.discard(filename)
+            # Arrived, so earlier refusals were transient - drop the strikes
+            # rather than leaving the name one failure from being written off.
+            client._file_attempts.pop(filename, None)
             # A downloaded .gmap file is the world grid - parse it.
             if filename.endswith('.gmap'):
                 try:
@@ -91,13 +99,22 @@ def handle_file_send_failed(client, data):
     # File send failed
     filename = parse_filesendfailed(data)
     if filename:
-        logger.warning("Server failed to send file %r", filename)
-        client._failed_files.add(filename)
         client._pending_files.discard(filename)
         attempts = client._file_attempts.get(filename, 0) + 1
         client._file_attempts[filename] = attempts
-        if attempts < 3:
-            client._failed_files.discard(filename)
+        # _failed_files means "written off, stop asking" - it is what gates
+        # re-requests. A refusal only lands there once the retry budget is
+        # spent; until then the name stays requestable. Callers that want
+        # "did the server say no at all" ask Client.server_refused().
+        if attempts >= _MAX_FILE_ATTEMPTS:
+            client._failed_files.add(filename)
+            logger.warning(
+                "Server refused file %r (%d attempts) - giving up",
+                filename, attempts)
+        else:
+            logger.warning(
+                "Server refused file %r (attempt %d of %d)",
+                filename, attempts, _MAX_FILE_ATTEMPTS)
         if client.on_file_send_failed:
             client.on_file_send_failed(filename)
 
@@ -149,6 +166,7 @@ def handle_large_file_end(client, data):
         client._received_files[pending_filename] = file_data
         client._store_cached_file(pending_filename, file_data, mod_time)
         client._pending_files.discard(pending_filename)
+        client._file_attempts.pop(pending_filename, None)
         if pending_filename.endswith('.gmap'):
             try:
                 client.load_gmap(file_data.decode('latin-1', errors='replace'))
