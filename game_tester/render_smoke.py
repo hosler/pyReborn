@@ -220,12 +220,17 @@ def _t1d(game, c1, c2):
     assert all(t == 0 for t in tiles)
 
 
-# Real Bomber Arena (bomber.eevul.net) gani fixtures, captured live and
-# checked into cache/bomber_arena/assets - used below to prove the PARAMn
-# frame-token substitution and embedded-SCRIPT fallback against the actual
-# server assets rather than a synthetic stand-in.
-_BOMBER_ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "cache", "bomber_arena", "assets")
+# Real Bomber Arena gani fixtures - used below to prove the PARAMn frame-token
+# substitution and embedded-SCRIPT fallback against actual server assets rather
+# than a synthetic stand-in.
+#
+# These used to be read out of cache/bomber_arena/assets, which is a gitignored
+# runtime download cache: the fixtures were never actually checked in, so this
+# smoke test silently depended on whatever the last live session happened to
+# leave on disk and broke outright on a cache wipe. They now live in a tracked
+# fixtures dir instead.
+_BOMBER_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fixtures", "bomber_arena")
 
 
 @check("tier1e_bomber_arena_bomb_param_substitution")

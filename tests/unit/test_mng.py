@@ -9,10 +9,7 @@ from pyreborn.mng import decode_mng
 from pyreborn.sprites import SpriteManager
 
 
-_REAL_LAMP = (
-    Path(__file__).parents[2]
-    / "examples/games/reborn_modern/assets/levels/images/bluelampani.mng"
-)
+_REAL_LAMP = Path(__file__).parents[1] / "fixtures" / "bluelampani.mng"
 
 
 def _chunk(kind, payload=b""):

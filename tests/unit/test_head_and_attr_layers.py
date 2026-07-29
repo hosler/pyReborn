@@ -38,8 +38,7 @@ from pyreborn.player import Player
 
 pygame.init()
 
-BOMBER_IDLE = (Path(__file__).resolve().parents[2]
-               / "cache" / "bomber_arena" / "eye_bomber_idle0.gani")
+BOMBER_IDLE = Path(__file__).resolve().parents[1] / "fixtures" / "eye_bomber_idle0.gani"
 
 
 def _headgif_packet(payload: bytes) -> bytes:
