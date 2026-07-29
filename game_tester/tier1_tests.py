@@ -7,8 +7,12 @@ audit):
   - a >32000 byte file download via PLO_LARGEFILESTART/SIZE/...FILE.../END,
     verified byte-exact against the fixture on disk
 
-Needs the server-side fixture `world/qa_bigfile.txt` (45000 pseudo-random
-bytes) - see GServer-v2/bin/servers/default/world/qa_bigfile.txt.
+The large-file fixture is GENERATED, not stored. It used to be an untracked
+45000-byte blob that had to exist in two places at once - the server's world
+directory to be served, and GServer-v2's tree to be compared against - and was
+committed to neither, so on any checkout but the one it was created on the test
+failed with "fixture missing" or, worse, "large file never arrived", which reads
+as a broken transfer rather than absent test data.
 
 Run: python -m game_tester --tier1
 """
@@ -17,16 +21,62 @@ from __future__ import annotations
 
 import hashlib
 import os
+import random
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
 
 BIGFILE_NAME = "qa_bigfile.txt"
-BIGFILE_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "GServer-v2", "bin", "servers",
-    "default", "world", BIGFILE_NAME)
+# 45000 bytes: over GServer-v2's 32000 large-file threshold (and pygserver's,
+# now aligned to it), so this lands on the chunked path rather than a single
+# ordinary PLO_FILE. Seeded, so every checkout produces identical bytes.
+BIGFILE_SIZE = 45000
+_BIGFILE_SEED = 0x9E3779B9
+
+# Where a locally-run server keeps the files it serves. Only used when the
+# target is loopback - a remote server's disk is none of our business.
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SERVER_WORLD_DIRS = (
+    os.path.join(_REPO, "pygserver", "world"),
+    os.path.join(_REPO, "GServer-v2", "bin", "servers", "default", "world"),
+)
+_LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+def bigfile_bytes() -> bytes:
+    """The fixture's content. Deterministic across machines and runs."""
+    return random.Random(_BIGFILE_SEED).randbytes(BIGFILE_SIZE)
+
+
+def ensure_bigfile_served(host: str) -> Optional[str]:
+    """Put the fixture where a locally-run server will serve it.
+
+    Returns a reason string if it could not be provisioned, else None. Writing
+    is skipped entirely for a non-loopback host: we cannot reach that server's
+    disk, and the test reports the resulting refusal rather than pretending.
+    """
+    if host not in _LOOPBACK:
+        return f"target {host} is not local, cannot place the fixture"
+    payload = bigfile_bytes()
+    written = []
+    for world_dir in _SERVER_WORLD_DIRS:
+        if not os.path.isdir(world_dir):
+            continue
+        path = os.path.join(world_dir, BIGFILE_NAME)
+        try:
+            if not os.path.exists(path) or os.path.getsize(path) != len(payload) \
+                    or open(path, "rb").read() != payload:
+                with open(path, "wb") as f:
+                    f.write(payload)
+            written.append(world_dir)
+        except OSError as e:
+            return f"could not write {path}: {e}"
+    if not written:
+        return ("no server world directory found (looked in "
+                + ", ".join(_SERVER_WORLD_DIRS) + ")")
+    return None
 
 
 def _issue(sev: str, cat: str, desc: str) -> Issue:
@@ -41,14 +91,12 @@ def test_large_file_transfer(bot: GameBot) -> TestResult:
     start = time.time()
     issues: List[Issue] = []
 
-    expected = None
-    try:
-        with open(BIGFILE_PATH, "rb") as f:
-            expected = f.read()
-    except OSError as e:
-        issues.append(_issue("HIGH", "file", f"fixture missing: {e}"))
+    expected = bigfile_bytes()
+    unprovisioned = ensure_bigfile_served(bot.host)
+    if unprovisioned:
+        issues.append(_issue("HIGH", "file", f"fixture not served: {unprovisioned}"))
         return TestResult("large_file_transfer", False, time.time() - start,
-                          f"fixture {BIGFILE_PATH} not found", issues)
+                          f"fixture not served: {unprovisioned}", issues)
 
     bot.client.request_file(BIGFILE_NAME)
     deadline = time.time() + 15.0
