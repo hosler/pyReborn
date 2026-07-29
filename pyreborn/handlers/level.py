@@ -382,9 +382,11 @@ def handle_level_sign(client, data):
 
 @handles(PacketID.PLO_MINIMAP)
 def handle_minimap(client, data):
-    # Minimap data (packet 172)
     mm = parse_minimap(data)
-    if mm and client.on_minimap:
+    if 'image' in mm:
+        # Both map-image packets share the same stored configuration and renderer.
+        client.bigmap_info = mm
+    elif mm and client.on_minimap:
         client.on_minimap(mm['data'])
 
 

@@ -216,11 +216,23 @@ class Client:
         # defensive, not load-bearing).
         self._authenticated = False
         self._login_appearance_applied = False
+        self._reset_file_transfer_state()
         if self.input_frozen:
             self.input_frozen = False
             if self.on_fullstop:
                 self.on_fullstop(False)
         return self._protocol.connect()
+
+    def _reset_file_transfer_state(self, full_reset: bool = True) -> None:
+        """Clear active download state and, for a new session, retry history."""
+        self._large_file_pending = None
+        self._large_file_discarding = None
+        self._large_file_buffer = bytearray()
+        self._large_file_expected_size = 0
+        if full_reset:
+            self._pending_files.clear()
+            self._failed_files.clear()
+            self._file_attempts.clear()
 
     def disconnect(self):
         """Disconnect from the server."""
@@ -1445,6 +1457,7 @@ class Client:
         here made every sign in the world go dead after the first re-entered
         level (live-verified: re-warping into chicken_house1.nw streamed no
         PLO_LEVELSIGN at all). They mirror the server's own session cache."""
+        self._reset_file_transfer_state(full_reset=False)
         self.items.clear()
         self.baddies.clear()
         # PLO_ISLEADER (GServer-v2 PlayerClient.cpp checkAndInformIfLevelLeader)
@@ -2670,8 +2683,10 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_pending_files': ('file_transfers', 'pending_files'),
     '_received_files': ('file_transfers', 'received_files'),
     '_failed_files': ('file_transfers', 'failed_files'),
+    '_file_attempts': ('file_transfers', 'file_attempts'),
     '_uptodate_files': ('file_transfers', 'uptodate_files'),
     '_large_file_pending': ('file_transfers', 'large_file_pending'),
+    '_large_file_discarding': ('file_transfers', 'large_file_discarding'),
     '_large_file_buffer': ('file_transfers', 'large_file_buffer'),
     '_large_file_expected_size': ('file_transfers', 'large_file_expected_size'),
 
@@ -2702,6 +2717,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_weapon_add': ('callbacks', 'on_weapon_add'),
     'on_projectile': ('callbacks', 'on_projectile'),
     'on_file': ('callbacks', 'on_file'),
+    'on_file_send_failed': ('callbacks', 'on_file_send_failed'),
     'on_sign': ('callbacks', 'on_sign'),
     'on_explosion': ('callbacks', 'on_explosion'),
     'on_hit_objects': ('callbacks', 'on_hit_objects'),

@@ -7,7 +7,7 @@ Works with pygame surfaces.
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import os
 
 # Pygame import is optional - only needed when actually used
@@ -129,7 +129,11 @@ PLAYER_EQUIPMENT_PREVIEW_RECTS = {
 class SpriteManager:
     """Manages loading and caching of sprite sheets."""
 
-    def __init__(self, search_paths: Optional[List[Path]] = None):
+    def __init__(
+        self,
+        search_paths: Optional[List[Path]] = None,
+        fetch_bytes: Optional[Callable[[str], Optional[bytes]]] = None,
+    ):
         """
         Initialize sprite manager.
 
@@ -140,10 +144,12 @@ class SpriteManager:
             raise RuntimeError("pygame is required for SpriteManager")
 
         self.search_paths = search_paths or []
+        self.fetch_bytes = fetch_bytes
         # OrderedDicts so recently-used entries can be pushed to the end and
         # stale ones evicted from the front once the matching _MAX_CACHED_*
         # bound is exceeded (see _evict_lru).
         self.sheet_cache: "OrderedDict[str, pygame.Surface]" = OrderedDict()
+        self._missing_sheets: set[str] = set()
         self.animation_cache: "OrderedDict[str, MNGAnimation]" = OrderedDict()
         # Names whose DOWNLOADED bytes failed to decode. A cached None in
         # sheet_cache only means "not on local disk (yet)" — it must NOT stop
@@ -203,19 +209,20 @@ class SpriteManager:
         Returns:
             pygame.Surface or None if not found
         """
-        # Check cache (a cached None is a remembered miss — see below)
         if name in self.sheet_cache:
             self.sheet_cache.move_to_end(name)
             return self._display_sheet(name)
+        if name in self._missing_sheets:
+            data = self.fetch_bytes(name) if self.fetch_bytes is not None else None
+            return self.load_bytes(name, data) if data is not None else None
 
         # Find file
         file_path = self.find_file(name)
         if not file_path:
-            # Cache the miss so we don't stat the disk for this name every frame
-            # (huge cost with many NPCs whose images are still downloading). When
-            # the file arrives, on_file -> load_bytes overwrites this None.
-            self.sheet_cache[name] = None
-            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
+            data = self.fetch_bytes(name) if self.fetch_bytes is not None else None
+            if data is not None:
+                return self.load_bytes(name, data)
+            self._missing_sheets.add(name)
             return None
 
         # Load image
@@ -232,12 +239,12 @@ class SpriteManager:
                 or name.lower().endswith(('.png', '.mng')),
             )
             self.sheet_cache[name] = surface
+            self._missing_sheets.discard(name)
             self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
         except Exception as e:
             print(f"Error loading sprite sheet {name}: {e}")
-            self.sheet_cache[name] = None   # don't retry an unloadable file each frame
-            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
+            self._missing_sheets.add(name)
             return None
 
     def has_sheet(self, name: str) -> bool:
@@ -317,6 +324,7 @@ class SpriteManager:
         # decoded and cached.
         if name in self._undecodable_bytes:
             return None
+        self._invalidate_sheet_derivatives(name)
         import io
         try:
             if name.lower().endswith('.mng'):
@@ -329,14 +337,28 @@ class SpriteManager:
                 or name.lower().endswith(('.png', '.mng')),
             )
             self.sheet_cache[name] = surface
+            self._missing_sheets.discard(name)
             self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return surface
         except Exception as e:
             print(f"Error loading downloaded sheet {name}: {e}")
-            self.sheet_cache[name] = None   # remember the miss; stop retrying
+            self.sheet_cache.pop(name, None)
+            self._missing_sheets.add(name)
             self._undecodable_bytes.add(name)
-            self._evict_lru(self.sheet_cache, _MAX_CACHED_SHEETS)
             return None
+
+    def _invalidate_sheet_derivatives(self, name: str) -> None:
+        """Drop cached surfaces cut or recolored from one source sheet."""
+        self.animation_cache.pop(name, None)
+        self._raw8_cache.pop(name, None)
+        for cache in (
+            self.sprite_cache,
+            self._recolor_sheet_cache,
+            self._recolor_sprite_cache,
+        ):
+            for key in tuple(cache):
+                if key[0] == name:
+                    del cache[key]
 
     def get_sprite(self, sheet_name: str, x: int, y: int,
                    width: int, height: int) -> Optional[pygame.Surface]:
@@ -488,6 +510,7 @@ class SpriteManager:
     def clear_cache(self):
         """Clear all cached sprites and sheets."""
         self.sheet_cache.clear()
+        self._missing_sheets.clear()
         self.animation_cache.clear()
         self.sprite_cache.clear()
         self._recolor_sheet_cache.clear()

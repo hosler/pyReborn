@@ -338,6 +338,7 @@ class FileTransfers:
         self.pending_files: set = set()  # Files we're waiting for
         self.received_files: Dict[str, bytes] = BoundedLRU(MAX_CACHED_FILES)
         self.failed_files: set = set()  # Files that failed to download
+        self.file_attempts: Dict[str, int] = {}
         self.uptodate_files: set = set()  # Files confirmed unchanged by the server
 
         # Large file transfer (PLO_LARGEFILESTART/SIZE/...FILE.../END): files
@@ -345,6 +346,7 @@ class FileTransfers:
         # its own modtime+filename header) that must be appended, not treated
         # as separate complete downloads. Keyed by filename.
         self.large_file_pending: Optional[str] = None
+        self.large_file_discarding: Optional[str] = None
         self.large_file_buffer: bytearray = bytearray()
         self.large_file_expected_size: int = 0
 
@@ -441,6 +443,8 @@ class Callbacks:
 
         # File callback: handler(filename, data) - called when file is received
         self.on_file: Optional[Callable[[str, bytes], None]] = None
+        # File failure callback: handler(filename)
+        self.on_file_send_failed: Optional[Callable[[str], None]] = None
 
         # Sign callback: handler(x, y, text) - when sign text is received
         self.on_sign: Optional[Callable[[float, float, str], None]] = None

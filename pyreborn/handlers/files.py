@@ -37,6 +37,9 @@ def handle_file(client, data):
         filename = file_info['filename']
         file_data = file_info['data']
 
+        if client._large_file_discarding == filename:
+            return
+
         # Files over 32000 bytes arrive as repeated PLO_FILE chunks
         # bracketed by PLO_LARGEFILESTART/...END (each chunk resends
         # the full modtime+filename header - see
@@ -53,6 +56,7 @@ def handle_file(client, data):
                 logger.warning(
                     "Aborting oversized file transfer for %r", filename)
                 client._large_file_pending = None
+                client._large_file_discarding = filename
                 client._large_file_buffer = bytearray()
                 client._large_file_expected_size = 0
                 client._failed_files.add(filename)
@@ -82,8 +86,15 @@ def handle_file_send_failed(client, data):
     # File send failed
     filename = parse_filesendfailed(data)
     if filename:
+        logger.warning("Server failed to send file %r", filename)
         client._failed_files.add(filename)
         client._pending_files.discard(filename)
+        attempts = client._file_attempts.get(filename, 0) + 1
+        client._file_attempts[filename] = attempts
+        if attempts < 3:
+            client._failed_files.discard(filename)
+        if client.on_file_send_failed:
+            client.on_file_send_failed(filename)
 
 
 @handles(PacketID.PLO_LARGEFILESTART)
@@ -92,6 +103,7 @@ def handle_large_file_start(client, data):
     # for this filename must be appended, not treated as complete files.
     filename = parse_large_file_marker(data)
     client._large_file_pending = filename
+    client._large_file_discarding = None
     client._large_file_buffer = bytearray()
     client._large_file_expected_size = 0
 
@@ -108,22 +120,34 @@ def handle_large_file_end(client, data):
     # Large file transfer ends (packet 69) - flush the accumulated
     # buffer through the same path a normal PLO_FILE download takes.
     filename = parse_large_file_marker(data)
-    if client._large_file_pending == filename:
+    if client._large_file_discarding is not None:
+        client._large_file_pending = None
+        client._large_file_discarding = None
+        client._large_file_buffer = bytearray()
+        client._large_file_expected_size = 0
+        return
+    pending_filename = client._large_file_pending
+    if pending_filename is not None:
+        if filename != pending_filename:
+            logger.warning(
+                "Large file end marker %r does not match pending file %r; "
+                "flushing pending transfer",
+                filename, pending_filename)
         file_data = bytes(client._large_file_buffer)
         client._large_file_pending = None
         client._large_file_buffer = bytearray()
         client._large_file_expected_size = 0
-        client._received_files[filename] = file_data
-        client._pending_files.discard(filename)
-        if filename.endswith('.gmap'):
+        client._received_files[pending_filename] = file_data
+        client._pending_files.discard(pending_filename)
+        if pending_filename.endswith('.gmap'):
             try:
                 client.load_gmap(file_data.decode('latin-1', errors='replace'))
-                client.gmap_name = filename
+                client.gmap_name = pending_filename
                 client.request_adjacent_levels()
             except Exception:
                 pass
         if client.on_file:
-            client.on_file(filename, file_data)
+            client.on_file(pending_filename, file_data)
 
 
 @handles(PacketID.PLO_FILEUPTODATE)

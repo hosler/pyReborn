@@ -184,14 +184,27 @@ def parse_hit_objects(data: bytes) -> dict:
 
 
 def parse_minimap(data: bytes) -> dict:
-    """
-    Parse PLO_MINIMAP (packet 172) - minimap data.
-    Format varies by server implementation.
-    """
-    return {
-        'data': data,
-        'type': data[0] - 32 if data else 0
-    }
+    """Parse PLO_MINIMAP (172) map-image configuration or legacy raw data."""
+    text = data.decode('latin-1', errors='replace')
+    parts = text.split(',')
+    first = parts[0].strip()
+    basename = first.replace('\\', '/').rsplit('/', 1)[-1]
+    if ',' in text and (
+            '.' in basename and not basename.startswith('.')
+            and not basename.endswith('.')):
+        parts += [''] * (4 - len(parts))
+
+        def _num(v):
+            try:
+                return float(v)
+            except ValueError:
+                return 0.0
+
+        return {'image': first, 'levels_file': parts[1].strip(),
+                'x': _num(parts[2]), 'y': _num(parts[3])}
+
+    # Preserve raw bytes for servers that use a different minimap payload.
+    return {'data': data, 'type': data[0] - 32 if data else 0}
 
 
 def parse_board_layer(data: bytes) -> dict:
@@ -569,4 +582,3 @@ def parse_board_heights(data: bytes) -> dict:
         heights.append(whole + frac)
     return {'map_x': map_x, 'map_y': map_y, 'block_x': block_x, 'block_y': block_y,
             'block_width': cols, 'block_height': rows, 'heights': heights}
-

@@ -138,7 +138,8 @@ class GameClient(
         self.asset_paths = self._setup_asset_paths()
 
         # Initialize managers
-        self.sprite_mgr = SpriteManager(self.asset_paths)
+        self.sprite_mgr = SpriteManager(
+            self.asset_paths, fetch_bytes=self.client.get_file)
         self.tileset_mgr = TilesetManager(self.sprite_mgr)
         # Classic (2.x) servers assume the classic client's BUILT-IN default
         # tileset, pics1.png — their scripts only issue addtiledef to RESET
@@ -159,7 +160,8 @@ class GameClient(
         self.tileset_mgr.set_current_level(
             getattr(self.client, "_current_level_name", "") or "")
         self.sound_mgr = SoundManager(self.asset_paths)
-        self.gani_parser = GaniParser(self.asset_paths)
+        self.gani_parser = GaniParser(
+            self.asset_paths, fetch_bytes=self.client.get_file)
 
         # Preload common sounds
         preload_common_sounds(self.sound_mgr)

@@ -8,7 +8,7 @@ for rendering animated sprites.
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 import re
 
 # Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
@@ -118,10 +118,15 @@ class Gani:
 class GaniParser:
     """Parser for GANI animation files."""
 
-    def __init__(self, search_paths: Optional[List[Path]] = None):
+    def __init__(
+        self,
+        search_paths: Optional[List[Path]] = None,
+        fetch_bytes: Optional[Callable[[str], Optional[bytes]]] = None,
+    ):
         """Initialize parser with optional search paths for gani files."""
         self.search_paths = search_paths or []
-        self.cache: "OrderedDict[str, Gani]" = OrderedDict()
+        self.fetch_bytes = fetch_bytes
+        self.cache: "OrderedDict[str, Optional[Gani]]" = OrderedDict()
 
     def find_file(self, name: str) -> Optional[Path]:
         """Find a gani file by name in search paths."""
@@ -161,12 +166,21 @@ class GaniParser:
         # Find file
         file_path = self.find_file(name)
         if not file_path:
+            filename = name if name.endswith('.gani') else name + '.gani'
+            data = self.fetch_bytes(filename) if self.fetch_bytes is not None else None
+            if data is not None:
+                try:
+                    gani = self.parse_content(data.decode('latin-1'), cache_key)
+                except Exception:
+                    gani = None
+                self.put_cache(cache_key, gani)
+                return gani
+            self.put_cache(cache_key, None)
             return None
 
         # Parse file
         gani = self.parse_file(file_path)
-        if gani:
-            self.put_cache(cache_key, gani)
+        self.put_cache(cache_key, gani)
         return gani
 
     def parse_file(self, file_path: Path) -> Optional[Gani]:

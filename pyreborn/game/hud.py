@@ -522,9 +522,8 @@ class HUD:
         g = self.game
         if not (stats_mask(g) & STAT_MINIMAP):
             return          # hidden by a script's showstats call
-        if g.minimap_visible and not g.minimap_surface and not g.minimap_data:
-            # Tier 4b: no live PLO_MINIMAP data - try the PLO_BIGMAP world
-            # image instead (classic gmap worlds ship one, not the other).
+        if g.minimap_visible and not g.minimap_surface:
+            # Try either configured map image when raw minimap data built no surface.
             g._ensure_bigmap_surface()
         if not (g.minimap_visible and g.minimap_surface):
             return

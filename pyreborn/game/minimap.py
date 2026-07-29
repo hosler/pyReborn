@@ -86,15 +86,10 @@ class MinimapMixin:
         self._minimap_native_surface = self.minimap_surface
         self.minimap_surface = pygame.transform.scale(self.minimap_surface, self.minimap_size)
     def _ensure_bigmap_surface(self):
-        """Tier 4b: fall back to the PLO_BIGMAP world image for the M-key map
-        when there's no PLO_MINIMAP grid data (classic gmap worlds that ship a
-        single big picture instead of a live per-tile minimap).
+        """Load the configured PLO_MINIMAP or PLO_BIGMAP image for the map UI.
 
-        client.py has no on_bigmap callback (PLO_BIGMAP just sets
-        client.bigmap_info directly, no event fires - see client.py's
-        _handle_packet), so this polls the field once per (level/image)
-        change instead of reacting to an event; cheap since it's only called
-        while the minimap has nothing else to show.
+        The shared configuration has no image callback, so this polls once per
+        image change while the map has nothing else to show.
         """
         info = self.client.bigmap_info
         if not info or not info.get('image'):

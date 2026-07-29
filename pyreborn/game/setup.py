@@ -34,6 +34,21 @@ def append_start_message(chat_messages: list, text: str) -> int:
 class SetupMixin:
     """Mixin providing the above methods for GameClient."""
 
+    def _invalidate_tile_derived_caches(self) -> None:
+        """Clear every render cache whose pixels come from the tileset."""
+        clear_tiles = getattr(self.tileset_mgr, "clear_cache", None)
+        if clear_tiles is not None:
+            clear_tiles()
+        else:
+            tile_cache = getattr(self.tileset_mgr, "tile_cache", None)
+            if tile_cache is not None:
+                tile_cache.clear()
+        self.world_surface = None
+        for name in ("_shimmer_cache", "_chest_sprite_cache"):
+            cache = getattr(self, name, None)
+            if cache is not None:
+                cache.clear()
+
     def _append_chat(self, message: str) -> None:
         """Append one chat-log line, trim to the cap, and advance chat_seq.
 
@@ -222,8 +237,7 @@ class SetupMixin:
                         # the sprite cache but every tile keeps rendering from
                         # the stale surface, so the whole world stays wrong.
                         or filename == tm.default_tileset):
-                    tm.clear_cache()
-                    self.world_surface = None
+                    self._invalidate_tile_derived_caches()
             elif ext == 'gani':
                 # The server streams gani scripts on demand; cache the parsed
                 # animation so NPCs/players using it stop falling back to the
@@ -679,7 +693,7 @@ class SetupMixin:
             if not self.sprite_mgr.has_sheet(image):
                 self._request_asset(image)
             if changed:
-                self.world_surface = None
+                self._invalidate_tile_derived_caches()
 
         self.gs1.on_putbomb = on_putbomb
         self.gs1.on_removebomb = on_removebomb
@@ -737,7 +751,7 @@ class SetupMixin:
         def on_tiledef(kind, image, levelstart="", x=0, y=0):
             if kind is None:
                 if self.tileset_mgr.clear_tiledefs(image or ""):
-                    self.world_surface = None
+                    self._invalidate_tile_derived_caches()
                 return
             image = strip_tiledef_image(image)
             if kind == "full":
@@ -752,7 +766,7 @@ class SetupMixin:
             # are keyed off tiles_id/layers_snapshot only - a tiledef swap
             # doesn't touch either, so they'd keep returning stale bakes
             # from the old tileset. Force a full rebuild.
-            self.world_surface = None
+            self._invalidate_tile_derived_caches()
             if not self.sprite_mgr.has_sheet(image):
                 try:
                     self.client.request_file(image)
@@ -1078,7 +1092,7 @@ class SetupMixin:
         # tiles re-run removetiledefs + addtiledef2 themselves (classic
         # bomber's arena NPC 162 does).
         self.tileset_mgr.set_current_level(self.client._current_level_name)
-        self.world_surface = None
+        self._invalidate_tile_derived_caches()
         self._camera_focus = None   # scripted setfocus dies with its level
         self._load_npc_scripts()
         self._trigger_playerenters()
