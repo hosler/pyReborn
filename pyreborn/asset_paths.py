@@ -32,10 +32,15 @@ neither dedupe works.
 """
 
 import os
+import logging
 from pathlib import Path
+from typing import List
 
 __all__ = [
     "normalize_asset_name",
+    "looks_like_client_install",
+    "expand_content_root",
+    "content_dirs",
     "user_content_dir",
     "cache_root",
     "server_cache_dir",
@@ -43,6 +48,7 @@ __all__ = [
 ]
 
 _APP = "pyreborn"
+logger = logging.getLogger(__name__)
 
 
 def normalize_asset_name(name: str) -> str:
@@ -76,6 +82,83 @@ def user_content_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return _xdg_dir("XDG_DATA_HOME", ".local/share") / "content"
+
+
+def looks_like_client_install(path: Path) -> bool:
+    """Return whether a directory has the expected stock-asset layout."""
+    path = Path(path).expanduser()
+    if not path.is_dir():
+        return False
+    if (path / "levels").is_dir():
+        return True
+    if path.name.lower() == "levels":
+        return any((path / name).is_dir() for name in ("ganis", "heads", "bodies"))
+    return (path / "pics1.png").is_file()
+
+
+def expand_content_root(path: Path) -> List[Path]:
+    """Expand an install directory or its levels directory into asset roots."""
+    path = Path(path).expanduser()
+    candidates = [path]
+    if path.name.lower() == "levels" and (path.parent / "levels") == path:
+        candidates = [path.parent, path]
+    elif (path / "levels").is_dir():
+        candidates.append(path / "levels")
+
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            key = candidate.resolve()
+        except OSError:
+            key = candidate.absolute()
+        if candidate.is_dir() and key not in seen:
+            seen.add(key)
+            roots.append(candidate)
+    return roots
+
+
+def _asset_counts(root: Path) -> str:
+    """Summarize common asset groups beneath one resolved root."""
+    counts = {}
+    for name in ("ganis", "images", "sounds"):
+        directories = [root / name, root / "levels" / name]
+        counts[name] = sum(
+            sum(1 for entry in directory.iterdir() if entry.is_file())
+            for directory in directories
+            if directory.is_dir()
+        )
+    return ", ".join(f"{name}={count}" for name, count in counts.items())
+
+
+def content_dirs() -> List[Path]:
+    """Return existing user content roots in search-priority order."""
+    configured = os.environ.get("PYREBORN_CONTENT_DIR")
+    supplied = []
+    if configured:
+        supplied.extend(Path(value) for value in configured.split(os.pathsep) if value)
+
+    from .prefs import Prefs
+    supplied.extend(Path(value) for value in Prefs.load().content_dirs if value)
+
+    if not configured:
+        supplied.append(user_content_dir())
+
+    roots = []
+    seen = set()
+    for supplied_path in supplied:
+        for root in expand_content_root(supplied_path):
+            try:
+                key = root.resolve()
+            except OSError:
+                key = root.absolute()
+            if key not in seen:
+                seen.add(key)
+                roots.append(root)
+
+    for root in roots:
+        logger.info("Content root %s: %s", root, _asset_counts(root))
+    return roots
 
 
 def cache_root() -> Path:

@@ -81,10 +81,12 @@ class SetupMixin:
 
     def _setup_asset_paths(self) -> List[Path]:
         """Setup asset search paths."""
+        # Server art wins over the user's stock copy of the same filename;
+        # bundled defaults are the last resort.
         return [
-            PACKAGE_DIR / "assets",
-            asset_paths.user_content_dir(),
             asset_paths.server_cache_dir(self.client.host, self.client.port),
+            *asset_paths.content_dirs(),
+            PACKAGE_DIR / "assets",
         ]
     def _setup_callbacks(self):
         """Setup client callbacks."""

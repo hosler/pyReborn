@@ -20,7 +20,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def config_dir() -> Path:
@@ -62,6 +62,7 @@ class Prefs:
     window_w: int = 1024
     window_h: int = 720
     day_night: bool = False
+    content_dirs: List[str] = field(default_factory=list)
 
     # -- in-game settings overlay (F9, game/settings_ui.py) ----------------
     # Live-tunable gameplay settings, applied to game/sound state and

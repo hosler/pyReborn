@@ -597,15 +597,44 @@ lowercase names anywhere else:
 
 | Tier | Location | What |
 |---|---|---|
-| bundled | `pyreborn/assets/` | whatever art happens to be installed locally |
-| user content | `~/.local/share/pyreborn/content/` (`$PYREBORN_CONTENT_DIR`) | base art a server assumes you already have |
 | download cache | `~/.cache/pyreborn/servers/{host}_{port}/` (`$PYREBORN_CACHE_DIR`) | everything the server sends, + `index.json` of modtimes |
+| user content | any directory you point at (below), else `~/.local/share/pyreborn/content/` | base art a server assumes you already have |
+| bundled | `pyreborn/assets/` | last resort; nearly empty in a clone |
+
+Searched in that order, so a server's own art wins over your stock copy of the
+same filename.
 
 The middle tier exists because the original client shipped base art **built in**,
 so servers only publish their own custom content and are under no obligation to
 serve `pics1.png`, player ganis, `sprites.png`, `body.png`, `head0.png` or the
 `COMMON_SOUNDS`. If those are missing the client renders an invisible player and
-nothing errors. Populate that directory from your own game install.
+nothing errors.
+
+### Pointing at an existing client installation
+
+The quickest way to fill that tier is to point pyReborn at an installed game
+client. Persisted to prefs, so it is only given once:
+
+```bash
+python -m pyreborn.example_pygame --content-dir /path/to/client-install
+python -m pyreborn.example_pygame --content-dir /path/a --content-dir /path/b
+python -m pyreborn.example_pygame --clear-content-dirs
+```
+
+`$PYREBORN_CONTENT_DIR` takes an `os.pathsep`-separated list for one-off runs.
+
+Detection is layout-based (`asset_paths.looks_like_client_install`), never
+name-based, so any directory laid out like a client works. Pointing at the
+install root or at its `levels/` subdirectory both resolve to the same pair of
+roots; each manager's `subdirs` probing then finds `levels/ganis`,
+`levels/heads`, `sounds/` and the rest. A real install supplies the entire
+tier-2 set — all 12 base player ganis, `sprites.png`, `pics1.png`, the
+body/head/sword/shield defaults and ~110 sounds.
+
+Every resolved root logs one INFO line with what it found
+(`Content root /path: ganis=114, images=19, sounds=110`). A wrong directory
+reports zeros — which is the whole point, since every other asset failure in
+this client is silent.
 
 The download cache is **advisory**: any IO error degrades to memory-only. It is
 revalidated with `PLI_UPDATEFILE`/`PLO_FILEUPTODATE` rather than trusting mtime,

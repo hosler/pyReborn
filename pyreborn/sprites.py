@@ -205,7 +205,8 @@ class SpriteManager:
 
         # Subdirectories to search within each path
         self.subdirs = ['', 'bodies', 'heads', 'swords', 'shields', 'hats',
-                        'images', 'sprites', 'ganis', 'npcs', 'baddies', 'bomys']
+                        'images', 'sprites', 'ganis', 'npcs', 'baddies', 'bomys',
+                        'horses', 'backpals']
 
     @staticmethod
     def _evict_lru(cache: "OrderedDict", max_size: int):

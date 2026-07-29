@@ -41,6 +41,8 @@ Game Controls:
 import sys
 import os
 import re
+import logging
+from pathlib import Path
 
 try:
     import pygame
@@ -53,6 +55,7 @@ from .listserver import ListServerClient
 from .pygame_screens import LoginScreen, ServerSelectScreen, show_loading_screen
 from .pygame_game import GameClient
 from .prefs import Prefs
+from . import asset_paths
 
 
 def version_for(server, default):
@@ -68,9 +71,53 @@ def version_for(server, default):
 
 def main():
     """Main entry point."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     # Preferences (last username/server/window size etc, see prefs.py) seed the
     # defaults below; CLI args always override them when given explicitly.
     prefs = Prefs.load()
+    launch_args = sys.argv[1:]
+
+    content_values = []
+    remaining_args = []
+    clear_content_dirs = False
+    index = 0
+    while index < len(launch_args):
+        argument = launch_args[index]
+        if argument == "--clear-content-dirs":
+            clear_content_dirs = True
+            index += 1
+            continue
+        if argument == "--content-dir":
+            if index + 1 >= len(launch_args):
+                print("Error: --content-dir requires a PATH.")
+                sys.exit(2)
+            content_values.append(launch_args[index + 1])
+            index += 2
+            continue
+        remaining_args.append(argument)
+        index += 1
+
+    changed_content_dirs = clear_content_dirs
+    if clear_content_dirs:
+        prefs.content_dirs = []
+    for value in content_values:
+        content_path = Path(value).expanduser()
+        if not content_path.is_dir():
+            print(f"Warning: content directory does not exist: {content_path}")
+            continue
+        if not asset_paths.looks_like_client_install(content_path):
+            print(
+                "Warning: content directory does not look like a client "
+                f"installation: {content_path}"
+            )
+        text_path = str(content_path)
+        if text_path not in prefs.content_dirs:
+            prefs.content_dirs.append(text_path)
+            changed_content_dirs = True
+    if changed_content_dirs:
+        prefs.save()
 
     # Check for command line arguments
     username = None
@@ -83,12 +130,12 @@ def main():
     version = "6.037"  # Default version, can be overridden with --version
     servers = []        # listserver result, passed to the game for the F8 switcher
 
-    if len(sys.argv) >= 3:
+    if len(remaining_args) >= 2:
         # Credentials provided via command line
-        username = sys.argv[1]
-        password = sys.argv[2]
+        username = remaining_args[0]
+        password = remaining_args[1]
 
-        args = sys.argv[3:]
+        args = remaining_args[2:]
 
         # Parse --version flag
         if "--version" in args or "-v" in args:
@@ -110,7 +157,7 @@ def main():
     else:
         # No credentials - show login screen
         print("Starting login screen...")
-        print("Usage (optional): python -m pyreborn.example_pygame [user] [pass] [host] [port] [--version VER] [--listserver [host]]")
+        print("Usage (optional): python -m pyreborn.example_pygame [user] [pass] [host] [port] [--version VER] [--listserver [host]] [--content-dir PATH] [--clear-content-dirs]")
 
         login_screen = LoginScreen(prefs=prefs)
         login_result = login_screen.run()
