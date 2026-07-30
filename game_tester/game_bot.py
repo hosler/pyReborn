@@ -189,13 +189,17 @@ class GameBot:
     """
 
     def __init__(self, name: str, host: str = "localhost", port: int = 14900,
-                 password: str = "testpass"):
+                 password: str = "testpass", version: str = "6.037"):
         self.name = name
         self.host = host
         self.port = port
         self.password = password
 
-        self.client = Client(host, port, version="6.037")
+        # Classic (2.x) servers reject the v6 handshake outright, so a bot
+        # pointed at one needs its protocol version. Defaults to 6.037 so
+        # every existing caller behaves exactly as before; see
+        # game_tester/version_probe.py for finding what a server accepts.
+        self.client = Client(host, port, version=version)
         self.issues: List[Issue] = []
         self.action_log: List[ActionLog] = []
         self.position_history: List[Tuple[float, float, float]] = []  # (x, y, time)
