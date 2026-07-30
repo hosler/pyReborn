@@ -38,7 +38,17 @@ pyreborn/
 │   ├── host_commands_main.py   # _GS1_MAIN_COMMANDS stage
 │   ├── host_functions.py       # call_function + message_code
 │   └── runtime.py        # ClientGS1
-├── gs2_client.py         # GS2 bytecode transport
+├── gs2_client/           # GS2 bytecode transport/state package
+│   ├── __init__.py       # Compatibility exports; re-exports BY VALUE, so
+│   │                     #   monkeypatch the owning submodule, not this
+│   ├── registry.py       # Builtin tables + @_gs2_builtin/@_gs2_object
+│   ├── helpers.py        # CSV/image/admin-guild helpers
+│   ├── objects.py        # Level/NPC/layer object wrappers
+│   ├── objects_player.py # Engine/name/player object wrappers
+│   ├── host.py           # GS2ClientHost composition + call_builtin/get_object
+│   ├── host_objects.py   # @_gs2_object factories
+│   ├── host_*.py         # One mixin per builtin table
+│   └── runtime.py        # ClientGS2
 ├── tiletypes.py          # Tile collision data
 ├── sprites.py            # Sprite/tileset managers
 ├── sounds.py             # Sound manager

@@ -66,7 +66,10 @@ def test_savelines_rejects_input_caps_and_embedded_nul(tmp_path, monkeypatch):
 
 def test_savelines_enforces_server_cache_byte_ceiling(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(gs2_client_module, "SAVE_LINES_CACHE_MAX_BYTES", 8)
+    # Patch the module that READS the ceiling: gs2_client/__init__.py re-exports
+    # it by value, so patching the package root would not reach save_lines().
+    from pyreborn.gs2_client import runtime as gs2_runtime
+    monkeypatch.setattr(gs2_runtime, "SAVE_LINES_CACHE_MAX_BYTES", 8)
     rt = ClientGS2(SimpleNamespace(server_name="tiny-cache"))
     assert rt.save_lines("first.txt", ["1234"])
     assert not rt.save_lines("second.txt", ["56789"])
