@@ -25,7 +25,19 @@ pyreborn/
 ├── nc_client.py          # NPC Control client
 ├── npc_handler.py        # NPC state tracking
 ├── gani.py               # GANI animation parser
-├── gs1_client.py         # GS1 script transport/state
+├── gs1_client/           # GS1 script transport/state package
+│   ├── __init__.py       # Compatibility exports (see packets.py for the idiom)
+│   ├── registry.py       # Handler tables + @_gs1_builtin/@_gs1_command
+│   ├── board.py          # Board access helpers
+│   ├── objects.py        # Object references and flag scopes
+│   ├── host.py           # GS1ClientHost composition + core dispatch
+│   ├── host_builtins.py  # get/set_builtin handlers
+│   ├── host_commands_pre.py    # _GS1_PRE_COMMANDS stage
+│   ├── host_commands_layer.py  # _GS1_LAYER_COMMANDS stage
+│   ├── host_commands_npc.py    # _GS1_NPC_COMMANDS + _NPC_TAIL stages
+│   ├── host_commands_main.py   # _GS1_MAIN_COMMANDS stage
+│   ├── host_functions.py       # call_function + message_code
+│   └── runtime.py        # ClientGS1
 ├── gs2_client.py         # GS2 bytecode transport
 ├── tiletypes.py          # Tile collision data
 ├── sprites.py            # Sprite/tileset managers
