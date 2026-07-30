@@ -40,6 +40,9 @@ pyreborn/
 └── game/                 # GameClient mixins (rendering, input, world logic)
     ├── actions.py        # Player actions (grab/sword/attack/etc.)
     ├── assets.py         # Asset loading
+    ├── callbacks/        # on_* wiring pulled out of setup.py
+    │   ├── client_callbacks.py  # Client (network) callbacks
+    │   └── gs1_callbacks.py     # GS1 engine callbacks
     ├── camera.py         # Camera/viewport tracking
     ├── collision.py      # Tile/entity collision
     ├── constants.py      # Screen/tile size constants
