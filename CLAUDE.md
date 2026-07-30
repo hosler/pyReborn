@@ -10,6 +10,13 @@
 pyreborn/
 ├── __init__.py           # Exports: Client, Player, ListServerClient, RCClient, NCClient
 ├── client.py             # Client facade - session, state components, dispatch
+├── client_actions.py     # Outbound action mixin
+├── client_appearance.py  # Chat and player-appearance mixin
+├── client_combat.py      # Sword and arrow simulation mixin
+├── client_files.py       # File-transfer and board-modification mixin
+├── client_gmap.py        # Multi-level map loading and adjacency mixin
+├── client_movement.py    # Movement and position synchronization mixin
+├── client_warp.py        # Warp and level-link transition mixin
 ├── client_state.py       # Client's state components (level/gmap/entities/...)
 ├── handlers/             # Packet handlers, one module per domain
 │   ├── registry.py       # @handles(<PLO id>) table; grep it to find a handler

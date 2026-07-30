@@ -232,7 +232,9 @@ def test_disk_verification_runs_once_per_name(tmp_path, monkeypatch):
         calls += 1
         return real_sha256(data)
 
-    monkeypatch.setattr("pyreborn.client.hashlib.sha256", counted_sha256)
+    # client_files.py is what digests cached payloads; patch it there rather
+    # than via pyreborn.client, which no longer touches hashlib at all.
+    monkeypatch.setattr("pyreborn.client_files.hashlib.sha256", counted_sha256)
     assert second.get_file("image.png") == b"cached"
     assert second.get_file("image.png") == b"cached"
     assert calls == 1
