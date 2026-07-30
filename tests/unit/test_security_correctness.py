@@ -127,15 +127,16 @@ def test_large_file_exceeding_announced_size_is_aborted():
     client = _connected_client()
     filename = "large.bin"
     client._pending_files.add(filename)
-    client._large_file_pending = filename
-    client._large_file_expected_size = 1
+    client._large_file_transfers[filename] = {
+        "buffer": bytearray(), "expected_size": 1,
+        "modtime": 0, "discarding": False,
+    }
     oversized = b"x" * (client_module.LARGE_FILE_SIZE_SLACK + 2)
 
     client._handle_packet(PacketID.PLO_FILE, _file_packet(filename, oversized))
 
-    assert client._large_file_pending is None
-    assert client._large_file_buffer == bytearray()
-    assert client._large_file_expected_size == 0
+    assert client._large_file_transfers[filename]["discarding"]
+    assert client._large_file_transfers[filename]["buffer"] == bytearray()
     assert filename in client.failed_files
     assert not client.is_file_pending(filename)
 
@@ -144,12 +145,15 @@ def test_large_file_absolute_cap_applies_without_announced_size(monkeypatch):
     monkeypatch.setattr(client_module, "MAX_LARGE_FILE_SIZE", 4)
     client = _connected_client()
     filename = "large.bin"
-    client._large_file_pending = filename
+    client._large_file_transfers[filename] = {
+        "buffer": bytearray(), "expected_size": 0,
+        "modtime": 0, "discarding": False,
+    }
 
     client._handle_packet(PacketID.PLO_FILE, _file_packet(filename, b"12345"))
 
     assert filename in client.failed_files
-    assert client._large_file_pending is None
+    assert client._large_file_transfers[filename]["discarding"]
 
 
 def test_bounded_lru_refreshes_reads_and_evicts_oldest():

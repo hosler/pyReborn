@@ -78,7 +78,7 @@ FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
     "_arrow_sims", "_pending_arrow_hits", "auto_respond_hurt",
     # files
     "_pending_files", "_received_files", "_failed_files",
-    "_large_file_pending", "_large_file_buffer", "_large_file_expected_size",
+    "_large_file_transfers",
     # scripts
     "gs1_host", "gs2_host", "gs2_bytecode", "gs2_script_headers",
     "gani_setbackto",

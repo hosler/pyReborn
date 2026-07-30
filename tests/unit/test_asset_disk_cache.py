@@ -1,5 +1,6 @@
-"""Persistent download-cache and conditional-request coverage."""
+"""Content-verified download-cache and conditional-request coverage."""
 
+import hashlib
 import json
 
 from pyreborn import Client
@@ -38,7 +39,9 @@ def _file_packet(filename, data, mod_time):
     )
 
 
-def test_completed_download_is_cached_with_modtime(tmp_path, monkeypatch):
+def test_completed_download_is_cached_with_verified_metadata(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
     client = _client()
 
@@ -50,7 +53,11 @@ def test_completed_download_is_cached_with_modtime(tmp_path, monkeypatch):
     directory = server_cache_dir(client.host, client.port)
     assert (directory / "example.png").read_bytes() == b"asset bytes"
     assert json.loads((directory / "index.json").read_text()) == {
-        "example.png": 123456
+        "example.png": {
+            "modtime": 123456,
+            "size": 11,
+            "sha256": hashlib.sha256(b"asset bytes").hexdigest(),
+        }
     }
 
 
@@ -83,7 +90,9 @@ def test_unusable_cache_degrades_to_memory_only(tmp_path, monkeypatch):
     assert "image.png" not in client._pending_files
 
 
-def test_malformed_index_is_ignored(tmp_path, monkeypatch):
+def test_malformed_index_is_ignored_and_disk_bytes_are_not_trusted(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
     client = _client()
     directory = server_cache_dir(client.host, client.port)
@@ -91,7 +100,7 @@ def test_malformed_index_is_ignored(tmp_path, monkeypatch):
     (directory / "index.json").write_text("{bad json")
     (directory / "image.png").write_bytes(b"still usable")
 
-    assert client.get_file("image.png") == b"still usable"
+    assert client.get_file("image.png") is None
     assert client._cached_file_modtime("image.png") is None
 
 
@@ -131,3 +140,99 @@ def test_update_notification_invalidates_memory_and_disk(
     assert key not in client._received_files
     assert not (server_cache_dir(client.host, client.port) / key).exists()
     assert key not in client._load_cache_index()
+
+
+def test_same_length_tamper_is_rejected_and_requested_in_full(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    first = _client()
+    first._handle_packet(
+        PacketID.PLO_FILE, _file_packet("image.png", b"original", 77)
+    )
+    directory = server_cache_dir(first.host, first.port)
+    (directory / "image.png").write_bytes(b"tampered")
+
+    second = _client()
+    assert second.get_file("image.png") is None
+    assert second.request_file("image.png")
+    assert second._protocol.sent[0][0] == PacketID.PLI_WANTFILE
+    assert not (directory / "image.png").exists()
+
+
+def test_truncated_cached_file_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    first = _client()
+    first._handle_packet(
+        PacketID.PLO_FILE, _file_packet("image.png", b"complete", 9)
+    )
+    directory = server_cache_dir(first.host, first.port)
+    (directory / "image.png").write_bytes(b"short")
+
+    assert _client().get_file("image.png") is None
+    assert not (directory / "image.png").exists()
+
+
+def test_zero_byte_payload_is_never_written(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    client = _client()
+
+    client._store_cached_file("empty.png", b"", 4)
+
+    directory = server_cache_dir(client.host, client.port)
+    assert not (directory / "empty.png").exists()
+    assert not (directory / "index.json").exists()
+
+
+def test_legacy_modtime_entry_is_not_trusted(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    client = _client()
+    directory = server_cache_dir(client.host, client.port)
+    directory.mkdir(parents=True)
+    (directory / "image.png").write_bytes(b"uncertified")
+    (directory / "index.json").write_text(json.dumps({"image.png": 42}))
+
+    assert client.get_file("image.png") is None
+    assert client._cached_file_modtime("image.png") is None
+    assert not (directory / "image.png").exists()
+
+
+def test_malformed_index_entries_are_dropped_without_raising(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    client = _client()
+    directory = server_cache_dir(client.host, client.port)
+    directory.mkdir(parents=True)
+    (directory / "index.json").write_text(json.dumps({
+        "bad-size.png": {"modtime": 1, "size": "no", "sha256": "0" * 64},
+        "bad-hash.png": {"modtime": 1, "size": 2, "sha256": "not-a-hash"},
+        "Folder.PNG": {
+            "modtime": 1,
+            "size": 2,
+            "sha256": "0" * 64,
+        },
+    }))
+
+    assert client._load_cache_index() == {}
+
+
+def test_disk_verification_runs_once_per_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    first = _client()
+    first._handle_packet(
+        PacketID.PLO_FILE, _file_packet("image.png", b"cached", 99)
+    )
+    second = _client()
+    real_sha256 = hashlib.sha256
+    calls = 0
+
+    def counted_sha256(data):
+        nonlocal calls
+        calls += 1
+        return real_sha256(data)
+
+    monkeypatch.setattr("pyreborn.client.hashlib.sha256", counted_sha256)
+    assert second.get_file("image.png") == b"cached"
+    assert second.get_file("image.png") == b"cached"
+    assert calls == 1

@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 # with nothing logged; three strikes with a warning each is the compromise.
 _MAX_FILE_ATTEMPTS = 3
 
+# A normal client has only a handful of asset downloads in flight. Sixteen
+# leaves room for a burst while bounding the bytearray owners a buggy server
+# can create; evicting the oldest lets current traffic recover instead of
+# making every later LARGEFILESTART fail behind abandoned transactions.
+MAX_CONCURRENT_LARGE_FILE_TRANSFERS = 16
+
 
 def _large_file_caps():
     """(absolute cap, announced-size slack) for an in-flight large transfer.
@@ -44,34 +50,32 @@ def handle_file(client, data):
         file_data = file_info['data']
         mod_time = file_info['mod_time']
 
-        if client._large_file_discarding == filename:
-            return
-
         # Files over 32000 bytes arrive as repeated PLO_FILE chunks
         # bracketed by PLO_LARGEFILESTART/...END (each chunk resends
         # the full modtime+filename header - see
         # server/src/player/Player.cpp Player::sendFile). Append
         # rather than overwrite while a large transfer is in flight.
-        if client._large_file_pending == filename:
-            if not client._large_file_buffer:
-                client._large_file_modtime = mod_time
+        transfer = client._large_file_transfers.get(filename)
+        if transfer is not None:
+            if transfer['discarding']:
+                return
+            if not transfer['buffer']:
+                transfer['modtime'] = mod_time
             max_size, size_slack = _large_file_caps()
-            new_size = len(client._large_file_buffer) + len(file_data)
-            announced_limit = (
-                client._large_file_expected_size + size_slack)
+            new_size = len(transfer['buffer']) + len(file_data)
+            announced_limit = transfer['expected_size'] + size_slack
             if (new_size > max_size
-                    or (client._large_file_expected_size > 0
+                    or (transfer['expected_size'] > 0
                         and new_size > announced_limit)):
                 logger.warning(
                     "Aborting oversized file transfer for %r", filename)
-                client._large_file_pending = None
-                client._large_file_discarding = filename
-                client._large_file_buffer = bytearray()
-                client._large_file_expected_size = 0
+                transfer['discarding'] = True
+                transfer['buffer'] = bytearray()
+                transfer['expected_size'] = 0
                 client._failed_files.add(filename)
                 client._pending_files.discard(filename)
             else:
-                client._large_file_buffer.extend(file_data)
+                transfer['buffer'].extend(file_data)
         else:
             client._received_files[filename] = file_data
             client._store_cached_file(filename, file_data, mod_time)
@@ -124,58 +128,72 @@ def handle_large_file_start(client, data):
     # Large file transfer starts (packet 68) - subsequent PLO_FILE chunks
     # for this filename must be appended, not treated as complete files.
     filename = parse_large_file_marker(data)
-    client._large_file_pending = filename
-    client._large_file_discarding = None
-    client._large_file_buffer = bytearray()
-    client._large_file_expected_size = 0
-    client._large_file_modtime = 0
+    transfers = client._large_file_transfers
+    # Reassignment alone preserves dict order. Pop first so a same-name
+    # restart is both a clean reset and the target of the filename-less SIZE
+    # packet which immediately follows START.
+    transfers.pop(filename, None)
+    if len(transfers) >= MAX_CONCURRENT_LARGE_FILE_TRANSFERS:
+        evicted = next(iter(transfers))
+        transfers.pop(evicted)
+        logger.warning(
+            "Evicting oldest incomplete large file transfer for %r", evicted)
+    transfers[filename] = {
+        'buffer': bytearray(),
+        'expected_size': 0,
+        'modtime': 0,
+        'discarding': False,
+    }
 
 
 @handles(PacketID.PLO_LARGEFILESIZE)
 def handle_large_file_size(client, data):
     # Large file total size (packet 84) - informational, arrives right
-    # after LARGEFILESTART.
-    client._large_file_expected_size = parse_large_file_size(data)
+    # after LARGEFILESTART. The packet has no filename, so insertion order
+    # identifies the start it belongs to even while older files keep flowing.
+    if client._large_file_transfers:
+        filename = next(reversed(client._large_file_transfers))
+        client._large_file_transfers[filename]['expected_size'] = (
+            parse_large_file_size(data))
 
 
 @handles(PacketID.PLO_LARGEFILEEND)
 def handle_large_file_end(client, data):
-    # Large file transfer ends (packet 69) - flush the accumulated
-    # buffer through the same path a normal PLO_FILE download takes.
+    # Large file transfer ends (packet 69) - only the named transaction can
+    # complete. The old global slot let one file's END flush another's bytes.
     filename = parse_large_file_marker(data)
-    if client._large_file_discarding is not None:
-        client._large_file_pending = None
-        client._large_file_discarding = None
-        client._large_file_buffer = bytearray()
-        client._large_file_expected_size = 0
-        client._large_file_modtime = 0
+    transfer = client._large_file_transfers.pop(filename, None)
+    if transfer is None:
         return
-    pending_filename = client._large_file_pending
-    if pending_filename is not None:
-        if filename != pending_filename:
-            logger.warning(
-                "Large file end marker %r does not match pending file %r; "
-                "flushing pending transfer",
-                filename, pending_filename)
-        file_data = bytes(client._large_file_buffer)
-        mod_time = client._large_file_modtime
-        client._large_file_pending = None
-        client._large_file_buffer = bytearray()
-        client._large_file_expected_size = 0
-        client._large_file_modtime = 0
-        client._received_files[pending_filename] = file_data
-        client._store_cached_file(pending_filename, file_data, mod_time)
-        client._pending_files.discard(pending_filename)
-        client._file_attempts.pop(pending_filename, None)
-        if pending_filename.endswith('.gmap'):
-            try:
-                client.load_gmap(file_data.decode('latin-1', errors='replace'))
-                client.gmap_name = pending_filename
-                client.request_adjacent_levels()
-            except Exception:
-                pass
-        if client.on_file:
-            client.on_file(pending_filename, file_data)
+    if transfer['discarding']:
+        return
+    file_data = bytes(transfer['buffer'])
+    expected_size = transfer['expected_size']
+    if not file_data or (expected_size > 0 and len(file_data) != expected_size):
+        # A short image once reached both the persistent cache and the
+        # renderer's never-retry set, shadowing a good user copy on every
+        # later run. Leave the request retryable and never publish uncertain
+        # bytes to either consumer.
+        logger.warning(
+            "Discarding incomplete large file transfer for %r: "
+            "received %d bytes, expected %d",
+            filename, len(file_data), expected_size)
+        client._pending_files.discard(filename)
+        return
+    mod_time = transfer['modtime']
+    client._received_files[filename] = file_data
+    client._store_cached_file(filename, file_data, mod_time)
+    client._pending_files.discard(filename)
+    client._file_attempts.pop(filename, None)
+    if filename.endswith('.gmap'):
+        try:
+            client.load_gmap(file_data.decode('latin-1', errors='replace'))
+            client.gmap_name = filename
+            client.request_adjacent_levels()
+        except Exception:
+            pass
+    if client.on_file:
+        client.on_file(filename, file_data)
 
 
 @handles(PacketID.PLO_FILEUPTODATE)

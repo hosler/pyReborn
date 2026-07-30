@@ -597,7 +597,7 @@ lowercase names anywhere else:
 
 | Tier | Location | What |
 |---|---|---|
-| download cache | `~/.cache/pyreborn/servers/{host}_{port}/` (`$PYREBORN_CACHE_DIR`) | everything the server sends, + `index.json` of modtimes |
+| download cache | `~/.cache/pyreborn/servers/{host}_{port}/` (`$PYREBORN_CACHE_DIR`) | everything the server sends, + `index.json` of modtime/size/SHA-256 metadata |
 | user content | any directory you point at (below), else `~/.local/share/pyreborn/content/` | base art a server assumes you already have |
 | bundled | `pyreborn/assets/` | last resort; nearly empty in a clone |
 
@@ -638,9 +638,11 @@ this client is silent.
 
 The download cache is **advisory**: any IO error degrades to memory-only. It is
 revalidated with `PLI_UPDATEFILE`/`PLO_FILEUPTODATE` rather than trusting mtime,
-and `PLO_UPDATEPACKAGEISUPDATED` (187) drops a stale entry mid-session.
+and every disk read is additionally verified against its recorded byte length
+and SHA-256 digest before it can be served or conditionally revalidated.
+`PLO_UPDATEPACKAGEISUPDATED` (187) drops a stale entry mid-session.
 
-Two traps this replaced, both of which cost a real outage:
+Three traps this replaced, all of which cost a real outage:
 - There used to be a `cache/` directory *inside the checkout* that nothing in
   the client ever wrote. It was populated out of band, so `rm -rf cache/` took
   the tileset with it and a fresh clone never had one at all.
@@ -648,6 +650,10 @@ Two traps this replaced, both of which cost a real outage:
   lowercase). Servers descend from a Windows client and send mixed casing; on
   Linux `Body.png` and `body.png` were two cache entries, two downloads and two
   surfaces, with the requested/failed bookkeeping split so neither deduped.
+- A zero-byte `pics1.png` from a truncated large-file transfer kept its recorded
+  modtime, so the server repeatedly declared it current. Because the download
+  tier is searched first, that poisoned entry also shadowed a good user copy
+  and left the whole world placeholder-coloured across restarts.
 
 ## Running the tests
 

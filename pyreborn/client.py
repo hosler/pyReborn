@@ -7,6 +7,7 @@ In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -230,11 +231,7 @@ class Client:
 
     def _reset_file_transfer_state(self, full_reset: bool = True) -> None:
         """Clear active download state and, for a new session, retry history."""
-        self._large_file_pending = None
-        self._large_file_discarding = None
-        self._large_file_buffer = bytearray()
-        self._large_file_expected_size = 0
-        self._large_file_modtime = 0
+        self._large_file_transfers.clear()
         if full_reset:
             self._pending_files.clear()
             self._failed_files.clear()
@@ -1873,18 +1870,43 @@ class Client:
         key = normalize_asset_name(filename)
         if not key:
             return None
+        data = self._received_files.get(key)
+        if data is not None:
+            return data
         try:
             data = (server_cache_dir(self.host, self.port) / key).read_bytes()
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             return None
+        try:
+            metadata = self._load_cache_index().get(key)
+            # The server modtime only describes what SHOULD be in this path.
+            # A truncated pics1.png once remained at modtime 0 forever and,
+            # because the download tier wins path lookup, hid a good user
+            # copy. Legacy integers deliberately fail this check: hashing and
+            # blessing their existing bytes would certify the corruption this
+            # metadata is meant to detect.
+            if (
+                not isinstance(metadata, dict)
+                or len(data) != metadata.get("size")
+                or hashlib.sha256(data).hexdigest() != metadata.get("sha256")
+            ):
+                self._invalidate_cached_file(filename)
+                return None
+        except (OSError, ValueError, TypeError):
+            self._invalidate_cached_file(filename)
+            return None
+        # This is both the byte cache and the verification verdict. Later hot
+        # SpriteManager/GaniParser reads return above without touching disk or
+        # hashing again; bytes placed here by a wire handler are trusted too.
         self._received_files[filename] = data
+        self._received_files[key] = data
         return data
 
     def has_file(self, filename: str) -> bool:
         """Check if a file has been downloaded."""
         return self.get_file(filename) is not None
 
-    def _load_cache_index(self) -> Dict[str, int]:
+    def _load_cache_index(self) -> Dict[str, object]:
         """Load this server's advisory cache metadata once for the session."""
         if self._cache_index is not None:
             return self._cache_index
@@ -1897,11 +1919,34 @@ class Client:
                 )
             )
             if isinstance(raw, dict):
-                index = {
-                    str(key): int(value)
-                    for key, value in raw.items()
-                    if normalize_asset_name(str(key)) == str(key)
-                }
+                for key, value in raw.items():
+                    key = str(key)
+                    if normalize_asset_name(key) != key:
+                        continue
+                    try:
+                        if isinstance(value, dict):
+                            modtime = int(value["modtime"])
+                            size = int(value["size"])
+                            digest = value["sha256"]
+                            if (
+                                size < 0
+                                or not isinstance(digest, str)
+                                or len(digest) != 64
+                                or any(c not in "0123456789abcdef" for c in digest)
+                            ):
+                                continue
+                            index[key] = {
+                                "modtime": modtime,
+                                "size": size,
+                                "sha256": digest,
+                            }
+                        # Retain legacy metadata only so loading old indexes is
+                        # harmless. get_file() refuses it, preventing upgrade
+                        # from blessing bytes that may already be poisoned.
+                        elif not isinstance(value, bool):
+                            index[key] = int(value)
+                    except (KeyError, ValueError, TypeError):
+                        continue
         except (OSError, ValueError, TypeError):
             pass
         self._cache_index = index
@@ -1912,7 +1957,10 @@ class Client:
         key = normalize_asset_name(filename)
         if not key:
             return None
-        return self._load_cache_index().get(key)
+        metadata = self._load_cache_index().get(key)
+        if not isinstance(metadata, dict):
+            return None
+        return metadata.get("modtime")
 
     @staticmethod
     def _atomic_cache_write(path: Path, data: bytes) -> None:
@@ -1938,14 +1986,21 @@ class Client:
     ) -> None:
         """Persist a completed download, ignoring every cache failure."""
         key = normalize_asset_name(filename)
-        if not key:
+        # Empty assets are not legitimate downloads. A zero-byte tileset from
+        # a cut-off large transfer was persisted and then shadowed a good user
+        # copy across every restart, so never create that artifact again.
+        if not key or not file_data:
             return
         try:
             directory = server_cache_dir(self.host, self.port)
             directory.mkdir(parents=True, exist_ok=True)
             self._atomic_cache_write(directory / key, file_data)
             index = self._load_cache_index()
-            index[key] = int(mod_time)
+            index[key] = {
+                "modtime": int(mod_time),
+                "size": len(file_data),
+                "sha256": hashlib.sha256(file_data).hexdigest(),
+            }
             encoded = json.dumps(index, sort_keys=True).encode("utf-8")
             self._atomic_cache_write(directory / "index.json", encoded)
         except (OSError, ValueError, TypeError):
@@ -2825,11 +2880,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_file_attempts': ('file_transfers', 'file_attempts'),
     '_uptodate_files': ('file_transfers', 'uptodate_files'),
     '_cache_index': ('file_transfers', 'cache_index'),
-    '_large_file_pending': ('file_transfers', 'large_file_pending'),
-    '_large_file_discarding': ('file_transfers', 'large_file_discarding'),
-    '_large_file_buffer': ('file_transfers', 'large_file_buffer'),
-    '_large_file_expected_size': ('file_transfers', 'large_file_expected_size'),
-    '_large_file_modtime': ('file_transfers', 'large_file_modtime'),
+    '_large_file_transfers': ('file_transfers', 'large_file_transfers'),
 
     # --- script / bytecode transport ---------------------------------------
     'gs1_host': ('scripts', 'gs1_host'),

@@ -340,17 +340,14 @@ class FileTransfers:
         self.failed_files: set = set()  # Files that failed to download
         self.file_attempts: Dict[str, int] = {}
         self.uptodate_files: set = set()  # Files confirmed unchanged by the server
-        self.cache_index: Optional[Dict[str, int]] = None
+        self.cache_index: Optional[Dict[str, object]] = None
 
-        # Large file transfer (PLO_LARGEFILESTART/SIZE/...FILE.../END): files
-        # over 32000 bytes arrive as repeated PLO_FILE chunks (each carrying
-        # its own modtime+filename header) that must be appended, not treated
-        # as separate complete downloads. Keyed by filename.
-        self.large_file_pending: Optional[str] = None
-        self.large_file_discarding: Optional[str] = None
-        self.large_file_buffer: bytearray = bytearray()
-        self.large_file_expected_size: int = 0
-        self.large_file_modtime: int = 0
+        # One server interleaved pics1.png with another large download and the
+        # old single buffer silently replaced pics1.png's first half; its tail
+        # was then cached as a complete image with modtime zero. Keep the wire
+        # transaction state keyed by filename so unrelated starts cannot
+        # replace bytes already in flight.
+        self.large_file_transfers: Dict[str, dict] = {}
 
 
 class ScriptTransport:
