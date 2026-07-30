@@ -73,9 +73,14 @@ pyreborn/
     ├── input.py          # Keyboard/input handling
     ├── minimap.py        # GMAP minimap
     ├── render.py         # Core render loop
+    ├── render_collect.py # Entity collection, sorting, and interpolation
     ├── render_effects.py # Particle/effect rendering
     ├── render_entities.py # Player/NPC/baddy rendering
+    ├── render_gani.py    # Animated-entity rendering
+    ├── render_layers.py  # Scripted-layer rendering
     ├── render_objects.py # Item/object rendering
+    ├── render_shared.py  # Shared entity-rendering definitions
+    ├── render_text.py    # Entity text and speech-bubble rendering
     ├── render_world.py   # Tile/level rendering
     ├── setup.py          # GameClient init/setup
     ├── theme.py          # UI palette + emblem/panel helpers (reskin here)
