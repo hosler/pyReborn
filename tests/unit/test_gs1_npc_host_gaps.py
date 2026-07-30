@@ -70,6 +70,14 @@ def _this(gs1, npc_id):
     return gs1._progs["npc_%d" % npc_id]["scopes"]["this"]
 
 
+def _finish_ready_slices(gs1):
+    # The captured room scripts exceed the cooperative frame budget.  Drain
+    # only zero-delay preemption continuations when a test needs completed
+    # state; numeric sleeps still wait for the explicit frame time below.
+    while any(c["remaining"] <= 0 for c in gs1._coros):
+        gs1.process_coroutines(0.0)
+
+
 # -- npcscount / npcs[i] -----------------------------------------------------
 
 def test_npcscount_counts_the_level_npcs():
@@ -360,6 +368,7 @@ def room0():
                         x=c.npcs[npc_id]["x"], y=c.npcs[npc_id]["y"])
     gs1.trigger_event("created")
     gs1.trigger_event("playerenters")
+    _finish_ready_slices(gs1)
     return c, gs1, calls
 
 
@@ -400,6 +409,7 @@ def test_room0_controller_refreshes_the_furniture_npcs(room0):
     for _ in range(3):
         gs1.process_coroutines(0.05)
         gs1.process_timeouts(0.05)
+        _finish_ready_slices(gs1)
     # `for(n..npcscount) if(npcs[n].save[1]==13) callnpc n,timeout,2`
     refreshed = {npc_id for npc_id, event, params in calls
                  if event == "timeout" and params == ["2"]}

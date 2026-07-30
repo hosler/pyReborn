@@ -368,6 +368,8 @@ def test_grab_old_snapshots_the_real_colors():
     gs1.load_weapon("-probe", load_weapon_script()
                     + "\nif (grabprobe) { grab_Old(); }")
     gs1.call_weapon("-probe", "grabprobe")
+    while any(c["remaining"] <= 0 for c in gs1._coros):
+        gs1.process_coroutines(0.0)
     this = gs1._progs["weapon_-probe"]["scopes"]["this"]
     assert this["o_color"] == [2.0, 5.0, 12.0, 18.0, 12.0]
 
@@ -460,6 +462,8 @@ def tailor():
                     x=info["x"], y=info["y"])
     gs1.load_weapon(cap["weapon"], load_weapon_script())
     gs1.trigger_event("playerenters")
+    while any(c["remaining"] <= 0 for c in gs1._coros):
+        gs1.process_coroutines(0.0)
     handler = NPCHandler(c)
     handler.gs1 = gs1
     handler.on_playertouchsme = lambda npc_id, _npc: gs1.trigger_npc_event(
@@ -473,12 +477,21 @@ def _tailor_layers(gs1):
     return gs1._weapon_imgs.get("weapon_-tailor") or {}
 
 
+def _finish_ready_slices(gs1):
+    # Tailor GUI construction is larger than one cooperative slice.  Tests
+    # asserting its completed state drain only preemption continuations;
+    # numeric sleeps retain their one-per-frame timing.
+    while any(c["remaining"] <= 0 for c in gs1._coros):
+        gs1.process_coroutines(0.0)
+
+
 def test_touching_jonah_opens_the_tailor(tailor):
     c, gs1, handler = tailor
     # walk up to him from below, facing up (playerdir 0), no grab key held
     c.player.direction = 0
     handler.process_movement(c.player.x, c.player.y, 0)
     gs1.process_coroutines(0.05)
+    _finish_ready_slices(gs1)
     layers = _tailor_layers(gs1)
     # the panel, the character preview (400 + the 399 showani) and the
     # 410-418 outlined selector, all in the GUI band (vis >= 4)
@@ -503,6 +516,7 @@ def test_the_tailor_uses_the_modern_layout(tailor):
     c.player.direction = 0
     handler.process_movement(c.player.x, c.player.y, 0)
     gs1.process_coroutines(0.05)
+    _finish_ready_slices(gs1)
     layers = _tailor_layers(gs1)
     this = gs1._progs["weapon_-tailor"]["scopes"]["this"]
     assert layers[401]["x"] == this["xx"] - 70
@@ -514,6 +528,7 @@ def test_the_tailor_snapshots_the_players_look(tailor):
     c.player.direction = 0
     handler.process_movement(c.player.x, c.player.y, 0)
     gs1.process_coroutines(0.05)
+    _finish_ready_slices(gs1)
     this = gs1._progs["weapon_-tailor"]["scopes"]["this"]
     # o_color is what Cancel() restores: the player's real colours, not zeros
     assert this["o_color"] == [2.0, 5.0, 12.0, 18.0, 12.0]
@@ -528,10 +543,13 @@ def test_the_tailor_responds_to_the_arrow_keys(tailor):
     c, gs1, handler = tailor
     c.player.direction = 0
     handler.process_movement(c.player.x, c.player.y, 0)
+    gs1.process_coroutines(0.05)
+    _finish_ready_slices(gs1)
     for frame in range(30):
         gs1.keys_dir = {3} if frame < 10 else ({2} if frame in (12, 13) else set())
         gs1.advance_input_frame()
         gs1.process_coroutines(0.05)
+        _finish_ready_slices(gs1)
     this = gs1._progs["weapon_-tailor"]["scopes"]["this"]
     assert this["dat"][0] == 1.0             # the Body row is selected
     assert this["dat"][1] > 471.0            # the head advanced past the start

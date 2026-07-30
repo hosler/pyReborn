@@ -372,6 +372,11 @@ def _open_shop(gs1):
     for tick in range(6):
         gs1.keys_dir = {4} if tick else set()
         gs1.process_coroutines(0.05)
+        # The menu construction is deliberately allowed to span frames now;
+        # finish its zero-delay slices before inspecting the completed panel,
+        # without advancing any numeric sleep a second time in this tick.
+        while any(c["remaining"] <= 0 for c in gs1._coros):
+            gs1.process_coroutines(0.0)
 
 
 def _gui_layers(client, npc_id):

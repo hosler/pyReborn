@@ -22,7 +22,7 @@ import traceback
 from reborn_protocol.coords import level_index, segment_at, world_to_local
 from reborn_protocol.gs1.runtime import Host, NAMESPACES, UNSET, VarStore, Context
 from reborn_protocol.gs1 import ast
-from reborn_protocol.gs1.interp import Interpreter
+from reborn_protocol.gs1.interp import Interpreter, PREEMPTED
 from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
 from reborn_protocol.gs1.values import to_num, to_str
@@ -44,6 +44,19 @@ logger = logging.getLogger(__name__)
 # full traceback on each unique error.
 _GS1_ERR_SEEN: set = set()
 _GS1_DEBUG = os.environ.get("GS1_DEBUG")
+
+# The measured playerenters stall spent 430 ms in 8.1 million Python calls,
+# or about 18,800 calls/ms.  Four ms is therefore roughly 75,000 calls across
+# all 11 weapon handlers started that frame: 200 statements apiece leaves room
+# for about 34 calls per statement (75,000 / 11 / 200), including the profiled
+# name resolution and builtins, before one frame escapes the few-ms range.
+_GS1_STATEMENTS_PER_SLICE = 200
+
+# A board normally follows its level announce within a few frames.  Five
+# seconds at the client's 60-FPS target is long enough to cover a slow stream,
+# but finite because suppressing the continuation forever would be a worse
+# semantic change than letting its existing GS1NoBoard error path win.
+_GS1_PREEMPT_BOARD_WAIT_FRAMES = 300
 
 
 def _report_gs1_error(where: str, exc: Exception):
@@ -4085,14 +4098,17 @@ class ClientGS1:
         ctx._prog_key = key
         interp = _RefNamespaceInterpreter(ctx)
         interp._coro = True                # `sleep` suspends; we pump it below
+        interp.statement_budget = _GS1_STATEMENTS_PER_SLICE
         gen = interp.iter_event(entry["prog"], event)
         self._drive(gen, ctx, key, entry, event)
 
     def _drive(self, gen, ctx, key, entry, event):
-        """Pump a script generator until it suspends on a `sleep` or finishes.
-        A suspended generator is parked in _coros and resumed by
-        process_coroutines once its sleep elapses."""
-        ctx.steps = 0          # fresh step budget per slice; sleeps don't count
+        """Pump one script slice, parking sleep and preemption continuations.
+
+        A preempted generator gets remaining=0 but is not pumped again here:
+        process_coroutines sees it on the next frame, preserving the frame
+        boundary that removes the measured 430-ms playerenters stall."""
+        ctx.steps = 0
         try:
             delay = next(gen)
         except StopIteration:
@@ -4109,7 +4125,10 @@ class ClientGS1:
             self._active_coro_keys.add(key)
         self._coros.append({"gen": gen, "ctx": ctx, "key": key,
                             "entry": entry, "event": event,
-                            "remaining": float(delay)})
+                            "remaining": (0.0 if delay is PREEMPTED
+                                          else float(delay)),
+                            "preempted": delay is PREEMPTED,
+                            "board_wait_frames": 0})
 
     def process_coroutines(self, dt):
         """Resume suspended scripts whose `sleep` has elapsed. Driven once per
@@ -4122,9 +4141,27 @@ class ClientGS1:
             if c["remaining"] > 0:
                 still.append(c)
                 continue
-            c["ctx"].steps = 0
+            # Sleep already crossed level changes before slicing existed, so
+            # only the synthetic preemption park inherits playerenters'
+            # board-ready window.  Holding the record also holds its active
+            # key, preventing a duplicate event while the continuation waits.
+            if c["preempted"] and not self.board_ready():
+                c["board_wait_frames"] += 1
+                if c["board_wait_frames"] <= _GS1_PREEMPT_BOARD_WAIT_FRAMES:
+                    still.append(c)
+                    continue
+            # A numeric sleep starts a fresh statement slice.  A preemption
+            # stopped immediately before its next statement and already reset
+            # the shared ctx.steps counter; resetting again would fail to count
+            # that pending statement when the generator continues below.
+            if not c["preempted"]:
+                c["ctx"].steps = 0
             try:
-                c["remaining"] = float(next(c["gen"]))
+                delay = next(c["gen"])
+                c["remaining"] = (0.0 if delay is PREEMPTED
+                                  else float(delay))
+                c["preempted"] = delay is PREEMPTED
+                c["board_wait_frames"] = 0
                 still.append(c)
             except StopIteration:
                 if c["key"] is not None:

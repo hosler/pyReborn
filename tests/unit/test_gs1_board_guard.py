@@ -116,11 +116,21 @@ def _room_flag_sends(client):
     return [d for pid, d in client._protocol.sent if b"server.room0" in d]
 
 
+def _finish_ready_slices(gs1):
+    # These assertions concern the completed timeout handler, not which frame
+    # exposes its intermediate furniture state.  The live 430-ms stall proved
+    # that large handlers now intentionally cross frames, so drain only the
+    # zero-delay preemption continuations; a real sleep must remain asleep.
+    while any(c["remaining"] <= 0 for c in gs1._coros):
+        gs1.process_coroutines(0.0)
+
+
 def test_resetobj_deletes_wall_furniture_when_the_tile_is_not_a_wall():
     # The hazard, demonstrated: a real board that says "no wall here" is a
     # legitimate delete, and it goes out on the wire.
     client, gs1 = _room0_engine(board_tile=0)
     gs1.trigger_npc_event(91, "timeout")
+    _finish_ready_slices(gs1)
     assert gs1._shared["server"]["room0"] == "1,"
     assert _room_flag_sends(client)
 
@@ -128,6 +138,7 @@ def test_resetobj_deletes_wall_furniture_when_the_tile_is_not_a_wall():
 def test_resetobj_keeps_wall_furniture_when_the_tile_is_a_wall():
     client, gs1 = _room0_engine(board_tile=0x278)
     gs1.trigger_npc_event(91, "timeout")
+    _finish_ready_slices(gs1)
     assert gs1._shared["server"]["room0"] == _ROOM
     assert not _room_flag_sends(client)
 
@@ -135,6 +146,7 @@ def test_resetobj_keeps_wall_furniture_when_the_tile_is_a_wall():
 def test_resetobj_cannot_delete_anything_before_the_board_arrives():
     client, gs1 = _room0_engine(board_tile=None)
     gs1.trigger_npc_event(91, "timeout")
+    _finish_ready_slices(gs1)
     assert gs1._shared["server"]["room0"] == _ROOM
     assert not _room_flag_sends(client)
 
@@ -145,6 +157,7 @@ def test_the_old_zero_answer_would_have_deleted(monkeypatch):
     client, gs1 = _room0_engine(board_tile=None)
     monkeypatch.setattr(gs1, "board_ready", lambda: True)
     gs1.trigger_npc_event(91, "timeout")
+    _finish_ready_slices(gs1)
     assert gs1._shared["server"]["room0"] == "1,"
 
 
