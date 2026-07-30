@@ -677,7 +677,12 @@ class ActionsMixin:
 
         # Play throw animation; fall back to idle if the gani isn't available
         # (otherwise we'd stay stuck in the looping carry pose after throwing).
-        anim = "throw" if self.gani_parser.parse("throw") else "idle"
+        throw_gani = self.gani_parser.parse("throw")
+        if throw_gani is not None:
+            prefetch = getattr(self, '_prefetch_gani_assets', None)
+            if prefetch is not None:
+                prefetch(throw_gani)
+        anim = "throw" if throw_gani else "idle"
         self.player_anim.set_animation(anim, direction, force=True)
         self.current_anim_name = anim
         self.sound_mgr.play("put.wav")

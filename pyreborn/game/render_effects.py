@@ -131,6 +131,10 @@ class EffectsRenderMixin(FrameContextMixin):
         gani = self.gani_parser.parse(name)
         if gani is None:
             self._request_asset(name + '.gani')
+        else:
+            prefetch = getattr(self, '_prefetch_gani_assets', None)
+            if prefetch is not None:
+                prefetch(gani)
         return gani
 
     def _get_effect_sprite(self, filename: str):

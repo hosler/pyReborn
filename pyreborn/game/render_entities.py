@@ -1092,6 +1092,45 @@ class EntityRenderMixin(FrameContextMixin):
                 self._requested_assets.add(filename)
         except Exception:
             pass
+
+    def _prefetch_gani_assets(self, gani) -> None:
+        """Request the static sprite sheets named by a parsed animation."""
+        try:
+            name = getattr(gani, 'name', None)
+            prefetched = getattr(self, '_prefetched_gani_names', None)
+            if prefetched is None:
+                prefetched = self._prefetched_gani_names = set()
+            guardable_name = isinstance(name, str)
+            if guardable_name and name in prefetched:
+                return
+
+            filenames = set()
+            defaults = getattr(gani, 'defaults', {})
+            if isinstance(defaults, dict):
+                for layer, filename in defaults.items():
+                    if (isinstance(layer, str)
+                            and not layer.startswith('PARAM')
+                            and isinstance(filename, str)
+                            and '.' in filename):
+                        filenames.add(filename)
+            sprites = getattr(gani, 'sprites', {})
+            values = sprites.values() if isinstance(sprites, dict) else ()
+            for sprite in values:
+                layer = getattr(sprite, 'layer', None)
+                if isinstance(layer, str) and '.' in layer:
+                    filenames.add(layer.lower())
+
+            if guardable_name:
+                prefetched.add(name)
+            # These are exactly the static filenames the frame blit fallback
+            # eventually discovers, but requesting the whole set here avoids
+            # serializing one server round trip behind each frame/direction.
+            # Entity-owned equipment images stay at their existing call sites.
+            for filename in filenames:
+                self._request_asset(filename)
+        except Exception:
+            pass
+
     def _status_label(self, status) -> str:
         """Tier 3c: resolve a numeric PLPROP_STATUS to a selectable label from
         client.status_list (PLO_STATUSLIST), when it's being used as an index

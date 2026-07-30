@@ -29,6 +29,13 @@ IS_BROWSER = sys.platform == "emscripten"
 
 MAX_DECOMPRESSED_SIZE = 8 * 1024 * 1024
 
+# A single 64 KiB read per render frame limited level-entry traffic to about
+# 3.84 MiB/s at 60 FPS, leaving boards queued behind multi-megabyte asset
+# bursts. Drain generously past those bursts, but stop at 4 MiB so a peer
+# producing faster than we parse cannot hold one frame in this loop forever;
+# bytes left in the kernel buffer are picked up by the next update.
+MAX_SOCKET_DRAIN_BYTES = 4 * 1024 * 1024
+
 
 class DecompressionLimitError(Exception):
     """Raised when an inbound compressed frame exceeds the size limit."""
@@ -361,19 +368,33 @@ class Protocol:
             if not ready:
                 return []
 
-            # Receive available data
+            # Drain the burst already queued by the kernel. Level entry can
+            # deliver several MiB before one 60 Hz update, while one recv here
+            # imposed a measured 64 KiB-per-frame ceiling and left the board
+            # behind its assets. BlockingIOError ends the burst without a
+            # second select syscall; the budget bounds work if the peer keeps
+            # filling the socket faster than this client consumes it.
             self.socket.setblocking(False)
+            received = 0
             try:
-                chunk = self.socket.recv(65536)
-                if not chunk:
-                    self.connected = False
-                    return []
-                self.recv_buffer += chunk
+                while received < MAX_SOCKET_DRAIN_BYTES:
+                    chunk = self.socket.recv(
+                        min(65536, MAX_SOCKET_DRAIN_BYTES - received))
+                    if not chunk:
+                        self.connected = False
+                        # A draining call can read the peer's final bundle and
+                        # then observe EOF immediately; parse those bytes below
+                        # because connected=False prevents a later call from
+                        # recovering them.
+                        break
+                    self.recv_buffer += chunk
+                    received += len(chunk)
             except BlockingIOError:
                 pass
-            except Exception as e:
+            except Exception:
                 self.connected = False
-                return []
+                # Bytes received before this failing iteration remain valid and
+                # must not be stranded behind the disconnected guard above.
 
             # NOTE: raw-data (PLO_RAWDATA) continuation is handled entirely
             # inside the decrypted-bundle loop below, not here. self.recv_buffer
