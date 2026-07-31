@@ -1,18 +1,20 @@
-# Playtest brief — you are playing a live game to find bugs
+# Playtest brief: you play a live game to find bugs
 
-You drive a real game bot connected to a running Reborn (Graal-style) game server, over a
-local HTTP API. Your job is to PLAY THE GAME like a curious, adversarial human and find
-things that are broken, wrong, or weird. You are not writing tests — you are the tester.
+You drive a real game bot. The bot connects to a running Reborn game server over
+a local HTTP API. Play the game like a curious, adversarial human. Find what is
+broken, wrong, or strange. You do not write tests. You are the tester.
 
 ## The API (use curl; the daemon is at http://127.0.0.1:14990)
 
-- `GET /spawn?name=YOU` — connect your bot (call once at start; idempotent). Returns state.
+- `GET /spawn?name=YOU` — connect your bot. Call it once at the start. It is
+  idempotent and returns the state.
 - `GET /state?name=YOU` — JSON: pos (x,y), direction, hearts/max_hearts, bombs, arrows,
   rupees, swimming, players_visible {name: {x,y,...}}, npcs_nearby, chests (with
   x/y/opened/item), signs (with x/y/text), links, npc_dialogue (last ~10 sign/NPC texts).
 - `GET /map?name=YOU` — ASCII of the level around you. Legend: `@`=you, `P`=other player,
   `B`=blocking/wall, `W`=water, `C`=chest, `S`=sign, `L`=link/warp, `N`=npc, `.`=walkable.
-- `GET /act?name=YOU&cmd=CMD&...` — do something; returns resulting state. Commands:
+- `GET /act?name=YOU&cmd=CMD&...` — do something. It returns the resulting state.
+  Commands:
   - `move&dx=1&dy=0` (step in a direction; dx/dy in tiles)
   - `walkto&x=35&y=35` (pathfind-ish walk to a tile)
   - `say&msg=hello`
@@ -20,53 +22,73 @@ things that are broken, wrong, or weird. You are not writing tests — you are t
   - `bomb` (optionally `&power=1`) / `arrow` (optionally `&dir=`)
   - `grab` / `attack&pid=PLAYERID` / `pm&pid=PLAYERID&msg=hi`
   - `warp&level=NAME.nw&x=30&y=30`
-  - `open_chest` (optionally `&x=&y=`; with no coords it auto-targets the nearest known
-    chest in reach and only reports success once the open is actually confirmed - an
-    out-of-reach or unknown chest returns an error string, not a false `true`)
-    / `pickup` (optionally `&x=&y=`)
+  - `open_chest` (optionally `&x=&y=`). With no coordinates it targets the
+    nearest known chest in reach. It reports success only after the server
+    confirms the open. An out-of-reach or unknown chest returns an error string,
+    not a false `true`.
+  - `pickup` (optionally `&x=&y=`)
 - `GET /log?name=YOU` — recent chat_received, hurt_received, pm_received, npc_dialogue,
   and any issues the bot's own detector flagged (including death/respawn events).
-- `GET /leave?name=YOU` — disconnect just your bot when done (optional; don't disconnect others).
+- `GET /leave?name=YOU` — disconnect your own bot when you finish. This is
+  optional. Do not disconnect anyone else.
 
-Do NOT call `/quit` — it stops the whole shared daemon for every agent, not just you.
+Do NOT call `/quit`. It stops the whole shared daemon for every agent, not just you.
 
 curl pattern: `curl -s 'http://127.0.0.1:14990/act?name=YOU&cmd=walkto&x=40&y=40'`
-Always URL-safe: use `+` or `%20` for spaces in msg. Parse JSON with `python3.13 -c` if useful.
+Keep every URL safe. Use `+` or `%20` for a space in `msg`. Parse the JSON with
+`python3.13 -c` if that helps.
 
 ## CRITICAL caveat (or you WILL report false bugs)
 
-`/map` draws `@` at your sprite's TOP-LEFT, but collision is FEET-only (the bottom row of
-your 2-wide, 3-tall sprite — roughly tiles y+2..y+3). So you can visually "overlap" a wall
-by up to ~2 tiles above your feet and that is CORRECT, not a clip-through. Judge collision by
-your feet, not the `@`. Likewise you stand ON your feet position, not the `@`.
+`/map` draws `@` at your sprite's TOP-LEFT. Collision uses the FEET only. Your
+sprite is 2 tiles wide and 3 tall, so the feet are roughly tiles y+2 to y+3. You
+can therefore "overlap" a wall by up to 2 tiles above your feet, and that is
+CORRECT, not a clip-through. Judge collision by your feet, not by the `@`. You
+also stand on your feet position, not on the `@`.
 
 ## How to play
 
-Spend your budget actually doing things and observing the RESULT of each — don't just fire
-actions blindly. Move around the whole level, cross into water, walk into walls from every
-side, open every chest (twice — does it re-give loot?), swing your sword at NPCs and at the
-other players, throw bombs and watch what they do, pick things up, warp between levels and
-back, chat and PM. After each action check `/state` and `/log` and ask: did the world change
-the way a real game should? Did hearts/bombs/arrows/rupees move correctly? Did the other
-player actually see it (coordinate with them via `say`/`pm`)?
+Spend your budget on real actions, and check the RESULT of each one. Do not fire
+actions blindly. Move around the whole level. Cross into water. Walk into walls
+from every side. Open every chest twice and see whether it gives the loot again.
+Swing your sword at NPCs and at the other players. Throw bombs and watch what
+they do. Pick things up. Warp between levels and back. Chat and send PMs.
 
-Hunt specifically for: things that silently do nothing, counts that don't change (or go
-negative/absurd), positions that desync between what you did and where you ended up, actions
-that work when they shouldn't (or vice versa), stuff that affects the wrong player, getting
-stuck/stranded, crashes or error spam, and anything that just feels wrong for a game.
+After each action, read `/state` and `/log`. Then ask three questions. Did the
+world change the way a real game should? Did the hearts, bombs, arrows and rupees
+move correctly? Did the other player see it? Use `say` and `pm` to confirm that
+last one with them.
+
+Hunt for these:
+
+- Actions that silently do nothing.
+- Counts that do not change, or that go negative or absurd.
+- A position that desyncs from what you did and where you ended up.
+- Actions that work when they should not, and the reverse.
+- Effects that land on the wrong player.
+- A bot that gets stuck or stranded.
+- Crashes or error spam.
+- Anything that feels wrong for a game.
 
 ## Coordinate with the other bots
 
-Other agents are playing their own bots on the SAME server right now (names in your task).
-Use in-game `say`/`pm` to set up joint tests: "hold still at 30,30, I'm bombing you" then
-verify their hearts drop; "did you see me swing?"; stand on the same tile; race to a chest.
-Multiplayer interactions (visibility, PvP, chat relay) are the richest bug source — actually
-exercise them together, don't just test solo.
+Other agents drive their own bots on the SAME server right now. Your task names
+them. Use in-game `say` and `pm` to set up joint tests. Tell another bot to hold
+still at 30,30, bomb it, then check that its hearts drop. Ask whether it saw you
+swing. Stand on the same tile. Race it to a chest.
+
+Multiplayer interactions carry the most bugs: visibility, PvP and chat relay.
+Exercise them together. Do not test only on your own.
 
 ## Report back
 
-Return a concise, ranked list of concrete findings. For each: what you did (the exact
-actions/coords), what you observed, what you expected, and how sure you are it's a real bug
-vs. expected behavior. Include the raw `/state` or `/log` evidence. Empty/○ findings is a
-fine answer if the game held up — say so and say what you covered. Do NOT edit any source
-code; you are a player, not a fixer.
+Return a short, ranked list of concrete findings. For each one, give:
+
+1. What you did, with the exact actions and coordinates.
+2. What you observed.
+3. What you expected.
+4. How sure you are that it is a real bug and not expected behavior.
+5. The raw `/state` or `/log` evidence.
+
+Zero findings is a fine answer if the game held up. Say so, and say what you
+covered. Do NOT edit any source code. You are a player, not a fixer.

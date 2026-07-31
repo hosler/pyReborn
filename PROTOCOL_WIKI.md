@@ -1,6 +1,6 @@
 # Reborn Protocol Wiki
 
-Complete protocol reference for pyReborn - the Python client library for Reborn game servers.
+Protocol reference for pyReborn, the Python client library for Reborn game servers.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ Complete protocol reference for pyReborn - the Python client library for Reborn 
 
 ## Overview
 
-The Reborn protocol uses TCP connections with custom encryption and compression. All data is framed with 2-byte length prefixes (big-endian).
+The Reborn protocol runs over TCP with custom encryption and compression. Every frame starts with a 2-byte big-endian length prefix.
 
 **Supported Protocol Versions:**
 | Version | Protocol String | Client Type |
@@ -44,7 +44,7 @@ The Reborn protocol uses TCP connections with custom encryption and compression.
 
 ## Data Types
 
-The Reborn protocol uses custom encoding for all values. Understanding these types is critical for packet parsing.
+The Reborn protocol encodes every value in a custom form. You must know these types to parse a packet correctly.
 
 ### GCHAR (1 byte)
 Single byte with +32 offset. Value range: 0-223.
@@ -91,7 +91,7 @@ value = ((b1 - 32) << 21) | ((b2 - 32) << 14) | ((b3 - 32) << 7) | (b4 - 32)
 ```
 
 ### GINT5 (5 bytes)
-Five bytes for large values (e.g., file modification times).
+Five bytes for large values, for example a file modification time.
 
 ### GSTRING
 Length-prefixed string: GCHAR(length) + raw bytes.
@@ -145,7 +145,7 @@ b2 = (raw & 0x7F) + 32
 
 ### Gen5 Encryption (ENCRYPT_GEN_5)
 
-Used for protocol versions 2.22+. Partial encryption with XOR cipher.
+Protocol versions 2.22 and later use this. It encrypts part of the payload with an XOR cipher.
 
 **Constants:**
 ```python
@@ -195,7 +195,7 @@ def encrypt(data, key, iterator, limit):
 
 ### Login Packet (Special - ZLIB only, no encryption)
 
-The login packet is sent first and uses only ZLIB compression (no encryption).
+The client sends the login packet first. That packet uses ZLIB compression only, with no encryption.
 
 **Format:**
 ```
@@ -231,8 +231,8 @@ send([len(compressed) as 2 bytes BE] + compressed)
 
 ### Server Response
 
-The first server response is ZLIB compressed but NOT encrypted.
-All subsequent packets use encryption.
+The server ZLIB-compresses its first response and does NOT encrypt it.
+The server encrypts every packet after that one.
 
 ---
 
@@ -253,7 +253,7 @@ Payload (before encryption):
 [2 bytes: length (BE)] [compressed/encrypted data]
 ```
 
-After decryption/decompression, data contains newline-delimited packets:
+After you decrypt and decompress it, the data holds newline-delimited packets:
 ```
 [packet_id + 32] [data...] \n
 [packet_id + 32] [data...] \n
@@ -262,7 +262,7 @@ After decryption/decompression, data contains newline-delimited packets:
 
 ### Raw Data Mode (PLO_RAWDATA)
 
-When PLO_RAWDATA (100) is received, the next N bytes are NOT newline-delimited.
+When you receive PLO_RAWDATA (100), the next N bytes are NOT newline-delimited.
 
 ```python
 # PLO_RAWDATA format: GINT3(size)
@@ -326,7 +326,7 @@ Your player's properties.
 **Format:** `[prop_id data]...`
 
 ### PLO_TOALL (13)
-Chat message OR movement update (check first prop to distinguish).
+Chat message or movement update. Check the first prop to tell them apart.
 
 **Chat Format:** `GSHORT(player_id) GCHAR(msg_len-1) message[1:]`
 
@@ -548,7 +548,11 @@ GCHAR(params_len) params
 
 ## Player Properties
 
-Property IDs used in PLO_PLAYERPROPS, PLO_OTHERPLPROPS, and PLI_PLAYERPROPS.
+PLO_PLAYERPROPS, PLO_OTHERPLPROPS and PLI_PLAYERPROPS use these property IDs.
+
+Do not hand-roll these sizes. `reborn_protocol.props` owns the descriptor tables
+and the decode and encode helpers. The table below is a reading aid, not the
+oracle.
 
 ### Basic Properties
 
@@ -567,8 +571,8 @@ Property IDs used in PLO_PLAYERPROPS, PLO_OTHERPLPROPS, and PLI_PLAYERPROPS.
 | 10 | GANI | string | Current animation |
 | 11 | HEADGIF | string | Head image (special encoding) |
 | 12 | CURCHAT | string | Chat bubble text |
-| 13 | COLORS | 5 bytes | Player colors (skin, coat, etc.) |
-| 14 | ID | 2 bytes | Direction (legacy) |
+| 13 | COLORS | 5 or 8 bytes | Player colors (skin, coat, and so on). 5 on classic, 8 on v6 new-world. A server-wide mode picks the width, so you cannot derive it from the handshake. |
+| 14 | ID | 2 bytes | Player's coded connection ID (legacy). NOT a direction |
 | 15 | X | 1 byte | X position (half-tiles) |
 | 16 | Y | 1 byte | Y position (half-tiles) |
 | 17 | SPRITE | 1 byte | Direction in lower 2 bits |
@@ -577,20 +581,30 @@ Property IDs used in PLO_PLAYERPROPS, PLO_OTHERPLPROPS, and PLI_PLAYERPROPS.
 | 20 | CURLEVEL | string | Current level name |
 | 21 | HORSEGIF | string | Horse image |
 | 22 | HORSEBUSHES | 1 byte | Horse bush hiding |
-| 23 | EFFECTCOLORS | 4 bytes | RGBA effect color |
-| 24 | CARRYNPC | 4 bytes | Carried NPC ID (GINT4) |
+| 23 | EFFECTCOLORS | 1 or 5 bytes | Effect colors. 1 byte when the first value is 0, else 5 |
+| 24 | CARRYNPC | 3 bytes (GINT3) | Carried NPC ID |
 | 34 | ACCOUNTNAME | string | Account name |
 | 35 | BODYIMG | string | Body image |
 
 ### Sword/Shield Power Encoding
 
-**Sword (prop 8):**
-- Value 0-4: Built-in sword (power = value)
-- Value > 4: Custom sword (power = value - 30, followed by image string)
+Each of these props carries a bias. Test the raw byte against the bias, never
+against the bare power range.
 
-**Shield (prop 9):**
-- Value 0-3: Built-in shield (power = value)
-- Value > 3: Custom shield (power = value - 10, followed by image string)
+**Sword (prop 8), bias 30:**
+- Raw 0: no sword.
+- Raw 1-4: built-in sword. The power is the raw value, and no image follows.
+- Raw >= 30: the power is `raw - 30`, and a length-prefixed image string follows.
+
+**Shield (prop 9), bias 10:**
+- Raw 0: no shield.
+- Raw 1-3: built-in shield. The power is the raw value, and no image follows.
+- Raw >= 10: the power is `raw - 10`, and a length-prefixed image string follows.
+
+A branch on `raw > 4` reads an image string that is not on the wire, and it
+desyncs every following property in the packet. The oracle is
+`GServer-v2/server/src/utilities/PropertySerializers.cpp`
+(`PropertySwordPower::serialize` and `::deserialize`, plus the shield pair).
 
 ### Head Image Encoding (prop 11)
 
@@ -612,22 +626,39 @@ if len_val >= 100:
 | 79 | Y2 | 2 bytes | Y in pixels / 16 (signed) |
 | 80 | Z2 | 2 bytes | Z in pixels / 16 |
 
-### GATTRIB Properties (36-74)
+### GATTRIB Properties (37-74)
 
-GATTRIBs are custom string attributes for scripting:
+GATTRIBs are custom string attributes for scripting. For a PLAYER they are the
+30 ids `[37-41, 46-49, 54-74]`:
 
 | ID | Name |
 |----|------|
-| 36 | GATTRIB1 |
-| 37 | GATTRIB2 |
+| 36 | **RATING** — not a GATTRIB (ELO, special encoding) |
+| 37 | GATTRIB1 |
+| 38 | GATTRIB2 |
 | ... | ... |
 | 74 | GATTRIB30 |
+
+**The GATTRIB block is NOT contiguous, and it does not start at 36.** Prop 36 is
+`RATING`. Inside the apparent range sit ATTACHNPC, GMAPLEVELX, GMAPLEVELY and Z
+(42-45), and JOINLEAVELVL, DISCONNECT, LANGUAGE and PLAYERLISTSTATUS (50-53).
+None of those is a GATTRIB. A naive `GATTRIB1 <= id <= GATTRIB30` range test
+reads them as length-prefixed strings and corrupts the rest of the packet. That
+was a live pygserver bug, fixed on 2026-07-25. Derive the real ids from
+`reborn_protocol.props.PLAYER_PROPS`, never from a range.
+
+NPC GATTRIB ids are a **different set** and do start at 36. Do not reuse the
+player list for NPCs. See the NPC GATTRIB mapping below.
+
+Property streams also arrive in ASCENDING id order. A strict parser STOPS at the
+first descending id instead of raising an error, so an out-of-order writer makes
+entities silently arrive half-populated.
 
 ---
 
 ## NPC Properties
 
-Used in PLO_NPCPROPS packets. Format: `GINT3(npc_id) [props...]`
+PLO_NPCPROPS packets carry these. Format: `GINT3(npc_id) [props...]`
 
 | ID | Name | Size | Description |
 |----|------|------|-------------|
@@ -635,9 +666,23 @@ Used in PLO_NPCPROPS packets. Format: `GINT3(npc_id) [props...]`
 | 1 | SCRIPT | GSHORT(len) + string | NPC script |
 | 2 | X | 1 byte | X position (half-tiles) |
 | 3 | Y | 1 byte | Y position (half-tiles) |
-| 5 | DIR | 1 byte | Direction |
-| 75 | OSTYPE | string | OS type |
-| 76 | CODEPAGE | 3 bytes | Text codepage |
+| 4 | POWER | 1 byte | Hearts |
+| 5 | RUPEES | 3 bytes (GINT3) | Rupee count |
+| 6 | ARROWS | 1 byte | Arrow count |
+| 7 | BOMBS | 1 byte | Bomb count |
+| 8 | GLOVEPOWER | 1 byte | Glove power |
+| 9 | BOMBPOWER | 1 byte | Bomb power |
+| 10 | SWORDIMAGE | bias form | Sword power + image |
+| 52 | CURLEVEL | string | Current level. Sent on every NPC level change |
+| 75 | X2 | 2 bytes | Signed pixel X |
+| 76 | Y2 | 2 bytes | Signed pixel Y |
+| 77 | Z2 | 2 bytes | Signed pixel Z |
+
+**NPC prop ids are NOT player prop ids.** The two tables diverge early and the
+overlap is the single biggest source of garbled NPC parsing. NPC 5 is `RUPEES`
+(3 bytes), not a 1-byte direction. NPC 75/76/77 are `X2`/`Y2`/`Z2`, not
+`OSTYPE`/`TEXTCODEPAGE`. Reading the player meanings here misaligns the rest of
+the packet. Take the ids from `reborn_protocol.props.NPC_PROPS`.
 
 ### NPC GATTRIB Mapping (for PLI_NPCPROPS)
 
@@ -658,23 +703,31 @@ Used in PLO_NPCPROPS packets. Format: `GINT3(npc_id) [props...]`
 
 ## Baddy Properties
 
-Used in PLO_BADDYPROPS packets. Format: `GCHAR(baddy_id) [props...]`
+PLO_BADDYPROPS packets carry these. Format: `GCHAR(baddy_id) [props...]`
 
 | ID | Name | Size | Description |
 |----|------|------|-------------|
+| 0 | ID | 1 byte | Baddy ID |
 | 1 | X | 1 byte | X position (half-tiles) |
 | 2 | Y | 1 byte | Y position (half-tiles) |
 | 3 | TYPE | 1 byte | Baddy type ID |
-| 4 | POWER | 1 byte | Remaining health |
-| 5 | DIR | 1 byte | Direction |
-| 6 | IMAGE | string | Custom image |
-| 7 | ANI | string | Animation name |
+| 4 | POWERIMAGE | bias form | Power byte, then an image string when biased |
+| 5 | MODE | 1 byte | Baddy mode |
+| 6 | ANI | 1 byte | Animation index (a BYTE, not a string) |
+| 7 | DIR | 1 byte | Direction |
+| 8 | VERSESIGHT | string | Sight verse |
+| 9 | VERSEHURT | string | Hurt verse |
+| 10 | VERSEATTACK | string | Attack verse |
+
+Wire order is `ID, X, Y, TYPE, POWERIMAGE, MODE, ANI, DIR, ...`. Older tables
+list ids 4-7 as `POWER`, `DIR`, `IMAGE`, `ANI`. That is wrong on every one of
+the four, and it misreads every baddy packet from the fourth property on.
 
 ---
 
 ## Remote Control Packets
 
-RC (Remote Control) packets for server administration.
+The RC (Remote Control) packets administer the server.
 
 ### Server to RC Client
 
@@ -886,4 +939,4 @@ client._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
 ---
 
-*This documentation covers pyReborn protocol implementation. For server-specific behaviors, refer to your server's documentation.*
+*This document covers the pyReborn protocol implementation. For server-specific behavior, read your server's own documentation.*

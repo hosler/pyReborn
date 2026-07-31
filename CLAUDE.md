@@ -2,7 +2,8 @@
 
 ## Project Overview
 
-**PyReborn** is a Python client library for Reborn game servers. Zero external dependencies for core functionality, optional pygame for the graphical client.
+**PyReborn** is a Python client library for Reborn game servers. The core has no
+external dependencies. The graphical client needs pygame.
 
 ## Directory Structure
 
@@ -19,7 +20,7 @@ pyreborn/
 ├── client_warp.py        # Warp and level-link transition mixin
 ├── client_state.py       # Client's state components (level/gmap/entities/...)
 ├── handlers/             # Packet handlers, one module per domain
-│   ├── registry.py       # @handles(<PLO id>) table; grep it to find a handler
+│   ├── registry.py       # @handles(<PLO id>) table. Grep it to find a handler
 │   ├── level.py          # level/board/warp        session.py  # handshake/auth
 │   ├── entities.py       # players/NPCs            combat.py   # combat relay
 │   ├── chat.py           # chat/RC                 files.py    # downloads
@@ -46,7 +47,7 @@ pyreborn/
 │   ├── host_functions.py       # call_function + message_code
 │   └── runtime.py        # ClientGS1
 ├── gs2_client/           # GS2 bytecode transport/state package
-│   ├── __init__.py       # Compatibility exports; re-exports BY VALUE, so
+│   ├── __init__.py       # Compatibility exports. Re-exports BY VALUE, so
 │   │                     #   monkeypatch the owning submodule, not this
 │   ├── registry.py       # Builtin tables + @_gs2_builtin/@_gs2_object
 │   ├── helpers.py        # CSV/image/admin-guild helpers
@@ -98,8 +99,8 @@ pyreborn/
 game_tester/              # Automated QA framework
 ├── __init__.py           # Exports all modules
 ├── login.py              # login_client/login_session - the ONE connect+login
-│                         #   path, with guaranteed teardown. Use it; don't
-│                         #   hand-roll connect/login (leaked sockets before).
+│                         #   path, with guaranteed cleanup. Use it. Do not
+│                         #   hand-roll connect/login (that leaked sockets).
 ├── game_bot.py           # Headless bot wrapper for Client (GameBot.ACTIONS)
 ├── bug_detector.py       # Anomaly detection utilities
 ├── multi_bot.py          # Multi-bot coordination (PvP, visibility)
@@ -138,7 +139,8 @@ python -m game_tester --host localhost --port 14900
 
 ## Automated QA Testing (game_tester)
 
-The `game_tester` module provides headless automated testing for the game client and server.
+The `game_tester` module runs headless automated tests against the game client
+and server.
 
 ### Running Tests
 
@@ -169,98 +171,109 @@ python -m game_tester --behaviour --behaviour-server "Login" --rebaseline
 
 ### Behavioural fingerprints (`--behaviour`)
 
-**Run this after ANY change to the GS2 VM or client host.** The rest of the
-suite cannot detect a *branch flip* in real server content: if a semantic
-change makes a server's own scripts take the wrong path, there is no error,
-no warning and no failing test — the client just silently builds nothing.
-That is exactly how a `gs2_compare(<object>, null)` change broke the public
-Login server on 2026-07-24 with all 754 tests passing.
+**Run this after ANY change to the GS2 VM or client host.** The other suites
+cannot detect a *branch flip* in real server content. If a semantic change makes
+a server's own scripts take the wrong path, you get no error, no warning and no
+failing test. The client silently builds nothing. That is how a
+`gs2_compare(<object>, null)` change broke the public Login server on 2026-07-24
+while all 754 tests passed.
 
-`--behaviour` logs into each known server with a real `GameClient`, pumps a
-fixed window of frames, and asserts ~34 invariants against
+`--behaviour` logs into each known server with a real `GameClient`. It pumps a
+fixed window of frames. It then asserts ~34 invariants against
 `game_tester/behaviour_baselines.json`, in four families:
 
-- **structure** — GUI root / named-control / control-class counts, which
-  weapons load and which must *never* load, event and host-call volumes, no
-  new missing builtins, no new warning templates;
+- **structure** — GUI root, named-control and control-class counts. Also which
+  weapons load and which must *never* load, event and host-call volumes, no new
+  missing builtins, and no new warning templates.
 - **content** — `tree_nodes`, `list_rows`, `text_controls` and the
-  `required_filled_controls` pin. **Structure alone is not enough**: on
-  2026-07-25 the Login server list came up completely EMPTY and every
-  structural count stayed inside its band, so the harness reported 25/25 over
-  a broken UI. A control that exists is not a control that has anything in it.
+  `required_filled_controls` pin. **Structure alone is not enough.** On
+  2026-07-25 the Login server list came up completely EMPTY. Every structural
+  count stayed inside its band, so the harness reported 25/25 over a broken UI.
+  A control that exists is not a control that has anything in it.
+
   Do NOT pin a control whose population depends on which row the listserver
-  happens to return first: `serverlist_description0`, `serverlist_eventnews`
-  and `serverlist_tablestab` were removed from Login/Login DEV on 2026-07-26
-  for that reason. They belong to the Account Info pane, which
-  `Rescripted_Serverlist`'s `showLoginInfo()` only builds when the first listed
-  server is a `"P "`/`"3 "` entry. A `"U "` server first yields a blank-named
-  root folder (`serverlistcats[4]` is unset) whose auto-select instead runs
-  `showServerListEntry(serverlistentries[0])` — its unset `id` reads 0.0, so
-  `node.id >= 0` HOLDS — and the faithful engine builds the MAP pane for that
-  first row (`Serverlist_Map` with unfetchable `login_servermap_*` art, hence
-  0×0, plus per-tick `updateServerMapIcons` host calls; Login was re-baselined
-  for this on 2026-07-26). Under the pre-lattice `to_num` compare, the
-  `this.selectedserver == entry` guard at weapon-Rescripted_Serverlist.txt:559
-  was spuriously TRUE (`<unset> == "<row string>"`), which early-returned and
-  built neither pane — the earlier claim that `node.id >= 0` fails was a
-  mis-attribution of that masking. Either way pane choice is payload-order
-  dependent; the pruned pins stay pruned. `serverlist_serverlist` is the real
-  list-is-populated signal; keep that one;
-- **geometry** — `within_parent`, `nonzero_area`, `window_layout`. These catch
-  a layout that collapses without changing any count: an unimplemented
-  `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults
-  with *identical* roots/named/controls/tree_nodes/list_rows to the healthy
-  capture;
-- **assets** — `assets_refused`, a ceiling (not a band) on how many files the
-  server declined to send. A refusal is a fact about the SERVER's content, not
-  about our engine — the login serverlist asks for a per-server icon most
-  servers never published — so counting them as engine warnings pinned
-  `no_new_warnings` red on four servers for something no client change could
-  fix. They are counted separately instead, and only a *jump* fails: asking
-  for art nobody has is a client bug even though each refusal is not. Fewer
-  refusals always passes.
+  returns first. That is why `serverlist_description0`, `serverlist_eventnews`
+  and `serverlist_tablestab` left Login and Login DEV on 2026-07-26. They belong
+  to the Account Info pane. `Rescripted_Serverlist`'s `showLoginInfo()` builds
+  that pane only when the first listed server is a `"P "` or `"3 "` entry. A
+  `"U "` server first yields a blank-named root folder, because
+  `serverlistcats[4]` is unset. Its auto-select instead runs
+  `showServerListEntry(serverlistentries[0])`. The unset `id` reads 0.0, so
+  `node.id >= 0` HOLDS, and the faithful engine builds the MAP pane for that
+  first row. That pane is `Serverlist_Map`, with unfetchable
+  `login_servermap_*` art and therefore a 0×0 size, plus per-tick
+  `updateServerMapIcons` host calls. Login was re-baselined for this on
+  2026-07-26.
 
-A server's most interesting UI often only exists once someone opens it, so a
-target may list `open_ui` entries (`"<weapon vm>:<function>"`) that are
-invoked after the observation window — Login opens `-Serverlist_Chat.openChat`.
-**Only ever list openers that build UI locally**; a function that sends is a
-live action on someone else's server.
+  Under the pre-lattice `to_num` compare, the `this.selectedserver == entry`
+  guard at weapon-Rescripted_Serverlist.txt:559 was spuriously TRUE
+  (`<unset> == "<row string>"`). It returned early and built neither pane. The
+  earlier claim that `node.id >= 0` fails was a mis-attribution of that masking.
+  Either way, pane choice depends on payload order, so the pruned pins stay
+  pruned. `serverlist_serverlist` is the real list-is-populated signal. Keep
+  that one.
+- **geometry** — `within_parent`, `nonzero_area`, `window_layout`. These catch a
+  layout that collapses without changing any count. An unimplemented
+  `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults, with
+  *identical* roots, named controls, controls, tree_nodes and list_rows to the
+  healthy capture.
+- **assets** — `assets_refused`, a ceiling rather than a band. It counts the
+  files the server declined to send. A refusal is a fact about the SERVER's
+  content, not about our engine. The login serverlist asks for a per-server icon
+  that most servers never published. Counting those as engine warnings pinned
+  `no_new_warnings` red on four servers, for something no client change could
+  fix. The harness counts them separately instead, and only a *jump* fails.
+  Asking for art nobody has is a client bug even though each refusal is not.
+  Fewer refusals always passes.
 
-Bands are deliberately loose enough to survive normal content churn and tight
-enough to catch a branch flip. When a real content or engine change moves a
-metric legitimately, re-baseline **that server** with `--rebaseline` (curated
-pins are preserved, and pin kinds added since the baseline was recorded get
-seeded; `--rebaseline-pins` resets them) and say why in the commit.
+A server's most interesting UI often exists only after someone opens it. A
+target may therefore list `open_ui` entries (`"<weapon vm>:<function>"`) that
+the harness invokes after the observation window. Login opens
+`-Serverlist_Chat.openChat`. **Only ever list openers that build UI locally.** A
+function that sends is a live action on someone else's server.
+
+Bands are loose enough to survive normal content churn and tight enough to catch
+a branch flip. When a real content or engine change moves a metric legitimately,
+re-baseline **that server** with `--rebaseline` and say why in the commit. That
+flag keeps the curated pins, and it seeds pin kinds added since the baseline was
+recorded. `--rebaseline-pins` resets them.
 
 `tests/fixtures/fingerprint_login_{good,broken,emptylist,layout}.json` are real
-captures of the healthy server and of three different outages, replayed offline
-by `tests/unit/test_behaviour_fingerprint.py` — so "does this still catch THE
-outage?" stays answerable with no network, even after a re-baseline. The
-`emptylist` and `layout` fixtures also assert the *converse*: that the
-structural invariants alone would NOT have caught them.
+captures of the healthy server and of three different outages.
+`tests/unit/test_behaviour_fingerprint.py` replays them offline. "Does this
+still catch THE outage?" therefore stays answerable with no network, even after
+a re-baseline. The `emptylist` and `layout` fixtures also assert the *converse*.
+The structural invariants alone would NOT have caught either one.
 
 ### GS1 client-engine conformance (`--gs1-client`)
 
-`python -m game_tester --gs1-client` pins the CLIENT-side GS1 engine
-(`pyreborn/gs1_client.py` running in the real Client + GameClient + NPCHandler
-stack, SDL dummy) against the decompiled reference client. Each of the 73
-rows in `game_tester/gs1_client_conformance.py` is an executable transcription
-of one FourPlay citation (`Preagonal/FourPlay/quattroplay/src/...` file:line
-in the row), covering footprint blocking/dontblock, touchtestd touch,
-timeout=0 cancel, setani-vs-setcharani, say/say2/message/sign ordering,
-tiles[]/updateboard, hurt half-hearts, putbomb/putexplosion wire+local pairs,
-hideimg(s), hidelocal/showlocal and selectedweapon — so a semantic change that
-breaks a row contradicts a cited reference line, not a guess. It spawns its
-own throwaway pygserver (never targets `--host`), skips wholesale if that
-fails, and finishes in ~12s. Two delivery gotchas are baked in and documented
-in the module docstring: weapon-channel scripts must be ONE line (pygserver's
-weapon-text builder skips the newline→0xa7 GS1 wire mangling — pinned by the
-`weapon_multiline_truncation` divergence row) and every fixture weapon ships
-an empty `.gs2bc` cache, because a gs2test binary in the checkout otherwise
-compiles GS1-style bodies as GS2 and the cases silently run in the GS2 VM
-instead of the engine under test. Rows marked `[PINNED DIVERGENCE]` assert the
-current known-divergent shipping state (stacked-sign collapse, weapon
-truncation) and go red when the server side gets fixed.
+`python -m game_tester --gs1-client` pins the CLIENT-side GS1 engine against the
+decompiled reference client. It runs `pyreborn/gs1_client.py` inside the real
+Client, GameClient and NPCHandler stack, with the SDL dummy driver.
+
+Each of the 73 rows in `game_tester/gs1_client_conformance.py` is an executable
+transcription of one FourPlay citation. The row carries that citation as a
+`Preagonal/FourPlay/quattroplay/src/...` file:line reference. The rows cover
+footprint blocking and dontblock, touchtestd touch, timeout=0 cancel,
+setani-vs-setcharani, say/say2/message/sign ordering, tiles[]/updateboard, hurt
+half-hearts, putbomb/putexplosion wire+local pairs, hideimg(s),
+hidelocal/showlocal and selectedweapon. A semantic change that breaks a row
+therefore contradicts a cited reference line, not a guess.
+
+The suite starts its own throwaway pygserver and never targets `--host`. If that
+server fails to start, the suite skips wholesale. A full run takes about 12
+seconds.
+
+Two delivery gotchas are baked in, and the module docstring records both.
+Weapon-channel scripts must be ONE line, because pygserver's weapon-text builder
+skips the newline→0xa7 GS1 wire mangling. The `weapon_multiline_truncation`
+divergence row pins that. Every fixture weapon also ships an empty `.gs2bc`
+cache. Without it, a gs2test binary in the checkout compiles GS1-style bodies as
+GS2, and the cases silently run in the GS2 VM instead of the engine under test.
+
+Rows marked `[PINNED DIVERGENCE]` assert the current known-divergent shipping
+state: stacked-sign collapse and weapon truncation. They go red when someone
+fixes the server side.
 
 ### Test Categories
 
@@ -367,21 +380,21 @@ bot.disconnect()
 
 ### Known Detectable Bugs
 
-The framework can detect:
-- **Position desync** - Client/server position mismatch
-- **Stuck detection** - Bot unable to move for extended period
-- **Out of bounds** - Player outside level boundaries
-- **Position discontinuity** - Sudden teleportation/jumps
-- **PvP damage not applied** - Attacks don't reduce hearts
-- **Chat not relayed** - Messages not reaching other players
-- **Level data missing** - Tiles not loaded
+The framework detects:
+- **Position desync** - Client and server positions do not match
+- **Stuck detection** - The bot cannot move for an extended period
+- **Out of bounds** - The player is outside the level boundaries
+- **Position discontinuity** - A sudden teleport or jump
+- **PvP damage not applied** - Attacks do not reduce hearts
+- **Chat not relayed** - Messages do not reach other players
+- **Level data missing** - Tiles did not load
 - **Invalid tile values** - Corrupted tile data
 
 ---
 
 ## Critical: Player Property IDs
 
-When parsing player props, each prop has a specific byte size. Getting this wrong causes parser misalignment.
+Each player prop has a specific byte size. A wrong size misaligns the parser.
 
 ```python
 # Single byte props (value = byte - 32)
@@ -435,24 +448,24 @@ sword:  power 0             -> single byte 0
 shield: same, with bias 10 and bare range 1..3
 ```
 
-Receiving: `raw < bias` is a bare power; `raw >= bias` means `power = raw - bias`
-followed by the image. **Branching on `power > 4` instead reads an image string
-that is not on the wire and desyncs every following property in the packet.**
-Bare powers 1..4 get a synthesised default name (`sword{N}.png`, `.gif` on
-classic servers).
+When you receive a value, `raw < bias` is a bare power. `raw >= bias` means
+`power = raw - bias`, followed by the image. **A branch on `power > 4` instead
+reads an image string that is not on the wire, and desyncs every following
+property in the packet.** Bare powers 1..4 get a synthesized default name
+(`sword{N}.png`, or `.gif` on classic servers).
 
-Don't hand-roll any of this -- `reborn_protocol.props` owns the descriptor
-tables (`PLAYER_PROPS`, `NPC_PROPS`, `BADDY_PROPS`) plus `decode_value`,
-`encode_value` and `parse_prop_stream`. It replaced six independent parsers
-across this client and pygserver, which is what let them drift apart.
+Do not hand-roll any of this. `reborn_protocol.props` owns the descriptor tables
+(`PLAYER_PROPS`, `NPC_PROPS`, `BADDY_PROPS`) plus `decode_value`, `encode_value`
+and `parse_prop_stream`. It replaced six independent parsers across this client
+and pygserver, which is what let them drift apart.
 
 Two more traps from the same fix:
-- `PLPROP_COLORS` is 5 bytes on classic and 8 on v6 new-world, and the server
-  picks the width from a server-wide mode, NOT from the client version -- so it
-  cannot be derived from the handshake.
-- Property streams are emitted in ASCENDING id order. A strict parser STOPS at
-  the first descending id rather than erroring, so an out-of-order writer makes
-  entities silently arrive half-populated.
+- `PLPROP_COLORS` is 5 bytes on classic and 8 on v6 new-world. The server picks
+  the width from a server-wide mode, NOT from the client version, so you cannot
+  derive it from the handshake.
+- Property streams arrive in ASCENDING id order. A strict parser STOPS at the
+  first descending id instead of raising an error, so an out-of-order writer
+  makes entities silently arrive half-populated.
 
 ### X2/Y2 Decoding (High Precision Position)
 
@@ -471,7 +484,8 @@ def decode_position(b1, b2):
 ## Critical: Packet Parsing Rules
 
 ### Parser Alignment
-**Every prop must consume the correct number of bytes.** If a prop consumes wrong bytes, all subsequent props are misaligned and you'll read garbage.
+**Every prop must consume the correct number of bytes.** If one prop consumes
+the wrong count, every later prop is misaligned and you read garbage.
 
 Common symptoms of misalignment:
 - Y position jumps randomly (e.g., smooth movement then sudden jump to 39.5)
@@ -491,12 +505,14 @@ elif packet_id == PacketID.PLO_OTHERPLPROPS:
 
 ### parse_other_player Must Handle All Props
 
-The `parse_other_player` function in packets.py must have handlers for ALL prop types that could appear, especially:
+The `parse_other_player` function in packets.py needs a handler for EVERY prop
+type that can appear. Watch these:
 - Props 78, 79, 80 (X2, Y2, Z2) - 2 bytes each
 - Props 75, 76 (OSTYPE, CODEPAGE) - string and 3-byte gInt
 - All GATTRIB props (46-74) - strings
 
-If a prop falls through to the default `else` clause, it only skips 1 byte, causing misalignment for multi-byte props.
+A prop that falls through to the default `else` clause skips only 1 byte. That
+misaligns every multi-byte prop after it.
 
 ## Sprite Positioning Rules
 
@@ -506,16 +522,16 @@ If a prop falls through to the default `else` clause, it only skips 1 byte, caus
 # Correct - sprites render at entity position
 self.screen.blit(sprite, (x, y))
 
-# WRONG - don't center sprites
+# WRONG - do not center sprites
 self.screen.blit(sprite, (x - w//2, y - h//2))  # NO!
 ```
 
 ## GMAP Coordinate System
 
 **Do not re-derive this math inline.** `reborn_protocol.coords` owns it for both
-this client and pygserver, because independently-written copies are what caused
-the repeated coordinate-frame bugs (props frame, door frame, edge-warp frame,
-gani anchor, cross-seam collision).
+this client and pygserver. Independently-written copies caused the repeated
+coordinate-frame bugs: props frame, door frame, edge-warp frame, gani anchor,
+and cross-seam collision.
 
 ```python
 from reborn_protocol.coords import (
@@ -525,18 +541,19 @@ from reborn_protocol.coords import (
 )
 ```
 
-Local coords are 0-63 within a segment; `world = local + grid * 64`.
+Local coords are 0-63 within a segment. The world coordinate is
+`local + grid * 64`.
 
 **Segment selection must use `math.floor(world / 64)`.** `int(world / 64)`
-truncates toward zero and disagrees for negative coordinates: world `-1.5` is
-segment -1 / local 62 under floor, but segment 0 / local 63 under `int()`. That
-exact mismatch made the debug tile-editor's hover readout name a different tile
-than the one it edited (fixed 2026-07-25).
+truncates toward zero and disagrees for negative coordinates. World `-1.5` is
+segment -1 and local 62 under floor, but segment 0 and local 63 under `int()`.
+That mismatch made the debug tile-editor's hover readout name a different tile
+than the one it edited. It was fixed on 2026-07-25.
 
 Known limitation, deliberately not "fixed": for a negative magnitude below one
-ULP of 64 (e.g. `-1e-16`), `world % 64` returns exactly `64.0` rather than
-staying in `[0, 64)`. Unreachable for real coordinates, which are all multiples
-of 1/16 tile.
+ULP of 64 (for example `-1e-16`), `world % 64` returns exactly `64.0` instead of
+a value in `[0, 64)`. Real coordinates never reach that case, because they are
+all multiples of 1/16 tile.
 
 ## Key Packet IDs
 
@@ -562,7 +579,7 @@ PLI_LEVELWARP = 29       # Warp request
 
 ### Run Automated Tests First
 
-Before manual debugging, run the game_tester to identify issues:
+Before you debug by hand, run game_tester to find the issue:
 
 ```bash
 python -m game_tester --report debug_report
@@ -578,7 +595,9 @@ print(f"prop={prop_id} pos={pos} remaining={len(data)-pos}")
 
 ### Check for Parser Misalignment
 
-If you see unexpected prop IDs (like prop 0 appearing multiple times in one packet), the parser is misaligned. Check that all preceding props consumed the correct bytes.
+Unexpected prop IDs mean the parser is misaligned. Prop 0 more than once in a
+single packet is the usual sign. Check that every preceding prop consumed the
+correct byte count.
 
 ### Use BugDetector for Specific Checks
 
@@ -606,8 +625,8 @@ result = BugDetector.check_tiles_valid(client)
 
 ## Which server the tier suites need
 
-The QA suites do NOT all run against the same server world, and running one
-against the wrong world produces misleading results rather than an error.
+The QA suites do NOT all run against the same server world. A suite run against
+the wrong world gives misleading results instead of an error.
 
 ```bash
 cd pygserver && python run_server.py                      # default world
@@ -623,42 +642,43 @@ python -m game_tester --gmap          # needs `gmaps = chicken.gmap`
 ```
 
 `--gmap` refuses to run when the server has no gmap loaded, because it used to
-pass *vacuously*: with `gmaps =` unset every warp onto a segment silently fails,
-both bots stay on the start level, and "can they see each other" / "does chat
-arrive" are trivially true. Three of six tests passed while testing nothing,
-which is how two real cross-segment failures stayed hidden. If you see
-`gmap_world_loaded` fail, you started the wrong world.
+pass *vacuously*. With `gmaps =` unset, every warp onto a segment fails silently
+and both bots stay on the start level. "Can they see each other" and "does chat
+arrive" are then trivially true. Three of six tests passed while they tested
+nothing, which hid two real cross-segment failures. If `gmap_world_loaded`
+fails, you started the wrong world.
 
-`--tier1` provisions its own large-file fixture (generated from a fixed seed)
-into whichever local server world directory it finds. It used to depend on an
-untracked 45000-byte blob that existed on exactly one machine.
+`--tier1` writes its own large-file fixture into whichever local server world
+directory it finds, and it generates that fixture from a fixed seed. The suite
+used to depend on an untracked 45000-byte blob that existed on exactly one
+machine.
 
 ## Where assets live
 
 **Game art is not committed to this repo.** `pyreborn/assets/` is gitignored, so
-a fresh clone has almost nothing in it and the client must work with it empty.
-`pyreborn/asset_paths.py` owns the three tiers — don't hand-roll paths or
-lowercase names anywhere else:
+a fresh clone has almost nothing in it. The client must work with that directory
+empty. `pyreborn/asset_paths.py` owns the three tiers. Do not hand-roll paths or
+lowercase names anywhere else.
 
 | Tier | Location | What |
 |---|---|---|
 | download cache | `~/.cache/pyreborn/servers/{host}_{port}/` (`$PYREBORN_CACHE_DIR`) | everything the server sends, + `index.json` of modtime/size/SHA-256 metadata |
 | user content | any directory you point at (below), else `~/.local/share/pyreborn/content/` | base art a server assumes you already have |
-| bundled | `pyreborn/assets/` | last resort; nearly empty in a clone |
+| bundled | `pyreborn/assets/` | last resort, nearly empty in a clone |
 
-Searched in that order, so a server's own art wins over your stock copy of the
-same filename.
+The client searches the tiers in that order, so a server's own art wins over
+your stock copy of the same filename.
 
-The middle tier exists because the original client shipped base art **built in**,
-so servers only publish their own custom content and are under no obligation to
-serve `pics1.png`, player ganis, `sprites.png`, `body.png`, `head0.png` or the
-`COMMON_SOUNDS`. If those are missing the client renders an invisible player and
-nothing errors.
+The middle tier exists because the original client shipped base art **built
+in**. Servers therefore publish only their own custom content. No server has to
+serve `pics1.png`, the player ganis, `sprites.png`, `body.png`, `head0.png` or
+the `COMMON_SOUNDS`. If those files are missing, the client renders an invisible
+player and reports no error.
 
 ### Pointing at an existing client installation
 
 The quickest way to fill that tier is to point pyReborn at an installed game
-client. Persisted to prefs, so it is only given once:
+client. The client saves the path to prefs, so you give it once:
 
 ```bash
 python -m pyreborn.example_pygame --content-dir /path/to/client-install
@@ -668,46 +688,47 @@ python -m pyreborn.example_pygame --clear-content-dirs
 
 `$PYREBORN_CONTENT_DIR` takes an `os.pathsep`-separated list for one-off runs.
 
-Detection is layout-based (`asset_paths.looks_like_client_install`), never
-name-based, so any directory laid out like a client works. Pointing at the
-install root or at its `levels/` subdirectory both resolve to the same pair of
-roots; each manager's `subdirs` probing then finds `levels/ganis`,
-`levels/heads`, `sounds/` and the rest. A real install supplies the entire
-tier-2 set — all 12 base player ganis, `sprites.png`, `pics1.png`, the
-body/head/sword/shield defaults and ~110 sounds.
+`asset_paths.looks_like_client_install` detects an install from its layout,
+never from its name, so any directory laid out like a client works. The install
+root and its `levels/` subdirectory both resolve to the same pair of roots. Each
+manager then probes its `subdirs` and finds `levels/ganis`, `levels/heads`,
+`sounds/` and the rest. A real install supplies the entire tier-2 set: all 12
+base player ganis, `sprites.png`, `pics1.png`, the body/head/sword/shield
+defaults and about 110 sounds.
 
 Every resolved root logs one INFO line with what it found
 (`Content root /path: ganis=114, images=19, sounds=110`). A wrong directory
-reports zeros — which is the whole point, since every other asset failure in
+reports zeros. That is the whole point, because every other asset failure in
 this client is silent.
 
-The download cache is **advisory**: any IO error degrades to memory-only. It is
-revalidated with `PLI_UPDATEFILE`/`PLO_FILEUPTODATE` rather than trusting mtime,
-and every disk read is additionally verified against its recorded byte length
-and SHA-256 digest before it can be served or conditionally revalidated.
-`PLO_UPDATEPACKAGEISUPDATED` (187) drops a stale entry mid-session.
+The download cache is **advisory**. Any IO error degrades it to memory-only. The
+client revalidates each entry with `PLI_UPDATEFILE` and `PLO_FILEUPTODATE`
+instead of trusting the mtime. It also checks every disk read against the
+recorded byte length and SHA-256 digest before it serves or revalidates that
+entry. `PLO_UPDATEPACKAGEISUPDATED` (187) drops a stale entry mid-session.
 
 Three traps this replaced, all of which cost a real outage:
-- There used to be a `cache/` directory *inside the checkout* that nothing in
-  the client ever wrote. It was populated out of band, so `rm -rf cache/` took
-  the tileset with it and a fresh clone never had one at all.
-- Asset names are keyed through `normalize_asset_name()` (basename +
-  lowercase). Servers descend from a Windows client and send mixed casing; on
-  Linux `Body.png` and `body.png` were two cache entries, two downloads and two
-  surfaces, with the requested/failed bookkeeping split so neither deduped.
-- A zero-byte `pics1.png` from a truncated large-file transfer kept its recorded
-  modtime, so the server repeatedly declared it current. Because the download
-  tier is searched first, that poisoned entry also shadowed a good user copy
-  and left the whole world placeholder-coloured across restarts.
+- A `cache/` directory once sat *inside the checkout*, and nothing in the client
+  ever wrote to it. Someone populated it out of band. `rm -rf cache/` therefore
+  took the tileset with it, and a fresh clone never had one at all.
+- `normalize_asset_name()` keys every asset name by basename and lowercase.
+  Servers descend from a Windows client and send mixed casing. On Linux,
+  `Body.png` and `body.png` became two cache entries, two downloads and two
+  surfaces. The requested and failed bookkeeping split as well, so neither
+  entry deduped.
+- A truncated large-file transfer left a zero-byte `pics1.png` that kept its
+  recorded modtime, so the server declared it current every time. The client
+  searches the download tier first, so that poisoned entry also shadowed a good
+  user copy. The whole world stayed placeholder-colored across restarts.
 
 ## Running the tests
 
-Use **`/usr/bin/python3.13`**. The system `python3` is 3.14 and lacks
-`hypothesis`, so `reborn-protocol`'s property suite silently fails to *collect*
-under it and you get a false green.
+Use **`/usr/bin/python3.13`**. The system `python3` is 3.14 and has no
+`hypothesis`. Under it, `reborn-protocol`'s property suite silently fails to
+*collect* and you get a false green.
 
-Do **not** pass `-q`: `pyproject.toml`'s addopts already includes it, and a
-second `-q` (`-qq`) suppresses the pass/fail summary line entirely.
+Do **not** pass `-q`. The `addopts` in `pyproject.toml` already includes it. A
+second `-q` gives `-qq`, which suppresses the pass/fail summary line entirely.
 
 ```bash
 /usr/bin/python3.13 -m pytest                          # unit + integration
@@ -717,17 +738,18 @@ SDL_VIDEODRIVER=dummy /usr/bin/python3.13 -m game_tester.render_smoke
 
 **`pytest` does not cover the render loop.** On 2026-07-25 the pygame client
 crashed on its first rendered frame while all 1295 unit tests and the 16/16 bot
-QA passed — nothing in either drives `_render()`. After touching anything under
-`pyreborn/game/`, run `render_smoke` or you have not tested your change.
+QA passed. Neither suite drives `_render()`. After you touch anything under
+`pyreborn/game/`, run `render_smoke`. Without it you have not tested your
+change.
 
 ## Common Pitfalls
 
-1. **Props 75/76 are NOT position** - They're OSTYPE (string) and TEXTCODEPAGE (3 bytes)
-2. **Missing prop handlers** - Causes 1-byte skip instead of correct size
+1. **Props 75/76 are NOT position** - They are OSTYPE (string) and TEXTCODEPAGE (3 bytes)
+2. **Missing prop handlers** - The parser skips 1 byte instead of the correct size
 3. **Centering sprites** - Reborn uses top-left positioning
 4. **PLO_TOALL for movement** - Use PLO_OTHERPLPROPS instead
-5. **Boundary check failures** - Must still advance pos or break to avoid infinite loops
+5. **Boundary check failures** - Advance `pos` or break, or the loop never ends
 6. **Not running QA tests** - Always run `python -m game_tester` after changes
 7. **Green pytest != working client** - see "Running the tests" above
 8. **Hand-rolling prop or coordinate math** - use `reborn_protocol.props` and
-   `reborn_protocol.coords`; duplicating either is how they drifted before
+   `reborn_protocol.coords`. Duplicating either is how they drifted before

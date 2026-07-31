@@ -1,37 +1,41 @@
 # PyReborn TODO
 
-Most of the items formerly tracked here (other-player gani/sword/shield rendering,
-sword hit detection, damage/hurt/death, bombs/explosions, arrows, NPC movement/anim,
-sign reading + dialogue boxes, trigger actions, audio, minimap, weapon switching,
-animated tiles, water/lava, item pickup/chest/inventory, level links/warping,
-config file, unit tests) are **done** — verified against current `pyreborn/`,
-`pyreborn/game/`, `tests/unit/`, and `pygserver/pygserver/` source.
+Most of the items this file once tracked are **done**. That covers other-player
+gani/sword/shield rendering, sword hit detection, damage/hurt/death,
+bombs/explosions, arrows, NPC movement and animation, sign reading with dialogue
+boxes, trigger actions, audio, the minimap, weapon switching, animated tiles,
+water and lava, item pickup with chests and inventory, level links and warping,
+the config file, and the unit tests. Each one was checked against the current
+`pyreborn/`, `pyreborn/game/`, `tests/unit/` and `pygserver/pygserver/` source.
 
-For current implementation status, known gaps, and the roadmap, see
-[`../FEATURE_GAPS.md`](../FEATURE_GAPS.md) at the repo root — it is kept up to date
-and covers pyReborn, pygserver, and reborn-protocol together.
+For the current implementation status, the known gaps and the roadmap, see
+[`../FEATURE_GAPS.md`](../FEATURE_GAPS.md) at the repo root. That file stays up
+to date and covers pyReborn, pygserver and reborn-protocol together.
 
 ## Still open (pyReborn-specific, per FEATURE_GAPS.md)
 
-- Remaining GS1 commands: `changeimgpart`, `showpoly`/`hidepoly`, `drawoverplayer`/`drawunderplayer`.
-- `pyreborn/listserver.py` defines its own local `PacketReader` instead of importing
-  the shared one from `reborn-protocol`.
+- Remaining GS1 command: `hidepoly`. `changeimgpart`, `showpoly`,
+  `drawoverplayer` and `drawunderplayer` all landed with the Bomber Arena lobby
+  work and are pinned by `game_tester/gs1_client_conformance.py`.
 - No verified `pics1.png` tile-position table for ground-item sprites
-  (`pyreborn/game/render_objects.py`) — some item drops render with placeholder art.
+  (`pyreborn/game/render_objects.py`). Some item drops therefore render with
+  placeholder art.
 - Polish: key rebinding.
-- GS2 bytecode execution (no VM) — cross-project gap, see FEATURE_GAPS.md.
+- GS2 bytecode execution (no VM). This is a cross-project gap, see
+  FEATURE_GAPS.md.
 
 ## Notes for Next Session
 
 ### Debugging Parser Issues
 If positions jump randomly, check:
-1. Are all props in parse_other_player consuming correct bytes?
-2. Is the suspect value (e.g., 39.5) coming from string data being read as position?
+1. Does every prop in parse_other_player consume the correct byte count?
+2. Does the suspect value (for example 39.5) come from string data that the
+   parser read as a position?
 3. Add debug: `print(f"prop={prop_id} pos={pos} remaining={len(data)-pos}")`
 
 ### GServer Reference
-Check prop definitions in: `GServer-v2/server/include/TAccount.h`
-Check prop encoding in: `GServer-v2/server/src/TPlayer/TPlayerProps.cpp`
+For the prop definitions, read `GServer-v2/server/include/TAccount.h`.
+For the prop encoding, read `GServer-v2/server/src/TPlayer/TPlayerProps.cpp`.
 
 ### Quick Test Command
 ```bash

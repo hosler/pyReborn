@@ -1,8 +1,8 @@
 # PyReborn
 
-A minimal, pure-Python client for Reborn servers. The only runtime dependency is
-the shared `reborn-protocol` library; the optional pygame client additionally
-requires `pygame`.
+A small, pure-Python client for Reborn servers. The only runtime dependency is
+the shared `reborn-protocol` library. The optional pygame client also needs
+`pygame`.
 
 ## Installation
 
@@ -87,7 +87,7 @@ client = connect_via_listserver(
 
 ## Pygame Client
 
-Run the included pygame game client:
+Run the bundled pygame game client:
 
 ```bash
 python -m pyreborn.example_pygame username password
@@ -107,8 +107,8 @@ Controls:
 - Q - Toggle inventory
 - Enter - Chat
 
-(Note: movement is arrow keys only — A/S/D are bound to grab/sword/weapon, so WASD
-is not a movement scheme.)
+Note: the arrow keys are the only movement keys. A, S and D are bound to grab,
+sword and weapon, so WASD is not a movement scheme.
 
 ## License
 

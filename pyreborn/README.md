@@ -1,6 +1,7 @@
 # pyreborn
 
-A minimal Python client for Reborn servers. ~1,300 lines of code with no external dependencies.
+A small Python client for Reborn servers. It is about 1,300 lines of code with
+no external dependencies.
 
 ## Installation
 
@@ -23,7 +24,7 @@ client.login("username", "password")
 client.move(1, 0)   # Move right
 client.say("Hello!")  # Chat
 
-# Update loop (call regularly in your game loop)
+# Update loop (call this often from your game loop)
 client.update()
 
 # Cleanup
