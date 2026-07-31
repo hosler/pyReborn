@@ -77,7 +77,7 @@ class _Harness(ActionsMixin, CollisionMixin, EffectsRenderMixin):
     def _touch_points(self, direction):
         return [(10, 10)]
 
-    def _update_and_render_other_thrown(self, dt):
+    def _update_and_render_other_thrown(self, dt, frame=None):
         pass
 
     def _apply_pushaway(self, dt):

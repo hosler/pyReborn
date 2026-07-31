@@ -481,17 +481,18 @@ class RenderMixin(FrameContextMixin):
         self._render_animated_tiles()                # Tier 4a: water/lava shimmer
         if self.debug_mode:
             self._render_debug_overlay()
+        self._render_bombs(frame)
+        self._update_and_render_projectiles(
+            getattr(self, '_last_dt', 0.016), frame)
+        self._update_and_render_thrown(getattr(self, '_last_dt', 0.016), frame)
+        self._render_server_explosions(frame)
         self._render_entities(frame)                # layer- then depth-sorted entities
         self._render_damage_numbers()
-        self._render_bombs()
-        self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))
-        self._update_and_render_thrown(getattr(self, '_last_dt', 0.016))
         self._render_break_effects()
         self._render_leaf_particles()
         self._render_leaps()                        # putleaps debris bursts
         self._render_water_ripples()
         self._render_chest_reveals()
-        self._render_server_explosions()
         self._render_screen_tint(frame)              # seteffect overlay, under HUD
         self._render_deferred_lights(frame)          # additive glows, above tint
 

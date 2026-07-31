@@ -5,7 +5,7 @@ Split from render.py; methods operate on the GameClient instance."""
 import time
 import math
 import random
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import pygame
 
@@ -64,6 +64,25 @@ def day_night_tint(minute_of_day):
 
 class EffectsRenderMixin(FrameContextMixin):
     """Mixin providing the above methods for GameClient."""
+
+    def _render_world_object(self, frame: Optional[FrameContext],
+                             world_y: float, draw: Callable[[], None],
+                             height_tiles: float = 1.0) -> None:
+        """Hand one layer-1 world object to the entity pass, to be drawn at its
+        turn in the depth sort rather than on top of every character.
+
+        What gets deferred is the DRAW CALL, not a captured image. Rendering
+        each object into its own scratch surface would cost a full-screen
+        allocation and a full-screen alpha scan per object per frame, and it
+        would change the result for anything that blends against the scene
+        under it. The closure already carries its own screen position.
+
+        Idle callers still draw immediately, the same contract defer_light
+        has. That is what keeps the standalone render harnesses working: they
+        call these renderers with no entity pass to flush the queue."""
+        frame = self._frame_context() if frame is None else frame
+        if not frame.defer_world_draw(draw, world_y + height_tiles):
+            draw()
 
     def _combat_surface(self, name, flags=pygame.SRCALPHA):
         """Return a screen-sized cached effect surface."""
@@ -252,7 +271,7 @@ class EffectsRenderMixin(FrameContextMixin):
         pygame.draw.circle(explosion_surf, (255, 200, 100, alpha), (radius, radius), int(radius * 0.4))
         self.screen.blit(explosion_surf, (screen_x - radius, screen_y - radius))
 
-    def _render_bombs(self):
+    def _render_bombs(self, frame: Optional[FrameContext] = None):
         """Advance and render the unified local/remote bomb registry."""
         current_time = time.time()
         active_bombs = []
@@ -268,7 +287,10 @@ class EffectsRenderMixin(FrameContextMixin):
                 # Flash faster as fuse runs out
                 flash_rate = 5 + (elapsed / fuse_time) * 10
                 if int(elapsed * flash_rate) % 2 == 0:
-                    self._render_bomb_ticking(screen_x, screen_y, elapsed)
+                    self._render_world_object(
+                        frame, bomb['y'],
+                        lambda: self._render_bomb_ticking(
+                            screen_x, screen_y, elapsed))
                 active_bombs.append(bomb)
 
             else:
@@ -283,7 +305,10 @@ class EffectsRenderMixin(FrameContextMixin):
                 radius = int(16 + bomb['power'] * 16 * explosion_progress)
                 alpha = int(255 * (1.0 - explosion_progress))
 
-                self._render_explosion_burst(screen_x, screen_y, explosion_elapsed, radius, alpha)
+                self._render_world_object(
+                    frame, bomb['y'],
+                    lambda: self._render_explosion_burst(
+                        screen_x, screen_y, explosion_elapsed, radius, alpha))
                 active_bombs.append(bomb)
 
         self.active_bombs = active_bombs
@@ -403,7 +428,8 @@ class EffectsRenderMixin(FrameContextMixin):
         pygame.draw.polygon(self.screen, fill, points)
         pygame.draw.polygon(self.screen, outline, points, 1)
 
-    def _update_and_render_projectiles(self, dt: float):
+    def _update_and_render_projectiles(self, dt: float,
+                                       frame: Optional[FrameContext] = None):
         """Advance all arrows and stop them briefly at the first solid tile."""
         current_time = time.time()
         active_projectiles = []
@@ -443,9 +469,12 @@ class EffectsRenderMixin(FrameContextMixin):
                 # Convert world position to screen position
                 screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
 
-                self._render_projectile_marker(
-                    proj.get('gani', 'arrow'), screen_x, screen_y, proj['direction'],
-                    current_time - proj.get('time', current_time))
+                self._render_world_object(
+                    frame, proj['y'],
+                    lambda: self._render_projectile_marker(
+                        proj.get('gani', 'arrow'), screen_x, screen_y,
+                        proj['direction'],
+                        current_time - proj.get('time', current_time)))
 
                 active_projectiles.append(proj)
 
@@ -480,7 +509,8 @@ class EffectsRenderMixin(FrameContextMixin):
         'sign': ((174, 132, 72), (103, 70, 36)),
     }
 
-    def _update_and_render_thrown(self, dt: float):
+    def _update_and_render_thrown(self, dt: float,
+                                  frame: Optional[FrameContext] = None):
         """Fly thrown liftables along their arc and break them
         on landing or on the first blocking tile. The 2x2 tile graphic is drawn
         lifted by its arc height, so the throw actually reads as a throw."""
@@ -505,19 +535,31 @@ class EffectsRenderMixin(FrameContextMixin):
                 continue
 
             sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
-            for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1)]):
-                tile_surf = self.tileset_mgr.get_tile_or_color(obj['tiles'][i])
-                self.screen.blit(tile_surf, (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
+
+            def draw_thrown():
+                for i, (dx, dy) in enumerate(
+                        [(0, 0), (1, 0), (0, 1), (1, 1)]):
+                    tile_surf = self.tileset_mgr.get_tile_or_color(
+                        obj['tiles'][i])
+                    self.screen.blit(
+                        tile_surf,
+                        (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
+
+            # The sprite rises, but its depth stays on the ground. Sorting by
+            # the lifted bottom makes it jump behind characters near the arc.
+            self._render_world_object(frame, obj['y'], draw_thrown,
+                                      height_tiles=2.0)
             survivors.append(obj)
         self.thrown_objects = survivors
         # Piggy-back the other-players'-throw arc and pushaway-knockback decay
         # on this method since it already runs every frame with dt (see
         # game/render.py's render loop, which calls this by name - it isn't
         # touched by this change).
-        self._update_and_render_other_thrown(dt)
+        self._update_and_render_other_thrown(dt, frame)
         self._apply_pushaway(dt)
 
-    def _update_and_render_other_thrown(self, dt: float):
+    def _update_and_render_other_thrown(self, dt: float,
+                                        frame: Optional[FrameContext] = None):
         """Fly OTHER players' thrown objects (PLO_THROWCARRIED - see
         game/setup.py's on_throwcarried) along the same arc as our own thrown
         objects above, but drawn as a generic colored 2x2 block rather than
@@ -548,10 +590,18 @@ class EffectsRenderMixin(FrameContextMixin):
 
             sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
             bright, dark = obj['colors']
-            for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1)]):
-                chunk = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                chunk.fill((*(bright if i % 2 == 0 else dark), 255))
-                self.screen.blit(chunk, (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
+
+            def draw_other_thrown():
+                for i, (dx, dy) in enumerate(
+                        [(0, 0), (1, 0), (0, 1), (1, 1)]):
+                    chunk = pygame.Surface(
+                        (TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    chunk.fill((*(bright if i % 2 == 0 else dark), 255))
+                    self.screen.blit(
+                        chunk, (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
+
+            self._render_world_object(frame, obj['y'], draw_other_thrown,
+                                      height_tiles=2.0)
             survivors.append(obj)
         self.other_thrown_objects = survivors
 
@@ -1018,7 +1068,8 @@ class EffectsRenderMixin(FrameContextMixin):
             scratch.blit(eraser, (int(lx), int(ly)), special_flags=pygame.BLEND_RGBA_SUB)
         self.screen.blit(scratch, (0, 0))
 
-    def _render_server_explosions(self):
+    def _render_server_explosions(self,
+                                  frame: Optional[FrameContext] = None):
         """Render explosions received from server (PLO_EXPLOSION packets)."""
         current_time = time.time()
         explosion_duration = 0.5  # seconds
@@ -1038,7 +1089,10 @@ class EffectsRenderMixin(FrameContextMixin):
                 radius = int(base_radius * (0.5 + progress * 0.5))
                 alpha = int(255 * (1.0 - progress))
 
-                self._render_explosion_burst(screen_x, screen_y, elapsed, radius, alpha)
+                self._render_world_object(
+                    frame, exp['y'],
+                    lambda: self._render_explosion_burst(
+                        screen_x, screen_y, elapsed, radius, alpha))
 
                 active.append(exp)
 

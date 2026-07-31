@@ -15,6 +15,7 @@ real method still receives the real arguments.
 
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -187,8 +188,42 @@ class TestEntityPass:
             del game._get_item_sprite
         assert order == expected
 
+    @pytest.mark.parametrize(
+        ('bomb_y', 'expected'),
+        [(31.0, ['deferred_world', 'player']),
+         (35.0, ['player', 'deferred_world'])],
+    )
+    def test_bombs_compete_with_player_depth(self, game, bomb_y, expected):
+        _populate(game)
+        game.client.players.clear()
+        game.client.npcs.clear()
+        game.client.baddies.clear()
+        game.client.horses.clear()
+        game.client.chests.clear()
+        game.client.items.clear()
+        bomb_sprite = pygame.Surface((16, 16), pygame.SRCALPHA)
+        bomb_sprite.fill(RED)
+        game._get_effect_sprite = lambda filename: bomb_sprite
+        game.active_bombs = [{
+            'x': 32.0, 'y': bomb_y, 'time': time.time(),
+            'fuse_time': 10.0, 'power': 1, 'exploded': False,
+        }]
+        frame = game._begin_frame()
+        game._render_bombs(frame)
+        order = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, ctx: order.append(ent.kind))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities(frame)
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._get_effect_sprite
+        assert order == expected
+
     def test_frame_state_does_not_leak_back_onto_the_client(self, game):
-        """The three cross-pass lists live on FrameContext only. The old
+        """The cross-pass lists live on FrameContext only. The old
         attribute mechanism (and its _in_gui_pass flag) must stay gone."""
         _populate(game)
         game._render_entities()
@@ -311,3 +346,47 @@ class TestFrameLifecycle:
         assert ctx.in_frame is False
         assert ctx.defer_light(object(), 0, 0) is False
         assert ctx.light_draws == []
+
+
+class TestDeferredWorldObjects:
+    def test_idle_bomb_renderer_blits_immediately(self, game):
+        _populate(game)
+        game._frame_ctx = FrameContext()
+        game.screen.fill(BLACK)
+        bomb_sprite = pygame.Surface((16, 16), pygame.SRCALPHA)
+        bomb_sprite.fill(RED)
+        game._get_effect_sprite = lambda filename: bomb_sprite
+        game.active_bombs = [{
+            'x': 32.0, 'y': 32.0, 'time': time.time(),
+            'fuse_time': 10.0, 'power': 1, 'exploded': False,
+        }]
+        try:
+            game._render_bombs()
+        finally:
+            del game._get_effect_sprite
+        assert game.screen.get_bounding_rect().width > 0
+        assert game._frame_context().world_draws == []
+
+    def test_thrown_object_depth_uses_ground_at_top_of_arc(self, game):
+        _populate(game)
+        game.thrown_objects = [{
+            'x': 32.0, 'y': 30.0, 'dx': 0.0, 'dy': 1.0,
+            'speed': 1.0, 'dist': 0.0, 'range': 10.0,
+            'z': 8.0, 'z0': 8.0, 'tiles': [0, 0, 0, 0],
+        }]
+        game.other_thrown_objects = []
+        game._get_tile_at = lambda x, y: 0
+        game._is_tile_blocking = lambda tile: False
+        frame = game._begin_frame()
+        try:
+            game._update_and_render_thrown(0.0, frame)
+        finally:
+            del game._get_tile_at
+            del game._is_tile_blocking
+        assert len(frame.world_draws) == 1
+        _draw, depth = frame.world_draws[0]
+        # Ground y (30.0) plus the fixed 2-tile graphic. Sorting by the lifted
+        # sprite instead would put the object 8 tiles higher in the order and
+        # make it duck behind characters at the top of every arc.
+        assert depth == 32.0
+        assert depth != (30.0 - 8.0) + 2.0

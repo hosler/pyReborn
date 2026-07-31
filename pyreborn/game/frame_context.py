@@ -42,6 +42,21 @@ class FrameContext:
     light_sources: List[Tuple[Any, float, float]] = field(default_factory=list)
     # (surface, screen_x, screen_y) additive glows waiting for the tint.
     light_draws: List[Tuple[Any, float, float]] = field(default_factory=list)
+    # (draw_callable, depth) layer-1 objects waiting for the entity pass:
+    # bombs, arrows, thrown liftables, server explosions. Without this they
+    # draw in their own pass afterwards and cover every character, whatever
+    # the world positions are. The queue holds the DRAW CALL rather than a
+    # captured image, so deferring costs nothing and blends identically.
+    world_draws: List[Tuple[Any, float]] = field(default_factory=list)
+
+    def defer_world_draw(self, draw: Any, depth: float) -> bool:
+        """Queue a layer-1 world draw for the entity pass, and report whether
+        it was queued. False means nothing will flush it (an idle context, or
+        the GUI pass) and the caller should draw now."""
+        if not self.in_frame or self.gui_pass:
+            return False
+        self.world_draws.append((draw, depth))
+        return True
 
     def defer_light(self, surface: Any, x: float, y: float) -> bool:
         """Queue an additive light draw for after the ambient tint, and report

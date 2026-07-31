@@ -349,6 +349,16 @@ class EntityCollectMixin:
                 out.append(_Entity('horse', self._depth_sort_key(
                     wy, self._horse_height_tiles(horse)), sx, sy, horse, hkey))
 
+    def _collect_deferred_world(self, out: List["_Entity"],
+                                frame: FrameContext) -> None:
+        """Move bombs, arrows, thrown objects and explosions into layer 1 so
+        their world depth competes with characters, instead of covering the
+        whole entity pass. Each entry is the deferred draw call itself; the
+        screen position is already inside it, so x/y here go unused."""
+        for draw, depth in frame.world_draws:
+            out.append(_Entity('deferred_world', depth, 0.0, 0.0, draw))
+        frame.world_draws.clear()
+
     # -- entity pass: draw --------------------------------------------------
 
     def _draw_chest_entity(self, ent: "_Entity", frame: FrameContext) -> None:
@@ -373,6 +383,10 @@ class EntityCollectMixin:
     def _draw_horse_entity(self, ent: "_Entity", frame: FrameContext) -> None:
         self._render_horse(ent.x, ent.y, ent.data, ent.key)
 
+    def _draw_deferred_world_entity(self, ent: "_Entity",
+                                    frame: FrameContext) -> None:
+        ent.data()
+
     # kind -> (collector, renderer) in COLLECTION order, which the stable
     # depth sort also makes the tie-break between two entities whose image
     # bottoms land on the same world row. A new entity kind is one row here
@@ -385,6 +399,8 @@ class EntityCollectMixin:
         ('npc', _collect_npcs, _draw_npc_entity),
         ('baddy', _collect_baddies, _draw_baddy_entity),
         ('horse', _collect_horses, _draw_horse_entity),
+        ('deferred_world', _collect_deferred_world,
+         _draw_deferred_world_entity),
     )
     _ENTITY_RENDERERS = {kind: render
                          for kind, _collect, render in _ENTITY_PASSES}
