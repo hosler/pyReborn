@@ -109,7 +109,7 @@ def test_gmap_reentry_still_waits_when_the_file_was_never_downloaded():
     been seen this session, so neither the grid nor the destination board is
     local and the hold has to stay engaged for the server. This is the one
     transition the client cannot shorten - it is pinned here so the
-    round-trip-free paths above can't be widened onto it by accident."""
+    round-trip-free paths above cannot be widened onto it by accident."""
     client = _client(level="house.nw", x=30.5, y=38.0)
 
     assert client.warp_to_level("east.nw", 22.5, 33.0)

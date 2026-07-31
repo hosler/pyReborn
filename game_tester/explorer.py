@@ -262,7 +262,7 @@ class ExplorerBot:
         return False
 
     def _is_stuck(self) -> bool:
-        """Check if bot hasn't moved."""
+        """Check if bot has not moved."""
         dx = abs(self.bot.x - self._last_position[0])
         dy = abs(self.bot.y - self._last_position[1])
         return dx < 0.1 and dy < 0.1

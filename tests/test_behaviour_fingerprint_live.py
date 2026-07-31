@@ -1,23 +1,24 @@
-"""Live proof that the behavioural fingerprint catches a silent branch flip.
+"""This live test proves that the behavioral fingerprint detects a silent branch flip.
 
-Opt-in (`pytest -m live -s`): needs the public Login server and the
-credentials in ~/.config/pyreborn/prefs.json. Two PASSIVE connections, no
-writes.
+The opt-in test (`pytest -m live -s`) needs the public Login server and the
+credentials in ~/.config/pyreborn/prefs.json. The test uses two PASSIVE
+connections and makes no writes.
 
-This is the regression the fingerprint suite was built for. On 2026-07-24
+The fingerprint suite was built for this regression. On 2026-07-24,
 `gs2_compare` let a GS2Object compare EQUAL to null, so Login's
 `findweapon("-Rescripted/Serverlist") == null` was true for a weapon that WAS
-found, `-Rescripted/IRC/Login3` skipped `initServerlist()`, and the client
-built no GUI -- with zero errors, zero warnings, and every other suite green.
+found. Thus, `-Rescripted/IRC/Login3` skipped `initServerlist()`, and the client
+built no GUI. The run had zero errors and zero warnings, and every other suite
+was green.
 
-The test re-introduces exactly that semantic at runtime (a monkeypatched
+The test reintroduces exactly that semantic at runtime. A monkeypatched
 `gs2_compare` that falls through to the numeric compare, which reports 0.0 ==
-0.0 for object-vs-null) and asserts the fingerprint check FAILS and names the
-structural invariants that moved. Then it asserts the same check PASSES with
-the real, fixed comparison.
+0.0 for object-vs-null, supplies the semantic. The test asserts that the
+fingerprint check FAILS and names the structural invariants that moved. Then,
+the test asserts that the same check PASSES with the real, fixed comparison.
 
-reborn-protocol itself is never edited: `vm.py` does `from .values import
-gs2_compare`, so the binding that matters is the one in the vm module.
+The test never edits reborn-protocol. `vm.py` does `from .values import
+gs2_compare`. Thus, the binding in the vm module is the binding that matters.
 """
 
 import json
@@ -35,7 +36,7 @@ SERVER = "Login"
 
 
 def _buggy_compare():
-    """The pre-fix gs2_compare: no object-vs-non-object identity guard."""
+    """The pre-fix gs2_compare has no object-vs-non-object identity guard."""
     from reborn_protocol.gs2.values import (
         GS2Object, _casecmp, _numcmp, to_num)
 
@@ -83,10 +84,10 @@ def _capture(name):
 
 
 def _maybe_dump(label, fingerprint):
-    """PYREBORN_FINGERPRINT_DUMP=<dir> keeps the raw captures.
+    """PYREBORN_FINGERPRINT_DUMP=<dir> saves the raw captures.
 
-    This is how tests/fixtures/fingerprint_login_*.json (the offline copies
-    the unit tests replay) were produced.
+    This setting produced tests/fixtures/fingerprint_login_*.json. The unit
+    tests replay these offline copies.
     """
     directory = os.environ.get("PYREBORN_FINGERPRINT_DUMP")
     if not directory:

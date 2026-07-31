@@ -273,7 +273,7 @@ def test_websocket_adapter_reassembles_a_bundle_split_across_messages(
 def test_status_body_decodes_as_cp1252():
     """PLO_STATUS/SITEURL/UPGURL/ERROR bodies are list-server text, so they use
     the same cp1252 codepage as the length-prefixed fields. 0x92 is a right
-    single quote there; latin-1 would yield the U+0092 control character."""
+    single quote there. Latin-1 would yield the U+0092 control character."""
     body = b"Rusty\x92s server"
     response = build_response([(LSPacketID.PLO_STATUS, body)], "")
     assert response.status == "Rusty’s server"

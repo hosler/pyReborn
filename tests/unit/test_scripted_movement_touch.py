@@ -11,7 +11,7 @@ the HELD direction keys at the player's current script-driven position.
 
 Covered here, no live server needed:
 - the probe dispatches process_movement with the pressed direction (and does
-  nothing with no direction held);
+  nothing with no direction held).
 - the NPCHandler gate accepts a GS2-only NPC (no GS1 script text) that
   declares onPlayerTouchsMe, respects the setshape2 14x1 per-tile flags, fires
   once per overlap, and re-fires only after the player leaves the shape

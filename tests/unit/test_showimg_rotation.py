@@ -7,7 +7,7 @@ wave (commit 59976de):
    nudging .rotation) drew frozen. Reference semantics from the C# client's
    ShowImg/Drawing.cs: radians, pivot = drawn image centre, positive =
    counter-clockwise on screen (it negates the angle for MonoGame's
-   clockwise convention; pygame's rotate() is already CCW).
+   clockwise convention. Pygame's rotate() is already CCW).
 
 2. findimg(i).visible = false stored 'visible': False on the record but the
    renderer ignored it, so hidden layers kept drawing.

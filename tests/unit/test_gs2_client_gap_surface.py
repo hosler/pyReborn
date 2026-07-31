@@ -248,7 +248,7 @@ def test_hasfunction_probes_loaded_weapons_and_object_members(monkeypatch):
 
 
 def test_patcher_stubs_answer_with_terminating_values():
-    """IRC_Installer polls the update-package counters in a progress loop;
+    """IRC_Installer polls the update-package counters in a progress loop.
     an all-zero answer for getPackagesDownloadComplete() spins forever."""
     rt = ClientGS2()
     assert call(rt, "getpackagesdownloadcomplete") == 1.0

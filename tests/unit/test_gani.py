@@ -11,52 +11,52 @@ from pyreborn.gani import GaniParser, Gani, GaniFrame, GaniSprite
 
 
 class TestGaniParser:
-    """Tests for GANI file parsing."""
+    """These tests cover GANI file parsing."""
 
     def test_parser_creation(self):
-        """Test creating a GaniParser."""
+        """The test creates a GaniParser."""
         parser = GaniParser()
         assert parser is not None
 
     def test_gani_class_exists(self):
-        """Test Gani class exists and can be instantiated."""
+        """The test checks that the Gani class exists and can create an instance."""
         # Just verify the class exists
         assert Gani is not None
 
 
 class TestGaniFrame:
-    """Tests for GaniFrame dataclass."""
+    """These tests cover the GaniFrame dataclass."""
 
     def test_frame_creation(self):
-        """Test GaniFrame creation."""
+        """The test creates a GaniFrame."""
         frame = GaniFrame(sprites=[])
         assert frame is not None
 
     def test_frame_has_sound_field(self):
-        """Test GaniFrame has sound field."""
+        """The test checks that GaniFrame has a sound field."""
         frame = GaniFrame(sprites=[])
         assert hasattr(frame, 'sound')
 
 
 class TestGaniSprite:
-    """Tests for GaniSprite dataclass."""
+    """These tests cover the GaniSprite dataclass."""
 
     def test_sprite_creation(self):
-        """Test GaniSprite creation."""
+        """The test creates a GaniSprite."""
         sprite = GaniSprite(id=0, layer=0, x=0, y=0, width=32, height=32)
         assert sprite is not None
 
     def test_sprite_has_description(self):
-        """Test GaniSprite has description field."""
+        """The test checks that GaniSprite has a description field."""
         sprite = GaniSprite(id=0, layer=0, x=0, y=0, width=32, height=32)
         assert hasattr(sprite, 'description')
 
 
 class TestDirectionConversion:
-    """Tests for direction helper functions."""
+    """These tests cover the direction helper functions."""
 
     def test_direction_from_delta(self):
-        """Test converting movement delta to direction."""
+        """The test converts a movement delta to a direction."""
         from pyreborn.gani import direction_from_delta
 
         # Right
@@ -69,7 +69,7 @@ class TestDirectionConversion:
         assert direction_from_delta(0, -1) == 0
 
     def test_direction_name(self):
-        """Test getting direction name."""
+        """The test gets a direction name."""
         from pyreborn.gani import direction_name
 
         assert direction_name(0) == "up"

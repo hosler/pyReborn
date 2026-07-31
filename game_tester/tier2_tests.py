@@ -31,7 +31,7 @@ def _pump(bot0: GameBot, bot1: GameBot, seconds: float, until=None):
 
 
 def test_bomb_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 places a bomb; bot1 must see it via on_bomb_add and self.bombs,
+    """bot0 places a bomb. Bot1 must see it via on_bomb_add and self.bombs,
     then see it removed via on_bomb_del after bot0 detonates/removes it.
 
     Only fully testable without an NPC server: with one, msgPLI_BOMBADD takes
@@ -74,7 +74,7 @@ def test_bomb_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
 
 
 def test_arrow_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 fires an arrow; bot1 must see it via on_arrow_add."""
+    """bot0 fires an arrow. Bot1 must see it via on_arrow_add."""
     start = time.time()
     issues: List[Issue] = []
     seen = {}
@@ -93,7 +93,7 @@ def test_arrow_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
 
 
 def test_horse_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 mounts a horse; bot1 must see it via on_horse_add, then see it
+    """bot0 mounts a horse. Bot1 must see it via on_horse_add, then see it
     removed via on_horse_del."""
     start = time.time()
     issues: List[Issue] = []
@@ -124,11 +124,11 @@ def test_horse_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
 
 
 def test_flagdel_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 sets then deletes a server.* flag; bot1 must see both the set
+    """bot0 sets then deletes a server.* flag. Bot1 must see both the set
     (existing PLO_FLAGSET coverage) and the delete (PLO_FLAGDEL, new).
 
-    Only testable without an NPC server: with one, clients can't set server.*
-    flags at all (msgPLI_FLAGSET: "If we have an npc-server, clients can't set
+    Only testable without an NPC server: with one, clients cannot set server.*
+    flags at all (msgPLI_FLAGSET: "If we have an npc-server, clients cannot set
     server flags"), so the whole test is skipped there."""
     start = time.time()
     issues: List[Issue] = []

@@ -15,12 +15,12 @@ real engine gs1_host.py was written against.
 
 Design (see memory gs1-gs2-real-server-testing #2): we compare DECODED client
 state, not raw packet bytes. For each GS1 command family a fixture NPC runs one
-small script on `playerenters`; a pyReborn GameBot warps onto it, pumps the
+small script on `playerenters`. A pyReborn GameBot warps onto it, pumps the
 client, and we read the resulting state (player props / NPC props / current
 level). The decoded-protocol layer both servers already share does the hard
 part, and we sidestep fragile trace parsing.
 
-The GS1 script body is IDENTICAL on both servers; only the level *packaging*
+The GS1 script body is IDENTICAL on both servers. Only the level *packaging*
 (where the .nw lives, config) differs. Fixtures are authored here and written
 to game_tester/fixtures/gs1/*.nw (self-contained, not the live world).
 
@@ -29,7 +29,7 @@ CLI (mirrors --gs2):
     python -m game_tester --gs1 --host H --port P  # capture ONE server's effects
 
 It SKIPS gracefully (clear message, non-failing) when the gs2emu binary or a
-server can't be brought up, so it never blocks CI.
+server cannot be brought up, so it never blocks CI.
 """
 
 from __future__ import annotations
@@ -254,8 +254,8 @@ def _basename(level: Optional[str]) -> str:
 def _current_npc(bot: GameBot) -> Optional[dict]:
     """The fixture NPC on the current level: the one nearest (30,30).
 
-    (Each fixture level has exactly one scripted NPC; nearest-to-30,30 is a
-    robust pick even if a stray default NPC exists.)"""
+    (Each fixture level has exactly one scripted NPC. Nearest-to-30,30 is a
+    consistent pick even if a stray default NPC exists.)"""
     npcs = bot.client.npcs
     if not npcs:
         return None
@@ -320,7 +320,7 @@ def capture_effects(host: str, port: int, cases: List[GS1Case] = CASES,
                     ) -> Optional[Dict[str, str]]:
     """Connect a bot to host:port and record the observed effect of each case.
 
-    Returns {case_name: observed_string}, or None if the bot can't connect
+    Returns {case_name: observed_string}, or None if the bot cannot connect
     (server unreachable)."""
     bot = GameBot(account, host, port)
     if not bot.connect():
@@ -430,7 +430,7 @@ def spawn_pygserver(fixtures: Path) -> Optional[_Server]:
 
 def spawn_gs2emu(fixtures: Path) -> Optional[_Server]:
     """Spawn the C++ oracle from a COPY of GServer-v2/bin (never touches the
-    checkout): listserver pointed at 127.0.0.1 so it can't reach the public
+    checkout): listserver pointed at 127.0.0.1 so it cannot reach the public
     listserver, and the fixtures dropped into world/."""
     binary = _GS2EMU_BIN / "gs2emu"
     if not binary.exists():
@@ -517,8 +517,8 @@ def run_gs1_conformance(host: Optional[str] = None, port: Optional[int] = None,
     """Entry point for `--gs1`.
 
     * explicit_target (a --host/--port was given): capture that ONE server's
-      effects and print them (requires the fixtures to be loadable there;
-      handy for pointing at a hand-run gs2emu/pygserver).
+      effects and print them. The fixtures must be loadable there. This mode
+      helps when you point at a hand-run gs2emu/pygserver.
     * otherwise: spawn BOTH servers, capture, diff. Oracle-skip is graceful.
     """
     generate_fixtures()

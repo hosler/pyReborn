@@ -2,7 +2,7 @@
 
 `TServerNPC::getTileType` indexes the array by the offset from the NPC's
 origin and returns the cell verbatim
-(Preagonal/FourPlay/quattroplay/src/TServerNPC.cpp:2016-2040);
+(Preagonal/FourPlay/quattroplay/src/TServerNPC.cpp:2016-2040).
 `TServerLevel::getTileType` asks the level's NPCs BEFORE the board and lets any
 answer above 1 override it (TServerLevel.cpp:688-708, searching via
 getNPCTileType at :536-561).

@@ -1,9 +1,9 @@
 """Tests for the ground-item sprite lookup in game/render_objects.py.
 
 _ITEM_SPRITE_TABLE maps LevelItemType names to a verified pics1.png
-(sheet, x, y, w, h) rect; _get_item_sprite() crops+caches it via
+(sheet, x, y, w, h) rect. _get_item_sprite() crops+caches it via
 sprite_mgr.get_sprite() and falls back to the pre-existing vector icon when a
-table entry is missing or its sheet/crop can't be loaded (headless tests,
+table entry is missing or its sheet/crop cannot be loaded (headless tests,
 missing assets). As of this pass the table is empty -- see its module-level
 comment in render_objects.py for the research that came up dry -- so these
 tests mainly guard: (1) every LevelItemType name still gets *some* surface
@@ -88,7 +88,7 @@ class TestItemSpriteTableShape:
 
 class TestItemSpriteFallback:
     """With no table entries reachable (either because _ITEM_SPRITE_TABLE is
-    empty, or because the sheet can't be loaded), every item name must still
+    empty, or because the sheet cannot be loaded), every item name must still
     resolve to a usable, correctly-sized vector-icon surface."""
 
     @pytest.mark.parametrize("item_type", ALL_ITEM_NAMES)

@@ -42,7 +42,7 @@ def test_negative_offset_survives_parsing():
 
 
 def test_bare_playsound_is_kept_not_dropped():
-    """`PLAYSOUND PARAM1` with no offsets is common in weapon ganis; the old
+    """`PLAYSOUND PARAM1` with no offsets is common in weapon ganis. The old
     `len(parts) >= 4` guard discarded it outright."""
     sounds = _frames_with_sound(_GANI.format(line="PARAM1"))
     assert sounds == [("PARAM1", 0.0, 0.0)]

@@ -94,7 +94,7 @@ def test_seam_echo_does_not_rewind_the_player():
 
 
 def test_seam_echo_is_one_shot():
-    """Only the acknowledgement is absorbed; a later reposition still moves
+    """Only the acknowledgement is absorbed. A later reposition still moves
     the player, so a server-side unstick/script warp is never swallowed."""
     client = _gmap_client()
     assert client.move(1, 0, step=0.5)

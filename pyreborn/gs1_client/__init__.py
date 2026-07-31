@@ -1,4 +1,4 @@
-"""Compatibility exports for the GS1 client package."""
+"""The package provides compatibility exports for the GS1 client."""
 
 from . import registry as _registry
 from . import board as _board

@@ -41,11 +41,11 @@ class BugDetector:
         Mirrors the `world = local + grid_position * 64` convention used
         throughout this codebase - see pyreborn/client.py's
         `_update_npc_world_coords` and `GameBot._resolve_level_name` for the
-        same lookup (level name -> grid cell in gmap_grid). A value that's
+        same lookup (level name -> grid cell in gmap_grid). A value that is
         already world (>=64 or negative - only possible from a high-precision
         X2/Y2 prop) is passed through unchanged, so this is safe to call on
         positions that might already be normalized. Returns (x, y) unchanged
-        if `level` isn't in `gmap_grid` (non-gmap, or an unknown segment).
+        if `level` is not in `gmap_grid` (non-gmap, or an unknown segment).
         """
         if not gmap_grid or not level:
             return x, y
@@ -128,7 +128,7 @@ class BugDetector:
         max here flagged every player past the first segment as "out of
         bounds". Only use client.in_gmap_segment (an actual grid segment, not
         e.g. a standalone house/cave reached via a door while a gmap happens
-        to be loaded - see Client.in_gmap_segment) to size the check; an
+        to be loaded - see Client.in_gmap_segment) to size the check. An
         explicit max_val always wins.
         """
         x, y = client.x, client.y

@@ -11,7 +11,7 @@ which is why a pile of hand corrections was needed to paper over it.
 There are TWO type tables, selected per level by the registered tiledefs
 (``TTiles::GetLevelTiles``, Preagonal/FourPlay/quattroplay/src/TTiles.cpp:568):
 the active *tilestype* is reset to 0 on level change and set from the type of
-the tiledef whose prefix is the longest match on the level name; defs with
+the tiledef whose prefix is the longest match on the level name. Defs with
 type >= 3 are skipped unless the type is 5 (so ``addtiledef2``, which
 registers type 4, never affects it). Reads then route by that value
 (``TServerLevel::getTileType``, src/TServerLevel.cpp:688-708): tilestype 0
@@ -22,11 +22,11 @@ level has no tile types at all (every tile reports 0).
 v6.0.3.7 Linux client binary, where it sits at 0x541740, directly after the
 classic table at 0x540740 (which matches tiletypes1.dat). Sanity check: on
 real era_ levels (a tilestype-1 server) the classic table calls 96% of board
-tiles blocking; the new-world table gives a plausible 57%.
+tiles blocking. The new-world table gives a plausible 57%.
 
 Like the real client's ``TTiles::tilestype``, the active tilestype and the
 registered tiledefs are PROCESS-GLOBAL. Multiple in-process clients (multi-bot
-QA) share them; that is only observable if bots sit on levels with different
+QA) share them. That is only observable if bots sit on levels with different
 tilestype defs at the same time, which mirrors what a single real client
 process could express anyway.
 """
@@ -126,7 +126,7 @@ def select_tilestype(defs: Iterable[Tuple[str, int]], level_name: str) -> int:
     """The selection rule of TTiles::GetLevelTiles (TTiles.cpp:568-631).
 
     Reset to 0, then take the type of the def whose prefix is the LONGEST
-    match on the level name (first registered wins ties; an empty prefix
+    match on the level name (first registered wins ties. An empty prefix
     matches everything). Defs with type >= 3 are skipped unless type == 5.
     """
     name = _strip_level_name(level_name)
@@ -249,7 +249,7 @@ def get_tile_type(tile_id: int, tilestype: Optional[int] = None) -> int:
 
 
 def type_is_blocking(tile_type: int) -> bool:
-    """Whether a tile *type* blocks walking.
+    """Return True if a tile *type* blocks walking.
 
     Mirrors the C# client's IsOnWall, which is just a threshold: anything at
     THROW_THROUGH (20) or above blocks — throw-through, jump-stone, solid walls,

@@ -6,15 +6,15 @@ TServerLevel.cpp:2642-2654) and player movement runs through exactly that test
 (TPlayer::movementAction, TPlayer.cpp:7515-7519). Per NPC (TServerNPC::isOnNPC,
 TServerNPC.cpp:2093-2226):
 
-- invisible (or zoom-0) NPCs neither block nor touch;
+- invisible (or zoom-0) NPCs neither block nor touch.
 - the not-blocking flag (dontblock/dontblocklocal set, blockagain* clear —
-  TServerNPCProperties.cpp:358-371, 436-446) exempts from WALL tests only;
-  touch ignores it;
+  TServerNPCProperties.cpp:358-371, 436-446) exempts from WALL tests only.
+  touch ignores it.
 - character NPCs block/touch a 2x2 box at +(0.5, 1.0) (also GServer-v2
-  NPC.h:544-551);
-- setshape publishes cells; a setshape2 array cell walls at type >= 20;
+  NPC.h:544-551).
+- setshape publishes cells. A setshape2 array cell walls at type >= 20.
 - otherwise a visible image NPC's footprint is its setimgpart rect, else the
-  image's full (uncapped) size, refined per-pixel by transparency;
+  image's full (uncapped) size, refined per-pixel by transparency.
 - `timeout = 0` / settimer(0) CANCELS the pending timer (TScriptSpace::
   setTimeout, TScriptSpace.cpp:121-129: any value <= 0.0001 deactivates).
 """

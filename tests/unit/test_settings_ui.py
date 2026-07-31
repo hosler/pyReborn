@@ -39,8 +39,8 @@ class _Key:
 
 class _FakeGame:
     """Just enough of GameClient's surface for SettingsOverlay to drive:
-    a real SoundManager (its volume/music_enabled setters don't touch the
-    mixer unless it's been initialize()'d) and a real Camera2D (zoom clamps
+    a real SoundManager (its volume/music_enabled setters do not touch the
+    mixer before initialize()) and a real Camera2D (zoom clamps
     identically to the live client)."""
 
     def __init__(self):

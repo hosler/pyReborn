@@ -16,7 +16,7 @@ on and the parts we cannot:
                 at the end (an asset stampede competing with the board)
 
 The point of the split: `warp->name` and `name->board` are the server and the
-link; `board->live` and `live->show` are ours. Optimising the wrong half was
+link. `board->live` and `live->show` are ours. Optimising the wrong half was
 how this investigation went wrong before, so measure first.
 
     python -m game_tester.warp_trace <account> <password> [host] [port]

@@ -56,7 +56,7 @@ def probe_status(capabilities: dict[str, Any]) -> str:
 
     A server that refuses our account (staff-only listing, version gate) and a
     server that never answered are both untestable, but neither is a failure on
-    our side; only an exception escaping the probe is. The catalog used to
+    our side. Only an exception escaping the probe is. The catalog used to
     carry that distinction implicitly across two fields, so every non-accepted
     server read as a bare connection failure.
 
@@ -313,7 +313,7 @@ def _probe_entry_once(entry: ServerEntry, username: str, password: str, timeout:
                 crawler: Callable[..., dict[str, Any]] | None = None,
                 forced_version: str | None = None, pin_version: bool = False,
                 retry_sleep: Callable[[float], None] | None = None) -> dict[str, Any]:
-    """Probe one entry; all client failures become record data."""
+    """Probe one entry. All client failures become record data."""
     name, category = parse_server_name(entry.display_name)
     active_ok = is_owned_server(entry.ip, name)
     record: dict[str, Any] = {

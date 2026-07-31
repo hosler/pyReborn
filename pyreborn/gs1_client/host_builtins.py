@@ -78,11 +78,12 @@ class BuiltinsMixin:
         return UNSET
 
     def _npc_ids(self):
-        """Level NPC ids in `npcs[]` index order.
+        """Return level NPC IDs in `npcs[]` index order.
 
-        GS1's npcs[] is a level-order array; client.npcs is keyed by the
-        server's NPC id. The server allocates those ids in level order, so
-        sorting them reproduces the array's ordering."""
+        GS1 uses level order for the npcs[] array. Client.npcs uses the server's
+        NPC ID as its key. The server allocates these IDs in level order. Thus,
+        sorting the IDs reproduces the array order.
+        """
         cl = self.rt.client
         if cl is None:
             return []
@@ -489,4 +490,3 @@ class BuiltinsMixin:
             setattr(player, "glove_power", max(0, int(to_num(value)) - 1))
             return True
         return False
-

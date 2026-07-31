@@ -37,7 +37,7 @@ SAMPLE = ((11, "Global Chat"), (12, "Log"), (13, "Trades"))
 # -- counts and lookups -------------------------------------------------------
 
 def test_rowcount_and_id_row_number_conversion():
-    """rowCount -> getNumEntries (GuiTextListCtrl.cpp:677-680);
+    """rowCount -> getNumEntries (GuiTextListCtrl.cpp:677-680).
     getRowNumById -> findEntryById, -1 on a miss (:664-676)."""
     ctrl = _list(*SAMPLE)
     assert ctrl.get("rowcount")() == 3.0
@@ -74,7 +74,7 @@ def test_row_at_point_uses_canvas_coordinates():
 
 def test_getselectedrow_is_the_row_number_and_getselectedid_the_id():
     """getselectedrow reuses propfun_guitextlistctrl_selectedrow_r
-    (GuiTextListCtrlProperties.cpp:423, body :156-159 = getSelectedCell().y);
+    (GuiTextListCtrlProperties.cpp:423, body :156-159 = getSelectedCell().y).
     getselectedid is the separate id binding (:421)."""
     ctrl = _list(*SAMPLE)
     ctrl.get("setselectedrow")(2)
@@ -106,7 +106,7 @@ def test_selection_is_a_list_of_cells():
 
 def test_multi_select_bindings_degrade_to_single_selection():
     """One token, or a control that does not allow multiple selections, is a
-    plain select; an empty argument clears
+    plain select. An empty argument clears
     (GuiTextListCtrlProperties.cpp:344-376)."""
     ctrl = _list(*SAMPLE)
     ctrl.get("setselectedbyids")("13,11")     # multi off -> first token only
@@ -271,7 +271,7 @@ def test_root_methods_still_do_the_work_on_an_array(tmp_path, monkeypatch):
 
 def test_settimer_answers_in_the_object_form():
     """this.settimer(1) is a valid official spelling
-    (src/TGraalVarProperties.cpp:548); it used to live only in the bare
+    (src/TGraalVarProperties.cpp:548). It used to live only in the bare
     table."""
     rt = _runtime()
     vm = SimpleNamespace(_gs2_owner=("weapon", "-test"),

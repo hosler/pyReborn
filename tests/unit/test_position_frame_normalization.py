@@ -64,7 +64,7 @@ class TestToWorldPos:
 
 
 class TestCheckPositionSyncFrameConsistency:
-    """The comparator itself is frame-agnostic; these lock in that feeding
+    """The comparator itself is frame-agnostic. These lock in that feeding
     it two ALREADY-normalized (same-frame) positions behaves correctly, and
     that the raw local-vs-world mismatch this bug produced would indeed
     have been flagged (documenting why the multi_bot.py call site had to

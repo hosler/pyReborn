@@ -126,7 +126,7 @@ class GaniParser:
         search_paths: Optional[List[Path]] = None,
         fetch_bytes: Optional[Callable[[str], Optional[bytes]]] = None,
     ):
-        """Initialize parser with optional search paths for gani files."""
+        """Create a parser with optional search paths for gani files."""
         self.search_paths = search_paths or []
         self.fetch_bytes = fetch_bytes
         self.cache: "OrderedDict[str, Optional[Gani]]" = OrderedDict()
@@ -204,7 +204,7 @@ class GaniParser:
         - Those lines are followed by a TRAILER of command lines -- PLAYSOUND
           and WAIT -- that belong to the frame just read, not to the next one
           (Animation.cs:142 assigns `newFrame.PlaySound` to the frame it has
-          already built; Ani.cpp:721 pushes onto that same `frame->sounds`).
+          already built. Ani.cpp:721 pushes onto that same `frame->sounds`).
         - The trailer ends at a blank line, at ANIEND, or at the next
           sprite-placement line (Animation.cs:145-159 keeps consuming only
           blank/WAIT/PLAYSOUND lines), so blank separators are optional.
@@ -530,7 +530,7 @@ class GaniParser:
 
 
 class AnimationState:
-    """Manages the state of an animation for an entity."""
+    """The animation state manager controls an entity animation."""
 
     FRAME_DURATION = 0.05  # 20 FPS animation rate
 
@@ -592,7 +592,7 @@ class AnimationState:
                       force: bool = False, params: Optional[List[str]] = None):
         """Set the current animation by name.
 
-        `name` may be the raw comma-joined `ani,param1,param2` form; the params
+        `name` may be the raw comma-joined `ani,param1,param2` form. The params
         are split off (and override `params`) so PARAMn sound/sprite tokens
         resolve. They are refreshed on EVERY call, including the
         same-animation early return below, because a script re-issues the same

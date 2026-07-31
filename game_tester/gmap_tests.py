@@ -12,7 +12,7 @@ a 3x3 overworld of chicken1-9.nw with interior levels). Validates:
 
 These need the chicken gmap world loaded (gmaps = chicken.gmap) and the bots
 warped around the scripted world, which persists their LEVEL/X/Y and can mutate
-NICK; the runner resets both accounts on teardown via reset_account_position.
+NICK. The runner resets both accounts on teardown via reset_account_position.
 
 Run: python -m game_tester --gmap
 """

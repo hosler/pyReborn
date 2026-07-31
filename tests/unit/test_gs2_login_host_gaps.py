@@ -129,7 +129,7 @@ def test_isfullscreenmode_reports_the_real_window_state():
 
 
 def test_native_platform_queries_answer_inert_without_warning():
-    """Login Mobile's -Adventure/-Mobile/Serverlist call these every session;
+    """Login Mobile's -Adventure/-Mobile/Serverlist call these every session.
     they stay out of `stubbed` because server_crawl's KNOWN_UNSUPPORTED_CALLS
     is the registry that classifies them."""
     rt = ClientGS2()
@@ -455,7 +455,7 @@ def _serverlist_tree(rt):
 
 def test_tree_node_level_is_one_based_depth():
     """Login's connect handler is gated on `node.level <= 1` to skip the
-    category folders; an unanswered read made every row look like one."""
+    category folders. An unanswered read made every row look like one."""
     rt = ClientGS2()
     tree = _serverlist_tree(rt)
     folder = tree.root_nodes[0]
@@ -474,7 +474,7 @@ def test_tree_node_addnode_builds_children():
 
 def test_per_node_profile_paints_its_own_row_background():
     """`node.profile = IRC_TreeViewProfile2;` -- Login restyles its category
-    folder rows; the renderer used to draw every row in the tree profile."""
+    folder rows. The renderer used to draw every row in the tree profile."""
     rt = ClientGS2()
     tree = _serverlist_tree(rt)
     profile = rt.gui.create_control("GuiTreeViewProfile", "IRC_TreeViewProfile2")
@@ -734,7 +734,7 @@ def test_string_method_call_fetches_the_unloaded_weapon(monkeypatch):
 
 
 def test_slider_controls_route_and_clamp():
-    """GuiSliderCtrl/GuiTextEditSliderCtrl (Login Options' sound rows;
+    """GuiSliderCtrl/GuiTextEditSliderCtrl (Login Options' sound rows.
     absent from the FourPlay build, Torque-standard surface): real classes
     instead of the generic-fallback warning."""
     from pyreborn.game.gs2_gui import make_control

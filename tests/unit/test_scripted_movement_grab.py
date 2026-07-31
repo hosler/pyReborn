@@ -8,7 +8,7 @@ PLO_LEVELSIGN signs, so the DATA was always there):
 1. input.py's scripted-movement branch returned right after
    _scripted_movement_touch, so the one-shot A dispatch (_try_grab: sign read
    -> dialogue box, chests, doors, pickups) was unreachable — pressing A on a
-   level sign did nothing. disabledefmovement only disables default MOVEMENT;
+   level sign did nothing. disabledefmovement only disables default MOVEMENT.
    grab stays a built-in.
 
 2. _check_and_render_signs' proximity popup used a 2.0-tile feet-to-sign-

@@ -11,7 +11,7 @@ sizes the bomber lobby's CadavreTest cog spin (0.03 rad/tick ⇒ ~1.8 rad/s at
 60fps, not the 0.6 rad/s the 0.05 floor produced).
 
 Bytecode assembly mirrors test_gs2_client.py's minimal hand-assembler (kept
-local: tests/ isn't a package, so cross-test-module imports are fragile).
+local: tests/ is not a package, so cross-test-module imports are fragile).
 """
 
 import os
@@ -104,8 +104,8 @@ class TestTimerFloor:
 
 class TestRearmingLoopCadence:
     """The CadavreTest cogs step rotation 0.03 rad per onTimeout with a
-    setTimer(0.01) re-arm; the visual rate is ticks/s * 0.03. The reference
-    runs that loop at ~60-120Hz (frame-bound); with the old 0.05 floor we
+    setTimer(0.01) re-arm. The visual rate is ticks/s * 0.03. The reference
+    runs that loop at ~60-120Hz (frame-bound). With the old 0.05 floor we
     ticked at 20Hz (0.6 rad/s — hosler's 'really slow' cogs)."""
 
     def _ticks_after_one_second(self, fps: int) -> float:

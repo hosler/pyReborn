@@ -1,5 +1,7 @@
-"""Combat and projectile packets: damage, relayed shots/explosions, and the
-bomb/arrow/horse/firespy entity families.
+"""The client handles combat and projectile packets.
+
+These packets contain damage, relayed shots and explosions, and the
+bomb, arrow, horse, and firespy entity families.
 """
 
 import time

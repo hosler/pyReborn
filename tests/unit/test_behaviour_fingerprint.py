@@ -19,7 +19,7 @@ game_tester/behaviour_fingerprint.py:
                                  the 2026-07-25 outage: the server list is
                                  EMPTY. `serverstartconnect` was unanswered,
                                  so it resolved to Number 0.0 and compared
-                                 equal to every word; initServerlist() took
+                                 equal to every word. InitServerlist() took
                                  `serverstartconnect == "skills"` and
                                  auto-connected instead of requesting the
                                  list. Structurally almost identical to the
@@ -118,7 +118,7 @@ def test_empty_server_list_was_invisible_to_the_structural_invariants(
     Every count the harness had BEFORE content metrics -- roots, named,
     controls, depth, weapon VMs, events, host calls, warnings -- is inside
     its band for a Login screen that lists no servers at all. If this ever
-    starts failing on a structural invariant, great; but it must never stop
+    starts failing on a structural invariant, great. But it must never stop
     failing on the content ones.
     """
     results = {r.name: r for r in
@@ -267,7 +267,7 @@ def test_default_pins_use_root_controls_not_every_named_control():
 def test_rebaseline_seeds_pin_kinds_the_previous_entry_never_had():
     """A rebaseline used to restore the previous pins WHOLESALE, so any pin
     kind added after a baseline was recorded stayed absent for ever and
-    checked nothing. Curated keys still win; new keys get seeded."""
+    checked nothing. Curated keys still win. New keys get seeded."""
     observed = _fixture("login_good")
     previous = make_entry(Target("Login", "h", 1), observed)
     del previous["pins"]["required_filled_controls"]

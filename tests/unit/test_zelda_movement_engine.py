@@ -6,12 +6,15 @@ client three weapons that ARE the game: `*System` draws the HUD,
 `-Player/Movement` calls `disabledefmovement()` and then drives walking,
 collision, swimming, sitting and jumping itself from a 10 ms timer.
 
-Three client gaps kept that from working; all three are covered here with no
+Three client gaps kept that from working. All three are covered here with no
 server needed. Source references are to Preagonal/graal-lttp, the world's own
 repository.
 
-1. **Scripted layer colours.** GS2 assigns `findimg(i).red/.green/.blue/.alpha`, not GS1's packed `changeimgcolors` (-Player/Movement:155-160).
-2. **Tile probes on a gmap.** Zelda passes world tile coordinates (0..640), while the GS1 host only knew a single 64x64 board.
+1. **Scripted layer colours.** GS2 assigns
+   `findimg(i).red/.green/.blue/.alpha`, not GS1's packed `changeimgcolors`
+   (-Player/Movement:155-160).
+2. **Tile probes on a gmap.** Zelda passes world tile coordinates (0..640),
+   while the GS1 host only knew a single 64x64 board.
 3. **`tiletype()` itself** was not implemented (-Player/Movement:369-370, 451).
 """
 

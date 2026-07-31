@@ -7,7 +7,7 @@ swimming:true after warping into a dry indoor level (chicken_house1.nw).
 Root cause: _update_swimming_state() (pyreborn/game/actions.py) was only
 called from _move() and from the run() loop's per-frame catch-all - warp
 entry points (_use_door_link, _process_pending_warp) never called it
-directly, so any caller that doesn't drive the full run() loop (or checks
+directly, so any caller that does not drive the full run() loop (or checks
 state immediately after a warp within the same frame, before the catch-all
 runs) sees the previous level's stale value. Fixed by recomputing swimming
 state immediately at both warp sites.

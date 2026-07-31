@@ -1,9 +1,9 @@
 """
 pyreborn - ListServer Client
-Handles authentication and server list retrieval from listserver.
+The client authenticates with the listserver and gets the server list.
 
 Wire handling (encryption, compression, framing, G-types) comes from
-reborn_protocol; this module only adds the list-server session's own policies:
+reborn_protocol. This module only adds the list-server session's own policies:
 its GEN_5 compression policy (LIST_SERVER_COMPRESSION - never bz2) and its
 cp1252 text codepage.
 """
@@ -240,7 +240,7 @@ class ListServerSession:
     Client side of a list-server session, with no transport of its own.
 
     Owns the encryption key, the GEN_5 codec, the receive buffer and all
-    framing; the socket and WebSocket clients below only move bytes.
+    framing. The socket and WebSocket clients below only move bytes.
     """
 
     def __init__(self, version: str = "G3D0311C",
@@ -275,13 +275,13 @@ class ListServerSession:
         sendServerList() then calls conn->canAcceptClient(_clientType) per
         server, and canAcceptClient() short-circuits `true` for every server
         UNLESS the client is bucketed as Version3 (i.e. clienttype ==
-        "newmain" exactly), in which case it's masked against that game
+        "newmain" exactly), in which case it is masked against that game
         server's own `_allowedVersionsMask` (server-admin configurable via
         "Listserver,settings,allowedversions"). "newmain" also causes servers
         literally named "offline" to be dropped from the list.
 
         Verified live against listserver.graal.in:14922 (account hosler):
-        clienttype="newmain" returned 10/11 servers; clienttype="pyreborn"
+        clienttype="newmain" returned 10/11 servers. Clienttype="pyreborn"
         (anything != "newmain") returned 17/18 servers -- 7 extra entries
         (some behind allowedversions restrictions, one "offline"-named).
         We are not the reference "newmain" client, so identifying honestly
@@ -430,7 +430,7 @@ class ListServerClient:
             return False
 
     def _send_init_packet(self) -> bool:
-        """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
+        """Send PLI_V2ENCRYPTKEYCL to start encryption."""
         return self._send(self._session.build_init_packet(), "init packet")
 
     def _send_login_packet(self, username: str, password: str) -> bool:
@@ -656,7 +656,7 @@ if IS_BROWSER:
                 return False
 
         def _send_init_packet(self) -> bool:
-            """Send PLI_V2ENCRYPTKEYCL to initialize encryption."""
+            """Send PLI_V2ENCRYPTKEYCL to start encryption."""
             try:
                 return self._send_raw(self._session.build_init_packet())
             except Exception as e:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Visual test for GMAP rendering - verifies tiles and NPCs render correctly."""
+"""This visual test verifies that the client renders GMAP tiles and NPCs correctly."""
 
 import os
 import sys
@@ -28,13 +28,13 @@ pytestmark = pytest.mark.live
 
 
 def take_screenshot(screen) -> Image.Image:
-    """Capture pygame screen as PIL Image."""
+    """Capture the pygame screen as a PIL Image."""
     data = pygame.image.tostring(screen, 'RGB')
     return Image.frombytes('RGB', (SCREEN_WIDTH, SCREEN_HEIGHT), data)
 
 
 def analyze_screenshot(img: Image.Image) -> dict:
-    """Analyze screenshot for visual correctness."""
+    """Analyze the screenshot for visual correctness."""
     pixels = list(img.getdata())
     width, height = img.size
 
@@ -77,7 +77,7 @@ def analyze_screenshot(img: Image.Image) -> dict:
 
 
 def run_visual_test():
-    """Run visual test and return results."""
+    """Run the visual test and return the results."""
     print("=" * 60)
     print("VISUAL TEST: GMAP Rendering")
     print("=" * 60)

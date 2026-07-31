@@ -5,7 +5,7 @@ job a34dbef5 tmp/gui_before_* / gui_after_*):
 
 1. The scripted GUI band (showimg/showtext layers with explicit
    changeimgvis >= 4) drew in showimg-INDEX order only. `vis` is a stratum:
-   higher vis draws on top; the index only breaks ties within one stratum.
+   higher vis draws on top. The index only breaks ties within one stratum.
    The v6 -GraalUI HUD draws its white A/S/D/Q key letters at vis 6
    (indices 237-241) and their black drop-shadow copies at vis 5 on HIGHER
    indices (242-246) — index-only ordering painted the shadows over the
@@ -14,7 +14,7 @@ job a34dbef5 tmp/gui_before_* / gui_after_*):
 2. SpriteManager.get_sprite clamped NEGATIVE part coordinates to the sheet's
    (0,0) corner. Scripts deliberately use negative part-x as "no sprite for
    this state" (-GraalUI's empty heart slots walk part-x -80, -160, ...,
-   -1280); the real client samples off-sheet and draws nothing. The clamp
+   -1280). The real client samples off-sheet and draws nothing. The clamp
    only looked correct on reborn_system_hearts.png because that sheet's
    corner happens to be transparent.
 """

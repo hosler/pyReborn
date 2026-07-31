@@ -28,9 +28,9 @@ _DEFAULT_PYGSERVER_ACCOUNTS_DIR = _CHECKOUT_ROOT / "pygserver" / "accounts"
 def _resolve_accounts_dir(env_var: str, default: Path) -> Optional[str]:
     """Resolve an account-store directory, or None to skip the fixture.
 
-    The helpers below REWRITE persisted account files, so a path that isn't
+    The helpers below REWRITE persisted account files, so a path that is not
     an account store must make them no-op rather than guess: returns None when
-    the resolved directory doesn't exist. An explicit override that points
+    the resolved directory does not exist. An explicit override that points
     nowhere is a misconfiguration worth saying out loud - it silently produced
     "the fixture didn't take" runs whose failures then looked like renderer or
     protocol regressions (see render_smoke's [ENV WARNING] block).
@@ -48,7 +48,7 @@ def _resolve_accounts_dir(env_var: str, default: Path) -> Optional[str]:
 def reset_account_chests(account_name: str) -> bool:
     """Strip persisted 'CHEST ...' loot lines from a local account file so a
     chest test can re-open chests. Best-effort: returns False (no-op) when the
-    account file can't be found (e.g. testing a remote server). The caller must
+    account file cannot be found (e.g. testing a remote server). The caller must
     be logged out when this runs, otherwise the server re-saves the looted state.
     """
     accounts_dir = _resolve_accounts_dir("GSERVER_ACCOUNTS_DIR",
@@ -108,16 +108,16 @@ def reset_account_position(account_name: str,
                            mp: "int | None" = None) -> bool:
     """Reset a local account's persisted LEVEL/X/Y to a known non-gmap start.
 
-    The server persists the player's last level + position; a gmap test that
+    The server persists the player's last level + position. A gmap test that
     leaves the bot on the .gmap world would otherwise make the next run start
-    there and break position-sensitive tests. Best-effort; caller must be
+    there and break position-sensitive tests. Best-effort. Caller must be
     logged out (else the server re-saves the live position on disconnect).
 
     `mp` optionally pins the account's PLPROP_MAGICPOINTS (FlatFileAccountLoader
     "MP" key) to a specific non-default value. render_smoke's HUD check uses
     this so a correctly-parsed self.mp can be told apart from the Player
     dataclass's default of 0 - a fresh account with no MP line would parse to
-    0 either way, which wouldn't prove the wire delivery actually happened.
+    0 either way, which would not prove the wire delivery actually happened.
     """
     # pygserver keeps accounts as JSON in its own dir; patch (or create — QA
     # wipes that dir, and pygserver loads a pre-existing file on login) the
@@ -248,7 +248,7 @@ class TestScenarios:
         """Test movement in all 4 directions.
 
         A previous version of this test never required any move to actually
-        succeed - it passed as long as any *blocked* move wasn't an
+        succeed - it passed as long as any *blocked* move was not an
         out-of-bounds bug, so it passed unconditionally even if move()
         always returned False (0/4 moves). The QA fixture level's spawn
         area (onlinestartlocal.nw around 30,30) is open ground in all 4
@@ -330,7 +330,7 @@ class TestScenarios:
         so it passed even with collision detection completely disabled. This
         version pins down two concrete facts about the shared QA fixture
         level (onlinestartlocal.nw, probed live against the running server):
-        the default spawn (30, 30) is open ground, and there's a wall
+        the default spawn (30, 30) is open ground, and there is a wall
         spanning row 17 a few tiles north of it (tile id 18 at column 30,
         row 17 is TileType-blocking). A real player can walk south from
         spawn but is stopped before crossing north past row 17.
@@ -698,7 +698,7 @@ class TestScenarios:
 
         Exercises PLI_OPENCHEST -> PLO_LEVELCHEST and the item grant. Chest loot
         is persisted per-account, so for repeatability we reset the account's
-        saved chests first (best-effort; only possible against a local server).
+        saved chests first (best-effort. Only possible against a local server).
         """
         start = time.time()
         issues = []

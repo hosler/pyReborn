@@ -146,7 +146,7 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
 
     @staticmethod
     def host_surface():
-        """Return builtins handled directly or delegated to the real GS1 host.
+        """Return built-ins that this host or the real GS1 host handles.
 
         Just the dispatch registries' key set (plus the two delegated GS1
         tables and the stub set) -- the flat if/elif chain this replaced had to
@@ -175,9 +175,9 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
 
     def get_object(self, name: str) -> Optional[GS2Object]:
         """Resolve a bare name to an object (or plain value -- the VM pushes
-        whatever comes back; see vm.py _lookup / _op_conv_to_object).
+        whatever comes back. See vm.py _lookup / _op_conv_to_object).
 
-        Named engine objects/globals come from the _GS2_OBJECTS registry; a
+        Named engine objects/globals come from the _GS2_OBJECTS registry. A
         name that is in no table falls through to the three dynamic sources
         below (loaded weapon scripts, GUI controls, the GS1 host's builtins).
         """

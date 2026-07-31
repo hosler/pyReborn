@@ -7,10 +7,10 @@ Both screens render **native** (viewport `native=True`): the canvas IS the
 window at its real size, not a fixed 640x480 canvas letterbox-scaled into
 whatever the window manager forces the window to. On tiling WMs the window
 gets resized to something large by the WM itself, and the old scaled mode put
-a small login box in a sea of black bars; native mode fills the window and
+a small login box in a sea of black bars. Native mode fills the window and
 re-centers content on resize via anchor layout (game/ui.py's UIManager).
 Content columns (login panel, server list) are capped at a sensible max width
-so they don't stretch edge-to-edge on an ultrawide window.
+so they do not stretch edge-to-edge on an ultrawide window.
 
 Public API is unchanged:
     LoginScreen().run() -> dict | None
@@ -92,7 +92,7 @@ class _Screen:
     def content_width(self, w: int, *, minimum: int = 560, maximum: int = 1040,
                       margin: int = 48) -> int:
         """A sensible column width for this window size: fills most of a
-        narrow window but is capped so it doesn't stretch edge-to-edge on an
+        narrow window but is capped so it does not stretch edge-to-edge on an
         ultrawide monitor."""
         return max(minimum, min(maximum, w - 2 * margin))
 
@@ -282,7 +282,7 @@ class ServerSelectScreen(_Screen):
     Shows every server the listserver returned (name + type badge, player
     count, version, truncated description), sorted by player count
     descending, with a header row and a servers/players summary line. Mouse
-    wheel and Up/Down scroll; click selects, clicking the already-selected
+    wheel and Up/Down scroll. Click selects, clicking the already-selected
     row connects.
     """
 
@@ -485,7 +485,7 @@ class ServerSelectScreen(_Screen):
 
 
 def show_loading_screen(message: str, size=None):
-    """Show a simple loading screen (transient; not resizable)."""
+    """Show a simple loading screen (transient. Not resizable)."""
     if not pygame.get_init():
         pygame.init()
     w, h = size or (DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)

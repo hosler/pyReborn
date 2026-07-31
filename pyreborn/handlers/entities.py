@@ -1,5 +1,7 @@
-"""Entity packets: our own player props, the other-player rosters, NPCs,
-baddies and ground items.
+"""The client handles entity packets.
+
+These packets contain local player properties, other-player rosters, NPCs,
+baddies, and ground items.
 """
 
 from reborn_protocol.coords import LEVEL_SIZE, local_coord, segment_origin
@@ -36,18 +38,20 @@ _ROSTER_CHANGE_KEYS = frozenset(
 
 
 def _same_gmap_world(client, other_level):
-    """True when `other_level` is part of the gmap we are standing on.
+    """Return True if `other_level` is part of the current gmap.
 
-    A gmap is ONE contiguous world: GServer-v2 keeps every segment's players in
-    a single Level and reports the .gmap filename as everyone's CURLEVEL
-    (PlayerClient::getLevelName, server/src/player/PlayerClient.cpp:1148), so
-    players on adjacent segments must stay in the same-level roster. Without
-    this, the plain name comparison above drops every cross-segment props packet
-    and neighbouring players are invisible - which is exactly what
-    `--gmap cross_segment_visibility` was failing on.
+    A gmap is ONE contiguous world. GServer-v2 keeps the players from every
+    segment in one Level. It reports the .gmap filename as each player's
+    CURLEVEL (PlayerClient::getLevelName,
+    server/src/player/PlayerClient.cpp:1148). Thus, the roster must keep
+    players from adjacent segments. Without this function, the plain name
+    comparison above drops each cross-segment properties packet. The other
+    players then become invisible. This fault caused
+    `--gmap cross_segment_visibility` to fail.
 
-    Accepts both spellings because servers differ: the .gmap name itself, and a
-    sibling segment's own .nw name (pygserver historically sent the latter).
+    The function accepts both forms because servers differ. A server can send
+    the .gmap name or a sibling segment's .nw name. In the past, pygserver sent
+    the .nw name.
     """
     if not getattr(client, 'is_gmap', False):
         return False
@@ -58,15 +62,18 @@ def _same_gmap_world(client, other_level):
 
 
 def _update_global_roster(client, player_id, props):
-    """Maintain the session-global `all_players` roster and fire the engine's
-    universe events through the attached GS2 host.
+    """Update the session-global `all_players` roster.
 
-    Mirrors scriptfun_client_setotherplayerprops (FourPlay
-    TClient.cpp:3076-3160): first sighting of an id adds it to allplayers and
-    fires onPlayerLogin(other, id); the DISCONNECT prop removes it and fires
-    onPlayerLogout; a roster-relevant prop update on a known player fires
-    onPlayerChanges. Level leaves (joinleave==0) and cross-level updates do
-    NOT touch this roster -- leaving your level is not logging out.
+    The function fires the engine's universe events through the attached GS2
+    host.
+
+    The function matches scriptfun_client_setotherplayerprops (FourPlay
+    TClient.cpp:3076-3160). When the function first finds an ID, it adds the ID
+    to allplayers and fires onPlayerLogin(other, id). The DISCONNECT property
+    removes the ID and fires onPlayerLogout. A roster-related property update
+    for a known player fires onPlayerChanges. Level leaves (joinleave==0) and
+    cross-level updates do NOT change this roster. A player does not log out
+    when the player leaves your level.
 
     Returns True when this packet was a logout (caller stops processing: the
     packet carries nothing but the DISCONNECT marker)."""

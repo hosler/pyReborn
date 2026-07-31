@@ -1,6 +1,8 @@
-"""File-download packets, including the large-file chunk protocol (files over
-32000 bytes arrive as repeated PLO_FILE chunks bracketed by
-PLO_LARGEFILESTART/PLO_LARGEFILEEND).
+"""The client handles file-download packets.
+
+This includes the large-file chunk protocol. Files larger than 32000 bytes
+arrive as repeated PLO_FILE chunks between PLO_LARGEFILESTART and
+PLO_LARGEFILEEND.
 """
 
 import logging
@@ -31,11 +33,11 @@ MAX_CONCURRENT_LARGE_FILE_TRANSFERS = 16
 
 
 def _large_file_caps():
-    """(absolute cap, announced-size slack) for an in-flight large transfer.
+    """Return (absolute cap, announced-size slack) for an active large transfer.
 
-    Read from pyreborn.client at call time rather than imported: client.py owns
-    both constants and tests/unit/test_security_correctness.py monkeypatches
-    MAX_LARGE_FILE_SIZE on that module.
+    The function reads the values from pyreborn.client at call time. Client.py
+    owns both constants. Tests/unit/test_security_correctness.py monkeypatches
+    MAX_LARGE_FILE_SIZE in that module.
     """
     from .. import client as client_module
     return client_module.MAX_LARGE_FILE_SIZE, client_module.LARGE_FILE_SIZE_SLACK

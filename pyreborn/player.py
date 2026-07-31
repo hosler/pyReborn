@@ -73,7 +73,7 @@ class Player:
 
     @property
     def is_hidden(self) -> bool:
-        """Whether the server marked this player as hidden."""
+        """Return True if the server marked this player as hidden."""
         return bool(self.status & 0x02)
 
     def update_from_props(self, props: dict):

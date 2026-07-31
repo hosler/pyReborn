@@ -1,4 +1,4 @@
-"""Servers ship .wav files whose RIFF fmt tag is MPEG Layer 3 (0x0055);
+"""Servers ship .wav files whose RIFF fmt tag is MPEG Layer 3 (0x0055).
 SDL_mixer's WAV parser rejects them, but decodes the bare data chunk as
 a raw MP3 stream — SoundManager._decode unwraps the container."""
 import os

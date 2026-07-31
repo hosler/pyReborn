@@ -1,5 +1,5 @@
 """Unit tests for classic-engine "corner assist" (collision.py's
-_corner_assist_offset): a blocked pure-cardinal press that's only blocked by
+_corner_assist_offset): a blocked pure-cardinal press that is only blocked by
 being slightly off a doorway/corner opening gets nudged perpendicular
 instead of stopping dead.
 
@@ -167,7 +167,7 @@ class TestCornerAssistDoesNotAssistSolidCorner:
 class TestCornerAssistIgnoresDiagonalAndNoInput:
     def test_diagonal_press_returns_none(self):
         """Diagonal presses already have their own axis-slide in _move and
-        don't use corner-assist."""
+        do not use corner-assist."""
         lvl = _wall_row_with_doorway(20)
         c, h = _harness_with_level(lvl)
         c.player.x, c.player.y = 31.0, APPROACH_Y

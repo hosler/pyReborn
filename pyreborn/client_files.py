@@ -59,7 +59,7 @@ class FileTransferMixin:
         return self._protocol.send_packet(PacketID.PLI_UPDATESCRIPT, data)
 
     def request_gani_bytecode(self, gani_name: str, checksum: int = 0) -> bool:
-        """Request a gani's GS2 bytecode (PLI_UPDATEGANI; name without .gani).
+        """Request a gani's GS2 bytecode (PLI_UPDATEGANI. Name without .gani).
         Replies: PLO_GANISCRIPT (if checksum differs) + PLO_LOADGANI."""
         if not self.connected or not self._authenticated:
             return False

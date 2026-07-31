@@ -12,7 +12,7 @@ findings (chicken.gmap, segment (1,1) = chicken1.nw):
    used to unconditionally overwrite self.tiles, so the ACTIVE render/
    collision board flip-flopped to whichever neighbour last streamed.
 4. NPC world-coord double-offset - PLO_NPCPROPS' X2/Y2 (75/76) can carry an
-   already-world value on a real GServer-v2; adding the segment offset on
+   already-world value on a real GServer-v2. Adding the segment offset on
    top of that double-counted it.
 
 See pyReborn/pyreborn/client.py's PLO_OTHERPLPROPS/PLO_BOARDPACKET/
@@ -393,7 +393,7 @@ class TestNpcPosEpochSnapMark:
 
     def test_restore_cached_npcs_remarks_every_restored_npc(self):
         """Re-entering a level repopulates self.npcs from the session cache
-        (gs2emu won't re-stream them) - every restored NPC must be marked so
+        (gs2emu will not re-stream them) - every restored NPC must be marked so
         a stale same-id npc_visual entry from before the level clear gets
         snapped past rather than lerped into from wherever it last was."""
         c = _client_with_grid()

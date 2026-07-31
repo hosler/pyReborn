@@ -9,16 +9,16 @@ Oracle notes (grep-verified):
   :215-242, msgPLI_EXPLOSION :840-861, msgPLI_ITEMADD :345-349,
   msgPLI_HURTPLAYER :819-838).
 - damage units are HALF-hearts, floored (GS1Commands.cpp fn_hurt :1423-1442,
-  fn_hitplayer :1396-1419, fn_hitnpc :1327-1368); GTA heals through negative
+fn_hitplayer :1396-1419, fn_hitnpc :1327-1368). GTA heals through negative
   amounts (`hurt -3` fountains), clamped to max hearts.
-- players[0] is the LOCAL player; FourPlay's hitplayer applies the local
+- players[0] is the LOCAL player. FourPlay's hitplayer applies the local
   branch directly (Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp
   :3447-3464) and reports remote hits over the wire.
 - explosion hitbox is a BOX with an INCLUSIVE boundary and damage is
   power*2 half-hearts (pygserver gs1/commands/combat.py _explode /
   _explosion_targets, pinned there by tests/test_gs1_audience.py).
 - setbackpal swaps the tileset's 256-color palette for the named file's
-  (scripting-gs1-commands.md:1715); the pal files are tiny indexed PNGs.
+  (scripting-gs1-commands.md:1715). The pal files are tiny indexed PNGs.
 """
 
 import os

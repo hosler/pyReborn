@@ -4,7 +4,7 @@ Test collision box overlap detection for level links
 """
 
 def check_overlap(player_x, player_y, link_x, link_y, link_w, link_h):
-    """Check if player's collision box overlaps with link area"""
+    """This function checks whether the player collision box overlaps the link."""
     # Player collision box parameters
     player_width = 1.0   # Full tile width
     player_height = 0.5  # Half tile height (feet/shadow area)

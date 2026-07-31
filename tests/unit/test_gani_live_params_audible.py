@@ -68,7 +68,7 @@ class _FakeSound:
 
 
 class _RecordingSoundManager(SoundManager):
-    """Loads always succeed; records what was asked for and at what volume."""
+    """Loads always succeed. Records what was asked for and at what volume."""
 
     def __init__(self):
         super().__init__([], enabled=True)
@@ -131,7 +131,7 @@ def _volumes(mgr, name):
 
 class TestNpcParams:
     def test_live_setani_param_names_the_sound(self, game, sound_mgr):
-        """The wire form is one comma-joined GANI prop; the split for the ATTR
+        """The wire form is one comma-joined GANI prop. The split for the ATTR
         layers must not lose it on the way to set_animation."""
         _reset_world(game)
         game.client.npcs[3] = {'x': 32.0, 'y': 32.0,

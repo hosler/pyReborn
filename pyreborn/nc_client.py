@@ -220,7 +220,7 @@ class NCClient(Client):
         return self._protocol.send_packet(packet_id, data)
 
     def _handle_packet(self, packet_id: int, data: bytes):
-        """Handle NC-specific replies; defer the rest to the base client."""
+        """Handle NC-specific replies. Defer the rest to the base client."""
 
         # The first NC packet from the server is PLO_SIGNATURE; NC logins never
         # get PLO_PLAYERPROPS, so latch authentication here.

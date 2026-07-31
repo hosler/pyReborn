@@ -131,9 +131,9 @@ def test_large_file_transfer(bot: GameBot) -> TestResult:
 
 
 def test_board_modify(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 edits a tile via PLI_BOARDMODIFY; bot1 (on the same level) must
+    """bot0 edits a tile via PLI_BOARDMODIFY. Bot1 (on the same level) must
     receive PLO_BOARDMODIFY and update its cached board. Reverts the tile
-    afterward so the shared onlinestartlocal.nw fixture isn't left dirty."""
+    afterward so the shared onlinestartlocal.nw fixture is not left dirty."""
     start = time.time()
     issues: List[Issue] = []
 

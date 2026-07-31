@@ -5,8 +5,8 @@ Exercises the pyReborn Tier 5 additions against server fixtures:
   - PLI_UPDATESCRIPT -> PLO_NPCWEAPONSCRIPT (weapon `qa_gs2weapon`)
   - PLI_UPDATECLASS  -> PLO_LOADSCRIPT bytecode form (class `qa_gs2class`)
   - PLI_UPDATEGANI   -> PLO_GANISCRIPT + PLO_LOADGANI (gani `qa_script`)
-  - PLO_NPCBYTECODE synthetic parse (no server-side GS2 NPC fixture exists;
-    the RAWDATA framing it shares is proven by the class/gani paths)
+  - PLO_NPCBYTECODE synthetic parse. No server-side GS2 NPC fixture exists.
+    The class/gani paths prove the shared RAWDATA framing.
 
 Server fixtures (created for this suite, all with //#CLIENTSIDE GS2 code so
 the server compiles client bytecode):

@@ -5,12 +5,12 @@ could the GUI he opens still came up wrong:
 
 * he only calls `showcharacter`, never setshape/setshape2, so `NPCHandler` had
   no touch box for him at all and `playertouchsme` could never fire. Upstream
-  gives a character NPC an implicit 2x2 box on its feet (NPC.h:540-552);
+  gives a character NPC an implicit 2x2 box on its feet (NPC.h:540-552).
 * `callweapon` — the one command his touch handler runs — was registered as a
-  silent no-op in the FIRST dispatch stage, so the event was discarded;
+  silent no-op in the FIRST dispatch stage, so the event was discarded.
 * the client-version builtin was unimplemented (0), so the weapon's
   `o_cli = (graalversion < 2.211)` was true on a 2.22 session and the whole GUI
-  drew in the legacy layout with the character preview skipped;
+  drew in the legacy layout with the character preview skipped.
 * the appearance message codes (`#3`, `#8`, `#C0`..) answered "" inside a
   weapon script, so `grab_Old()` snapshotted blanks and `Cancel()` reset the
   player's head, body and five colours to white.

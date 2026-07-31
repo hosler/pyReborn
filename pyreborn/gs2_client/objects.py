@@ -256,8 +256,9 @@ class _LayerImage(GS2Object):
     `.text`, toggle `.visible`, move layers with `.x/.y`, etc. A detached
     copy (the previous implementation) silently dropped all of those.
 
-    `rotation` and `visible` are stored on the record for the renderer;
-    `layer` maps to the classic vis band (changeimgvis)."""
+    The record stores `rotation` and `visible` for the renderer. `layer` maps to
+    the classic vis band (changeimgvis).
+    """
 
     #: era new-GS1 with-scope member bridge (see gs1_client.get_builtin)
     gs1_with_members = True
@@ -348,9 +349,9 @@ def layer_image_get(table: dict, index: int, owner=None):
     miss.  The decompiled NPC binding answers null for an unknown index
     (TShowImgList::getByImgIndex), but live-server particle content
     configures emitters on virgin indices as a matter of course --
-    era_partyhouse.nw:495 even does `hideimg(200); with (findimg(200))
+    era_partyhouse.nw:495 even does `hideimg(200). With (findimg(200))
     {...}` -- so on the shipping client the pattern must materialize a
-    layer; an empty record draws nothing until a script gives it content.
+    layer. An empty record draws nothing until a script gives it content.
     `owner` (the running NPC's dict, when there is one) is stashed for the
     renderer's attachtoowner anchoring."""
     record = table.get(index)
@@ -460,7 +461,7 @@ class _BoardTilesColumn(list):
     gmap-aware helpers in gs1_client, so world coords hit the owning
     segment's board and a write patches the real board (collision) plus the
     renderer's cached segment surface -- not a detached snapshot. The base
-    list stays empty; __len__ supplies the world height so the VM's bounds
+    list stays empty. __len__ supplies the world height so the VM's bounds
     checks and its extend-on-grow path stay in-range without materializing
     placeholder rows."""
 

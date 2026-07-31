@@ -1,7 +1,7 @@
 """The position anchor: what byte a given tile coordinate becomes on the wire,
 and the guarantee that every local position change reaches the server.
 
-Anchor (locked here so a refactor can't drift it silently):
+Anchor (locked here so a refactor cannot drift it silently):
 
 * A player's (x, y) is the TOP-LEFT of the 3x3-tile gani canvas. Bomber's own
   scripts confirm it from the content side -- ``onwall(playerx+1.5, playery+2)``

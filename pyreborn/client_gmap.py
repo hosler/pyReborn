@@ -17,7 +17,7 @@ class GmapMixin:
     def _exit_gmap(self, level_name: str):
         """Leave gmap mode and become a standalone level.
 
-        Called when the player warps from a gmap world into a level that isn't
+        Called when the player warps from a gmap world into a level that is not
         one of its segments (e.g. an interior). Clears the grid so is_gmap is
         False and positions are treated as plain local coordinates again.
         """
@@ -38,10 +38,10 @@ class GmapMixin:
         self._pending_level_name = level_name
 
     def restore_known_gmap(self, spawn_level: str) -> bool:
-        """Rebuild the world grid for a segment we're warping back into.
+        """Rebuild the world grid for a segment we are warping back into.
 
-        Walking out of an interior calls `_exit_gmap`, which drops the grid;
-        walking back in leaves the client in the standalone local frame until
+        If the player walks out of an interior, `_exit_gmap` drops the grid.
+        If the player walks back in, the client stays in the local frame until
         the server re-announces the .gmap and the file download completes.
         The transition hold correctly refuses to release into that interim
         frame (see `_maybe_release_local_transition`), so the screen stays
@@ -75,7 +75,7 @@ class GmapMixin:
             gmap_data: Contents of .gmap file
             spawn_level: Segment the player is entering, when the caller knows
                 it. Normally the grid cell comes from the PLO_PLAYERWARP2 that
-                precedes the download; a client-driven re-entry
+                precedes the download. A client-driven re-entry
                 (`restore_known_gmap`) has no such packet and names the
                 destination directly instead.
         """
@@ -164,7 +164,7 @@ class GmapMixin:
         Runs after load_gmap builds the grid, fixing up NPCs that arrived
         BEFORE the .gmap file download finished. NPCs carrying GMAPLEVELX/
         GMAPLEVELY props (gs2emu gmap streams - see the PLO_NPCPROPS handler)
-        are re-attributed from those; at stream time the grid was empty so
+        are re-attributed from those. At stream time the grid was empty so
         they were stamped with the .gmap name and local-as-world coords."""
         for npc_id, npc in self.npcs.items():
             gx = npc.get('gmaplevelx')

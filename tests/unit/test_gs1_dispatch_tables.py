@@ -6,9 +6,9 @@ lines). These pin what the table-driven version has to keep:
 * STAGE ORDER, for the five names that appear in two stages with different
   behaviour -- `destroy` (NPC vs weapon), `showimg`/`hideimg` (layer store vs
   embedder callback) and `setcharprop`/`setplayerprop` (a #P player gattrib vs
-  an NPC appearance slot / the on_setplayerprop callback);
+  an NPC appearance slot / the on_setplayerprop callback).
 * the arg-count fall-throughs: a command called with too few arguments must
-  stay a silent no-op, not raise and not half-apply;
+  stay a silent no-op, not raise and not half-apply.
 * `statsoff` returning UNSET so the interpreter falls back to the plain flag
   lookup.
 """
@@ -69,7 +69,7 @@ def test_every_registered_name_is_lowercase_and_callable():
 
 def test_builtin_handlers_do_not_shadow_the_attribute_tables():
     """PLAYER_ATTR / NPC_ATTR are read AFTER their stage's handlers, so an
-    entry in both would be dead (the decorator enforces this at import; this
+    entry in both would be dead (the decorator enforces this at import. This
     states it as a fact of the design)."""
     assert not set(_GS1_PLAYER_BUILTINS) & set(PLAYER_ATTR)
     assert not set(_GS1_NPC_BUILTINS) & set(NPC_ATTR)

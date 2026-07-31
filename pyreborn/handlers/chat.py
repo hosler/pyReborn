@@ -1,4 +1,4 @@
-"""Chat, private messages and the server-pushed text windows."""
+"""The client handles chat, private messages, and server-pushed text windows."""
 
 from ..packets import (
     PacketID,

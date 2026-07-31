@@ -1,7 +1,7 @@
 """
 pyreborn - Sprite sheet manager.
 
-Handles loading, caching, and extracting sprites from sprite sheets.
+The sprite manager loads and caches sheets, and extracts sprites from them.
 Works with pygame surfaces.
 """
 
@@ -79,7 +79,7 @@ BODY_COLOR_MARKERS: Tuple[Tuple[int, int, int], ...] = (
 
 
 def strip_tiledef_image(name: str) -> str:
-    """Return the lowercase basename stored for a tile definition; the reference
+    """Return the lowercase basename stored for a tile definition. The reference
     uses the last file separator (TFiles.cpp:392-404,610-620).
     """
     return normalize_asset_name(name)
@@ -160,7 +160,7 @@ PLAYER_EQUIPMENT_PREVIEW_RECTS = {
 
 
 class SpriteManager:
-    """Manages loading and caching of sprite sheets."""
+    """The sprite manager loads and caches sprite sheets."""
 
     def __init__(
         self,
@@ -168,7 +168,7 @@ class SpriteManager:
         fetch_bytes: Optional[Callable[[str], Optional[bytes]]] = None,
     ):
         """
-        Initialize sprite manager.
+        Create the sprite manager.
 
         Args:
             search_paths: List of paths to search for sprite images
@@ -296,7 +296,7 @@ class SpriteManager:
         return frames[0]
 
     def _stash_raw8(self, name: str, surface) -> None:
-        """Keep the pre-conversion surface when it's palettized (8-bit)."""
+        """Keep the pre-conversion surface when it is palettized (8-bit)."""
         try:
             if surface.get_bitsize() == 8:
                 self._raw8_cache[name] = surface
@@ -306,7 +306,7 @@ class SpriteManager:
 
     def get_raw8(self, name: str):
         """The original 8-bit surface for `name` (palette intact), loading the
-        file if it hasn't been touched yet; None for truecolor images or
+        file if it has not been used yet. Returns None for truecolor images or
         misses. Used by TilesetManager's setbackpal palette swap."""
         name = normalize_asset_name(name)
         if name not in self.sheet_cache:
@@ -322,7 +322,7 @@ class SpriteManager:
         return surface.convert()
 
     def _display_sheet(self, name: str):
-        """Select the current timed frame; ordinary cached data remains frame 0."""
+        """Select the current timed frame. Ordinary cached data remains frame 0."""
         animation = self.animation_cache.get(name)
         if animation is None or len(animation.frames) < 2:
             return self.sheet_cache.get(name)
@@ -459,7 +459,7 @@ class SpriteManager:
         prop hasn't changed - rebuilding `tuple(int(c) for c in colors[:5])`
         each time is wasted work. Guarded against id() reuse after garbage
         collection by verifying the cached entry is still the same object
-        (and, incidentally, keeping a reference to it so the id can't be
+        (and, incidentally, keeping a reference to it so the id cannot be
         recycled by an unrelated list while the entry is live)."""
         cache = self._colors_key_cache
         entry = cache.get(id(colors))
@@ -474,8 +474,8 @@ class SpriteManager:
     def recolor_body(self, sheet_name: str, colors) -> Optional[pygame.Surface]:
         """Return a palette-swapped copy of `sheet_name` for a 5-value
         PLPROP_COLORS sequence (see the module-level Tier 2a notes above).
-        Cached per (sheet_name, colors-tuple); returns None if the base sheet
-        isn't loaded yet (cache-the-miss - retried once it downloads, same
+        Cached per (sheet_name, colors-tuple). Returns None if the base sheet
+        is not loaded yet (cache-the-miss - retried once it downloads, same
         policy as load_sheet)."""
         sheet_name = normalize_asset_name(sheet_name)
         if not colors or len(colors) < 5:
@@ -505,7 +505,7 @@ class SpriteManager:
     def get_sprite_recolored(self, sheet_name: str, colors, x: int, y: int,
                               width: int, height: int) -> Optional[pygame.Surface]:
         """Like get_sprite(), but drawn from the colors-recolored sheet. Falls
-        back to the plain (uncoloured) sprite if colors isn't a usable 5-value
+        back to the plain (uncoloured) sprite if colors is not a usable 5-value
         sequence, so callers can pass a possibly-None `colors` unconditionally."""
         sheet_name = normalize_asset_name(sheet_name)
         if not colors or len(colors) < 5:
@@ -548,13 +548,13 @@ class TilesetManager:
     """
     Specialized manager for Reborn tilesets.
 
-    Handles the non-linear tile ID mapping used in Reborn level files.
+    The manager uses the non-linear tile ID map from Reborn level files.
     """
 
     TILE_SIZE = 16
 
     def __init__(self, sprite_manager: SpriteManager):
-        """Initialize with a sprite manager."""
+        """Create the tileset manager with a sprite manager."""
         self.sprite_mgr = sprite_manager
         self.tile_cache: Dict[Tuple[str, int], pygame.Surface] = {}
         # get_tile_or_color()'s colored fallback for a missing tile, cached per
@@ -658,7 +658,7 @@ class TilesetManager:
 
     def set_backpal(self, image: str) -> bool:
         """Set (or clear, with "") the setbackpal palette source. Returns
-        whether anything changed; a change drops the extracted-tile and
+        whether anything changed. A change drops the extracted-tile and
         composed-sheet caches so the next draw re-derives them."""
         image = normalize_asset_name(image)
         if image == self.backpal:
@@ -670,7 +670,7 @@ class TilesetManager:
     def _palettized_base(self, base_name: str) -> Optional[pygame.Surface]:
         """The base sheet with the backpal file's palette applied: both must
         still exist as 8-bit surfaces (SpriteManager stashes those before
-        display conversion). None = can't swap (missing/truecolor), caller
+        display conversion). None = cannot swap (missing/truecolor), caller
         falls back to the stock sheet."""
         raw = self.sprite_mgr.get_raw8(base_name)
         pal = self.sprite_mgr.get_raw8(self.backpal)

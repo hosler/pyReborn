@@ -4,11 +4,11 @@ Wire truths verified against loginserver.graal.in (Login/Login DEV/Login
 Mobile) and the server-side parsers (GServer-v2 PlayerRequestText.cpp):
 
 * PLI_SENDTEXT/REQUESTTEXT payloads lead with the CALLING WEAPON's name
-  ("-Serverlist_Chat,irc,login,-"); engine-originated sends use
+  ("-Serverlist_Chat,irc,login,-"). Engine-originated sends use
   "GraalEngine". Without it the server matched nothing and never replied.
-* A top-level {array} param flattens to one wire field per element; a
+* A top-level {array} param flattens to one wire field per element. A
   nested array collapses to ONE gtokenized field.
-* PLO_SERVERTEXT replies lead with the target weapon's name; the engine
+* PLO_SERVERTEXT replies lead with the target weapon's name. The engine
   consumes it for routing and hands scripts (texttype, textoption,
   textlines).
 * Control events are wired as dotted same-script functions

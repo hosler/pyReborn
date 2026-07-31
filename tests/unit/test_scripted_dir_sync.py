@@ -7,11 +7,11 @@ Movement() writes `player.dir = k` on every timer tick a key is held, but its
 Animate() only calls setani() on movemode TRANSITIONS (IDLE->WALK etc.), so
 the setani->player_anim bridge in gs2_client never fires for a WALK->WALK
 direction change. The real client re-reads player.dir every frame for the
-local sprite; RenderMixin._update_animations now mirrors that whenever a
+local sprite. RenderMixin._update_animations now mirrors that whenever a
 script drives movement (gs1.default_movement False).
 
 The engine side (keydown() -> player.dir write -> movement vector) was
-verified correct against the cached v6 bytecode; only the renderer facing
+verified correct against the cached v6 bytecode. Only the renderer facing
 was stale, so that is what's pinned here.
 """
 
@@ -28,7 +28,7 @@ from pyreborn.game.render import RenderMixin
 
 
 class _AnimStub:
-    """Records set_direction; the rest of the AnimationState surface used by
+    """Records set_direction. The rest of the AnimationState surface used by
     _update_animations is inert."""
 
     def __init__(self, direction=3):

@@ -139,7 +139,7 @@ def _baddy_type_from_name(value) -> int:
 
 class _ServerFlagScope(dict):
     """The GS1 `server.` scope backed by real server flags. Writing a flag
-    (setstring server.X) sends PLI_FLAGSET so other players see it; received
+    (setstring server.X) sends PLI_FLAGSET so other players see it. Received
     PLO_FLAGSET values are merged via recv(). Bomber's room roster lives here
     (server.bombrm_NN) — the member reads it to find the host's room."""
 
@@ -170,8 +170,8 @@ class _ServerFlagScope(dict):
             pass
 
     def recv(self, k, v):
-        """Set a flag value received from the server (don't echo it back). The
-        wire name carries a "server." prefix; strip it to the scope key."""
+        """Set a flag value received from the server (do not echo it back). The
+        wire name carries a "server." prefix. Strip it to the scope key."""
         k = k[7:] if str(k).startswith("server.") else k
         super().__setitem__(k, v)
         self._sent[k] = v
@@ -190,7 +190,7 @@ class _PlayerFlagScope(dict):
     """The GS1 `client.` scope backed by the player's PERSISTED account flags.
     The server streams them at login as PLO_FLAGSET packets named with a
     "client."/"clientr." wire prefix (GServer PlayerClient.cpp sendLogin:
-    account.variables); scripts write them with `setstring client.X,...`,
+    account.variables). Scripts write them with `setstring client.X,...`,
     which the classic client echoes back as PLI_FLAGSET so the selection
     sticks on the account. Bomber's PetSys keys the pet sprite off
     #s(client.pet) — before this scope existed those login flags were dumped
@@ -202,7 +202,7 @@ class _PlayerFlagScope(dict):
     TGraalClientVar and `clientr` to an ordinary TGraalVar
     (Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:642,649), and
     TClient::sendFlag drops any name that does not start with "client."
-    (TClient.cpp:895). set_local() is that non-sending write; the spelling the
+    (TClient.cpp:895). Set_local() is that non-sending write. The spelling the
     script used reaches it via _ClientScopeVarStore. Before this, opening
     classic Bomber's shop pushed its three `clientr.Shop_*` scratch strings
     onto the live account."""
@@ -265,7 +265,7 @@ class _ClientScopeVarStore(VarStore):
     the merged storage, which is right for reads — but only `client.` writes
     are transmitted (see _PlayerFlagScope). `_ref_namespace` is the spelling of
     the reference currently being resolved, published by
-    _RefNamespaceInterpreter; it is trustworthy here because every scoped write
+    _RefNamespaceInterpreter. It is trustworthy here because every scoped write
     is `_resolve(ref)` immediately followed by this `set()`, with nothing
     resolvable in between (interp.py:832-842 set_ref, :863-865 _store_set).
     """
@@ -304,7 +304,7 @@ class _RefNamespaceInterpreter(Interpreter):
 
 
 def _pcode(code):
-    """#P1..#P30 player-gattrib code -> store key 'P1'..; else None."""
+    """#P1..#P30 player-gattrib code -> store key 'P1'... Else None."""
     if code and code.startswith("#P") and code[2:].isdigit():
         return code[1:]
     return None
@@ -333,7 +333,7 @@ def _version_number(version) -> float:
 
 
 def _color_code_slot(code):
-    """`#C0`..`#C7` -> its COLORS slot number; anything else -> None."""
+    """`#C0`..`#C7` -> its COLORS slot number. Anything else -> None."""
     if code and code.startswith("#C") and code[2:].isdigit():
         return int(code[2:])
     return None
@@ -350,7 +350,7 @@ def _color_name(value) -> str:
     scripts also write names (`setcharprop #C0,orange`), so accept either and
     always answer the name — see the `#Cn` handling in message_code for why
     that direction is the one the content needs. An unset/out-of-range slot is
-    "" (no answer), not a colour: white is a real value a script may act on.
+    "" (no answer), not a color: white is a real value a script may act on.
     """
     if value is None or value == "":
         return ""
@@ -370,4 +370,3 @@ def _color_name(value) -> str:
     if 0 <= index < len(REBORN_PALETTE):
         return REBORN_PALETTE[index]
     return ""
-

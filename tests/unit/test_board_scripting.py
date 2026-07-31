@@ -10,8 +10,8 @@ Two live LTTP (hastur:14912) client bugs, 2026-07-26:
    level announce re-enabled native movement, gated off the scripted-movement
    probe chain (gmap seam announces, link warps) and double-drove the player.
 
-2. `tiles[]` was a detached 64x64 LOCAL snapshot in GS2 (world coords indexed
-   out to None, writes mutated the copy) and read-only-local in GS1; and
+2. GS2 used a detached 64x64 LOCAL snapshot for `tiles[]`. World coords indexed
+   out to None, and writes changed the copy. GS1 kept `tiles[]` read-only-local.
    `updateboard` did not exist. Both now route through the gmap-aware board
    helpers in gs1_client (board_tile_read/board_tile_write/
    board_update_region), frame math from reborn_protocol.coords, with writes
@@ -50,8 +50,8 @@ def _client(level="house.nw", board_tile=0):
 
 
 def _gmap_client():
-    """A 2x1 gmap: za.nw (segment 0,0; uniform tile 1) and zb.nw (segment
-    1,0; uniform tile 2), player standing in za.nw."""
+    """A 2x1 gmap has za.nw (segment 0,0, uniform tile 1) and zb.nw
+    (segment 1,0, uniform tile 2). The player stands in za.nw."""
     c = Client("localhost", 14900)
     c._authenticated = True
     c.gmap_width = 2

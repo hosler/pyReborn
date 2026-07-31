@@ -25,10 +25,10 @@ WARP_COORD_MAX = 111.5
 def _eval_warp_coord(expr, player_x: float, player_y: float) -> Optional[float]:
     """Resolve a level-link destination coordinate.
 
-    It's a plain number for most doors, but edge links use Reborn expressions
+    It is a plain number for most doors, but edge links use Reborn expressions
     that reference the player's current coordinate so a crossing is seamless:
     "playerx", "playery", "playery-4", "playerx+0.5", etc. Returns the resolved
-    float, or None if it can't be parsed.
+    float, or None if it cannot be parsed.
     """
     s = str(expr).strip().lower()
     # Server-controlled input (level link destination) — cap length and reject
@@ -219,7 +219,7 @@ class WarpMixin:
 
     def warp_names_pending_destination(self, level: str) -> bool:
         """Does a server warp packet naming `level` refer to the destination
-        of the warp we're waiting on?
+        of the warp we are waiting on?
 
         A server-side warp INTO a gmap is announced by the world's name
         (`zlttp.gmap`), never by the destination segment's file name — so
@@ -248,7 +248,7 @@ class WarpMixin:
         Both send PLI_LEVELWARP, and the server answers one round trip later
         with a PLO_PLAYERWARP/PLAYERWARP2 whose coordinates are the ones we
         sent, re-quantised to half-tiles by `build_level_warp` on the way out.
-        The packet therefore carries no position the client doesn't already
+        The packet therefore carries no position the client does not already
         have — but it arrives after the player has kept walking, so adopting
         it rewinds them by walk_speed x RTT. Measured on hastur (180 ms base
         RTT): 1.8 tiles / 29 px at a gmap seam (5.1 tiles on a slower sample)
@@ -291,7 +291,7 @@ class WarpMixin:
     def _restore_failed_warp(self, reason: str) -> None:
         """Roll back the optimistic state flip from warp_to_level after the
         server rejected the warp. The server's authoritative state never
-        changed (we're still in the pre-warp level), so restore the snapshot
+        changed (we are still in the pre-warp level), so restore the snapshot
         taken in warp_to_level: level name, position, render board, and any
         cached NPCs for that level."""
         fallback = self._warp_fallback
@@ -324,7 +324,7 @@ class WarpMixin:
 
     def _reset_level_state(self, cache_npcs: bool = True):
         """Clear per-level state on a full level change so ground items,
-        baddies and NPCs from the old level don't leak into the new one.
+        baddies and NPCs from the old level do not leak into the new one.
 
         Not called on seamless GMAP segment crossing (that goes through move(),
         not warp_to_level), so the stitched world keeps its entities.
@@ -334,7 +334,7 @@ class WarpMixin:
         the WRONG (optimistically-flipped) level, so caching them would poison
         _npc_cache for that level.
 
-        Signs/chests/chest_items are NOT cleared: they're keyed by level name
+        Signs/chests/chest_items are NOT cleared: they are keyed by level name
         (no cross-level leakage possible) and gs2emu keeps a per-session
         level cache (PlayerClient.cpp sendStaticLevelData) - signs are only
         streamed on the FIRST entry of a level each session, so wiping them
@@ -377,8 +377,8 @@ class WarpMixin:
 
     def _restore_cached_npcs(self, level_name: str) -> None:
         """Repopulate self.npcs from _npc_cache for level_name - and, when
-        it's a segment of the loaded gmap, for EVERY segment of that gmap
-        (the stitched world renders neighbours too, and gs2emu's per-session
+        it is a segment of the loaded gmap, for EVERY segment of that gmap
+        (the stitched world renders neighbors too, and gs2emu's per-session
         level cache means none of them get re-streamed on re-entry). Fresh
         PLO_NPCPROPS from the server simply overwrite these afterwards."""
         if not level_name:

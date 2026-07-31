@@ -73,7 +73,7 @@ class CombatMixin:
 
     def _target_in_sword_arc(self, target_x: float, target_y: float,
                              fx: int, fy: int) -> bool:
-        """Whether a target collision box overlaps the facing sword arc."""
+        """Return True if a target collision box overlaps the facing sword arc."""
         my_cx = self.player.x + PLAYER_BODY_CENTER_X
         my_cy = self.player.y + PLAYER_BODY_CENTER_Y
         corners = (
@@ -205,8 +205,8 @@ class CombatMixin:
         """Apply damage to a baddy we (the leader) own and broadcast the
         result. `damage_half_hearts` is in the same raw wire units as
         PLO_BADDYHURT's power field (half-hearts) - baddy['power'] itself is
-        plain hit points (GServer-v2's BaddyProp::POWERIMAGE), not hearts;
-        this client already treats one half-heart of sword damage as one
+        plain hit points (GServer-v2's BaddyProp::POWERIMAGE), not hearts.
+        This client already treats one half-heart of sword damage as one
         point of baddy power (see the PLO_BADDYHURT handler, unchanged by
         this task), so the units are kept consistent with that existing
         convention rather than introduced fresh here.
@@ -287,7 +287,7 @@ class CombatMixin:
     _ARROW_DIR_VECTORS = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
 
     def _start_arrow_sim(self, info: dict, now: Optional[float] = None):
-        """Begin victim-side flight simulation for another player's arrow
+        """Start victim-side flight simulation for another player's arrow
         (PLO_ARROWADD). Skips arrows we fired ourselves (matched
         heuristically against _own_recent_arrows - see its docstring) and
         arrows with no usable direction vector."""
@@ -314,7 +314,7 @@ class CombatMixin:
 
     def _advance_arrow_sim(self, sim: dict, now: float, my_x: float, my_y: float) -> bool:
         """Step one arrow simulation forward from its last-checked time to
-        `now`, sub-stepping at _ARROW_STEP so a low update() call rate can't
+        `now`, sub-stepping at _ARROW_STEP so a low update() call rate cannot
         let the arrow tunnel through the player's hitbox between checks.
         Returns True (and leaves `sim` at the point of impact) on hit."""
         dt_total = now - sim['last_tick']
@@ -353,7 +353,7 @@ class CombatMixin:
     def _tick_arrow_sims(self, now: Optional[float] = None):
         """Advance every tracked victim-side arrow simulation, queue
         self-damage for any that connect with our own collision box this
-        tick (see _ARROW_HIT_GRACE for why it's queued rather than applied
+        tick (see _ARROW_HIT_GRACE for why it is queued rather than applied
         immediately), and resolve anything whose grace period has elapsed.
         Call regularly (update() does this automatically)."""
         if now is None:

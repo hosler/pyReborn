@@ -4,12 +4,12 @@ Covers, against the FourPlay decompilation (quattroplay/src, cited per
 mechanism in the code under test):
 
 - the multi-catcher dispatch registry (catchevent/ignoreevent, dotted
-  handlers across every loaded VM, pending by-name registration);
-- the canvas first-responder concept and onKeyDown/onKeyUp;
-- script mouse events with the uniform 5-arg signature and click counting;
-- GuiTextListCtrl onDblClick;
-- onResize/onMove through the single resize choke point;
-- onWake/onShow/onHide lifecycle events;
+  handlers across every loaded VM, pending by-name registration).
+- the canvas first-responder concept and onKeyDown/onKeyUp.
+- script mouse events with the uniform 5-arg signature and click counting.
+- GuiTextListCtrl onDblClick.
+- onResize/onMove through the single resize choke point.
+- onWake/onShow/onHide lifecycle events.
 - GuiMLTextCtrl onURL (href retention + press/release-same-link).
 """
 import os
@@ -170,7 +170,7 @@ class TestMultiCatcherDispatch:
         """Registrations store the catcher's (kind, key) identity, not the
         VM object: after a live script update replaces the VM under the
         same key (ClientGS2.load_bytecode), the NEW VM's handler runs and
-        nothing pins the old VM; a key that no longer resolves drops the
+        nothing pins the old VM. A key that no longer resolves drops the
         registration."""
         got = []
         old_vm = _FakeVM({"onSwap": lambda *a: got.append("old")})
@@ -345,7 +345,7 @@ class TestMouseScriptEvents:
         assert counts == [1.0, 2.0, 1.0]
 
     def test_drag_goes_to_locked_control_even_outside_it(self, monkeypatch):
-        """Mouse lock pins events to the pressed control; moves with the
+        """Mouse lock pins events to the pressed control. Moves with the
         button held are onMouseDragged (GuiCanvas.cpp:1091-1096)."""
         self._patch_clock(monkeypatch)
         got = []
@@ -419,7 +419,7 @@ class TestMouseScriptEvents:
         assert self.gui._script_hover is None
 
     def test_script_events_fire_in_addition_to_builtin_handling(self, monkeypatch):
-        """Scripts can't consume: the built-in click (onAction) still runs
+        """Scripts cannot consume: the built-in click (onAction) still runs
         (GuiCanvas.cpp:494-516 -- script first, then the virtual chain)."""
         self._patch_clock(monkeypatch)
         order = []
@@ -451,7 +451,7 @@ class TestTextListDblClick:
     def test_even_click_on_selected_row_fires_ondblclick(self, monkeypatch):
         """Even click count on the already-selected cell activates it:
         onDblClick(id, text, row) (GuiArrayCtrl.cpp:477-508,
-        GuiTextListCtrl.cpp:798-809); odd clicks select."""
+        GuiTextListCtrl.cpp:798-809). Odd clicks select."""
         monkeypatch.setattr(manager_module, "_ticks", lambda: self.now[0])
         pos = (10, 5)                          # row 0 (ROW_H = 18)
         self.gui.handle_event(_mousedown(pos))
@@ -584,7 +584,7 @@ class TestLifecycleEvents:
                      self.events.append(f"{_c}.{_n}"))
 
     def test_addcontrol_wakes_children_before_self_then_shows_top_down(self):
-        """awaken() is post-order (GuiControl.cpp:1815-1825); the attach
+        """awaken() is post-order (GuiControl.cpp:1815-1825). The attach
         root's onWake tail then fires onShow top-down (:1966-1967)."""
         parent = self.gui.create_control("GuiControl", "WakeParent")
         child = self.gui.create_control("GuiControl", "WakeChild")
@@ -605,7 +605,7 @@ class TestLifecycleEvents:
         assert "NoWake.onwake" not in self.events
 
     def test_onshow_onhide_only_on_effective_visibility_change(self):
-        """Toggling a control inside a hidden tree fires nothing; the
+        """Toggling a control inside a hidden tree fires nothing. The
         visible flag is already updated when the handler runs
         (GuiControl.cpp:1288-1332)."""
         parent = self.gui.create_control("GuiControl", "VisParent")
@@ -634,7 +634,7 @@ class TestLifecycleEvents:
 
     def test_window_close_fires_onhide_not_onsleep(self):
         """closeWindow with closequery unset is setVisible(false)
-        (GuiWindowCtrl.cpp:144-146) -> onHide; script onSleep never fires
+        (GuiWindowCtrl.cpp:144-146) -> onHide. Script onSleep never fires
         from close/hide/destroy (its only emitters are the canvas content
         ops, GuiCanvas.cpp:1217-1226/:1472-1483)."""
         win = self.gui.create_control("GuiWindowCtrl", "CloseWin")
@@ -670,7 +670,7 @@ class TestLifecycleEvents:
         parent -- the reference attaches nothing until explicit placement
         and fires nothing until real effective visibility (so LTTP's
         LoadLevelWindow.onShow-constructs-controls pattern runs one build
-        early here). Goes red if the transient awaken is ever deferred;
+        early here). Goes red if the transient awaken is ever deferred.
         re-judge against the Login fingerprint then (see the addcontrol
         comment in manager.py)."""
         parent = self.gui.create_control("GuiControl", "HiddenParent")
@@ -718,7 +718,7 @@ class TestLifecycleEvents:
 
 class TestKeyboardHandback:
     """Login's chat-bar toggle (weapon-Rescripted_Serverlist.txt:2649-2700):
-    Tab on the canvas shows ChatBar + ChatBar.makeFirstResponder(true); Tab
+    Tab on the canvas shows ChatBar + ChatBar.makeFirstResponder(true). Tab
     on ChatBar sets ChatBar.visible = false + GraalControl.
     makeFirstResponder(true). Both halves used to trap the keyboard: the
     engine-object makeFirstResponder fell into the inert catch-all (FR never
@@ -789,7 +789,7 @@ class TestNamedReuse:
     def test_named_new_reuses_identity_members_and_catchers(self):
         """TScriptMachine::createObject (TScriptMachine.cpp:1135-1157):
         `new <Class>("Name")` with a live same-named engine object returns
-        THAT object -- no reset; members, children and catchevent
+        THAT object -- no reset. Members, children and catchevent
         registrations survive. Login's onServerLogin re-runs
         initGraalControlSize() and used to mint a ghost ChatBar root."""
         first = self.gui.create_control("GuiTextEditCtrl", "ChatBar")
@@ -834,7 +834,7 @@ class TestNamedReuse:
 def test_start_button_toggle_also_fires_script_onaction():
     """Serverlist_TaskButton_Start.onAction (weapon-Rescripted_Serverlist
     .txt:2884-2888) must fire even though the engine's start-menu toggle
-    handles the click -- everything fires, engine handling can't consume
+    handles the click -- everything fires, engine handling cannot consume
     events away from scripts."""
     rt2 = ClientGS2()
     gui = rt2.gui

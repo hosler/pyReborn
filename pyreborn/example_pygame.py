@@ -60,7 +60,7 @@ from . import asset_paths
 
 def version_for(server, default):
     """Map a listserver entry's reported version to a client protocol version.
-    "G3D*" -> 6.037, "2.*" -> 2.22; otherwise keep the default."""
+    "G3D*" -> 6.037, "2.*" -> 2.22. Otherwise keep the default."""
     v = getattr(server, "version", "") or ""
     if v.startswith("G3D"):
         return "6.037"

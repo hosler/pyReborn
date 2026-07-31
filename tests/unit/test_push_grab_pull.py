@@ -9,8 +9,8 @@ _clear_* counterparts):
 - Pull: while grabbing, also holding the movement key OPPOSITE the grabbed
   facing switches to "pull" without re-facing that direction.
 
-None of this actually moves a tile — there's no server support for
-pushable/pullable blocks; it's purely animation/feel state, verified here at
+None of this actually moves a tile — there is no server support for
+pushable/pullable blocks. It is purely animation/feel state, verified here at
 the state-machine level (no live server/pygame display needed).
 
 Uses the same minimal ActionsMixin+CollisionMixin harness pattern as

@@ -68,7 +68,7 @@ WRITABLE_PROPS = (
 
 def test_findimg_emitter_is_lazy_and_identity_stable():
     """TShowImg::getParticleEmitter allocates on first read and caches
-    (TShowImg.cpp:180-185); findimg(i) itself must materialize the layer --
+    (TShowImg.cpp:180-185). Findimg(i) itself must materialize the layer --
     era_partyhouse.nw:495 runs `hideimg(200); with (findimg(200)) {...}`."""
     rt = _rt()
     image = call(rt, "findimg", [200])
@@ -160,7 +160,7 @@ def test_every_property_in_the_oracle_table_is_claimed():
 
 
 def test_particle_template_and_particles_array():
-    """`particle` is particles[0]; `particletypes` resizes the template array
+    """`particle` is particles[0]. `particletypes` resizes the template array
     copying template 0 (TParticleEmitter.cpp:79-90, :149-225).  Unwritten
     string props answer STRINGS (the strtofloat mis-branch hazard)."""
     emitter = ParticleEmitter({})
@@ -200,7 +200,7 @@ def test_template_movement_fields_stay_coupled():
 
 def test_addlocalmodifier_validates_against_the_three_name_tables():
     """addXmodifier(modtype, t0, t1, var, mode, v0, v1): unknown modtype ->
-    null, nothing added; unknown var/mode -> modifier kept, var effect
+    null, nothing added. Unknown var/mode -> modifier kept, var effect
     silently skipped (TParticleEmitter.cpp:227-240, TParticleModifier
     .cpp:37-59). Lookups are case-insensitive."""
     rt = _rt()
@@ -249,7 +249,7 @@ def test_modifier_addmod_appends_var_effects():
 
 def test_template_seeds_spawned_particles_and_once_modifier_applies():
     """global_aura.gani: template rgba/mode/lifetime propagate to every
-    emitted particle; the once/movex modifier lands a uniform value in
+    emitted particle. The once/movex modifier lands a uniform value in
     [-2, 2] on the movement vector."""
     emitter = ParticleEmitter({"x": 10.0, "y": 12.0})
     emitter.set("delaymin", 0)
@@ -299,7 +299,7 @@ def test_lifetime_expiry_and_counters():
 
 def test_removemodifiers_drops_all_three_lists_and_the_particles():
     """TParticleEmitter::removeModifiers (:272-281) deletes template+global+
-    local AND calls removeParticles; removeparticles only zeroes the live
+    local AND calls removeParticles. Removeparticles only zeroes the live
     set."""
     rt = _rt()
     emitter = call(rt, "findimg", [1]).get("emitter")
@@ -374,7 +374,7 @@ def test_global_impulse_reschedules_a_shared_timer():
 
 def test_dropemitter_is_lazily_created_and_manual():
     """TParticleEmitter.cpp:377-393: created on first read, never emits
-    automatically; an expiring particle feeds it."""
+    automatically. An expiring particle feeds it."""
     emitter = ParticleEmitter({})
     sub = emitter.get("dropemitter")
     assert isinstance(sub, ParticleEmitter) and sub is emitter.get("dropemitter")

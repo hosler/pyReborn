@@ -167,7 +167,7 @@ class TestBoardModifyUpdatesAnimatedIndex:
 
     def test_modify_forces_animated_tiles_refold(self):
         """_refresh_animated_tiles_cache keys off id(surface), which an
-        in-place patch doesn't change - the patch must also invalidate that
+        in-place patch does not change - the patch must also invalidate that
         key so the per-frame shimmer fold actually re-reads the updated
         animated index."""
         c = _fake_connected_client()

@@ -6,7 +6,7 @@ Both were unimplemented on this client, and each broke the shop in its own way:
 * `testnpc` fell through to UNSET (0.0), so the counter's
   `callnpc testnpc(56,26),GrabItemList,#v(this.shopmode)` ran npcs[0] instead
   of the item catalogue — `clientr.Shop_n/Shop_i/Shop_p` stayed empty and the
-  menu drew one phantom row priced 0;
+  menu drew one phantom row priced 0.
 * `mousex`/`mousey` answered 0, which turns the counter's screen<->world
   conversion `mousescreenx - (mousex - playerx) * 16 + 24` into
   `cursor + playerx * 16 + 24` — about +(736, 584) pixels at the shop's
@@ -88,7 +88,7 @@ def _this(gs1, npc_id):
 
 def _shape_npcs(script):
     """Two shaped NPCs plus the probe NPC, ids out of level order so the
-    npcs[] INDEX and the server id can't be confused."""
+    npcs[] INDEX and the server id cannot be confused."""
     return {
         40: {"x": 10.0, "y": 20.0, "image": "-",
              "script": "if (playerenters) { setshape 1,32,32; }"},

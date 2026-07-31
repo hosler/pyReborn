@@ -119,7 +119,7 @@ class _ResolvedCallFilter(logging.Filter):
     sort/makefirstresponder/findweapon/echo/isobject were all reported
     "unknown" while the catalog correctly classified them implemented).
     Classification is untouched — builtins_missing/host.calls still record
-    everything; only the misleading stderr line is suppressed, so surviving
+    everything. Only the misleading stderr line is suppressed, so surviving
     unknown-call warnings during a crawl are genuine true gaps."""
 
     _CALL = re.compile(r"unknown (?:function|method) ([\w:.]+)\(\)")
@@ -197,7 +197,7 @@ class _WarningCapture(logging.Handler):
 class RecordingHost:
     """Inert GS2 host which records calls the VM cannot implement itself.
 
-    One host per script by default; a CrawlSession hands the SAME host to
+    One host per script by default. A CrawlSession hands the SAME host to
     every script a server serves, which is what makes cross-script calls
     resolve instead of being recorded as engine gaps."""
 
@@ -481,7 +481,7 @@ def run_gs2_bounded(blob: bytes, name: str = "script",
     """Parse and run bytecode with an inert host and strict operation budget.
 
     With a `session` the script shares one host, one globals dict and one VM
-    registry with the rest of the server's scripts (see CrawlSession); the
+    registry with the rest of the server's scripts (see CrawlSession). The
     per-script figures below are then diffed off the shared counters so each
     report still describes only its own script."""
     from reborn_protocol.gs2.vm import GS2VM
@@ -1188,7 +1188,7 @@ class DeepCrawler:
         """Queue header-only PLO_LOADSCRIPT announcements for fetching.
 
         The server announces every script it holds for us, sending bytecode
-        only for the weapons; classes arrive as a bare header plus CRC and are
+        only for the weapons. Classes arrive as a bare header plus CRC and are
         pulled when something join()s them (Zelda announces 11 that way)."""
         headers = dict(getattr(self.client, "gs2_script_headers", {}))
         for key, header in headers.items():
@@ -1199,7 +1199,7 @@ class DeepCrawler:
                 self._script_refs[kind].add(str(header.get("name") or key))
 
     def _fetch_referenced_scripts(self) -> int:
-        """Request referenced-but-absent scripts; return how many went out."""
+        """Request referenced-but-absent scripts. Return how many went out."""
         self._collect_announced_scripts()
         requesters = {"weapon": getattr(self.client, "request_weapon_bytecode", None),
                       "class": getattr(self.client, "request_class_bytecode", None)}

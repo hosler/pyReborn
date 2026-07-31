@@ -158,12 +158,12 @@ class MainCommandsMixin:
 
     def _hurt_local_player(self, halfhearts, from_x=None, from_y=None):
         """Apply floor(halfhearts) half-hearts to the LOCAL player, clamped to
-        [0, max_hearts]. GS1Commands.cpp fn_hurt floors the argument; GTA also
+        [0, max_hearts]. GS1Commands.cpp fn_hurt floors the argument. GTA also
         HEALS through this path (`hurt -3` fountains, `hitplayer 0,-2,...`),
         so negatives raise hearts up to the cap. Damage goes through
         client.respond_to_hurt -- the exact path a wire PLO_HURTPLAYER takes
         (hearts + hurt gani + CURPOWER props report) -- and then the on_hurt
-        callback so the shell's flash/sound/death presentation fires; a heal
+        callback so the shell's flash/sound/death presentation fires. A heal
         sends a bare CURPOWER update (client.send_hearts)."""
         cl = self.rt.client
         player = self._player

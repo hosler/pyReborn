@@ -24,8 +24,8 @@ No third-party dependency: the core library has none and this is not worth
 adding one for.
 
 Names are keyed through :func:`normalize_asset_name`. Servers are descended
-from a Windows client and send whatever casing and path separators they like;
-on Linux ``Body.png`` and ``body.png`` are two different files, which without
+from a Windows client and send whatever casing and path separators they like.
+On Linux ``Body.png`` and ``body.png`` are two different files, which without
 folding becomes two cache entries, two downloads and two surfaces for one
 asset - and splits the "already requested" and "known failed" bookkeeping so
 neither dedupe works.
@@ -85,7 +85,7 @@ def user_content_dir() -> Path:
 
 
 def looks_like_client_install(path: Path) -> bool:
-    """Return whether a directory has the expected stock-asset layout."""
+    """Return True if a directory has the expected stock-asset layout."""
     path = Path(path).expanduser()
     if not path.is_dir():
         return False

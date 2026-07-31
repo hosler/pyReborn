@@ -12,15 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class GS1NoBoard(Exception):
-    """`tiles[x,y]` was read while the current level's board is not in hand.
+    """A script read `tiles[x,y]` before the client received the current board.
 
-    There is no honest answer: GS1 has no "unknown tile" value, so any number
-    we invent is indistinguishable from a real tile id. Answering 0.0 (the old
-    behaviour) reads as "empty floor", and classic Bomber's room0.nw furniture
-    catalog deletes every wall-mounted object whose tile is not the wall id
-    0x278 -- writing the truncated object list straight back to `server.room<N>`
-    (ResetObj/Delete, room0.nw:1006/1052). Aborting the script instead leaves
-    the furniture alone; the event re-runs once the board has arrived.
+    GS1 has no "unknown tile" value. Thus, a script cannot distinguish an
+    invented number from a real tile ID. The old answer, 0.0, means "empty
+    floor." The classic Bomber room0.nw furniture catalog then deletes each
+    wall-mounted object whose tile is not wall ID 0x278. It writes the shortened
+    object list directly to `server.room<N>` (ResetObj/Delete,
+    room0.nw:1006/1052). If the client stops the script, the furniture stays
+    unchanged. The event runs again after the board arrives.
     """
 
 
@@ -35,11 +35,12 @@ class GS1NoBoard(Exception):
 # ---------------------------------------------------------------------------
 
 def _board_locate(client, x, y):
-    """Resolve script-frame tile coords -> (level_name, lx, ly, grid).
+    """Resolve script-frame tile coordinates.
 
-    level_name is None when the coords land outside the world (or in a hole
-    of the gmap grid); grid is the (gx, gy) segment on a gmap, None in a
-    standalone level."""
+    Return (level_name, lx, ly, grid). If the coordinates are outside the world
+    or in a gmap grid hole, level_name is None. For a gmap, grid is the (gx, gy)
+    segment. For a standalone level, grid is None.
+    """
     if client is None:
         return None, 0, 0, None
     tx, ty = int(math.floor(x)), int(math.floor(y))
@@ -56,9 +57,12 @@ def _board_locate(client, x, y):
 
 
 def _board_list(client, level_name):
-    """The 4096-entry tile list backing `level_name`, or None. Same resolution
-    order as the renderer's _segment_tiles (client.levels cache first, then
-    the active client.tiles) -- Client._apply_board_modify patches both."""
+    """Return the 4096-entry tile list for `level_name`, or None.
+
+    The function uses the renderer's _segment_tiles resolution order. It checks
+    the client.levels cache before the active client.tiles.
+    Client._apply_board_modify changes both lists.
+    """
     levels = getattr(client, "levels", None) or {}
     board = levels.get(level_name)
     if board is None and level_name == getattr(client, "_tiles_level_name", ""):
@@ -67,8 +71,11 @@ def _board_list(client, level_name):
 
 
 def board_world_dims(client):
-    """(width, height) of the script-frame board in tiles: the whole gmap
-    while standing on a segment, one level otherwise."""
+    """Return the script-frame board dimensions in tiles.
+
+    The result is (width, height). It covers the full gmap while the player is
+    on a segment. Otherwise, it covers one level.
+    """
     if client is not None and getattr(client, "in_gmap_segment", False):
         w = int(getattr(client, "gmap_width", 0) or 0)
         h = int(getattr(client, "gmap_height", 0) or 0)
@@ -78,8 +85,12 @@ def board_world_dims(client):
 
 
 def board_tile_read(client, x, y):
-    """tiles[x,y] read. None = unanswerable (outside the world, or that
-    segment's board never streamed); callers pick their engine's miss value."""
+    """Read tiles[x,y].
+
+    Return None if the coordinate is outside the world. Also return None if the
+    server did not stream the segment board. Callers select the miss value for
+    their engine.
+    """
     level, lx, ly, _grid = _board_locate(client, x, y)
     if level is None:
         return None
@@ -90,12 +101,16 @@ def board_tile_read(client, x, y):
 
 
 def board_tile_write(client, x, y, tile_id) -> bool:
-    """tiles[x,y] = id. Routes through Client._apply_board_modify (the same
-    path a PLO_BOARDMODIFY server delta takes), so the write hits the REAL
-    board -- client.levels + active client.tiles, hence collision -- and then
-    the on_board_modify callback, which the pygame client wires to the
-    renderer's per-segment surface patcher. Off-world / board-less writes are
-    dropped (matching a server delta for a level we don't have)."""
+    """Write id to tiles[x,y].
+
+    The function uses Client._apply_board_modify. A PLO_BOARDMODIFY server
+    change uses the same path. Thus, the function changes the REAL board in
+    client.levels and active client.tiles. The change also affects collision.
+    The function then fires the on_board_modify callback. The pygame client
+    connects this callback to the renderer's per-segment surface patcher. The
+    function discards writes outside the world or without a board. This matches
+    a server change for a level that the client does not have.
+    """
     level, lx, ly, grid = _board_locate(client, x, y)
     if level is None or _board_list(client, level) is None:
         return False
@@ -114,10 +129,10 @@ def board_update_region(client, x, y, w, h) -> None:
     """`updateboard x,y,width,height` -- re-blit the rect from current board
     data. Oracle: GServer-v2 GS1Commands.cpp:3560-3575 (fn_updateboard /
     fn_updateboard2): exactly this argument order, each value clamped at 0,
-    the rect handed to Level::updateBoard for a region redraw; updateboard2
-    additionally saves the level server-side, which has no client-side
+    the rect handed to Level::updateBoard for a region redraw. Updateboard2
+    also saves the level server-side, which has no client-side
     meaning, so both spellings redraw here. Scripts edit tiles[] first and
-    then call this to publish the change (LTTP's CheckTiles bush slash);
+    then call this to publish the change (LTTP's CheckTiles bush slash).
     board_tile_write already patches the renderer per write, so this is the
     idempotent region form -- and the only path that repaints edits made
     behind the callback's back."""

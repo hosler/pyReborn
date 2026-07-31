@@ -384,7 +384,7 @@ class ClientGS2:
         person (see the reuse detection in script_player_object): reset the
         sticky script/PM state to its seeded defaults and drop the per-id PM
         history. The wire-sourced members are rewritten by the refresh that
-        follows; the attr/colors views and the PM method surface are id-
+        follows. The attr/colors views and the PM method surface are id-
         bound, not occupant-bound, so they stay."""
         for member in _REMOTE_PLAYER_STICKY_NUMBERS:
             item.set(member, 0.0)
@@ -438,8 +438,8 @@ class ClientGS2:
         Reference (quattroplay TInitStatics.cpp:2218): walk the player's own
         var collection, keep the names starting with `prefix`, DROP the ones
         holding an empty string or 0, strip the prefix off what is left and
-        sort it. The player's vars are the client./clientr. flag namespace,
-        which is what an unprefixed prefix searches here; a leading scope
+        sort it. The player's vars are the client./clientr. Flag namespace,
+        which is what an unprefixed prefix searches here. A leading scope
         token selects that scope's store instead. Our stores key flags
         WITHOUT the wire prefix (gs1_client's _PlayerFlagScope /
         _ServerFlagScope), so the token is stripped from the search prefix
@@ -581,7 +581,7 @@ class ClientGS2:
         return result
 
     def all_player_objects(self) -> list:
-        """`allplayers`: every player id seen this session (incl. externals
+        """`allplayers`: every player id seen this session (incl. Externals
         and channel pseudo-players), as persistent wrappers -- the engine's
         global list distinct from the in-level `players`
         (TGameEnvironment::allplayers, fed by setotherplayerprops only, so
@@ -625,8 +625,8 @@ class ClientGS2:
     def roster_player_removed(self, player_id, record) -> None:
         """onPlayerLogout(other, id) -- FourPlay TClient.cpp:3123-3124. The
         wrapper stays cached (the reference's deletedplayers analog) so any
-        waiting-PM text survives until the id is pruned; id-100000
-        resurrection of departed PM senders is deliberately NOT modelled."""
+        waiting-PM text survives until the id is pruned. Id-100000
+        resurrection of departed PM senders is deliberately NOT modeled."""
         try:
             item = self.script_player_object(player_id, record or {})
             item.set("isloggedin", 0.0)
@@ -711,10 +711,10 @@ class ClientGS2:
         SCRIPT frame -- world tiles while standing on a gmap segment (LTTP's
         -Player/Movement indexes 0..width*64), local 0..63 in a standalone
         level. Columns are _BoardTilesColumn views routing straight to the
-        client board both ways; the old code here snapshotted one 64x64
+        client board both ways. The old code here snapshotted one 64x64
         local board, so world coords indexed out to None and every write
         mutated a detached copy. Rebuilt only when the world's shape
-        changes (gmap <-> house); reads/writes are live regardless."""
+        changes (gmap <-> house). Reads/writes are live regardless."""
         w, h = board_world_dims(self.client)
         if self._tiles_view is None or self._tiles_view_key != (w, h):
             self._tiles_view_key = (w, h)
@@ -776,19 +776,19 @@ class ClientGS2:
     def handle_server_text(self, text: str) -> None:
         """Inbound PLO_SERVERTEXT -> the v6 engine's onReceiveText(texttype,
         textoption, textlines) weapon event ("receivetext" in the reference
-        client's engine-event list; FourPlay's tclient_receivetext binding
+        client's engine-event list. FourPlay's tclient_receivetext binding
         takes FOUR strings). The wire payload's FIRST token is the target
-        WEAPON's name -- e.g. a join confirm is "-Serverlist_Chat,irc,join,
+        WEAPON's name -- e.g. A join confirm is "-Serverlist_Chat,irc,join,
         #channel" (GServer-v2 ServerList.cpp:925-961 rewrites the weapon
-        field per receiver; its replies echo the weapon field from the
-        request, PlayerRequestText.cpp; the C# client parses
+        field per receiver. Its replies echo the weapon field from the
+        request, PlayerRequestText.cpp. The C# client parses
         tokens[0]==weapon, [1]==type, [2]==option). The engine consumes the
         weapon token for routing and hands the script (texttype, textoption,
         textlines) -- which is why -Serverlist_Chat can gate texttype ==
         "irc". A prior revision bound texttype = tokens[0], so every real
         reply carried the weapon name as its texttype and no handler's gate
         ever matched. Replies addressed to a weapon we have route to it
-        alone; anything else (e.g. "GraalEngine", or a client-install weapon
+        alone. Anything else (e.g. "GraalEngine", or a client-install weapon
         the server never sent us) broadcasts."""
         from ..packets import _guntokenize
         tokens = _guntokenize(to_str(text))
@@ -906,12 +906,12 @@ class ClientGS2:
         works: the live Login server answers with full bytecode (verified
         2026-07-24 for all five client-install names).
 
-        When we're outside the client's packet loop, pump the connection
+        When we are outside the client's packet loop, pump the connection
         (bounded) until the script lands and load it inline, so findweapon()
         returns a live weapon object just as if it had been installed --
         Login3 then skips straight past its null-checks like the official
         client. From inside the packet loop (an event fired mid-update) we
-        can't recurse into update(); the request still goes out and the
+        cannot recurse into update(). The request still goes out and the
         weapon self-initializes when it loads via the normal deferred path.
         Names the server never answers are negative-cached for the session
         so a genuinely absent weapon stalls at most once."""
@@ -939,7 +939,7 @@ class ClientGS2:
 
     def join_class(self, vm: GS2VM, classname: str) -> bool:
         """join("classname"): merge the class's functions into the joining
-        VM. If the class bytecode isn't here yet, request it (PLI_UPDATECLASS)
+        VM. If the class bytecode is not here yet, request it (PLI_UPDATECLASS)
         and finish the join when it arrives."""
         cname = classname.lower()
         for j in vm.joined:
@@ -987,7 +987,7 @@ class ClientGS2:
         """The (kind, key) identity a VM's settimer()/onTimeout state files
         under. A joined-class instance resolves to its joiner's own key
         (multiple joiners share one class's bytecode but never its timeout
-        slot); a top-level weapon/npc/gani VM resolves to its own key."""
+        slot). A top-level weapon/npc/gani VM resolves to its own key."""
         return getattr(vm, "_gs2_owner",
                        (getattr(vm, "_gs2_kind", "weapon"),
                         getattr(vm, "_gs2_key", vm.name)))
@@ -1096,7 +1096,7 @@ class ClientGS2:
                          logtype: str = "game") -> None:
         """universe.onLogMessage(msg, r, g, b, logtype) -- the engine-log
         line feed the official -F2LogWindow weapon renders (its handler at
-        Preagonal/gbf/bytecode/login/_F2LogWindow.gs2bc.gs2:170-239; no C++
+        Preagonal/gbf/bytecode/login/_F2LogWindow.gs2bc.gs2:170-239. No C++
         fire site survives in the mobile reference, so the signature and the
         category vocabulary come from the two corpus handlers -- flagged
         inference). RGB are floats 0..1. Reentrancy-guarded: a handler that
@@ -1148,8 +1148,10 @@ class ClientGS2:
         return False
 
     def npc_has_event(self, npc_id, event: str) -> bool:
-        """True if this NPC's VM defines the event (used by the touch
-        handler's gate)."""
+        """Return True if this NPC's VM defines the event.
+
+        The touch handler uses this result as its gate.
+        """
         vms = self.vms["npc"]
         vm = vms.get(npc_id) or vms.get(str(npc_id))
         if vm is None:
@@ -1311,7 +1313,7 @@ class ClientGS2:
         never ("class", cname) -- because settimer()/this.timeout both file
         under the *joiner's* identity (see _timeout_key), so this always
         resolves to the actual joiner instance, not the shared class
-        definition. onTimeout may still be defined on a joined class; call()
+        definition. OnTimeout may still be defined on a joined class. Call()
         finds it there via has_function()'s joined-VM fallback."""
         self.pump_pending()
         self.sync_gani_wearers()
@@ -1635,8 +1637,11 @@ class ClientGS2:
         return self._npc_in_other_level(key)
 
     def _npc_in_other_level(self, key) -> bool:
-        """True only if this NPC is present in client.npcs AND tagged to a
-        level other than the player's current one."""
+        """Return True only if client.npcs contains this NPC.
+
+        The NPC must also have a tag for a level other than the player's current
+        level.
+        """
         client = self.client
         if client is None:
             return False
@@ -1700,7 +1705,7 @@ class ClientGS2:
         draws 0.666666667. Text a script BUILDS with @ is already correct:
         OP_JOIN stringifies inside the VM.
 
-        Only the caption positions are touched; coordinates and indices stay
+        Only the caption positions are touched. Coordinates and indices stay
         numeric so the GS1 host keeps full precision."""
         positions = _GS1_TEXT_ARGS.get(name)
         if not positions:

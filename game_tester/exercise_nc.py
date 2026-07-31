@@ -106,7 +106,7 @@ def _npc_lifecycle(nc: NCClient, notes: List[str], verbose: bool):
     """Create a throwaway database NPC, set its script, then delete it.
 
     Requires an npc-server (NPCADD is guarded by hasNPCServer). Without one this
-    is a no-op; the PLI still round-trips for builder coverage.
+    is a no-op. The PLI still round-trips for builder coverage.
     """
     try:
         nc.add_npc("qa_npc", THROWAWAY_NPC_ID, "", "qa", QA_LEVEL, 30, 30)

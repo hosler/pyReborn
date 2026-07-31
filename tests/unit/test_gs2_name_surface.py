@@ -55,7 +55,7 @@ def test_player_nick_is_read_only():
 
 
 def test_remote_player_nick_stays_writable():
-    """Only the LOCAL player's entry is replaced; a TServerPlayer keeps the
+    """Only the LOCAL player's entry is replaced. A TServerPlayer keeps the
     writable slot, so the read-only gate must not leak onto other players."""
     rt = _runtime(players={7: {"nickname": "Link", "level": "onmap.nw"}})
     entry = rt.script_player_object(7, rt.client.players[7])
@@ -171,7 +171,7 @@ def test_level_object_probes_index_their_lists():
 # -- "actively wrong" #5: levelname alongside our own player.level -----------
 
 def test_player_levelname_is_the_official_spelling():
-    """No player class registers `level`; the reference spells it `levelname`
+    """No player class registers `level`. The reference spells it `levelname`
     (src/TServerPlayerProperties.cpp:573, getter :181). Our `level` extension
     stays, so both answer."""
     rt = _runtime(_current_level_name="onmap.nw")
@@ -190,7 +190,7 @@ def test_unsourced_string_names_answer_the_empty_string():
     strtofloat()s the string (src/TScriptMachine.cpp:1463), so it equals
     every non-numeric literal. `""` compares through compareIgnoreCase.
 
-    Shown here on one representative per surface; the assertion that matters
+    Shown here on one representative per surface. The assertion that matters
     is the NEGATIVE one -- these must not equal an arbitrary word."""
     rt = _runtime(_current_level_name="x.nw")
     representatives = {
@@ -246,7 +246,7 @@ def test_default_font_size_is_24_so_lttp_nick_labels_are_visible():
     sweep used. graal-lttp weapons/weapon-Player_Movement.txt:101 computes
     `zoom = $pref::graal::defaultfontsize/24;` and draws every nearby
     player's nick at that zoom (:93). Unanswered the name is 0, so zoom is 0
-    and nothing renders; the reference seeds 0x18 == 24
+    and nothing renders. The reference seeds 0x18 == 24
     (src/TInitStatics.cpp:4981), which makes the ratio exactly 1."""
     rt = _runtime()
     size = rt.host.get_object("$pref::graal::defaultfontsize")
@@ -267,7 +267,7 @@ def test_npc_this_inherited_strings_answer():
 
 def test_showimg_handle_strings_answer():
     """TShowImg registers 13 string-typed properties
-    (src/TShowImgProperties.cpp:144-558); an unwritten one used to read
+    (src/TShowImgProperties.cpp:144-558). An unwritten one used to read
     0.0."""
     layer = _LayerImage(200, {"image": "block.png"})
     for name in ("text", "font", "style", "position", "shadowoffset",
@@ -292,7 +292,7 @@ def test_testnpc_and_testplayer_route_to_the_gs1_probe():
     """Already implemented in gs1_client._test_at, just absent from the GS2
     routing table -- so every GS2 spelling read 0.0, i.e. "hit npcs[0]", for
     a probe whose miss value is negative (src/TInitStatics.cpp:4278 body
-    :3880-3900; src/TServerLevelProperties.cpp:263)."""
+    :3880-3900. Src/TServerLevelProperties.cpp:263)."""
     rt = _runtime(npcs={1: {"x": 10.0, "y": 10.0, "image": "sign.png"}})
     rt.gs1.shapes[1] = (2, 2)       # setshape box, in tiles
     assert call(rt, "testnpc", [10.5, 10.5]) == 0.0
@@ -378,7 +378,7 @@ def test_player_ani_reads_the_animation_field():
     """player.ani was permanently "".
 
     `_PLAYER_MEMBER_ATTR["ani"]` pointed at `gani`, which is the key the
-    REMOTE-player record dicts use (packets.parse_other_player); the local
+    REMOTE-player record dicts use (packets.parse_other_player). The local
     Player dataclass keeps it in `.animation` and nothing ever sets `.gani`.
     So every `player.ani == "idle"` / "walk" / "sword" branch in content was
     dead, and `player.ani = "x"` landed on an attribute no one reads."""
@@ -402,7 +402,7 @@ def test_player_state_flags_come_from_the_gs1_host():
 
 def test_gani_transform_defaults_are_the_identity_transform():
     """The reference getters are raw addresses (src/TGaniObjectProperties.cpp:
-    199-289), so only the names/types are oracle-backed; the point of the
+    199-289), so only the names/types are oracle-backed. The point of the
     defaults is that an unwritten slot is not a zero scale."""
     rt = _runtime()
     assert rt.player_object.get("zoom") == 1.0

@@ -261,7 +261,7 @@ def _serve_only(external_host: str = None, external_port: int = 14900):
 
     If external_host is given, skip spawning a throwaway pygserver entirely and
     point the daemon at the already-running server instead — teardown then
-    never touches it (we didn't start it, we don't stop it)."""
+    never touches it (we didn't start it, we do not stop it)."""
     import signal
     srv = tmpdir = logf = None
     if external_host:

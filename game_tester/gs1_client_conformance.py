@@ -6,7 +6,7 @@ running inside the real stack (Client + GameClient + NPCHandler, SDL dummy
 video like render_smoke) — against the decompiled reference client:
 Preagonal/FourPlay/quattroplay/src (the official interpreter, our top
 oracle). Until now every client-GS1 semantic lived
-only in hand-read decompile citations inside gs1_client.py; each CASE row here
+only in hand-read decompile citations inside gs1_client.py. Each CASE row here
 is an executable transcription of one such citation, so an engine change that
 breaks a row is contradicting a cited reference line, not a guess.
 
@@ -28,24 +28,24 @@ Architecture (one live session, one throwaway server, ~35 warps):
         fires its playerenters on the case level. ONE LINE because pygserver's
         build_npc_weapon_add (protocol/builders/world.py:167-176) does not
         apply the GS1 wire's newline->0xa7 mangling, so a multi-line script
-        truncates at its first newline (pinned by the weapon_multiline_
-        truncation divergence row below; the client side accepts 0xa7 fine,
-        reborn_protocol/gs1/lexer.py:146).
+        truncates at its first newline. The weapon_multiline_truncation
+        divergence row below pins this behavior. The client side accepts 0xa7
+        fine (reborn_protocol/gs1/lexer.py:146).
       - 'npc': the fixture NPC arrives over the wire (image/x/y props), but
         pygserver never puts NPCPROP_SCRIPT(1) on the wire — it runs level-NPC
-        GS1 server-side only (npc.py build_props_packet has no SCRIPT entry;
-        NPCManager.attach_gs1 is the whole path). So the harness injects the
+        GS1 server-side only. npc.py build_props_packet has no SCRIPT entry.
+        NPCManager.attach_gs1 is the whole path. So the harness injects the
         script at the exact seam a streamed script lands in
         (client.npcs[id]['script']) and lets game._load_new_npcs() — the real
         streamed-NPC load path — parse it and fire created/playerenters.
-        The delivery is simulated; everything the case ASSERTS runs in the
+        The delivery is simulated. Everything the case ASSERTS runs in the
         real engine.
 
 CLI:
     python -m game_tester --gs1-client
 
 CI-safe: skips wholesale (non-failing, clear message) when the pygserver
-checkout or a login can't be brought up. The whole suite targets < 60s.
+checkout or a login cannot be brought up. The whole suite targets < 60s.
 """
 
 from __future__ import annotations
@@ -1185,7 +1185,7 @@ def generate_fixtures(dest: Path = _FIXTURES) -> List[str]:
 # Server lifecycle (throwaway pygserver seeded with world + weapons + account)
 # ---------------------------------------------------------------------------
 def _spawn_server(fixtures: Path):
-    """Start pygserver in a temp dir; returns (proc, port, workdir, log) or None."""
+    """Start pygserver in a temp dir. Returns (proc, port, workdir, log) or None."""
     from .gs1_conformance import _free_port, _wait_port   # shared plumbing
     run_server = _PYGSERVER_DIR / "run_server.py"
     if not run_server.exists():
@@ -1342,7 +1342,7 @@ def run_gs1_client_conformance(host: Optional[str] = None,
                                port: Optional[int] = None) -> List[TestResult]:
     """Entry point for `--gs1-client`. host/port are accepted for symmetry but
     the suite always spawns its own throwaway pygserver (fixtures must be in
-    the server's world, so pointing at an arbitrary live server can't work)."""
+    the server's world, so pointing at an arbitrary live server cannot work)."""
     generate_fixtures()
 
     spawned = _spawn_server(_FIXTURES)

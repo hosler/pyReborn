@@ -3,13 +3,13 @@
 Oracle: ``TTiles::GetLevelTiles`` (Preagonal/FourPlay/quattroplay/src/
 TTiles.cpp:568-631) resets tilestype to 0 on level change and takes the type
 of the longest-prefix-matching tiledef, skipping defs with type >= 3 unless
-the type is 5; ``TServerLevel::getTileType`` (src/TServerLevel.cpp:688-708)
+the type is 5. ``TServerLevel::getTileType`` (src/TServerLevel.cpp:688-708)
 then reads the classic table for tilestype 0, the new-world table for 1/2,
 and reports type 0 for everything under tilestype 5.
 
 ``tiletypesnw.dat`` was extracted from the official v6.0.3.7 Linux client
 (0x541740, directly after the classic table which byte-matches
-tiletypes1.dat); on real era_ levels the classic table calls 96% of board
+tiletypes1.dat). On real era_ levels the classic table calls 96% of board
 tiles blocking while the new-world table gives a plausible 57%.
 """
 

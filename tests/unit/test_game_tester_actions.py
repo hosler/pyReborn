@@ -173,7 +173,7 @@ def test_warp_guard_is_skipped_when_forced():
 
 
 def test_warp_guard_lets_an_unknown_level_through():
-    """Nothing to check against for a level we've never streamed."""
+    """Nothing to check against for a level we have never streamed."""
     bot = _guard_bot([18] * 4096)
     assert bot.warp_to_checked("never_visited.nw", 5.0, 5.0) == (
         "warped", "never_visited.nw", 5.0, 5.0)

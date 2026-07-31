@@ -1,7 +1,7 @@
 """
 pyreborn - Sound manager.
 
-Handles loading, caching, and playing sound effects.
+The sound manager loads, caches, and plays sound effects.
 Works with pygame.mixer.
 """
 
@@ -23,11 +23,11 @@ except ImportError:
 
 
 class SoundManager:
-    """Manages loading and playing sound effects."""
+    """The sound manager loads and plays sound effects."""
 
     def __init__(self, search_paths: Optional[List[Path]] = None, enabled: bool = True):
         """
-        Initialize sound manager.
+        Create the sound manager.
 
         Args:
             search_paths: List of paths to search for sound files
@@ -78,7 +78,7 @@ class SoundManager:
         self.subdirs = ['', 'sounds', 'sfx', 'audio']
 
     def initialize(self):
-        """Initialize pygame mixer if not already done."""
+        """If the pygame mixer is not active, start it."""
         if not PYGAME_AVAILABLE:
             print("Warning: pygame not available, sound disabled")
             self.enabled = False
@@ -148,7 +148,7 @@ class SoundManager:
         """Decode sound bytes, unwrapping MPEG-in-WAV.
 
         Servers ship .wav files whose RIFF fmt tag is MPEG Layer 3
-        (wFormatTag 0x0055); SDL_mixer's WAV parser rejects those with
+        (wFormatTag 0x0055). SDL_mixer's WAV parser rejects those with
         "MPEG formats not supported" even though it decodes the same
         payload as a raw MP3 stream, so hand it the bare data chunk.
         """
@@ -168,7 +168,7 @@ class SoundManager:
         return pygame.mixer.Sound(io.BytesIO(data))
 
     def _request(self, name: str):
-        """Ask the server for a sound we don't have, once per name."""
+        """Ask the server for a sound we do not have, once per name."""
         name = normalize_asset_name(name)
         if self.file_requester is None or name in self._requested:
             return
@@ -224,7 +224,7 @@ class SoundManager:
         Args:
             name: Sound filename
             volume: Volume multiplier (0.0 - 2.0, relative to master)
-            pitch: Pitch multiplier (currently ignored - pygame doesn't support pitch)
+            pitch: Pitch multiplier (currently ignored - pygame does not support pitch)
 
         Returns:
             True if sound was played, False otherwise
@@ -254,7 +254,7 @@ class SoundManager:
 
         sound_info is (filename, x_offset, y_offset) in tiles — see GaniFrame.
         The listener is the local player, so the piece's own offset is the
-        whole listener-relative displacement; routing it through
+        whole listener-relative displacement. Routing it through
         play_positional keeps one interpretation of the tuple for every
         emitter, and the sub-sprite distances involved barely attenuate.
         """
@@ -278,7 +278,7 @@ class SoundManager:
 
         Volume falls off linearly with distance and the sound pans left/right,
         so other players' and NPCs' sounds feel located in the world instead
-        of all firing at full volume in the centre.
+        of all firing at full volume in the center.
         """
         if not self.enabled:
             return False
@@ -327,7 +327,7 @@ class SoundManager:
         """Stream background music (MIDI/OGG/MP3/tracker) via pygame.mixer.music.
 
         Only one music track plays at a time. `data` is the file's bytes when it
-        was downloaded from the server; otherwise the file is looked up on disk.
+        was downloaded from the server. Otherwise the file is looked up on disk.
         Downloaded music is written to a temp file because SDL_mixer's MIDI
         backend loads by path, not from a file object.
         """
@@ -391,7 +391,7 @@ class SoundManager:
     def set_volume(self, volume: float):
         """Set master volume (0.0 - 1.0).
 
-        Also pushed to mixer.music immediately if it's already
+        Also pushed to mixer.music immediately if it is already
         initialized/playing: unlike Sound.set_volume (applied fresh on every
         play()), mixer.music has one persistent volume that play_music()
         only sets at load time, so a live volume change (e.g. the settings

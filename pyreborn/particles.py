@@ -1,7 +1,7 @@
 """GS2 particle-emitter state model + simulation.
 
 The v6 client hangs a lazily-created TParticleEmitter off every showimg
-(FourPlay quattroplay/src/TShowImg.cpp:180-185); scripts configure it through
+(FourPlay quattroplay/src/TShowImg.cpp:180-185). Scripts configure it through
 `findimg(i).emitter` and the three modifier lists (era/gta corpora, 14+
 scripts).  This module is the engine-neutral state model: both script engines
 (GS2 VM via gs2_client, era new-GS1 via gs1_client) resolve to the SAME
@@ -170,7 +170,7 @@ class ParticleData:
     def modify_value(self, type_index: int, mode: int, value: float) -> None:
         """Apply one var effect (TParticleData::modifyValue, :177-209):
         replace = assign, add = current+value, multiply = current*value.
-        The stretch/colour family clamps at >= 0."""
+        The stretch/color family clamps at >= 0."""
         def apply(current: float) -> float:
             if mode == 1:
                 return current + value
@@ -220,7 +220,7 @@ class ParticleModifier(GS2Object):
     """One entry of a local/global/template modifier list (TParticleModifier).
 
     `user_time` is the SHARED timer used when this modifier runs from the
-    global or template list; per-particle timers live on each particle's
+    global or template list. Per-particle timers live on each particle's
     `users` list instead (TParticleEmitter.cpp:734-741)."""
 
     #: era new-GS1 with-scope member bridge (see gs1_client.get_builtin)
@@ -310,7 +310,7 @@ class ParticleModifier(GS2Object):
 
 class ParticleTemplate(GS2Object):
     """One particle template -- the showimg-shaped objects in the emitter's
-    `particles[]` array; `emitter.particle` is particles[0]
+    `particles[]` array. `emitter.particle` is particles[0]
     (TParticleEmitterProperties.cpp:204-211, TParticleEmitter.cpp:79-90).
     Member writes seed every particle emitted from it."""
 
@@ -593,7 +593,7 @@ class ParticleEmitter(GS2Object):
 
     def emit_now(self, position=None, now: Optional[float] = None) -> None:
         """TParticleEmitter::emit (:667-755). `position` is in the owner
-        record's coordinate frame; None = the owner's own position."""
+        record's coordinate frame. None means the owner's own position."""
         if now is None:
             now = self._now
         if position is None:
@@ -694,7 +694,7 @@ class ParticleEmitter(GS2Object):
 
     def _process_particle(self, p: ParticleData, now: float, dt: float,
                           autorotate: bool) -> bool:
-        """One step; False = expired (order per processParticle/
+        """Run one step. False means expired (order per processParticle/
         processParticle2, :465-665: expiry first, then local users, then
         globals -- shared timer, kept)."""
         if now - p.born >= p.lifetime:
@@ -736,7 +736,7 @@ class ParticleEmitter(GS2Object):
 
     # -- script method entry points -----------------------------------------
     def call_method(self, name: str, args: list) -> Any:
-        """Dispatch one of the eight funcDefs; returns the modifier object,
+        """Dispatch one of the eight funcDefs. Returns the modifier object,
         None for a rejected modtype (the host maps that to GS2 null), or 0.0
         for the void methods."""
         if name == "addlocalmodifier":

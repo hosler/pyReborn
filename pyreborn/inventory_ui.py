@@ -54,7 +54,7 @@ class InventoryUI:
 
     def __init__(self, screen: 'pygame.Surface', sprite_mgr: Optional['SpriteManager'] = None):
         """
-        Initialize inventory UI.
+        Create the inventory UI.
 
         Args:
             screen: Pygame screen surface
@@ -492,7 +492,7 @@ class HeartDisplay:
     HEARTS_PER_ROW = 10
 
     def __init__(self, x: int, y: int):
-        """Initialize heart display at position."""
+        """Create a heart display at a position."""
         self.x = x
         self.y = y
         # The heart row only actually changes when hearts/max_hearts do, not

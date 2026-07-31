@@ -198,11 +198,11 @@ def test_leave_clears_a_join_still_waiting_on_bytecode():
 # -- GS2 -> GS1 caption text -----------------------------------------------
 
 def test_gs2_numbers_reaching_gs1_captions_use_the_gs2_print_rule():
-    """The engines print numbers differently on purpose (GS2: "%.9f"
-    trimmed; GS1/GServer: the shortest round-tripping repr), so a bare
-    number a GS2 script passes as caption text must be converted at the
-    bridge -- otherwise showtext(.., 2/3) draws 0.6666666666666666 where the
-    reference client draws 0.666666667."""
+    """The engines print numbers differently on purpose. GS2 uses a trimmed
+    "%.9f" value. GS1/GServer uses the shortest round-tripping repr. Thus, the
+    bridge must convert a bare number that a GS2 script passes as caption text.
+    Otherwise, showtext(.., 2/3) draws 0.6666666666666666, but the reference
+    client draws 0.666666667."""
     args = ClientGS2._gs1_args("showtext", [0, 30.0, 20.0, "arial", "", 2 / 3])
     assert args[5] == "0.666666667"
     assert args[1] == 30.0 and args[2] == 20.0     # coordinates stay numeric
@@ -398,7 +398,7 @@ def test_tiletype_resolves_gmap_world_coordinates():
 
 def test_level_tiletype_member_form_routes_like_the_bare_call():
     """`level.tiletype(x, y)` is the member spelling of the same TServerLevel
-    probe (weapon-Player_Movement.txt:369-370; the bare form is at :451).
+    probe (weapon-Player_Movement.txt:369-370. The bare form is at :451).
     The obj-method block exits NOT_HANDLED, so without an explicit route the
     member form was 198 "unknown method" misses per second of live play."""
     from pyreborn.tiletypes import get_tile_type

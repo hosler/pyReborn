@@ -16,7 +16,7 @@ player call sites only) shifted every NPC/horse gani half a tile left --
 hosler's "sign npcs are ~.5 tiles to the left" Bomber v6 report.
 
 Also locked here: the bomb/explosion effect-gani path centres its ganis on a
-drop POINT and was tuned with the old -8 baked in; its call-site offset now
+drop POINT and was tuned with the old -8 baked in. Its call-site offset now
 carries that 8px itself, so effect placement must be unchanged.
 """
 
@@ -70,7 +70,7 @@ ANIEND
 
 
 class _RecordingScreen:
-    """Stands in for the pygame display; records blit destinations."""
+    """Stands in for the pygame display. Records blit destinations."""
 
     def __init__(self):
         self.blits = []
@@ -143,7 +143,7 @@ def test_negative_frame_offsets_apply_verbatim():
 
 
 def test_effect_gani_frame_stays_centred_on_drop_point():
-    """Bomb/explosion ganis centre on an impact POINT; the call-site offset
+    """Bomb/explosion ganis centre on an impact POINT. The call-site offset
     absorbed the old -8 canvas shift, so net placement is unchanged: a 32px
     sprite at frame offset 0 spans point +/- 16."""
     h = _Harness()

@@ -21,7 +21,7 @@ parse-only test passed while the symptom persisted.
    only the local player seemed to work.
 
 2. PARAMn sound filenames. `PLAYSOUND PARAM1` is the stock "play a sound"
-   gani idiom (zlttp_playsound3.gani, sen_piano_note2.gani); nothing
+   gani idiom (zlttp_playsound3.gani, sen_piano_note2.gani). Nothing
    substituted the caller's setani params or the gani's own DEFAULTPARAMn, so
    the sound manager was handed the literal string "PARAM1".
 """
@@ -94,7 +94,7 @@ ANIEND
 
 
 class _FakeSound:
-    """Stands in for pygame.mixer.Sound; records every volume it is given."""
+    """Stands in for pygame.mixer.Sound. Records every volume it is given."""
 
     def __init__(self):
         self.volumes = []

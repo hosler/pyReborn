@@ -1,5 +1,7 @@
-"""Level and world packets: level naming/transitions, board data and tile
-deltas, links, signs, chests, and the gmap/minimap metadata that frames them.
+"""The client handles level and world packets.
+
+These packets contain level names, transitions, board data, tile changes,
+links, signs, chests, and the related gmap and minimap metadata.
 """
 
 import logging
@@ -30,10 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 def _load_cached_gmap(client, filename: str, blob: bytes) -> None:
-    """Re-establish the gmap world frame from an already-downloaded .gmap.
+    """Restore the gmap world frame from an already-downloaded .gmap.
 
-    Mirrors handlers/files.handle_file's .gmap branch (the only other place a
-    .gmap becomes a grid), minus the download.
+    The function matches the .gmap branch in handlers/files.handle_file, but it
+    does not download the file. That branch is the only other place that makes
+    a grid from a .gmap.
     """
     try:
         client.load_gmap(blob.decode('latin-1', errors='replace'))

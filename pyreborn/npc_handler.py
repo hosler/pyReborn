@@ -15,7 +15,7 @@ This module provides:
 It does NOT interpret scripts itself. Touch detection fires `on_playertouchsme`,
 which setup wires to ``gs1.trigger_npc_event`` — the one real GS1 engine
 (``reborn_protocol.gs1``) evaluates the script and its conditions. There is no
-regex-based fallback executor; that only ever diverged from the real engine.
+regex-based fallback executor. That only ever diverged from the real engine.
 """
 
 import math
@@ -123,7 +123,7 @@ class NPCShape:
 
 
 class NPCHandler:
-    """Handles NPC collision detection and dispatches touch events.
+    """The handler detects NPC collisions and sends touch events.
 
     Collision shapes come from the GS1 engine: when an NPC script runs
     setshape/setshape2, the GS1 host records (width, height, flags) keyed by
@@ -160,7 +160,7 @@ class NPCHandler:
         """Refresh per-NPC scripts and collision shapes.
 
         Shape geometry is whatever the GS1 engine recorded when the NPC's script
-        ran setshape/setshape2 (positioned at the NPC's current x/y); call this
+        ran setshape/setshape2 (positioned at the NPC's current x/y). Call this
         after triggering playerenters so those shapes exist.
 
         A CHARACTER NPC with no script shape still gets a touch box, because

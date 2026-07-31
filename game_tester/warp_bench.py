@@ -17,7 +17,7 @@ Per warp it records:
             render board - this is what gates the "Loading level..." overlay
             and the frozen-frame transition hold
     arrive  to bot.level == target, the authoritative "we are there" signal
-            (position-derived; see GameBot.warp_to for why the raw
+            (position-derived. See GameBot.warp_to for why the raw
             _current_level_name field is not trustworthy here)
 
 Usage:

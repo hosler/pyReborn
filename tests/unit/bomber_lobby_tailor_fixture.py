@@ -12,14 +12,14 @@ server, so nothing here may touch the network.
 
 Manifest notes:
 
-* the NPC's image is "#c#", which is what the wire carries once the server has
-  run its `showcharacter` (GServer-v2 GS1Commands.cpp:3049 sets the IMAGE prop;
-  scripting-gs1-commands.md lists showcharacter as gs2emu-serverside). The
-  level file itself declares no image ("-");
+* the NPC's image is "#c#", which is what the wire carries after the server runs
+  `showcharacter`. GServer-v2 GS1Commands.cpp:3049 sets the IMAGE prop, and
+  scripting-gs1-commands.md lists showcharacter as gs2emu-serverside. The
+  level file itself declares no image ("-").
 * `weapons` is an ORDERING, not a capture: the live session had `-tailor` at
   index 3 of `weaponscount`, which is the index the NPC's `#w(i)` scan finds
   and hands to `callweapon`. Which weapons occupy 0-2 does not matter to
-  anything here;
+  anything here.
 * the NPC id is synthetic (1): this is extracted from the level file, not
   captured off the wire, so there is no server-allocated id to preserve.
 """

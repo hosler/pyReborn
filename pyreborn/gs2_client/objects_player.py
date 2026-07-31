@@ -68,7 +68,7 @@ class _FlagScopeObject(GS2Object):
 
     Wire names: "serverr."/"clientr." names are stored UNstripped in the
     server scope ("server." alone is stripped by its recv), so the serverr
-    view prefixes its keys. serverr is the read-only replica -- writes stay
+    view prefixes its keys. Serverr is the read-only replica -- writes stay
     local (dict.__setitem__) instead of echoing PLI_FLAGSET back.
 
     `client`, `clientr` and `serverr` are ALSO the executing player:
@@ -192,7 +192,7 @@ class _PlayerAttrObject(GS2Object):
     (the wire props parse_other_player stored). The local player's slots
     read and write the shared GS1 store and sync to the server exactly the
     way GS1's `setplayerprop #P<i>` does -- the same single writer, so the
-    two engines can't disagree about what we are carrying."""
+    two engines cannot disagree about what we are carrying."""
 
     __slots__ = ("_rt2", "_player_id")
 
@@ -258,7 +258,7 @@ class _PlayerAttrObject(GS2Object):
 
 
 class _PlayerColorsObject(GS2Object):
-    """`player.colors[i]` / `pl.colors[i]`: the five body-colour slots
+    """`player.colors[i]` / `pl.colors[i]`: the five body-color slots
     (FourPlay TGaniObject.cpp:2717 iterates color0..color4). Zelda's lift
     code packs a carried player's appearance as
     `pl.headimg @ ":" @ ... @ pl.colors[0] @ ... @ pl.colors[4]`, so these
@@ -487,13 +487,13 @@ class _PlayerObject(GS2Object):
         return 0.0 if value is UNSET else value
 
     def _set_freezetime(self, seconds: float) -> None:
-        """player.freezetime = N, with the reference's quantisation.
+        """player.freezetime = N, with the reference's quantization.
 
         propfun_player_freezetime_w (quattroplay/src/TPlayerProperties.cpp:
         18-37): a negative value freezes for 0 ticks, anything past 30 s
         saturates at the 600-tick ceiling, and everything else is
         `int(seconds * 20 + 1e-4)` ticks -- so 0.03 s rounds DOWN to nothing
-        while 0.05 s is exactly one tick. It then clears the action mode; the
+        while 0.05 s is exactly one tick. It then clears the action mode. The
         input lock our freezeplayer handler installs (game/setup.py
         on_freezeplayer) is this client's equivalent, so routing through the
         GS1 command keeps one writer for both engines."""

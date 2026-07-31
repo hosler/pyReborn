@@ -9,11 +9,11 @@ Oracle notes (grep-verified):
   PlayerClientPackets.cpp:753-780 msgPLI_PUTNPC). The client must not spawn a
   local copy - the echo would double it. GTA guards every call with
   `if (testnpc(x,y)<0) putnpc ...` for exactly this persistence.
-- putcomp/putnewcomp are PLI_BADDYADD (PlayerClientPackets.cpp:544-575);
+- putcomp/putnewcomp are PLI_BADDYADD (PlayerClientPackets.cpp:544-575).
   type/power/image defaults from LevelBaddy.h:26-47 + LevelBaddy.cpp:29-40.
 - putleaps/attachplayertoobj/detachplayer are client-local
-  (Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:3185-3211, 3579-3597;
-  TServerLeap.cpp:11-131; TServerPlayer.cpp:509-581).
+  (Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:3185-3211, 3579-3597,
+  TServerLeap.cpp:11-131 and TServerPlayer.cpp:509-581).
 """
 
 import os

@@ -12,7 +12,7 @@ Server fixtures (identical copies in both server directories):
       onTimeout: this.count++ (re-arms until count==3)
       onActionqa2relay(a,b): this.relay = a@"-"@b
       qaSend(x,y): triggeraction(x,y,"qa2relay","ping")
-      qaJoinHelper(n): join("qa_gs2vmclass"); return qaDouble(n)
+      qaJoinHelper(n): join("qa_gs2vmclass"). Return qaDouble(n)
   scripts/qa_gs2vmclass.txt       - class with qaDouble(n)/qaGreet(name)
 
 GS2 weapons stay OFF the suite accounts (login-time registration of a
@@ -106,7 +106,7 @@ def test_weapon_oncreated(bot: GameBot, rt2: ClientGS2) -> TestResult:
 
 
 def test_timeout_loop(bot: GameBot, rt2: ClientGS2) -> TestResult:
-    """onCreated armed settimer(0.05); onTimeout increments this.count and
+    """onCreated armed settimer(0.05). OnTimeout increments this.count and
     re-arms until it reaches 3 -- proves the settimer/onTimeout scheduling
     loop end-to-end."""
     start = time.time()
@@ -125,7 +125,7 @@ def test_timeout_loop(bot: GameBot, rt2: ClientGS2) -> TestResult:
 def test_class_join(bot: GameBot, rt2: ClientGS2) -> TestResult:
     """qaJoinHelper(n) joins qa_gs2vmclass at runtime and calls its qaDouble.
     First call triggers the PLI_UPDATECLASS request (join returns before the
-    blob arrives -> method missing -> 0); once the class bytecode lands the
+    blob arrives -> method missing -> 0). Once the class bytecode lands the
     pending join resolves and the call works."""
     start = time.time()
     issues: List[Issue] = []
@@ -149,7 +149,7 @@ def test_class_join(bot: GameBot, rt2: ClientGS2) -> TestResult:
 
 def test_triggeraction_roundtrip(host: str, port: int) -> TestResult:
     """Bot B's GS2 weapon calls triggeraction(...) (VM builtin -> real
-    PLI_TRIGGERACTION); the server relays to bot A on the same level part;
+    PLI_TRIGGERACTION). The server relays to bot A on the same level part.
     A's inbound PLO_TRIGGERACTION routing fires onActionqa2relay on A's VM,
     which records this.relay -- full client->server->client GS2 round-trip."""
     start = time.time()
@@ -216,7 +216,7 @@ def test_inbound_action_routing(bot: GameBot, rt2: ClientGS2) -> TestResult:
 
 def test_corpus_coverage() -> TestResult:
     """Every gs2parser baseline .bytecode executes (toplevel + every function,
-    argless) with zero exceptions escaping the VM; prints the opcode/builtin
+    argless) with zero exceptions escaping the VM. Prints the opcode/builtin
     coverage summary -- the honest progress metric."""
     start = time.time()
     issues: List[Issue] = []

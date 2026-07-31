@@ -10,7 +10,7 @@ and chicken1's own links list gaining a second copy of one of its doors
 (see game_tester/playtest_daemon.py's _current_links docstring, which used
 to dedupe this on the read side as a workaround).
 
-client.py now dedupes at insertion; identity is the parsed link's own
+client.py now dedupes at insertion. Identity is the parsed link's own
 fields (dest_level/x/y/width/height/dest_x/dest_y).
 """
 
@@ -76,7 +76,7 @@ class TestLevelLinkDedup:
         assert len(c.links["chicken1.nw"]) == 3
 
     def test_revisit_across_pending_and_current_level_name(self):
-        """Full re-stream on entry uses _pending_level_name; a subsequent
+        """Full re-stream on entry uses _pending_level_name. A subsequent
         revisit that resolves through _current_level_name instead must
         still be recognized as the same level's link list."""
         c = _fake_connected_client()

@@ -5,19 +5,19 @@ functional, per the two audited specs (scratchpad/gs2-native-windows-spec.md,
 scratchpad/gs2-login-irc-spec.md):
 
 - prop-81 PLAYERLISTCATEGORY / prop-82 COMMUNITYNAME / prop-51 DISCONNECT /
-  prop-53 PLAYERLISTSTATUS decode in the other-player stream;
+  prop-53 PLAYERLISTSTATUS decode in the other-player stream.
 - the session-global `all_players` roster + universe events
-  (onPlayerLogin/onPlayerLogout/onPlayerChanges/onPM);
+  (onPlayerLogin/onPlayerLogout/onPlayerChanges/onPM).
 - the persistent per-id player wrapper surface (flag booleans, staff-guild
   isadmin, pmswaiting/ismasspm/isguildpm, showprofile,
-  openexternalpm/openexternalhistory falsy stubs, sticky writable members);
-- the `scriptedplayerlist`/`allplayers` script globals;
+  openexternalpm/openexternalhistory falsy stubs, sticky writable members).
+- the `scriptedplayerlist`/`allplayers` script globals.
 - GuiTextListCtrl's engine sort model (sortgroup band -> sortvalue/lexical,
-  both enum vocabularies) and active/flickering row semantics;
+  both enum vocabularies) and active/flickering row semantics.
 - universe onControlKeyDown/onKeyPressed from the GUI key path (F2/F7 arms
-  live, Esc arms dead because window is always "");
-- onLogMessage feed (echo -> log line; reentrancy guard);
-- the GuiPMCtrl/GuiPMEditCtrl/GuiPMHistoryCtrl native panes;
+  live, Esc arms dead because window is always "").
+- onLogMessage feed (echo -> log line. Reentrancy guard).
+- the GuiPMCtrl/GuiPMEditCtrl/GuiPMHistoryCtrl native panes.
 - the real -Playerlist/-F2LogWindow bytecode as runnable fixtures
   (skipped when the third-party corpus checkout is absent).
 """

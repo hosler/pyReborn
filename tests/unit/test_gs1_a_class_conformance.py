@@ -128,7 +128,7 @@ def test_say_is_a_sign_index_not_a_message_alias():
     """`say <n>` displays LEVEL SIGN n, it does not set the chat bubble -
     GServer-v2's own handler throws "invalid arguments: say signindex"
     (GS1Commands.cpp:2008-2016). The client now follows that contract
-    (gs1_client._cmd_say -> sign_text_by_index); pygserver's GS1 host still
+    (gs1_client._cmd_say -> sign_text_by_index). Pygserver's GS1 host still
     aliases say to message, so this is deliberately NOT in the cross-host
     parametrize above until pygserver catches up."""
     _, client_npc, _, _, _, _ = _run_pair("say 0;")

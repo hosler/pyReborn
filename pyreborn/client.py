@@ -195,7 +195,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         after a door drops the player into a standalone interior level (house,
         cave) that is NOT part of the grid. Such levels use plain local (0-63)
         coordinates and must be edge-clamped like any non-GMAP level, whereas
-        real segments stitch together with their neighbours and span past 64.
+        real segments stitch together with their neighbors and span past 64.
         """
         return (self.gmap_width > 0 and
                 self._current_level_name in self.gmap_grid.values())
@@ -256,7 +256,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
     def update(self, timeout: float = 0.01) -> List[Tuple[int, bytes]]:
         """
-        Process incoming packets. Call this regularly (e.g., in game loop).
+        Read incoming packets. Call this regularly (e.g., in game loop).
 
         Args:
             timeout: How long to wait for packets (seconds)
@@ -330,7 +330,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
     def _apply_board_modify(self, level_name: str, info: dict) -> None:
         """Patch a PLO_BOARDMODIFY/BOARDMODIFY2 tile delta into cached board
-        data (self.levels[level_name] and, if it's the active level,
+        data (self.levels[level_name] and, if it is the active level,
         self.tiles). Only layer 0 (the main board) is applied - extra layers
         go through PLO_BOARDLAYER/on_board_layer instead."""
         if info.get('layer', 0) != 0:
@@ -362,7 +362,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
     def get_current_level_from_position(self) -> str:
         """
-        Calculate which GMAP level the player is in based on position.
+        Get the GMAP level the player is in based on position.
         Returns the level name, or _current_level_name if not in GMAP.
         """
         # A configured grid can outlive the player's presence in that world
@@ -383,7 +383,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
                                   self._current_level_name)
 
     def get_chest_opened(self, level_name: str, x: int, y: int) -> bool:
-        """Return whether the chest at local coordinates is open."""
+        """Return True if the chest at local coordinates is open."""
         return self.chests.get(level_name, {}).get((x, y), False)
 
     def set_chest_opened(self, level_name: str, x: int, y: int) -> None:

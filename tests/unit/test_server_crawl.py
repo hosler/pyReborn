@@ -109,7 +109,7 @@ def test_cooperative_main_loop_is_bounded_by_yields_not_reported_as_capped(monke
     """A `while (true) { ...; sleep(); }` entry point is not a runaway script.
 
     Zelda's piano NPC (npc:10003 doplay) used to burn the whole 200k op
-    budget here because a plain vm.call() makes sleep() inert; driven as the
+    budget here because a plain vm.call() makes sleep() inert. Driven as the
     coroutine the client runs, it settles at a few ops per iteration.
     """
     import reborn_protocol.gs2.vm as vm_module
@@ -379,7 +379,7 @@ def _session_vm(session, kind, key, functions=()):
 
 def test_shared_session_resolves_cross_script_calls():
     """Zelda's -Player/Movement calls plfunc.modifyclientr(...) and
-    ("-Player/Movement").HurtPlayer(...); with one host per script both
+    ("-Player/Movement").HurtPlayer(...). With one host per script both
     reached the host as unknown builtins and were reported as engine gaps."""
     from reborn_protocol.gs2.vm import GS2ScriptFunction
 
@@ -405,7 +405,7 @@ def test_isolated_session_keeps_scripts_apart():
 
 
 def test_shared_host_call_counts_are_reported_per_script():
-    """The shared host's counters are cumulative; each script's report must
+    """The shared host's counters are cumulative. Each script's report must
     still describe only its own calls."""
     session = CrawlSession()
     _session_vm(session, "weapon", "empty")     # registers the VM; blob unused

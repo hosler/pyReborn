@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test NPC rendering, positions, and sign interactions."""
+"""Test NPC rendering, NPC positions, and sign interactions."""
 
 import os
 import sys
@@ -98,18 +98,18 @@ class NPCAndSignTests:
     # ========== NPC TESTS ==========
 
     def test_npcs_exist(self) -> bool:
-        """Verify NPCs are loaded."""
+        """Verify that the client loads NPCs."""
         return len(self.client.npcs) > 0
 
     def test_npc_has_id(self) -> bool:
-        """Verify NPCs have IDs."""
+        """Verify that NPCs have IDs."""
         for npc_id, npc in self.client.npcs.items():
             if 'id' not in npc:
                 return False
         return True
 
     def test_npc_has_position(self) -> bool:
-        """Verify NPCs have position data."""
+        """Verify that NPCs have position data."""
         for npc_id, npc in self.client.npcs.items():
             if 'x' not in npc or 'y' not in npc:
                 print(f"    NPC {npc_id} missing position")
@@ -117,7 +117,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_has_world_coords(self) -> bool:
-        """Verify NPCs have world coordinates for GMAP."""
+        """Verify that NPCs have world coordinates for the GMAP."""
         for npc_id, npc in self.client.npcs.items():
             if 'world_x' not in npc or 'world_y' not in npc:
                 print(f"    NPC {npc_id} missing world coords")
@@ -125,7 +125,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_world_coords_valid(self) -> bool:
-        """Verify NPC world coords are in valid GMAP range."""
+        """Verify that the NPC world coordinates are in the valid GMAP range."""
         max_coord = self.client.gmap_width * 64
         for npc_id, npc in self.client.npcs.items():
             wx = npc.get('world_x', 0)
@@ -136,7 +136,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_level_association(self) -> bool:
-        """Verify NPCs have level association."""
+        """Verify that NPCs have a level association."""
         for npc_id, npc in self.client.npcs.items():
             if '_level' not in npc:
                 print(f"    NPC {npc_id} missing level association")
@@ -144,7 +144,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_rendering_positions(self) -> bool:
-        """Verify NPCs render at expected screen positions."""
+        """Verify that the client renders NPCs at the expected screen positions."""
         render_frame(self.game, self.client)
 
         # Get camera offset
@@ -165,7 +165,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_properties(self) -> bool:
-        """Check various NPC properties."""
+        """Check the NPC properties."""
         for npc_id, npc in self.client.npcs.items():
             # NPCs can have various properties - just check structure
             if not isinstance(npc, dict):
@@ -173,7 +173,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_image_or_gani(self) -> bool:
-        """Verify NPCs have image or gani data."""
+        """Verify that NPCs have image or gani data."""
         has_visual = 0
         for npc_id, npc in self.client.npcs.items():
             if 'image' in npc or 'gani' in npc or 'animation' in npc:
@@ -182,7 +182,7 @@ class NPCAndSignTests:
         return has_visual > 0
 
     def test_walk_to_npc(self) -> bool:
-        """Test walking towards an NPC."""
+        """Test movement toward an NPC."""
         if not self.client.npcs:
             return False
 
@@ -208,7 +208,7 @@ class NPCAndSignTests:
         return True
 
     def test_npc_stays_after_movement(self) -> bool:
-        """Verify NPCs persist after player movement."""
+        """Verify that NPCs remain after player movement."""
         initial_npc_count = len(self.client.npcs)
 
         # Move around
@@ -225,7 +225,7 @@ class NPCAndSignTests:
     # ========== SIGN TESTS ==========
 
     def test_sign_npc_detection(self) -> bool:
-        """Look for sign-type NPCs (typically have 'sign' in image or script)."""
+        """Find sign-type NPCs. They typically have 'sign' in the image or script."""
         sign_npcs = []
         for npc_id, npc in self.client.npcs.items():
             image = npc.get('image', '').lower()
@@ -236,7 +236,7 @@ class NPCAndSignTests:
         return True  # Just informational
 
     def test_npc_scripts_present(self) -> bool:
-        """Check if any NPCs have scripts."""
+        """Check whether any NPCs have scripts."""
         has_script = 0
         for npc_id, npc in self.client.npcs.items():
             if 'script' in npc and npc['script']:
@@ -245,7 +245,7 @@ class NPCAndSignTests:
         return True  # Just informational
 
     def test_trigger_npc_action(self) -> bool:
-        """Test triggering an NPC action."""
+        """Test that the player triggers an NPC action."""
         if not self.client.npcs:
             return True  # No NPCs to trigger
 
@@ -257,7 +257,7 @@ class NPCAndSignTests:
     # ========== RENDERING TESTS ==========
 
     def test_npc_in_viewport(self) -> bool:
-        """Test that NPCs in viewport are rendered."""
+        """Test that the client renders NPCs in the viewport."""
         render_frame(self.game, self.client)
         screenshot = take_screenshot(self.game.screen, "/tmp/test_npc_viewport.png")
 
@@ -267,7 +267,7 @@ class NPCAndSignTests:
         return unique > 30
 
     def test_render_multiple_npcs(self) -> bool:
-        """Test rendering with multiple NPCs."""
+        """Test that the client renders multiple NPCs."""
         # Move to where we can see NPCs
         for _ in range(10):
             render_frame(self.game, self.client)
@@ -275,13 +275,13 @@ class NPCAndSignTests:
         return True
 
     def test_npc_z_order(self) -> bool:
-        """Test NPC depth sorting (Y-order rendering)."""
+        """Test NPC depth sorting by the Y-order rendering."""
         # Render and verify no crashes
         render_frame(self.game, self.client)
         return True
 
     def test_screenshot_with_npcs(self) -> bool:
-        """Take screenshot showing NPCs."""
+        """Take a screenshot that shows NPCs."""
         render_frame(self.game, self.client)
         img = take_screenshot(self.game.screen, "/tmp/test_npcs_full.png")
         print(f"    Screenshot saved to /tmp/test_npcs_full.png")

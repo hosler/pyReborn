@@ -4,7 +4,7 @@ Two separate wire facts, both live on Bomber classic (2026-07-25):
 
 * PLPROP_HEADGIF is a preset id below 100, else a filename. The reference
   client turns a preset id N into ``head{N}.png``
-  (Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:1659-1666); pyReborn
+  (Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:1659-1666). PyReborn
   used to keep only the filename form and silently ignore the id, leaving the
   avatar on whatever head it already had.
 * An ATTRn sprite layer draws the WEARER's gani attribute n
@@ -113,7 +113,7 @@ def test_attribute_image_is_drawn():
 
 
 def test_non_image_attribute_is_not_replaced_by_the_gani_default():
-    """Bomber stores room-editor data in #P1; it names no file."""
+    """Bomber stores room-editor data in #P1. It names no file."""
     equip = EntityRenderMixin._attr_equipment({1: '"hosler"'})
     # Used verbatim; it names no file, so nothing loads and (having no '.')
     # nothing is requested from the server either -- same as the real client.

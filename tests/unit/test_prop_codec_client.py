@@ -1,7 +1,7 @@
 """Client-side prop parsers on the shared descriptor table.
 
 The four parsers (self props, other-player props, NPC props, baddy props) share
-one wire table but deliberately keep their own key names and precedence rules;
+one wire table but deliberately keep their own key names and precedence rules.
 these pin the differences that are on purpose.
 """
 
@@ -31,7 +31,7 @@ def gint3(value: int) -> bytes:
 # =============================================================================
 
 def test_empty_chat_clears_the_bubble_only_for_other_players():
-    """An empty CURCHAT from another player means "clear the bubble"; in our own
+    """An empty CURCHAT from another player means "clear the bubble". In our own
     props packet there is nothing to act on."""
     body = gchar(12) + gchar(0)
     assert parse_other_player(gchar(0) + gchar(7) + body)['chat'] == ''

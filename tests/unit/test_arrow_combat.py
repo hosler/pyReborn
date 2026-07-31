@@ -9,7 +9,7 @@ notice they got shot: each client must simulate every other player's arrow
 itself and self-apply damage when its own collision box connects.
 
 These tests exercise the pure simulation geometry (hit/dodge/timing) via
-direct calls to the tick/advance helpers (so they don't depend on real wall-
+direct calls to the tick/advance helpers (so they do not depend on real wall-
 clock time or a live socket), plus the PLO_ARROWADD/PLO_HURTPLAYER packet
 wiring and the double-damage guard against a server (pygserver) that also
 runs its own independent arrow simulation.
@@ -191,8 +191,8 @@ class TestArrowDoubleDamageGuard:
     """pygserver runs its own independent server-side arrow simulation in
     parallel with ours (see combat.py's CombatManager) and sends a real
     PLO_HURTPLAYER for the same hit our own sim would also detect - on its
-    own schedule, with no awareness of what our client has or hasn't
-    applied yet. Either side may resolve first; only one hit may ever be
+    own schedule, with no awareness of what our client has or has not
+    applied yet. Either side may resolve first. Only one hit may ever be
     applied.
 
     Live pygserver repro that motivated the grace-period design (see

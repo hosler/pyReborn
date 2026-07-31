@@ -4,13 +4,13 @@
 lines). These pin the properties the table-driven version has to keep:
 
 * the STAGE ORDER, for the names that appear in more than one table with
-  different behaviour (`stubbed`, `getchild`/`setactive`, `destroy`);
+  different behaviour (`stubbed`, `getchild`/`setactive`, `destroy`).
 * the fall-through/catch-all answers (_EngineObject inert 0.0 vs GS2Object
-  NOT_HANDLED), so a bad arg count still answers exactly as before;
+  NOT_HANDLED), so a bad arg count still answers exactly as before.
 * that host_surface() -- which game_tester/server_crawl.py uses to decide
   what this client supports -- is the registries' key set.
 
-The `sort` case additionally pins the 2026-07-25 case-folding fix: the sort key
+The `sort` case also pins the 2026-07-25 case-folding fix: the sort key
 is GS2's ASCII-only fold (reborn_protocol.gs2.values.casefold), not Python's
 str.casefold().
 """
@@ -64,7 +64,7 @@ def test_host_surface_is_the_registry_key_set():
 # --- stage order: `stubbed` answers differently per call form ---------------
 
 def test_stubbed_patcher_values_only_apply_to_the_bare_form(host):
-    """The obj-method stage returns a flat 0.0; the bare stage consults
+    """The obj-method stage returns a flat 0.0. The bare stage consults
     _PATCHER_STUB_VALUES (IRC_Installer's progress loop needs the 1.0)."""
     assert host.call_builtin(None, "getpackagesdownloadcomplete", []) == 1.0
     assert host.call_builtin(None, "getpackagesdownloadcomplete", [],

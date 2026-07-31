@@ -1,14 +1,15 @@
 """
-Pytest wrappers around the game_tester QA scenarios.
+Pytest wraps the game_tester QA scenarios.
 
-Covers the same ground as `python -m game_tester` (single-bot
-TestScenarios + multi-bot visibility/pvp/chat), but against the throwaway
-pygserver started by the `pygserver`/`bots` fixtures in conftest.py instead
-of a hand-started, shared server - no account-state drift between runs.
+The tests cover the same items as `python -m game_tester`. These items include
+single-bot TestScenarios and multi-bot visibility/pvp/chat. The tests use the
+temporary pygserver that the `pygserver`/`bots` fixtures in conftest.py start.
+They do not use a manually started, shared server. Thus, account-state drift
+does not occur between runs.
 
-Marked `integration` (see pyproject.toml); deselected by default addopts
-only excludes `live`, so a bare `pytest` run *does* start the fixture
-server and run these.
+The tests have the `integration` mark (see pyproject.toml). The default addopts
+deselect only `live`. Thus, a bare `pytest` run starts the fixture server and
+runs these tests.
 """
 
 import pytest
@@ -42,7 +43,7 @@ def test_single_bot_scenario(bots, scenario):
 
 @pytest.fixture
 def multi_bots(pygserver):
-    """A connected 2-bot MultiBotTest (visibility/pvp/chat need two players)."""
+    """Create a connected two-bot MultiBotTest. Visibility/pvp/chat need two players."""
     test = MultiBotTest(2, pygserver.host, pygserver.port)
     if not test.connect_all(timeout=15.0):
         pytest.fail(f"multi-bot connect_all() failed: {pygserver.log_tail()}")

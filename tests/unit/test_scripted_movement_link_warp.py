@@ -5,7 +5,7 @@ player x/y from the VM every tick. That broke door links: _try_link_warp was
 only called from _move() in the input path, which input.py skips entirely
 while a script drives movement, so walking onto a level link no longer
 warped. The -Test/Movement bytecode itself only does wall checks (onwall2/
-hitwall) and gani updates, never link warps; the reference client warps
+hitwall) and gani updates, never link warps. The reference client warps
 whenever the player's position enters a link rect regardless of what moved
 them.
 

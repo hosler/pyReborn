@@ -1,7 +1,7 @@
 """Regression tests for two 2026-07-19 gmap coordinate-frame bugs in the
 CollisionMixin/ActionsMixin (pyreborn/game/collision.py, .../actions.py):
 
-1. Chest frame mismatch: client.chests is keyed level-LOCAL (0-63; see
+1. Chest frame mismatch: client.chests is keyed level-LOCAL (0-63. See
    client.py's PLO_LEVELCHEST handler), but _find_chest_in_front and
    _chest_blocks used to compare WORLD-frame touch points against those keys
    directly. On a gmap, a chest anywhere off the origin segment (grid (0,0))
@@ -140,7 +140,7 @@ class TestNoTileDataBlocking:
         assert h._get_tile_at(1.0, 1.0) == 0
 
     def test_known_segment_in_bounds_tile_still_reads_normally(self):
-        """Sanity check the fix didn't disturb the ordinary in-bounds path
+        """Sanity check the fix did not disturb the ordinary in-bounds path
         for a segment whose board HAS streamed in."""
         c = _client_with_grid()
         c.tiles[5 * 64 + 5] = 42  # tile at local (5, 5)

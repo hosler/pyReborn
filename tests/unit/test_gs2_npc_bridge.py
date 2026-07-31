@@ -282,7 +282,7 @@ def test_timer_of_an_npc_left_behind_by_a_warp_stops_firing():
 
 
 def test_a_never_entered_npc_vm_still_ticks():
-    """Props can stream in after the bytecode; that VM has not entered any
+    """Props can stream in after the bytecode. That VM has not entered any
     level yet and must keep its timer (as must weapons and headless VMs)."""
     client = _npc_client(npcs={})
     rt = ClientGS2(client)

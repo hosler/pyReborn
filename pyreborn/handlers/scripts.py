@@ -1,6 +1,8 @@
-"""Weapon and script transport: weapon add/remove, GS1 weapon scripts, GS2
-bytecode (parse and store only), and inbound triggeractions that fire the
-attached GS1/GS2 hosts.
+"""The client handles weapon and script transport.
+
+This transport adds and removes weapons. It carries GS1 weapon scripts and GS2
+bytecode, which the client only parses and stores. Inbound triggeractions fire
+the attached GS1 and GS2 hosts.
 """
 
 from ..packets import (

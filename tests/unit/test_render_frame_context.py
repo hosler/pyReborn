@@ -120,7 +120,7 @@ class TestEntityPass:
         assert depths == sorted(depths)
 
     def test_frame_state_does_not_leak_back_onto_the_client(self, game):
-        """The three cross-pass lists live on FrameContext only; the old
+        """The three cross-pass lists live on FrameContext only. The old
         attribute mechanism (and its _in_gui_pass flag) must stay gone."""
         _populate(game)
         game._render_entities()

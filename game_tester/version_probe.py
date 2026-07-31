@@ -76,7 +76,7 @@ def probe_version(version: str, host: str = "localhost", port: int = 14900,
 
 def run_version_probe(host: str = "localhost", port: int = 14900,
                       versions: List[str] = None) -> bool:
-    """Probe each version; returns True if nothing FAILed (SKIPs allowed)."""
+    """Probe each version. Returns True if nothing FAILed (SKIPs allowed)."""
     if versions is None:
         versions = ["1.411", "2.17", "2.21", "2.22", "6.037"]
 

@@ -156,7 +156,7 @@ class CoverageReport:
         return rows
 
     def gaps(self) -> List[Tuple[int, str, str]]:
-        """PLO ids the server sent that aren't cleanly handled."""
+        """PLO ids the server sent that are not cleanly handled."""
         return [(pid, name, verdict)
                 for pid, name, _s, _r, _h, _e, verdict in self.plo_status()
                 if verdict not in ("OK", "IGNORED")]
@@ -292,7 +292,7 @@ def run_coverage(host: str = "localhost", port: int = 14900,
 
     The battery is intentionally wide so the server emits as many PLO types as
     possible. Each action is best-effort: failures are recorded as notes rather
-    than aborting, so one missing fixture doesn't zero out the whole report.
+    than aborting, so one missing fixture does not zero out the whole report.
     """
     # Imported here to avoid a hard dependency when only the parser is used.
     from .exercise import run_exercise_battery

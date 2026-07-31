@@ -39,7 +39,7 @@ def _props_packet(*pairs):
 
 
 class TestMaxPowerDecode:
-    """MAXPOWER(1) is whole hearts; CURPOWER(2) is half-hearts."""
+    """MAXPOWER(1) uses whole hearts. CURPOWER(2) uses half-hearts."""
 
     def test_maxpower_is_full_hearts(self):
         # gs2emu fullheart pickup: MAXPOWER=6, CURPOWER=12 => 6.0 / 6.0
@@ -342,7 +342,7 @@ if __name__ == '__main__':
 
 class TestPlayerLeftRoster:
     """JOINLEAVELVL=0 in PLO_OTHERPLPROPS removes the player from the level
-    roster (the server's leave notification; without handling it, departed
+    roster (the server's leave notification. Without handling it, departed
     players linger as ghosts at their last position)."""
 
     @staticmethod

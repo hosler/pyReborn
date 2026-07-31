@@ -229,9 +229,9 @@ class ClientGS1:
         every NPC/weapon script from scratch (clear() drops the progs), and
         re-parsing the bomber lobby's 67 NPCs + weapons measured ~300ms of an
         ~800ms single-frame re-entry stall. Programs are immutable once built
-        (the interpreter never mutates AST nodes; entries already reuse one
+        (the interpreter never mutates AST nodes. Entries already reuse one
         prog across runs), so sharing them by source is safe. Parse failures
-        are cached as None too, so a broken script isn't re-parsed each visit.
+        are cached as None too, so a broken script is not re-parsed each visit.
 
         Both failure modes are reported at WARNING, because both used to be
         invisible: a LexError killed an NPC outright behind a debug-level log,
@@ -339,7 +339,7 @@ class ClientGS1:
     def recv_flag(self, name, value):
         """Route a PLO_FLAGSET wire flag into the right GS1 scope: player
         account flags ("client."/"clientr." prefix, streamed at login and
-        whenever the server sets one) go to the client scope; everything else
+        whenever the server sets one) go to the client scope. Everything else
         (the "server."-prefixed globals) to the server scope. Callers
         (game/setup.py's on_flag + its engine-init backfill) used to shove
         everything into the server scope, which left #s(client.pet) empty."""
@@ -360,13 +360,13 @@ class ClientGS1:
 
     def load_weapon(self, name, code):
         """Load a player weapon script (e.g. -validation, -arenaSYS). Weapons
-        run client-side like NPCs but have no NPC object; `isweapon` reads true
+        run client-side like NPCs but have no NPC object. `isweapon` reads true
         and they're keyed off any NPC-touch path (npc_id -1).
 
         Returns True when this registers a NEW weapon (or replaces its script)
         — the caller should then fire its `created` event, like a real client
         compiling a freshly added weapon. GTA's system weapons set their
-        install-handshake flags (gotsys2/gotclock) in `created`; without it the
+        install-handshake flags (gotsys2/gotclock) in `created`. Without it the
         -System weapon bounces the player back to splashscreen.nw forever."""
         key = f"weapon_{name}"
         is_new = self.scripts.get(key) != code
@@ -420,7 +420,7 @@ class ClientGS1:
     def drop_level_weapon_layers(self):
         """Clear weapon showimg layer stores on a level change — EXCEPT the
         GS2 weapon/class stores ("gs2_*" prog-keys). Real-client parity:
-        weapon layers persist across warps and scripts hide their own; the
+        weapon layers persist across warps and scripts hide their own. The
         per-level clear is a workaround for OUR GS1 reload model (GS1
         weapon playerenters re-runs and redraws, and stale world-band bombs
         must not survive a warp). GS2 weapon VMs are NOT reloaded per level
@@ -518,7 +518,7 @@ class ClientGS1:
         is loaded — "this NPC has written no slots" and "there is no such NPC"
         are different answers and callers act on the difference.
 
-        GS1 keeps save[] on the NPC itself; our engine keeps it in that NPC's
+        GS1 keeps save[] on the NPC itself. Our engine keeps it in that NPC's
         script scope, because that is where the interpreter's `this.save[i]`
         special case (interp.py:832) puts it — the two spellings are the same
         storage, and `npcs[i].save[j]` has to read it from outside."""
@@ -660,7 +660,7 @@ class ClientGS1:
     def _shape_cell_blocks(self, x, y, exclude_npc=None) -> bool:
         """Does a setshape/setshape2 blocking cell cover (x, y), owned by an
         NPC that is currently solid? The flat _shape_blocks set answers the
-        cheap membership test; the owner walk applies the per-NPC
+        cheap membership test. The owner walk applies the per-NPC
         visible/dontblock gate (the flag no longer edits the cell sets, so
         blockagain can restore them — see _cmd_dontblock)."""
         cell = (int(math.floor(x)), int(math.floor(y)))
@@ -679,9 +679,9 @@ class ClientGS1:
     def npc_image_rect(self, npc):
         """World-tile footprint rect (x, y, w, h) of a shapeless NPC, or None.
 
-        Character NPCs get the implicit 2x2 box on their feet; an image NPC
+        Character NPCs get the implicit 2x2 box on their feet. An image NPC
         covers its setimgpart rect if set, else its image's full size
-        (image_size_source; unknown -> the 2x2 engine default). Tiles are
+        (image_size_source. Unknown -> the 2x2 engine default). Tiles are
         pixels / 16. Visibility/blocking gates are the CALLER's business —
         touch uses this same rect without them."""
         if not isinstance(npc, dict):
@@ -761,7 +761,7 @@ class ClientGS1:
         resolves there.
 
         Prefers the host's `tile_source` (the pygame client's gmap-aware
-        segment lookup); falls back to the current level's own 64x64 board so
+        segment lookup). Falls back to the current level's own 64x64 board so
         headless callers with no game shell keep working."""
         if self.tile_source is not None:
             try:
@@ -793,7 +793,7 @@ class ClientGS1:
     def is_wall(self, x, y, exclude_npc=None):
         """Collision test at world tile (x, y) for onwall(). Checks the level
         board under (x, y) (a blocking tile id), plus NPC footprints — shape
-        cells (setshape/setshape2, e.g. the arena's falling sudden-death choc
+        cells (setshape/setshape2, e.g. The arena's falling sudden-death choc
         blocks) and visible blocking image/character NPCs, matching
         TServerLevel::isOnWall's NPC leg (see npc_blocks_at).
 
@@ -891,7 +891,7 @@ class ClientGS1:
         Applying the NPC's per-frame movement DELTA to the player is the same
         math: script movement of the player between frames implicitly updates
         the offset. Detaches itself when the NPC disappears (level change
-        clears client.npcs; the reference equally can't stay attached to a
+        clears client.npcs. The reference equally cannot stay attached to a
         despawned NPC)."""
         att = self._player_attach
         cl = self.client
@@ -916,8 +916,8 @@ class ClientGS1:
         """Text of the CURRENT level's sign `index` (0-based, in the order the
         signs arrived - PLO_LEVELSIGN is sent in level-file order, kept as an
         ordered list in client.sign_lists). The (x, y)-keyed client.signs
-        dict is only a fallback for harnesses that never populated the list;
-        it CANNOT be authoritative because say-only signs are conventionally
+        dict is only a fallback for harnesses that never populated the list.
+        It CANNOT be authoritative because say-only signs are conventionally
         stacked at 0,0 and collapse to one dict key (live GTA abermose7.nw:
         five signs, one dict entry). None for a non-numeric index or one out
         of range. Used by `say <n>`."""
@@ -987,7 +987,7 @@ class ClientGS1:
         per-draw TParticleEmitter::process, and running it here (not in the
         renderer) keeps the state model advancing for headless embedders.
         Emitters live only on layer records, so the NPC img stores plus
-        _weapon_imgs cover them all; GS2-created emitters share these same
+        _weapon_imgs cover them all. GS2-created emitters share these same
         records."""
         stores = list(self._weapon_imgs.values())
         for npc in (getattr(self.client, "npcs", {}) or {}).values():
@@ -1029,7 +1029,7 @@ class ClientGS1:
         blocking NPCs at (x, y) and PLI_BADDYHURT on baddies there.
         Coordinates are level-local (0-63), matching npc/baddy x,y and
         playerx/playery. `power` is hearts of damage (GS1Commands.cpp doubles
-        it to half-hearts only for the network PLO_HITOBJECTS relay; our
+        it to half-hearts only for the network PLO_HITOBJECTS relay. Our
         hurt_baddy() already takes hearts)."""
         cl = self.client
         if cl is None:

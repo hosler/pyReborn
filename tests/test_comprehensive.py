@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive tests for pygame client functionality."""
+"""These tests check pygame client functions."""
 
 import os
 import sys
@@ -53,7 +53,7 @@ class TestRunner:
         self.results = []
 
     def setup(self):
-        """Connect and setup client."""
+        """Connect and set up the client."""
         print("Setting up...")
         self.client = Client("localhost", 14900, version="2.22")
         if not self.client.connect():
@@ -87,7 +87,7 @@ class TestRunner:
         return True
 
     def teardown(self):
-        """Cleanup."""
+        """Clean up the test resources."""
         if pygame.get_init():
             pygame.quit()
         if self.client:
@@ -109,7 +109,7 @@ class TestRunner:
     # ========== TEST FUNCTIONS ==========
 
     def test_npc_world_coords(self) -> bool:
-        """Verify NPCs have correct world coordinates."""
+        """Verify that NPCs have the correct world coordinates."""
         if not self.client.npcs:
             return False
 
@@ -123,7 +123,7 @@ class TestRunner:
         return True
 
     def test_npc_rendering(self) -> bool:
-        """Verify NPCs render on screen."""
+        """Verify that the client renders NPCs on the screen."""
         render_frame(self.game, self.client)
         screenshot = take_screenshot(self.game.screen, "/tmp/test_npc_render.png")
 
@@ -133,7 +133,7 @@ class TestRunner:
         return unique > 30  # Should have variety if NPCs rendered
 
     def test_player_movement(self) -> bool:
-        """Verify player can move."""
+        """Verify that the player can move."""
         start_x, start_y = self.client.x, self.client.y
 
         # Try moving right
@@ -145,7 +145,7 @@ class TestRunner:
         return moved
 
     def test_collision_detection(self) -> bool:
-        """Verify collision detection works (can't walk through blocking tiles)."""
+        """Verify collision detection. The player cannot cross blocking tiles."""
         # Get current level tiles
         level = self.client._current_level_name
         tiles = self.client.levels.get(level, [])
@@ -163,7 +163,7 @@ class TestRunner:
         return blocking_found  # Just verify blocking tiles exist
 
     def test_tile_rendering(self) -> bool:
-        """Verify tiles render correctly."""
+        """Verify that the client renders tiles correctly."""
         render_frame(self.game, self.client)
 
         # Check world surface was created
@@ -175,7 +175,7 @@ class TestRunner:
         return width > 0 and height > 0
 
     def test_camera_follows_player(self) -> bool:
-        """Verify camera follows player movement."""
+        """Verify that the camera follows player movement."""
         # Move player significantly
         for _ in range(50):
             self.client.move(1, 0)
@@ -207,7 +207,7 @@ class TestRunner:
         return diff_count > 1000  # Significant difference
 
     def test_level_data_integrity(self) -> bool:
-        """Verify level data is valid."""
+        """Verify that the level data is valid."""
         for level_name, tiles in self.client.levels.items():
             if len(tiles) != 64 * 64:
                 print(f"    {level_name}: wrong size {len(tiles)}")
@@ -218,13 +218,13 @@ class TestRunner:
         return True
 
     def test_gmap_grid_complete(self) -> bool:
-        """Verify GMAP grid is fully populated."""
+        """Verify that the GMAP grid is fully populated."""
         expected_size = self.client.gmap_width * self.client.gmap_height
         actual_size = len(self.client.gmap_grid)
         return actual_size == expected_size
 
     def test_diagonal_movement(self) -> bool:
-        """Test diagonal movement works."""
+        """Test that diagonal movement works."""
         start_x, start_y = self.client.x, self.client.y
 
         # Move diagonally (down-right)
@@ -239,7 +239,7 @@ class TestRunner:
         return moved_x and moved_y
 
     def test_corner_transition(self) -> bool:
-        """Test walking significant distance without crashing."""
+        """Test that the player walks a significant distance without a crash."""
         start_x, start_y = self.client.x, self.client.y
 
         # Walk in positive direction (towards center/other levels)
@@ -257,7 +257,7 @@ class TestRunner:
         return moved and valid
 
     def test_rapid_direction_change(self) -> bool:
-        """Test rapid direction changes don't break anything."""
+        """Test that rapid direction changes do not cause a failure."""
         # First move to center of current level to have room in all directions
         for _ in range(50):
             self.client.move(1, 0)
@@ -276,7 +276,7 @@ class TestRunner:
         return self.client.x >= 0 and self.client.y >= 0
 
     def test_sprite_manager(self) -> bool:
-        """Test sprite manager loads sprites."""
+        """Test that the sprite manager loads sprites."""
         # Check tileset is loaded
         if not self.game.tileset_mgr:
             return False
@@ -286,7 +286,7 @@ class TestRunner:
         return sprite is not None
 
     def test_animation_state(self) -> bool:
-        """Test player animation state updates."""
+        """Test that the client updates the player animation state."""
         if not self.game.player_anim:
             return False
 
@@ -301,7 +301,7 @@ class TestRunner:
         return self.game.player_anim is not None
 
     def test_multiple_level_renders(self) -> bool:
-        """Test rendering multiple levels in GMAP."""
+        """Test that the client renders multiple levels in the GMAP."""
         # World surface should include multiple levels
         render_frame(self.game, self.client)
 
@@ -315,7 +315,7 @@ class TestRunner:
         return width == expected_size and height == expected_size
 
     def test_player_props(self) -> bool:
-        """Test player properties are set."""
+        """Test that the client sets the player properties."""
         p = self.client.player
         return (
             p.x is not None and
@@ -324,7 +324,7 @@ class TestRunner:
         )
 
     def test_frame_consistency(self) -> bool:
-        """Test multiple frames render consistently."""
+        """Test that the client renders multiple frames consistently."""
         screenshots = []
 
         for i in range(5):

@@ -659,14 +659,14 @@ class RCClient(Client):
 
     def npcserver_query(self, message: str = 'location') -> bool:
         """Query the NPC-server (PLI_NPCSERVERQUERY). 'location' requests the
-        NC address; the reply arrives as PLO_NPCSERVERADDR."""
+        NC address. The reply arrives as PLO_NPCSERVERADDR."""
         if not self.connected or not self._authenticated:
             return False
         data = build_rc_npcserverquery(0, message)
         return self._protocol.send_packet(PacketID.PLI_NPCSERVERQUERY, data)
 
     def filebrowser_largefile_start(self, filename: str) -> bool:
-        """Begin a chunked RC upload (PLI_RC_LARGEFILESTART); follow with
+        """Start a chunked RC upload (PLI_RC_LARGEFILESTART). Follow with
         filebrowser_upload() chunks and filebrowser_largefile_end()."""
         if not self.connected or not self._authenticated:
             return False

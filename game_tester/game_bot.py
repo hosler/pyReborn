@@ -100,8 +100,8 @@ def _as_flag(default: bool) -> Callable[[Optional[str]], bool]:
 class ActionParam:
     """One parameter of a declared action.
 
-    `name` is the transport-facing name; `arg` the bot method's keyword (they
-    differ where the wire name is shorter, e.g. dir -> direction).
+    `name` is the transport-facing name. `arg` is the bot method's keyword.
+    They differ where the wire name is shorter, e.g. dir -> direction.
     """
     name: str
     coerce: Callable[[Optional[str]], Any]
@@ -158,10 +158,10 @@ def _blocking_tile_in_footprint(board: List[int], x: float,
 
 def _validate_warp_dest(level_name: str, x: float, y: float,
                         board_lookup: Callable[[str], Any]) -> Optional[str]:
-    """Best-effort check that warping to local (x, y) on level_name won't
+    """Best-effort check that warping to local (x, y) on level_name will not
     strand the bot on a blocking tile. Returns an error string if it would,
-    None if it looks clear OR the destination level's board isn't cached
-    yet (never having visited it, there's nothing to check against - let
+    None if it looks clear OR the destination level's board is not cached
+    yet (never having visited it, there is nothing to check against - let
     the warp through rather than block on it)."""
     board = board_lookup(level_name)
     if not board or len(board) < 4096:
@@ -573,8 +573,8 @@ class GameBot:
 
     def _resolve_level_name(self, x: Optional[float] = None,
                              y: Optional[float] = None) -> str:
-        """Resolve which level owns a world position - robust to
-        client._current_level_name being a poor proxy for "the level the
+        """Resolve which level owns a world position even when
+        client._current_level_name is a poor proxy for "the level the
         player is standing in" while on a GMAP.
 
         client.py's PLO_LEVELNAME handler updates _current_level_name on
@@ -589,7 +589,7 @@ class GameBot:
         (94,94) and _current_level_name reads "chicken8.nw"). Every method
         here that read tiles/links for "the current level" was keying off
         that field and got the wrong board/links as soon as a bot loaded a
-        gmap - that's the root cause behind walk_to() reading blocking data
+        gmap - that is the root cause behind walk_to() reading blocking data
         from a neighbouring segment's board and producing nonsensical
         moves/timeouts, and check_link_collision() missing doors entirely.
 
@@ -660,7 +660,7 @@ class GameBot:
         inline rather than importing pyreborn/game/collision.py's box-based
         _is_position_blocked (a 2x2-tile box centred on x+1.5/y+2.0, spanning
         x+0.5..x+2.5 by y+1.0..y+3.0 from the sprite's top-left) to avoid a
-        pygame-dependent import in the headless bot; the sprite itself is 3
+        pygame-dependent import in the headless bot. The sprite itself is 3
         tiles wide x 3 tall, top-left anchored.
 
         The probed points are the leading edge of collision.py's collision
@@ -771,7 +771,7 @@ class GameBot:
         3x1 was walked onto and past without ever warping).
 
         Only fires on the rising edge (was-off -> now-on) so a return link
-        doesn't immediately bounce back, and stays suppressed until the bot
+        does not immediately bounce back, and stays suppressed until the bot
         physically moves away from where the last warp dropped it (the new
         level's links can arrive a few frames late).
 
@@ -882,7 +882,7 @@ class GameBot:
         """Open a chest.
 
         With explicit (x, y) - LOCAL level coords, same frame as
-        client.chests' keys - opens the chest there if it's in reach.
+        client.chests' keys - opens the chest there if it is in reach.
 
         Without coords, auto-targets the nearest known chest (from
         client.chests, populated by the level's chest announcements on
@@ -1022,7 +1022,7 @@ class GameBot:
 
         Returns the refusal as a string instead of stranding the bot on a wall
         (an LLM playtest agent then has something actionable instead of a bot
-        that can no longer move); force=True skips the check.
+        that can no longer move). Force=True skips the check.
         """
         if not force:
             # Prefer the live/active board (client.tiles) when warping within

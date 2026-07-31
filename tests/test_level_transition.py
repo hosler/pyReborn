@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test walking between adjacent levels in a GMAP."""
+"""Test movement between adjacent levels in a GMAP."""
 
 import os
 import sys
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.live
 
 
 def take_screenshot(screen, filename: str):
-    """Capture pygame screen as PIL Image and save."""
+    """Capture the pygame screen as a PIL Image and save the image."""
     data = pygame.image.tostring(screen, 'RGB')
     img = Image.frombytes('RGB', (SCREEN_WIDTH, SCREEN_HEIGHT), data)
     img.save(filename)
@@ -35,12 +35,12 @@ def take_screenshot(screen, filename: str):
 
 
 def get_grid_position(x: float, y: float) -> tuple:
-    """Get GMAP grid position from world coords."""
+    """Get the GMAP grid position from the world coordinates."""
     return (int(x // 64), int(y // 64))
 
 
 def run_level_transition_test():
-    """Test walking between levels."""
+    """Test movement between levels."""
     print("=" * 60)
     print("TEST: Level Transitions in GMAP")
     print("=" * 60)

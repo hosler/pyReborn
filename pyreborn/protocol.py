@@ -1,6 +1,6 @@
 """
 pyreborn - Protocol layer
-Handles socket connection, encryption, and packet framing.
+The protocol manages socket connections, encryption, and packet framing.
 
 Supports both TCP sockets (native Python) and WebSocket (browser via Pyodide).
 Uses the shared reborn_protocol library for core encryption and codec.
@@ -669,7 +669,7 @@ class WebSocketProtocol:
             traceback.print_exc()
 
     def _process_buffer(self):
-        """Process received data and extract packets."""
+        """Read received data and extract packets."""
         # NOTE: raw-data (PLO_RAWDATA) continuation is handled entirely
         # inside _parse_packets on DECRYPTED bundles, not here - self.recv_buffer
         # at this point still holds length-prefixed, encrypted/compressed

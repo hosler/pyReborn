@@ -25,10 +25,11 @@ class GS1ClientHost(
     BuiltinsMixin, PreCommandsMixin, LayerCommandsMixin, NpcCommandsMixin,
     MainCommandsMixin, FunctionsMixin, Host,
 ):
-    """Host bridging GS1 to the live pyReborn client (local player + NPC dict).
+    """The host connects GS1 to the live pyReborn client.
 
-    Visual / audio / world commands fire the runtime's ``on_*`` callbacks so the
-    pygame client renders them; everything else updates the local NPC/player.
+    The client contains the local player and the NPC dictionary. Visual, audio,
+    and world commands fire the runtime's ``on_*`` callbacks. The pygame client
+    then renders them. All other commands update the local NPC or player.
     """
 
     def __init__(self, runtime: "ClientGS1"):
@@ -45,9 +46,12 @@ class GS1ClientHost(
         return getattr(self.rt.client, "player", None) if self.rt.client else None
 
     def _player_list(self):
-        """All players the client knows: index 0 is us, then everyone else. Used
-        by NPC scripts (players[i].x, #a(i), playerscount) for proximity checks
-        and the room-join state machine."""
+        """Return all players that the client knows.
+
+        Index 0 is the local player. The other players follow it. NPC scripts
+        use this list for proximity checks and the room-join state machine.
+        Examples are players[i].x, #a(i), and playerscount.
+        """
         cl = self.rt.client
         if cl is None:
             return []
@@ -68,10 +72,13 @@ class GS1ClientHost(
     # -- era with-scope host-object members --------------------------------
     @staticmethod
     def _with_member_get(obj, name, indices):
-        """Resolve a (possibly dotted) member path against a with-scoped host
-        object; UNSET when any hop is unclaimed. Indices are consumed in path
-        order (`particles[0].lifetime` arrives as name "particles.lifetime",
-        indices [0] -- same flattening as `npcs[i].save[j]`)."""
+        """Resolve a member path against a with-scoped host object.
+
+        The member path can contain dots. Return UNSET if an object does not
+        claim a path part. The function consumes indices in path order.
+        `particles[0].lifetime` arrives as name "particles.lifetime" and indices
+        [0]. The function uses the same flattening for `npcs[i].save[j]`.
+        """
         if isinstance(obj, _GS1ObjectRef):
             return obj.get(name)
         cur = obj
@@ -115,7 +122,7 @@ class GS1ClientHost(
 
     @staticmethod
     def _imgs(npc):
-        """The NPC's showimg layer table (index -> record), created on demand."""
+        """Get or create the NPC's showimg layer table (index -> record)."""
         d = npc.get("imgs")
         if d is None:
             d = npc["imgs"] = {}
@@ -123,7 +130,7 @@ class GS1ClientHost(
 
     def _layer_store(self, ctx):
         """The showimg/showani layer table for the running script: an NPC keeps
-        it on its dict; a weapon (no NPC obj, e.g. arenaGUI's bombs/vases/
+        it on its dict. A weapon (no NPC obj, e.g. ArenaGUI's bombs/vases/
         explosions) keeps it in _weapon_imgs keyed by prog-key. The renderer
         draws both. Returns None if there's nowhere to store (no NPC, no key)."""
         npc = ctx.this_obj
@@ -146,8 +153,8 @@ class GS1ClientHost(
         first stage whose gate holds and whose handler does not return
         _FALL_THROUGH wins. Order matters -- `destroy`, `showimg`, `hideimg`,
         `setcharprop` and `setplayerprop` each appear in TWO stages with
-        different behaviour. Anything no stage claims is silently ignored
-        (client visuals we don't render).
+        different behavior. Anything no stage claims is silently ignored
+        (client visuals we do not render).
         """
         handler = _GS1_PRE_COMMANDS.get(name)
         # `imgs` is deliberately still unresolved here: _layer_store() CREATES
@@ -178,4 +185,3 @@ class GS1ClientHost(
             handler = _GS1_NPC_TAIL_COMMANDS.get(name)
             if handler is not None:
                 handler(self, name, args, ctx, imgs)
-

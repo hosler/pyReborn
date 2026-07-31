@@ -6,7 +6,7 @@ GServer-v2 IEnums.h sweep:
   (server/src/object/NPC.cpp getMoveQueuePacketData / sendMoveQueueToPlayer /
   sendMoveQueueToLevel).
 - PLO_NPCDEL2 (150): NPC delete scoped to an explicit level name, sent
-  instead of PLO_NPCDEL when the target player isn't currently on the NPC's
+  instead of PLO_NPCDEL when the target player is not currently on the NPC's
   level (server/src/Server.cpp:1950-1954, object/NPC.cpp:857-870).
 - PLO_UNKNOWN168 (168): blank "you are logged in" marker
   (server/src/player/Player.cpp:700-709).

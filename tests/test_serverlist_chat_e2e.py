@@ -1,14 +1,15 @@
-"""End-to-end serverlist chat: two pyReborn clients + the REAL Login
--Serverlist_Chat weapon bytecode against the throwaway pygserver (whose
-in-process IRC leg implements the combined gserver+lister behavior).
+"""This end-to-end serverlist chat test uses two pyReborn clients and the REAL
+Login -Serverlist_Chat weapon bytecode. The test uses the temporary pygserver.
+Its in-process IRC component implements the combined gserver+lister behavior.
 
-Exercises the full loop the specs describe (gs2-login-irc-spec.md section 5
-steps 1-3): irc login -> channel pseudo-player (prop 81 flags), join
-confirms, member pseudo-players in the chatters pane, sender-echo +
-cross-client privmsg relay, and part.
+The test runs the full loop that the specifications describe in
+gs2-login-irc-spec.md section 5, steps 1-3. The loop contains an irc login, a
+channel pseudo-player (prop 81 flags), join confirmations, and member
+pseudo-players in the chatters pane. It also contains a sender echo, a
+cross-client privmsg relay, and a part.
 
-Marked `integration`: needs the conftest pygserver fixture, plus the
-third-party Preagonal bytecode corpus for the official weapon.
+The test has the `integration` mark. It needs the conftest pygserver fixture and
+the third-party C# client bytecode corpus for the official weapon.
 """
 
 import time

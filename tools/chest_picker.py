@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Interactive tileset tile picker.
 
-Pan/zoom the tileset, click tiles to select them, and tag them as the CLOSED or
-OPEN chest graphic. Writes the selection (tile ids + row-major grid) to JSON so
-the chest sprite can be wired up from real data instead of guessed tile numbers.
+The user pans or zooms the tileset. The user clicks tiles and tags them as the
+CLOSED or OPEN chest graphic. The tool writes the selection to JSON as tile ids
+and a row-major grid. The chest sprite then uses real data instead of guessed
+tile numbers.
 
 Run:
     python tools/chest_picker.py
@@ -42,12 +43,15 @@ OUT_PATH = os.path.join(os.path.dirname(__file__), "tile_pick.json")
 
 
 def tile_id(col, row):
-    """Reborn tileset tile id from (col, row). Matches sprites.TilesetManager."""
+    """Get the Reborn tileset tile id from (col, row).
+
+    This calculation matches sprites.TilesetManager.
+    """
     return (col // 16) * 512 + (col % 16) + (row % 32) * 16
 
 
 def group_grid(tiles):
-    """Build a row-major 2D grid of tile ids over the selection's bounding box.
+    """Build a row-major 2D grid of tile ids in the selection's bounding box.
     Cells not selected become None."""
     if not tiles:
         return [], None

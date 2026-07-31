@@ -101,7 +101,7 @@ def test_crossing_west_re_homes_us_in_the_new_segment():
 
 def test_unknown_cell_says_nothing_and_does_not_re_probe():
     """Straight off the grid's edge: nothing to announce, and the cell is
-    still latched so the next frame doesn't retry."""
+    still latched so the next frame does not retry."""
     c = _client()
     h = _Harness(c)
     c.player.x, c.player.y = 70.0, 70.0
@@ -115,7 +115,7 @@ def test_unknown_cell_says_nothing_and_does_not_re_probe():
 
 
 def test_default_movement_worlds_are_untouched():
-    """With the built-in movement engine, move_to() already does this; the
+    """With the built-in movement engine, move_to() already does this. The
     probe must not fire a second announce."""
     c = _client()
     h = _Harness(c)

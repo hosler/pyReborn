@@ -26,7 +26,7 @@ pace (bots stay online + pumped between agent tool calls).
                                 (see caveats below)
   GET  /leave?name=X            disconnect just bot X (others keep playing)
   GET  /quit?confirm=shutdown   disconnect all bots and stop the daemon
-                                (token required so a shared daemon isn't killed
+                                (token required so a shared daemon is not killed
                                  by a stray call)
 
 Run: python -m game_tester.playtest_daemon [port]   (default 14990)
@@ -48,9 +48,9 @@ Agent-prompt caveats:
     and links are LEVEL-LOCAL (0-63) - what the wire protocol actually sends
     for another entity. npcs_nearby and signs are filtered to the bot's
     CURRENT level (npcs via their '_level' tag, signs because client.signs is
-    already keyed per level); chests/baddies have no level attribution
+    already keyed per level). Chests/baddies have no level attribution
     available here at all (see GameBot._resolve_level_name's docstring for
-    why that's the hard part on a GMAP) so they can still include stale
+    why that is the hard part on a GMAP) so they can still include stale
     entries from a previously-visited segment - _pump_on_level_change() below
     narrows but does not eliminate that window right after a level change.
     /act's warp param is also level-local, matching client.warp_to_level().
@@ -98,13 +98,13 @@ def _pump_on_level_change(bot):
 
     Right after an edge warp (a GMAP segment boundary crossed by ordinary
     movement, not warp_to_level) bot.level flips the instant the player's
-    world position crosses the boundary - it's derived from position, not
+    world position crosses the boundary - it is derived from position, not
     from a server confirmation - but the new segment's PLO_NPCPROPS /
     PLO_LEVELCHEST / PLO_LEVELSIGN packets can still be in flight. A
     /state or /map read at exactly that moment reports the OLD segment's
     npcs/chests/signs under a level field that already says the NEW
     segment (confirmed live: /state right after an edge warp still listed
-    the previous level's entities). This doesn't guarantee freshness - the
+    the previous level's entities). This does not guarantee freshness - the
     stream can still be slower than one extra pump - but it closes most of
     the window without adding real latency to the common case (no level
     change -> no extra pump at all).
@@ -125,7 +125,7 @@ def _current_links(bot, limit=10):
       (re-entering a level - e.g. crossing a GMAP segment boundary out and
       back - makes the server re-stream that level's full data, and
       client.py's PLO_LEVELLINK handler appended without checking for an
-      existing identical entry; confirmed live: cross chicken1.nw ->
+      existing identical entry. Confirmed live: cross chicken1.nw ->
       chicken7.nw -> chicken1.nw and chicken1's own links list gained a
       second copy of one of its doors). client.py now dedupes at insertion,
       so this is a defensive no-op kept for the size-limiting/serialization

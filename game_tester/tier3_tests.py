@@ -8,7 +8,7 @@ Exercises the pyReborn Tier 3 additions:
   - inbound PLO_TRIGGERACTION via the player->player relay
     (requires `sendplayertriggers = true`, the default)
   - PLO_SERVERWARP via PLI_SERVERWARP round-trip through the live listserver
-  - synthetic byte-exact parse checks for the packets the local server can't
+  - synthetic byte-exact parse checks for the packets the local server cannot
     be made to emit (PROFILE, NPCSERVERADDR, SETNETCOOKIE, DISABLECLASSICMODE,
     HIDENPCS) using payloads encoded exactly as the C++ writers do
 
@@ -40,7 +40,7 @@ def _pump(bot: GameBot, seconds: float, until=None):
 
 
 def test_freeze_say2_cycle(bot: GameBot) -> TestResult:
-    """Enter qa_tier3.nw: the serverside NPC freezes us and shows a say2 sign;
+    """Enter qa_tier3.nw: the serverside NPC freezes us and shows a say2 sign.
     chatting unfreezes. Validates PLO_FREEZEPLAYER2/UNFREEZEPLAYER handling,
     the move() no-op gate, and PLO_SAY2 text decoding."""
     start = time.time()
@@ -83,7 +83,7 @@ def test_freeze_say2_cycle(bot: GameBot) -> TestResult:
 
 
 def test_triggeraction_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
-    """bot0 fires a custom triggeraction; bot1 (same level) must receive the
+    """bot0 fires a custom triggeraction. Bot1 (same level) must receive the
     inbound PLO_TRIGGERACTION with player id + action intact."""
     start = time.time()
     issues: List[Issue] = []
@@ -109,7 +109,7 @@ def test_triggeraction_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
 
 def test_serverwarp_roundtrip(bot: GameBot) -> TestResult:
     """PLI_SERVERWARP('My Server') -> listserver SVI_SERVERINFO ->
-    PLO_SERVERWARP. Needs the server's live listserver connection; skipped
+    PLO_SERVERWARP. Needs the server's live listserver connection. Skipped
     (passed with a note) when no reply arrives within the timeout, since the
     external listserver is not under our control."""
     start = time.time()

@@ -76,7 +76,7 @@ class TestRequestingAMissingSound:
         assert game.sound_mgr.file_requester is not None
 
     def test_a_missing_sound_asks_the_server_exactly_once(self, game, requests):
-        """Two plays of a sound we don't have -> one PLI_WANTFILE. Repeats
+        """Two plays of a sound we do not have -> one PLI_WANTFILE. Repeats
         matter: a footstep/hit sound misses once per step."""
         game.sound_mgr.play("eye_minisword.wav")
         game.sound_mgr.play("eye_minisword.wav")

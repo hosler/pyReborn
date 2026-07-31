@@ -1,12 +1,12 @@
-"""Dispatch table behind Client._handle_packet.
+"""The registry provides the dispatch table for Client._handle_packet.
 
-Every inbound PLO packet id is handled by exactly one module-level function
-in this package, registered with `@handles(<PacketID>)`. The set of ids the
-client understands is therefore exactly the set in those decorators:
+Exactly one module-level function in this package handles each inbound PLO
+packet ID. The `@handles(<PacketID>)` decorator registers the function. Thus,
+the decorators contain the set of IDs that the client understands:
 
     grep -rn '@handles' pyreborn/handlers/
 
-which is also what Client.HANDLED_PLO_IDS / the packet-coverage harness read.
+Client.HANDLED_PLO_IDS and the packet-coverage harness also read this set.
 """
 
 from typing import Callable, Dict
@@ -18,7 +18,7 @@ PACKET_HANDLERS: Dict[int, Callable] = {}
 
 
 class _Stop:
-    """Type of the STOP sentinel."""
+    """Define the type of the STOP sentinel."""
 
     __slots__ = ()
 

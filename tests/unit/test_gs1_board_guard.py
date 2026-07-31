@@ -4,12 +4,12 @@
 `_reload_level_scripts` fired `playerenters` without checking the board had
 arrived. GS1 has no "unknown tile" value, so 0.0 reads as ordinary floor — and
 classic Bomber's room0.nw acts on that reading destructively: ResetObj deletes
-every wall-mounted (`-7`) furniture entry whose tile isn't the wall id 0x278,
+every wall-mounted (`-7`) furniture entry whose tile is not the wall id 0x278,
 and Delete() writes the shortened catalog straight back to `server.room<N>`.
 Boardless, that wipes the player's real, persistent room.
 
 The npc_91 replay below is the actual captured script (see
-bomber_room0_fixture); the third case shows the deletion is real, so the first
+bomber_room0_fixture). The third case shows the deletion is real, so the first
 case is a guard doing work rather than a vacuous pass.
 """
 
@@ -42,7 +42,7 @@ class _SentRecorder:
 
 def _client(board_tile=None, level="room0.nw"):
     """A connected client on `level`. `board_tile` None = the board has not
-    arrived yet (the state right after a warp); otherwise a uniform board."""
+    arrived yet (the state right after a warp). Otherwise a uniform board."""
     c = Client("localhost", 14900)
     c._authenticated = True
     c._protocol = _SentRecorder()

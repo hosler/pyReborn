@@ -6,11 +6,11 @@ arcade cabinets scan `npcs[0..npcscount-1].save[j]` to find who to poke with
 `callnpc`. All four of those pieces were missing or inert on this client, so
 furniture rendered and nothing ever activated:
 
-* `npcscount` was unimplemented, so every scan loop had zero iterations;
-* `npcs[i].<attr>` had no handler at all;
+* `npcscount` was unimplemented, so every scan loop had zero iterations.
+* `npcs[i].<attr>` had no handler at all.
 * a bare `save[i] = n` write fell through to VarStore's indexed-set, which
   drops a write into a non-existent array (runtime.py:199) — so every NPC
-  advertised 0;
+  advertised 0.
 * `callnpc` was in the no-op set.
 
 The replay at the bottom runs the real captured scripts (bomber_room0_fixture).

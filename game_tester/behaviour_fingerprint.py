@@ -12,15 +12,15 @@ checked-in baseline.
 DESIGN RULES
 ------------
 1. Structure, never pixels or exact strings.  Counts get *bands*, sets get
-   subset/disjoint checks.  Server content churns; a branch flip does not
+   subset/disjoint checks.  Server content churns. A branch flip does not
    look like churn (Login went 9 GUI roots -> 4, 90 named controls -> 3,
    3 weapon VMs -> 6 as it fell through to the legacy `-Serverlist` path).
 2. Every band is derived from the baseline value plus a per-metric tolerance
-   (see METRIC_BANDS).  The tolerances are judgement calls, not measurements;
+   (see METRIC_BANDS).  The tolerances are judgement calls, not measurements.
    they are all in one table so re-tuning is a one-line edit.
 3. A failure must name the invariant, the value now, and the value in the
    baseline -- "gui_named 3 outside band 67..115 (baseline 90)" is a bug
-   report; "assertion failed" is not.
+   report. "assertion failed" is not.
 4. Re-baselining is deliberate and explicit (`--rebaseline`), never automatic,
    so a real content change shows up as a diff someone chose to accept.
 5. Remote servers are PASSIVE: connect, watch, disconnect.  No chat, no
@@ -476,7 +476,7 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
 
     The pump mirrors GameClient.run()'s body minus `_handle_events` /
     `_handle_input` (which need a real window and keyboard), exactly like
-    render_smoke.py's `_pump`.  Nothing here sends gameplay input; the only
+    render_smoke.py's `_pump`.  Nothing here sends gameplay input. The only
     traffic we originate is what the client's own scripts ask for (weapon
     fetches, serverlist requests) -- i.e. what a real player's client sends
     just by sitting at the login screen.
@@ -742,7 +742,7 @@ def band_for(value: int, tolerance: float, slack: int) -> Tuple[int, int]:
 
 
 def default_pins(fingerprint: Dict[str, Any]) -> Dict[str, Any]:
-    """Pins a fresh baseline starts with; hand-edit them, they are preserved.
+    """Pins a fresh baseline starts with. Hand-edit them, they are preserved.
 
     `required_controls` defaults to the NAMES OF THE ROOT CONTROLS only, not
     all ~90 named controls: roots are the windows a script decided to build,

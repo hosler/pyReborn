@@ -1,18 +1,18 @@
 """The 2026-07-26 NPC rendering/dialogue cluster (live funtimes/bomber hunts).
 
 1. `setani` from an NPC-bound GS1 script targets the LOCAL PLAYER, never the
-   NPC — only `setcharani` is the NPC form (GServer-v2 GS1Commands.cpp; the
+   NPC — only `setcharani` is the NPC form. GServer-v2 GS1Commands.cpp and the
    GS2 host already split them this way). The old alias made bomber-classic's
    piano NPC vanish on seating and the seated player never got the playing
    pose.
 2. A GS2 NPC's `this.chat = "..."` write must feed the same speech-bubble
    store (setup.py on_say -> npc_chat_texts) the GS1 say/message command
    feeds, or the bubble never renders (bomber v6 Isaac 10333: 'Yes?').
-3. `#b` is a line break in sign text; format_sign_text dropped it while
+3. `#b` is a line break in sign text. Format_sign_text dropped it while
    packet_codec's parse_say2 translated it, so the sign-popup path leaked the
    raw token.
 4. A server-run `showcharacter` streams the literal NPC image "#c#"
-   (GS1Commands.cpp:3049 / NPC.h isCharacter); the render path must treat it
+   (GS1Commands.cpp:3049 / NPC.h isCharacter). The render path must treat it
    as the character marker, not a sheet filename (three funtimes villagers
    were invisible).
 """
@@ -105,7 +105,7 @@ def test_setcharani_still_targets_the_npc():
 
 
 def test_setani_params_reach_the_local_anim():
-    """`setani sen_piano_note2,<note>.wav` — the PARAM token names the sound;
+    """`setani sen_piano_note2,<note>.wav` — the PARAM token names the sound.
     the local mirror must hand the params to set_animation, same as the NPC
     render path does."""
     client, gs1, game = _gs1_game()

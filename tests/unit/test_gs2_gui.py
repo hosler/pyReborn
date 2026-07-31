@@ -14,7 +14,7 @@ Two layers of coverage:
    GServer-v2 compiler (gs2test, shared with reborn-protocol's test suite)
    and drives it through ClientGS2.load_bytecode() -- proving the traced
    compiler behavior this module's design relies on. Skipped if the gs2test
-   binary isn't built (same skip convention as
+   binary is not built (same skip convention as
    reborn-protocol/tests/test_gs2_compiler.py).
 """
 import os
@@ -1041,7 +1041,7 @@ class TestNewControlMethods:
     def test_tree_node_unset_id_reads_invalid_sentinel(self):
         """An id the script never assigned reads -1, not unset/0. Login's
         boot path is `nodes[0].select()` and its onSelect branches on
-        `node.id >= 0`; the auto-selected node is a category folder the live
+        `node.id >= 0`. The auto-selected node is a category folder the live
         script never ids (its category table is one entry short for the
         "U " servers), and the real client boots into the login-info panes
         -- so the untouched id must compare below zero. A script-assigned id
@@ -1472,7 +1472,7 @@ class TestClaimedPropertyNames:
     def test_bitmap_button_claims_its_three_faces(self):
         """Login's 2001-style buttons set all three in their construction
         blocks (graal-loginserver/weapons/
-        weapon-Rescripted_IRC_Login2001.txt:324-326); unclaimed, they
+        weapon-Rescripted_IRC_Login2001.txt:324-326). Unclaimed, they
         rendered with no face at all."""
         btn = self.gui.create_control("GuiBitmapButtonCtrl", "LoginButton")
         faces = (("normalbitmap", "gui2001_button.png"),
@@ -1570,7 +1570,7 @@ class TestClaimedPropertyNames:
         assert scroll.get("wheelscrolllines") == 4
 
     def test_bitmap_ctrl_claims_tile_with_wrap_as_its_alias(self):
-        """12 corpus files set `tile`; `wrap` is the same field under a
+        """12 corpus files set `tile`. `wrap` is the same field under a
         second name (GuiBitmapCtrlProperties.cpp:95-112)."""
         bmp = self.gui.create_control("GuiBitmapCtrl", "Back")
         assert _construction_write(bmp, "tile", True)
@@ -1660,7 +1660,7 @@ class TestButtonActivation:
         assert cb.checked is False
 
     def test_inactive_control_does_not_activate(self):
-        """onAction() returns early when `active` is false (:61-62); an
+        """onAction() returns early when `active` is false (:61-62). An
         UNSET active is true (GuiControl.cpp:3172)."""
         fired = []
         cb = self.gui.create_control("GuiCheckBoxCtrl", "CB")
@@ -1674,7 +1674,7 @@ class TestButtonActivation:
 class TestBorderStyle:
     """`border` selects a border RENDERER, it is not a pixel width
     (TGUIRender::renderBorder, FourPlay quattroplay/src/TGUIRender.cpp:
-    59-153); the width is the separate `borderthickness`."""
+    59-153). The width is the separate `borderthickness`."""
 
     def setup_method(self):
         self.rt2 = ClientGS2()
@@ -1694,7 +1694,7 @@ class TestBorderStyle:
         return ctrl.resolve_profile()
 
     def test_border_5_is_the_skinned_style_not_a_3px_rectangle(self):
-        """Ten corpus assignments use the skinned value 5; clamped to 0..3
+        """Ten corpus assignments use the skinned value 5. Clamped to 0..3
         it drew a solid 3px frame."""
         prof = self._resolved({"border": 5, "borderthickness": 2})
         assert prof.border_style == 5
@@ -1874,7 +1874,7 @@ class TestDrawingPanelOps:
 
     def test_drawimagestretched_keeps_its_source_rectangle(self):
         """Signature is `iiiisiiii` = (x, y, w, h, image, srcX, srcY, srcW,
-        srcH) (GuiDrawingPanelProperties.cpp:197); args 5-8 used to be
+        srcH) (GuiDrawingPanelProperties.cpp:197). Args 5-8 used to be
         dropped, which only stayed invisible while every live caller passed
         the whole image as its source rect."""
         self.panel.get("drawimagestretched")(0, 0, 32, 32, "sheet.png",
@@ -2085,7 +2085,7 @@ def test_useownprofile_copies_and_isolates_the_profile():
 
 def test_copyfrom_copies_profiles_but_noops_on_controls():
     """The TGraalVar::copyFrom gate (TGraalVar.cpp:2208-2214): every
-    Gui*Ctrl is engine-owned and silently no-ops; GuiControlProfile is the
+        Gui*Ctrl is engine-owned and silently no-ops. GuiControlProfile is the
     one GUI class whose table opts in (GuiControlProfileProperties.cpp:618)."""
     gui = ClientGS2().gui
     src = gui.create_control("GuiControlProfile", "SrcProf")
@@ -2105,7 +2105,7 @@ def test_copyfrom_copies_profiles_but_noops_on_controls():
 def test_context_menu_profile_is_the_scroll_slot_and_textprofile_styles_rows():
     """`profile` and `scrollprofile` are pointer-identical accessors -- one
     slot, styling the frame -- while `textprofile` styles the rows
-    (GuiContextMenuCtrlProperties.cpp:155-161, :44-64); the width setter
+    (GuiContextMenuCtrlProperties.cpp:155-161, :44-64). The width setter
     clamps to >= 1 (:74-78)."""
     gui = ClientGS2().gui
     frame_prof = gui.create_control("GuiControlProfile", "CtxFrameProf")
@@ -2156,7 +2156,7 @@ def test_drawing_panel_full_method_table_and_ro_props():
 
 
 def test_mobile_login_construction_props_are_claimed():
-    """weapon-Mobile_Login writes these bare in construction blocks; an
+    """weapon-Mobile_Login writes these bare in construction blocks. An
     unclaimed name silently falls through to temps (GuiControlProperties.cpp
     :660 clipchildren, :662 cliptobounds, :696 useownprofile)."""
     gui = ClientGS2().gui
@@ -2210,7 +2210,7 @@ class TestOptionsWindowRegressions:
 
     def test_detached_control_parent_reads_null(self):
         """`if (parent == null)` gates the window's whole first-time sizing
-        block INSIDE the construction with-block; the canvas stand-in must
+        block INSIDE the construction with-block. The canvas stand-in must
         only answer for ATTACHED roots or `extent = {460, 440}` is skipped
         and the window opens 76px tall."""
         win = self.gui.create_control("GuiWindowCtrl", "OptWin")

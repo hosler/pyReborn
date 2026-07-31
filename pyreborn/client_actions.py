@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class ActionsMixin:
     def drop_bomb(self, power: int = 1) -> bool:
         """
-        Drop a bomb at current position (PLI_BOMBADD; the server runs the
+        Drop a bomb at current position (PLI_BOMBADD. The server runs the
         fuse, explosion, and damage).
 
         Args:
@@ -166,7 +166,7 @@ class ActionsMixin:
 
     def send_hit_objects(self, power: float, x: float, y: float) -> bool:
         """Report a scripted hit probe (PLI_HITOBJECTS) at level-local
-        (x, y) — the GS1 `hitobjects` wire half; the server runs its own hit
+        (x, y) — the GS1 `hitobjects` wire half. The server runs its own hit
         detection there (fires serverside NPCs' washit). Same builder the
         sword swing uses."""
         if not self.connected or not self._authenticated:
@@ -205,7 +205,7 @@ class ActionsMixin:
             speed: Projectile speed (1-127, default 3)
             gani: Projectile animation name (default "arrow")
             gravity: Gravity effect (0 for flat shot, 8 for arc)
-            params: Projectile param string (GS1 shoot params; the receiver reads
+            params: Projectile param string (GS1 shoot params. The receiver reads
                 them via #p(n) in an actionprojectile2 handler)
 
         Returns:
@@ -301,7 +301,7 @@ class ActionsMixin:
     def send_baddy_add(self, x: float, y: float, baddy_type: int,
                        power: int, image: str) -> bool:
         """GS1 `putcomp`/`putnewcomp`: ask the server to add a baddy
-        (PLI_BADDYADD); it comes back via the level-wide PLO_BADDYPROPS
+        (PLI_BADDYADD). It comes back via the level-wide PLO_BADDYPROPS
         broadcast. `power` is half-hearts."""
         if not self.connected or not self._authenticated:
             return False
@@ -315,7 +315,7 @@ class ActionsMixin:
         lets us mark every baddy dead: the server applies MODE=DEAD to its
         copy and relays it to the level (see build_baddy_props' wire-format
         citation). putcomp/BADDYADD baddies have
-        respawn disabled server-side, so dead is gone; level-placed baddies
+        respawn disabled server-side, so dead is gone. Level-placed baddies
         follow their normal respawn timer. Local state is updated in the same
         step because the relay excludes the sender when we are the leader."""
         ok = True
@@ -366,7 +366,7 @@ class ActionsMixin:
         """Remove a weapon from this account, locally and server-side
         (PLI_NPCWEAPONDEL — GServer erases it from account.weapons unless
         protected). This is what a weapon script's `destroy` does on the real
-        client; without it, self-destroying weapons (the Bomber arena's
+        client. Without it, self-destroying weapons (the Bomber arena's
         -arenaSYS/-validation) pile up on the account and their playerenters
         re-fire on every later level/login."""
         if not name:
@@ -515,16 +515,16 @@ class ActionsMixin:
     def put_bomb(self, x: Optional[float] = None, y: Optional[float] = None,
                 power: int = 1, timer_ms: int = 3050,
                 consume_ammo: bool = True) -> bool:
-        """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time; the server
+        """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time. The server
         expects 50ms increments already counted down by ~200ms client-side, so
         this converts it the same way (see build_bomb_add).
 
         Ammo is client-authoritative on GServer-v2 (PLI_BOMBADD only spawns
-        the projectile; the server never touches the count), so this refuses
+        the projectile. The server never touches the count), so this refuses
         to fire at 0 bombs, decrements locally, and reports the new
         BOMBSCOUNT. pygserver additionally decrements server-side and echoes
         the authoritative count via PLO_PLAYERPROPS - that echo is an absolute
-        value equal to our prediction, so the two don't double-decrement.
+        value equal to our prediction, so the two do not double-decrement.
 
         consume_ammo=False is the GS1 `putbomb` path: a script-spawned bomb
         is a free level projectile, not a shot from the player's bag."""
@@ -554,7 +554,7 @@ class ActionsMixin:
 
     def send_explosion(self, radius: int, x: float, y: float,
                        power: int = 1) -> bool:
-        """Report a client-scripted explosion (PLI_EXPLOSION; GS1
+        """Report a client-scripted explosion (PLI_EXPLOSION and GS1
         putexplosion/putexplosion2). Coordinates are localized to the current
         segment like every other GCHAR-position packet."""
         if not self.connected or not self._authenticated:
@@ -563,7 +563,7 @@ class ActionsMixin:
         return self._protocol.send_packet(PacketID.PLI_EXPLOSION, data)
 
     def send_item_add(self, x: float, y: float, item_id: int) -> bool:
-        """Drop a level item (PLI_ITEMADD; GS1 lay/lay2). The server relays a
+        """Drop a level item (PLI_ITEMADD and GS1 lay/lay2). The server relays a
         PLO_ITEMADD to the rest of the level."""
         if not self.connected or not self._authenticated:
             return False

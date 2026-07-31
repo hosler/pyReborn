@@ -5,7 +5,7 @@ was compiled with the real gs2test compiler and run against a live
 GS2ClientHost until it showed up in GS2VM.builtins_missing), then shaped
 from the reference client's binding tables in Preagonal/FourPlay
 (quattroplay/src). Names the census listed that turned out NOT to be host
-gaps are pinned at the bottom so a later round doesn't chase them again.
+gaps are pinned at the bottom so a later round does not chase them again.
 """
 import os
 import sys
@@ -125,7 +125,7 @@ def test_objecttype_reports_the_control_class():
 
 def test_cursor_visibility_toggles_are_real():
     """GuiCanvas.cpp:47-63, bindings :83-85. Login's serverlist calls
-    cursorOn() when it takes over the screen; nothing in any corpus calls
+    cursorOn() when it takes over the screen. Nothing in any corpus calls
     cursorOff, so in practice this only ever confirms the pointer visible."""
     rt = _rt()
     assert rt.gui.cursor_on is True
@@ -136,7 +136,7 @@ def test_cursor_visibility_toggles_are_real():
 
 
 def test_imgwidth_is_the_legacy_spelling_of_getimgwidth():
-    """v6's table has only the get* pair (TInitStatics.cpp:2297-2298);
+    """v6's table has only the get* pair (TInitStatics.cpp:2297-2298).
     imgwidth/imgheight are in reborn_protocol.gs1's FUNCTIONS table, so both
     engines answer them from one implementation here."""
     sizes = {"x.png": (24, 48)}
@@ -178,7 +178,7 @@ def test_text_control_isempty_answers_the_login_autologin_gate():
 
 def test_list_findtext_returns_the_row_index_not_the_id():
     """GuiTextListCtrlProperties.cpp:420 -> findEntryByText, which returns
-    the array position (GuiTextListCtrl.cpp:747-758); findTextId is the
+    the array position (GuiTextListCtrl.cpp:747-758). FindTextId is the
     separate binding that maps it to an id."""
     lst = GuiTextListCtrl("l")
     lst.get("addrow")(70, "Admins")
@@ -202,7 +202,7 @@ def test_popup_findtext_and_setselected_use_the_reference_argument_kinds():
 
 def test_every_new_name_is_on_the_reported_host_surface():
     """host_surface() is what the crawler diffs gaps against, so a builtin
-    that works but isn't listed still reads as a gap."""
+    that works but is not listed still reads as a gap."""
     surface = GS2ClientHost.host_surface()
     for name in ("contains", "degtorad", "radtodeg", "findplayer", "objecttype",
                  "cursoron", "cursoroff", "iscursoron", "keycode",
@@ -237,7 +237,7 @@ def test_tree_node_select_is_already_a_node_method():
 def test_localization_wrapper_is_identity():
     """`text = _(temp.text);` (weapon-Mobile_Login.txt:176) -- the mobile
     client's localization lookup, absent from FourPlay and not script-
-    defined anywhere; identity is the default-language behaviour. Unanswered
+    defined anywhere. Identity is the default-language behaviour. Unanswered
     it read Number 0.0 on every wrapped label."""
     rt = _rt()
     assert call(rt, "_", ["Account:"]) == "Account:"
@@ -257,7 +257,7 @@ def test_char_is_chr_with_out_of_range_answering_empty():
 def test_des_decrypt_is_policy_inert_like_des_encrypt():
     """The mobile saveCredentials/getSavedPassword pair (weapon-
     Mobile_Login.txt:325-336) round-trips credentials through DES on a
-    cache file; BOTH endpoints must be inert stubs -- this client never
+    cache file. BOTH endpoints must be inert stubs -- this client never
     derives or recovers credential material for a script."""
     rt = _rt()
     assert call(rt, "des_decrypt", ["key", "blob"]) == 0.0

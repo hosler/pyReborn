@@ -4,14 +4,14 @@ The GEN_3/4/5 codecs carry a STATEFUL cipher iterator: the order bytes are
 encrypted must match the order they hit the wire. Before the fix, send_packet
 did `encrypt (advance iterator) ... sendall` with no lock, so two threads could
 interleave (wire order != encrypt order) and desync the server's decrypt
-stream. The server then reads garbage packet/prop ids; a player-prop id it
-can't map (>=83) makes GServer-v2's constructPropFor throw -> the whole process
+stream. The server then reads garbage packet/prop ids. A player-prop id it
+cannot map (>=83) makes GServer-v2's constructPropFor throw -> the whole process
 SIGABRTs (remote DoS, reproduced live against gs2emu).
 
 This test drives many threads through send_packet against a fake socket that
 captures the true wire order (with a tiny sleep to widen the interleave
 window), then decodes the captured stream with a single fresh in-codec. If any
-send interleaved, decoding desyncs and the recovered packet multiset won't
+send interleaved, decoding desyncs and the recovered packet multiset will not
 match what was sent. With the _send_lock in place it always matches.
 """
 import threading

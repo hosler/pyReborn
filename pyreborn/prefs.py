@@ -1,19 +1,19 @@
 """pyreborn.prefs -- local UI preferences persisted to disk.
 
 Stores whatever the login/server-select screens need to pre-fill next launch
-(account, last server, listserver host, window size) so the user doesn't
+(account, last server, listserver host, window size) so the user does not
 retype everything every time.
 
 Location: `$XDG_CONFIG_HOME/pyreborn/prefs.json`, falling back to
 `~/.config/pyreborn/prefs.json` when XDG_CONFIG_HOME is unset (the XDG
 default). The directory is created on first save.
 
-PLAINTEXT PASSWORD: `password` is stored unencrypted in prefs.json. That's a
+PLAINTEXT PASSWORD: `password` is stored unencrypted in prefs.json. That is a
 deliberate, user-accepted tradeoff for a single-player convenience feature in
 a game client -- it is NOT a security boundary. The file is chmod'd 0600
 (owner read/write only) on every save so at least other local accounts on the
-same machine can't read it, but treat it like a browser's saved password:
-don't reuse it anywhere that matters.
+same machine cannot read it, but treat it like a browser's saved password:
+do not reuse it anywhere that matters.
 """
 
 import json
@@ -43,7 +43,7 @@ class ServerPref:
     version: str = ""
 
     def matches(self, server) -> bool:
-        """Whether a listserver ServerEntry is "the same server" as this pref."""
+        """Return True if a ServerEntry identifies this preference's server."""
         return self.name == getattr(server, "name", None) and \
             self.ip == getattr(server, "ip", None) and \
             self.port == getattr(server, "port", None)
@@ -130,7 +130,7 @@ class Prefs:
                         host: Optional[str] = None, port: Optional[int] = None,
                         listserver_host: Optional[str] = None) -> None:
         """Persist a successful login. Only touches the fields relevant to the
-        mode actually used, so e.g. a listserver login doesn't clobber the
+        mode actually used, so e.g. a listserver login does not clobber the
         saved direct-connect host/port (and vice versa)."""
         self.username = username
         self.password = password

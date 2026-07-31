@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test player interactions - sword, items, chat, etc."""
+"""Test player interactions with swords, items, chat, and other features."""
 
 import os
 import sys
@@ -83,7 +83,7 @@ class InteractionTests:
     # ========== TESTS ==========
 
     def test_sword_attack(self) -> bool:
-        """Test sword attack sends packet."""
+        """Test that a sword attack sends a packet."""
         # Just verify it doesn't crash
         for direction in [0, 1, 2, 3]:
             self.client.sword_attack(direction)
@@ -91,7 +91,7 @@ class InteractionTests:
         return True
 
     def test_direction_change(self) -> bool:
-        """Test player direction changes."""
+        """Test that the player direction changes."""
         directions_tested = set()
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             self.client.move(dx, dy)
@@ -101,33 +101,33 @@ class InteractionTests:
         return len(directions_tested) >= 2
 
     def test_chat_message(self) -> bool:
-        """Test sending chat message."""
+        """Test that the client sends a chat message."""
         result = self.client.say("Test message from automated test")
         self.client.update(timeout=0.1)
         return result
 
     def test_item_pickup_attempt(self) -> bool:
-        """Test item pickup (may not find item)."""
+        """Test an item pickup. The client might not find an item."""
         # Just verify it doesn't crash
         self.client.pickup_item()
         self.client.update(timeout=0.1)
         return True
 
     def test_bomb_drop(self) -> bool:
-        """Test dropping a bomb."""
+        """Test that the player drops a bomb."""
         # Just verify it doesn't crash
         self.client.drop_bomb(power=1)
         self.client.update(timeout=0.1)
         return True
 
     def test_shoot_arrow(self) -> bool:
-        """Test shooting an arrow."""
+        """Test that the player shoots an arrow."""
         self.client.shoot(direction=0)
         self.client.update(timeout=0.1)
         return True
 
     def test_player_stats(self) -> bool:
-        """Test player stats are populated."""
+        """Test that the client populates the player stats."""
         p = self.client.player
         # Check various stats exist
         has_level = p.level is not None
@@ -135,21 +135,21 @@ class InteractionTests:
         return has_level and has_pos
 
     def test_npc_count(self) -> bool:
-        """Verify NPCs exist."""
+        """Verify that NPCs exist."""
         return len(self.client.npcs) > 0
 
     def test_other_players_dict(self) -> bool:
-        """Verify other players dict exists."""
+        """Verify that the other players dictionary exists."""
         # May be empty if no other players
         return isinstance(self.client.players, dict)
 
     def test_links_loaded(self) -> bool:
-        """Test level links are loaded."""
+        """Test that the client loads the level links."""
         # Links may or may not exist
         return isinstance(self.client.links, dict)
 
     def test_warp_request(self) -> bool:
-        """Test warp request doesn't crash."""
+        """Test that a warp request does not cause a crash."""
         # Just test it doesn't crash - actual warp depends on server
         try:
             self.client.warp_to_level("chicken1.nw", 32, 32)
@@ -159,19 +159,19 @@ class InteractionTests:
             return False
 
     def test_flag_setting(self) -> bool:
-        """Test setting a flag."""
+        """Test that the client sets a flag."""
         self.client.set_flag("test_flag", "test_value")
         self.client.update(timeout=0.1)
         return True
 
     def test_trigger_action(self) -> bool:
-        """Test trigger action doesn't crash."""
+        """Test that a trigger action does not cause a crash."""
         self.client.triggeraction("test_action")
         self.client.update(timeout=0.1)
         return True
 
     def test_continuous_movement(self) -> bool:
-        """Test continuous movement for extended period."""
+        """Test continuous movement for an extended period."""
         for _ in range(200):
             self.client.move(1, 0)
             self.client.update(timeout=0.005)
@@ -183,7 +183,7 @@ class InteractionTests:
         return self.client.x >= 0
 
     def test_visual_update(self) -> bool:
-        """Test visual position updates."""
+        """Test that the client updates the visual position."""
         self.game.visual_x = self.client.x
         self.game.visual_y = self.client.y
 
@@ -198,7 +198,7 @@ class InteractionTests:
         return abs(self.game.visual_x - self.client.x) < 10
 
     def test_multiple_renders(self) -> bool:
-        """Test multiple frame renders."""
+        """Test that the client renders multiple frames."""
         for _ in range(100):
             self.client.update(timeout=0.005)
             self.game.visual_x = self.client.x
@@ -211,7 +211,7 @@ class InteractionTests:
         return True
 
     def test_screenshot_capture(self) -> bool:
-        """Test screenshot capture works."""
+        """Test that screenshot capture works."""
         self.game.screen.fill((34, 139, 34))
         self.game._render_world()
         img = take_screenshot(self.game.screen, "/tmp/test_interaction_screenshot.png")

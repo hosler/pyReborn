@@ -3,7 +3,7 @@
 Every site here used to re-derive `math.floor(x/64)` / `x % 64` / `ly*64+lx`
 inline. These tests pin the *behaviour* at the places that historically broke
 (segment boundaries, negative world coords, the 63->64 rollover) so the shared
-implementation can't silently drift from what the call sites expect.
+implementation cannot silently drift from what the call sites expect.
 """
 
 import os

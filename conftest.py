@@ -1,13 +1,14 @@
 """
-Pytest-owned pygserver lifecycle for the game_tester QA integration suite.
+Pytest controls the pygserver lifecycle for the game_tester QA integration suite.
 
-Provides:
-- `pygserver` (session-scoped): starts a real pygserver subprocess against a
-  throwaway temp server dir (fresh accounts/ each session), so integration
-  tests never need a hand-started server or the repo's shared, mutable
-  pygserver/accounts dir.
-- `bots` (function-scoped factory): connects game_tester.game_bot.GameBot
-  instances to that server and disconnects them at teardown.
+This module provides:
+- `pygserver` (session-scoped): The fixture starts a real pygserver subprocess
+  that uses a temporary server directory. Each session gets a fresh accounts/
+  directory. Thus, integration tests do not need a manually started server or
+  the repository's shared, mutable pygserver/accounts directory.
+- `bots` (function-scoped factory): The factory connects
+  game_tester.game_bot.GameBot instances to that server. The factory
+  disconnects the instances during teardown.
 
 See game_tester/CLAUDE.md / pyReborn/CLAUDE.md for the QA framework this
 wraps, and pyReborn/tests/test_qa_pytest.py for the tests that use these
@@ -44,7 +45,7 @@ SHUTDOWN_TIMEOUT = 10.0
 
 
 def _free_port() -> int:
-    """Grab an OS-assigned free TCP port (small bind/release race is
+    """Get an OS-assigned free TCP port (a small bind/release race is
     acceptable for a test fixture)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -53,7 +54,8 @@ def _free_port() -> int:
 
 @dataclass
 class PygserverHandle:
-    """Connection info + log access for the throwaway QA server."""
+    """Store connection information and provide log access for the temporary
+    QA server."""
     host: str
     port: int
     server_dir: Path
@@ -71,9 +73,9 @@ class PygserverHandle:
 def pygserver(tmp_path_factory):
     """Start a real pygserver on a free port against a throwaway server dir.
 
-    Kills account-state drift for good: the accounts/ dir is empty at the
-    start of every pytest session, so QA scenarios always run against fresh
-    accounts instead of the repo's shared pygserver/accounts.
+    The fixture prevents account-state drift. The accounts/ directory is empty
+    at the start of every pytest session. Thus, QA scenarios always use fresh
+    accounts instead of the repository's shared pygserver/accounts directory.
     """
     if not RUN_SERVER.exists():
         pytest.skip(f"pygserver checkout not found at {PYGSERVER_DIR}")
@@ -179,10 +181,10 @@ def _test_failed(request) -> bool:
 
 @pytest.fixture
 def bots(pygserver: PygserverHandle, request):
-    """Factory fixture: bots(n=1, names=None) -> connected GameBot list.
+    """Create a connected GameBot list with bots(n=1, names=None).
 
-    Disconnects every bot it created at teardown; on test failure, also
-    prints the tail of the fixture server's log to aid debugging.
+    The fixture disconnects each bot that it created during teardown. If a test
+    fails, the fixture also prints the end of the server log to help debugging.
     """
     from game_tester.game_bot import GameBot
 

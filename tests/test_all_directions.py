@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test walking in all 4 directions to adjacent levels."""
+"""Test movement in all four directions to adjacent levels."""
 
 import os
 import sys
@@ -36,7 +36,7 @@ def get_grid_position(x: float, y: float) -> tuple:
 
 
 def walk_to_boundary(client, game, direction: str, max_steps: int = 300) -> dict:
-    """Walk in a direction until crossing a level boundary or max steps."""
+    """Walk until the player crosses a level boundary or reaches the maximum steps."""
     directions = {
         'up': (0, -1),
         'down': (0, 1),
@@ -83,7 +83,7 @@ def walk_to_boundary(client, game, direction: str, max_steps: int = 300) -> dict
 
 
 def walk_to_center(client, game, target_x: float, target_y: float, max_steps: int = 500):
-    """Walk towards a target position."""
+    """Walk toward a target position."""
     for _ in range(max_steps):
         dx = 1 if client.x < target_x else (-1 if client.x > target_x else 0)
         dy = 1 if client.y < target_y else (-1 if client.y > target_y else 0)

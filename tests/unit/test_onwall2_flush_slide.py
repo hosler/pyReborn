@@ -17,7 +17,7 @@ standing flush against a wall BELOW blocked purely horizontal movement, and
 flush against a wall to the RIGHT blocked purely vertical movement.
 
 Fix under test: far-edge cell enumeration forgives sliver overlaps up to
-_ONWALL2_EDGE_TOL (0.25 tiles); origin cells and overlaps beyond a quarter
+_ONWALL2_EDGE_TOL (0.25 tiles). Origin cells and overlaps beyond a quarter
 tile are unchanged.
 """
 

@@ -105,7 +105,7 @@ class MovementMixin:
         A seam crossing is NOT a warp: no level-state reset, no roster drop —
         just PLI_LEVELWARP so the server re-homes us, plus a request for the
         newly-adjacent segments. Factored out of move_to() so scripted
-        movement (which never calls move_to; see
+        movement (which never calls move_to. See
         ActionsMixin._check_scripted_gmap_segment) announces crossings the
         exact same way."""
         if not self.connected or not self._authenticated:

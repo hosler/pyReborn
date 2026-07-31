@@ -43,7 +43,7 @@ class MultiBotTest:
             self.bots.append(bot)
 
     def connect_all(self, timeout: float = 10.0) -> bool:
-        """Connect all bots to server; all-or-nothing.
+        """Connect all bots to server. All-or-nothing.
 
         A partial success used to leave the bots that DID get in logged in
         forever: no caller compensates on False (game_tester/__main__.py's

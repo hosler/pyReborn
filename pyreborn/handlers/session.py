@@ -1,5 +1,7 @@
-"""Session, handshake and server-control packets: raw-data framing, world
-time, flags, freeze/fullstop, profiles and the assorted login markers.
+"""The client handles session, handshake, and server-control packets.
+
+These packets contain raw-data framing, world time, flags, freeze and fullstop
+states, profiles, and the different login markers.
 """
 
 from ..packets import (

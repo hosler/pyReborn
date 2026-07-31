@@ -1,4 +1,4 @@
-"""Client-side GS2 bytecode execution for pyReborn.
+"""The client runs GS2 bytecode for pyReborn.
 
 Runs GS2 scripts (weapons/NPCs/classes/ganis) received as compiled bytecode
 (PLO_NPCWEAPONSCRIPT / PLO_NPCBYTECODE / PLO_LOADSCRIPT / PLO_GANISCRIPT)
@@ -13,7 +13,7 @@ log-stubbed once per name and show up in GS2VM.coverage_report()'s
 builtins_missing.
 
 Wiring mirrors ClientGS1: the embedding app creates ``ClientGS2(client, gs1)``
-and calls ``attach()``; inbound bytecode then loads automatically via
+and calls ``attach()``. Inbound bytecode then loads automatically via
 client.on_gs2_bytecode, inbound PLO_TRIGGERACTION fires onAction<name>
 handlers (client.gs2_host), and the game loop pumps process_timeouts(dt).
 """

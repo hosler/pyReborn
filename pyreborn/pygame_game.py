@@ -416,7 +416,7 @@ class GameClient(
 
     def _on_window_resize(self, w: int, h: int):
         """Window resized (native mode): re-point self.screen at the new window
-        surface and resize the camera + HUD so the world stays centred and the
+        surface and resize the camera + HUD so the world stays centered and the
         HUD re-anchors to the new corners."""
         self.screen = self.viewport.canvas
         self.camera.resize(w, h)
