@@ -314,7 +314,13 @@ class EntityCollectMixin:
     def _collect_baddies(self, out: List["_Entity"],
                          frame: FrameContext) -> None:
         """Baddies (enemies). Their x/y are local to the current segment, so
-        fold in that segment's gmap offset to line them up with the world."""
+        fold in that segment's gmap offset to line them up with the world.
+
+        Unlike items and chests, this store is flat: it holds no level, so the
+        fold assumes every baddy belongs to the player's own segment. Two
+        server-side facts keep that true today, and a gmap world with a BADDY
+        line under pygserver would break it. CLAUDE.md "Per-level stores, and
+        the two that are not" records both, and what the fix costs."""
         off_x, off_y = frame.segment_offset
         for bid, baddy in self.client.baddies.items():
             bx = baddy.get('x')
