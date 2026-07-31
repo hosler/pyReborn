@@ -13,7 +13,9 @@ class _Entity(NamedTuple):
     `depth` is the image's bottom edge in world tiles (_depth_sort_key), so a
     single stable sort across every kind reproduces the old per-kind draw
     order for ties. `key` is the collection's id -- player id, npc id, baddy
-    id, horse key -- and is None for the local player, which has no entry."""
+    id, horse key -- and is None for the local player, which has no entry.
+    `band` is the draw layer and sorts before depth, so every band-0 entity
+    stays behind every band-1 entity regardless of either bottom edge."""
 
     kind: str
     depth: float
@@ -21,6 +23,7 @@ class _Entity(NamedTuple):
     y: float
     data: Any
     key: Any = None
+    band: int = 1
 
 
 def _c255(v: float) -> int:

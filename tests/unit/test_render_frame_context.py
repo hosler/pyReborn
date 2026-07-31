@@ -39,7 +39,7 @@ pygame.display.set_mode((64, 64))
 RED = (255, 0, 0, 255)
 BLACK = (0, 0, 0, 255)
 
-# The five renderers the entity pass dispatches to, in _ENTITY_PASSES order.
+# The character renderers reached by the populated fixture below.
 ENTITY_RENDERER_NAMES = ('_render_player', '_render_other_player',
                          '_render_npc', '_render_baddy', '_render_horse')
 
@@ -63,6 +63,8 @@ def _populate(game):
     client.npcs.clear()
     client.baddies.clear()
     client.horses.clear()
+    client.chests.clear()
+    client.items.clear()
     game.camera.set_center(32.0, 32.0)
     game.visual_x = game.visual_y = 32.0
     game._player_render_pos = (32.0, 32.0)
@@ -118,6 +120,71 @@ class TestEntityPass:
         depths = [depth for _kind, depth in order]
         assert len(depths) == 5
         assert depths == sorted(depths)
+
+    def test_npc_bands_override_bottom_edge_depth(self, game):
+        _populate(game)
+        game.client.players.clear()
+        game.client.baddies.clear()
+        game.client.horses.clear()
+        game.npc_visual.clear()
+        game.client.npcs.clear()
+        game.client.npcs[1] = {
+            'x': 32.0, 'y': 40.0, 'imagepart': (0, 0, 16, 16),
+            'draw_layer': 'under',
+        }
+        game.client.npcs[2] = {
+            'x': 32.0, 'y': 20.0, 'imagepart': (0, 0, 16, 16),
+            'draw_layer': 'over',
+        }
+        order = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, frame: order.append(
+                (ent.kind, ent.data.get('draw_layer')
+                 if isinstance(ent.data, dict) else None)))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+        assert order == [('npc', 'under'), ('player', None), ('npc', 'over')]
+
+    @pytest.mark.parametrize(
+        ('kind', 'position', 'expected'),
+        [
+            ('chest', (32.0, 30.0), ['chest', 'player']),
+            ('chest', (32.0, 34.0), ['player', 'chest']),
+            ('item', (32.0, 33.0), ['item', 'player']),
+            ('item', (32.0, 35.0), ['player', 'item']),
+        ],
+    )
+    def test_ground_objects_compete_with_player_depth(self, game, kind,
+                                                       position, expected):
+        _populate(game)
+        game.client.players.clear()
+        game.client.npcs.clear()
+        game.client.baddies.clear()
+        game.client.horses.clear()
+        sprite_size = (32, 32) if kind == 'chest' else (16, 16)
+        sprite = pygame.Surface(sprite_size, pygame.SRCALPHA)
+        game._get_chest_sprite = lambda opened: sprite
+        game._get_item_sprite = lambda item_type: sprite
+        if kind == 'chest':
+            game.client.chests = {position: False}
+        else:
+            game.client.items[position] = 'greenrupee'
+        order = []
+        game._ENTITY_RENDERERS = {
+            entity_kind: (lambda self, ent, frame: order.append(ent.kind))
+            for entity_kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._get_chest_sprite
+            del game._get_item_sprite
+        assert order == expected
 
     def test_frame_state_does_not_leak_back_onto_the_client(self, game):
         """The three cross-pass lists live on FrameContext only. The old

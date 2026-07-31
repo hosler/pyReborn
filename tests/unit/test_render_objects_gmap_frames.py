@@ -29,6 +29,8 @@ import pytest
 from pyreborn import Client
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
+from pyreborn.game.frame_context import FrameContextMixin
+from pyreborn.game.render_collect import EntityCollectMixin
 from pyreborn.game.render_objects import LevelObjectsRenderMixin
 
 
@@ -63,7 +65,8 @@ def _client_with_grid():
     return c
 
 
-class _ChestRenderHarness(LevelObjectsRenderMixin):
+class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
+                          FrameContextMixin):
     """Minimal GameClient stand-in for _render_chests: stubs out
     _get_chest_sprite (tileset-backed) and _world_to_screen (camera-backed,
     defined on RenderMixin) so the test only exercises the coordinate fold,

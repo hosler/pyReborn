@@ -189,6 +189,11 @@ def _chk_blockagain(env):
             "blockagain must restore blocking with the footprint intact")
 
 
+def _chk_blockagain_layer(env):
+    _expect(env.npc().get("draw_layer") is None,
+            "blockagain must restore the default drawing layer")
+
+
 def _chk_hidden(env):
     g = env.gs1
     _expect(env.npc().get("visible") is False, "hidelocal should clear visible")
@@ -1052,6 +1057,11 @@ CASES: List[ClientCase] = [
         "FP TServerNPCProperties.cpp:451 (scriptfun_servernpc_drawunderplayer)",
         _chk_drawunderplayer,
         script="if (playerenters) { drawunderplayer; }"),
+    ClientCase(
+        "blockagain_draw_layer", "blockagain restores the default drawing layer",
+        "FP TServerNPCProperties.cpp:358 (scriptfun_servernpc_blockagain)",
+        _chk_blockagain_layer,
+        script="if (playerenters) { drawunderplayer; blockagain; }"),
     ClientCase(
         "destroy_npc", "destroy flags NPC for destruction",
         "FP TServerNPCProperties.cpp:348-356 (scriptfun_servernpc_destroy)",

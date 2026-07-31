@@ -526,6 +526,42 @@ self.screen.blit(sprite, (x, y))
 self.screen.blit(sprite, (x - w//2, y - h//2))  # NO!
 ```
 
+## Draw layers and depth sort
+
+Every drawable object has a layer index. The layer decides the stage at which
+the engine draws it. Depth sorting happens WITHIN a layer, never across layers.
+An object on a lower layer is always behind an object on a higher layer, whatever
+their Y values are.
+
+| Layer | Set by | What sits there |
+|---|---|---|
+| -1 | (not reachable by script) | the tile board. NPCs never draw here |
+| 0 | `drawunderplayer` | walkable ground: rugs, shadows, floor decals |
+| 1 | default; `blockagain` restores it | the player, NPCs, laid items, baddies, chests |
+| 2 | `drawoverplayer` | door frames, banners, tree canopy - anything that hangs above a head |
+| — | `seteffect` | the day/night tint. A screen-wide translucent rectangle |
+| 3 | `drawaslight` | light effects. Above the tint, so the tint does not dim them |
+| 4 | `changeimgvis <n>` with n >= 4 | the GUI band. X/Y are SCREEN PIXELS, not tiles |
+
+`drawovertrees` was probably meant to return an NPC to layer 1, and scripts cite
+it often, but the reference client does nothing with it. Do not implement it as
+a layer change. `blockagain` is the real way back. Oracle for the table:
+`GServer-v2/bin/docs/scripting-gs1-variables.md` "Draw layers".
+
+Within one layer, objects sort by the Y of their bottom-center point,
+`(x + 0.5 * width, y + height)`. If A's bottom-center is above B's, A draws
+first. Only the Y term decides the order; the X term defines the point.
+`_depth_sort_key(world_y, height_tiles)` in `game/render_collect.py` is that Y
+term, and every collector must pass a height in the same world-tile frame.
+
+What the client does today: `_render_scene` in `game/render.py` already runs
+board, then entities, then the `seteffect` tint, then deferred additive lights,
+then the vis>=4 GUI band. `showimg` layers already split into an under-player
+and an over-player band. **NPC bodies do not.** `drawoverplayer` and
+`drawunderplayer` write `draw_layer` on the NPC (`gs1_client/host_commands_npc.py`),
+and the entity pass ignores it - every NPC body depth-sorts on layer 1. An NPC
+that a script pushed under or over the player draws in the wrong band.
+
 ## GMAP Coordinate System
 
 **Do not re-derive this math inline.** `reborn_protocol.coords` owns it for both

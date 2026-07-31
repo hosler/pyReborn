@@ -14,6 +14,21 @@ from .render_shared import (
 )
 
 
+def _npc_draw_band(draw_layer) -> int:
+    """Translate script-facing NPC layers into renderer bands.
+
+    The C# client stores over as +1 and under as -1; renderer bands shift
+    those values by one so all keys stay non-negative:
+    Preagonal/FourPlay/quattroplay/src/TServerNPCProperties.cpp:450
+    Preagonal/FourPlay/quattroplay/src/TServerNPCProperties.cpp:451
+    """
+    if draw_layer == 'under':
+        return 0
+    if draw_layer == 'over':
+        return 2
+    return 1
+
+
 class EntityCollectMixin:
     @staticmethod
     def _depth_sort_key(world_y: float, height_tiles: float) -> float:
@@ -103,7 +118,7 @@ class EntityCollectMixin:
 
         # Every key is the image's bottom edge in the same world-tile frame.
         # The sort is stable, so equal keys keep _ENTITY_PASSES order.
-        entities.sort(key=lambda e: e.depth)
+        entities.sort(key=lambda e: (e.band, e.depth))
 
         renderers = self._ENTITY_RENDERERS
         for ent in entities:
@@ -192,6 +207,43 @@ class EntityCollectMixin:
 
     # -- entity pass: collect ----------------------------------------------
 
+    def _collect_chests(self, out: List["_Entity"],
+                        frame: FrameContext) -> None:
+        level_name, origin_x, origin_y = self._current_segment_info()
+        chests = self.client.chests_in_level(level_name)
+        if not chests:
+            return
+        surf_w, surf_h = frame.screen_size
+        # Chest keys are level-local while the camera and every depth key use
+        # world coordinates. Add this segment's origin to both operations so
+        # the sprite and its sorting bottom remain in the same frame.
+        for (cx, cy), opened in chests.items():
+            sprite = self._get_chest_sprite(bool(opened))
+            if sprite is None:
+                continue
+            world_x, world_y = cx + origin_x, cy + origin_y
+            sx, sy = self._world_to_screen(world_x, world_y)
+            if sx < -sprite.get_width() or sx > surf_w or \
+               sy < -sprite.get_height() or sy > surf_h:
+                continue
+            out.append(_Entity('chest', self._depth_sort_key(
+                world_y, sprite.get_height() / TILE_SIZE), sx, sy, sprite))
+
+    def _collect_items(self, out: List["_Entity"],
+                       frame: FrameContext) -> None:
+        items = getattr(self.client, "items", None)
+        if not items:
+            return
+        surf_w, surf_h = frame.screen_size
+        for (ix, iy), item_type in items.items():
+            sprite = self._get_item_sprite(item_type)
+            sx, sy = self._world_to_screen(ix, iy)
+            if sx < -TILE_SIZE or sx > surf_w or \
+               sy < -TILE_SIZE or sy > surf_h:
+                continue
+            out.append(_Entity('item', self._depth_sort_key(
+                iy, sprite.get_height() / TILE_SIZE), sx, sy, sprite))
+
     def _collect_local_player(self, out: List["_Entity"],
                               frame: FrameContext) -> None:
         """The local player, drawn through the camera at its true render-frame
@@ -240,7 +292,8 @@ class EntityCollectMixin:
             if self._entity_on_screen(sx, sy, width=draw_w, height=draw_h,
                                       screen_size=frame.screen_size):
                 out.append(_Entity('npc', self._depth_sort_key(
-                    vy, self._npc_height_tiles(npc)), sx, sy, npc, npc_id))
+                    vy, self._npc_height_tiles(npc)), sx, sy, npc, npc_id,
+                    _npc_draw_band(npc.get('draw_layer'))))
                 continue
             # A culled NPC's own sprite is skipped but its showimg layers are
             # not: one layer can be far bigger than the sprite and still cover
@@ -287,6 +340,12 @@ class EntityCollectMixin:
 
     # -- entity pass: draw --------------------------------------------------
 
+    def _draw_chest_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self.screen.blit(ent.data, (int(ent.x), int(ent.y)))
+
+    def _draw_item_entity(self, ent: "_Entity", frame: FrameContext) -> None:
+        self.screen.blit(ent.data, (int(ent.x), int(ent.y)))
+
     def _draw_player_entity(self, ent: "_Entity", frame: FrameContext) -> None:
         self._render_player(ent.x, ent.y, ent.data, self.player_anim, frame)
 
@@ -308,6 +367,8 @@ class EntityCollectMixin:
     # bottoms land on the same world row. A new entity kind is one row here
     # plus its two methods, not an edit to _render_entities.
     _ENTITY_PASSES = (
+        ('chest', _collect_chests, _draw_chest_entity),
+        ('item', _collect_items, _draw_item_entity),
         ('player', _collect_local_player, _draw_player_entity),
         ('other', _collect_other_players, _draw_other_player_entity),
         ('npc', _collect_npcs, _draw_npc_entity),

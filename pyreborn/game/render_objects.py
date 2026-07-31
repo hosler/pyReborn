@@ -152,19 +152,17 @@ class LevelObjectsRenderMixin:
         return surf
 
     def _render_items(self):
-        """Draw ground items from client state (PLO_ITEMADD/PLO_ITEMDEL). Reads
-        client.items live each frame, like baddies/chests - pickup already
-        removes the entry client-side so it just stops being drawn."""
-        items = getattr(self.client, "items", None)
-        if not items:
-            return
-        surf_w, surf_h = self.screen.get_size()
-        for (ix, iy), item_type in items.items():
-            sprite = self._get_item_sprite(item_type)
-            sx, sy = self._world_to_screen(ix, iy)
-            if sx < -TILE_SIZE or sx > surf_w or sy < -TILE_SIZE or sy > surf_h:
-                continue
-            self.screen.blit(sprite, (int(sx), int(sy)))
+        """Compatibility entry point for the render smoke harness. Ground items
+        are collected by the entity pass now, so this only exists for callers
+        that draw them on their own. It JOINS the frame in progress rather than
+        opening one: _begin_frame() would drop whatever lights and nameplates
+        that frame had already queued."""
+        frame = self._frame_context()
+        frame.screen_size = self.screen.get_size()
+        entities = []
+        self._collect_items(entities, frame)
+        for entity in entities:
+            self._draw_item_entity(entity, frame)
 
     def _sync_chest_reveals(self, now_ms: int) -> None:
         """Start a reveal when a known chest changes from closed to open."""
@@ -280,31 +278,15 @@ class LevelObjectsRenderMixin:
         cache[opened] = surf
         return surf
     def _render_chests(self):
-        """Draw level chests from client state, reflecting open/closed."""
-        level_name, origin_x, origin_y = self._current_segment_info()
-        chests = self.client.chests_in_level(level_name)
-        if not chests:
-            return
-
-        # Cull against the actual draw surface — while zoomed that's the smaller
-        # offscreen scene, not the full canvas, so SCREEN_WIDTH/HEIGHT are wrong.
-        surf_w, surf_h = self.screen.get_size()
-        # Chest keys are level-local (0-63; see client.py's PLO_LEVELCHEST
-        # handler); _world_to_screen wants world coords, so add the current
-        # segment's grid origin back on -- else every chest off the origin
-        # gmap segment rendered at its bare local coordinate instead of its
-        # real position.
-        for (cx, cy), opened in chests.items():
-            sprite = self._get_chest_sprite(bool(opened))
-            if sprite is None:
-                continue
-            # Chest tile (cx, cy) is the top-left of its 2x2 footprint, and the
-            # sprite is exactly 2 tiles wide, so it maps straight to that tile.
-            sx, sy = self._world_to_screen(cx + origin_x, cy + origin_y)
-            if sx < -sprite.get_width() or sx > surf_w or \
-               sy < -sprite.get_height() or sy > surf_h:
-                continue
-            self.screen.blit(sprite, (int(sx), int(sy)))
+        """Compatibility entry point for focused object-render tests. See
+        _render_items above for why this joins the frame instead of opening
+        one."""
+        frame = self._frame_context()
+        frame.screen_size = self.screen.get_size()
+        entities = []
+        self._collect_chests(entities, frame)
+        for entity in entities:
+            self._draw_chest_entity(entity, frame)
     def _check_and_render_signs(self):
         """Check if player is near a sign in the current level and show popup."""
         # The A-read dialogue box supersedes the proximity popup: drawing

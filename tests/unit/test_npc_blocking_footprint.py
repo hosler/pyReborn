@@ -111,7 +111,8 @@ def test_hidden_npc_neither_blocks_nor_touches():
 def test_dontblock_clears_blockagain_restores_via_script():
     # GTA's open-door mechanic: `if (playertouchsme) {hidelocal;
     # dontblocklocal;}` then a timeout re-shows and re-blocks.
-    script = ("if (playertouchsme) { hidelocal; dontblocklocal; }\n"
+    script = ("if (playertouchsme) { hidelocal; dontblocklocal; "
+              "drawunderplayer; }\n"
               "if (timeout) { showlocal; blockagainlocal; }")
     npcs = {5: {'x': 10.0, 'y': 10.0, 'image': 'door.png', 'script': script}}
     _c, gs1 = _gs1(npcs)
@@ -120,10 +121,12 @@ def test_dontblock_clears_blockagain_restores_via_script():
     assert gs1.npc_blocks_at(10.5, 10.5) is True        # shown: blocks
     gs1.trigger_npc_event(5, "playertouchsme")          # open
     assert npcs[5]['dontblock'] is True
+    assert npcs[5]['draw_layer'] == 'under'
     assert npcs[5]['visible'] is False
     assert gs1.npc_blocks_at(10.5, 10.5) is False       # walk through
     gs1.trigger_npc_event(5, "timeout")                 # re-close
     assert npcs[5]['dontblock'] is False
+    assert 'draw_layer' not in npcs[5]
     assert gs1.npc_blocks_at(10.5, 10.5) is True        # blocks again
 
 

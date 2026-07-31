@@ -481,9 +481,7 @@ class RenderMixin(FrameContextMixin):
         self._render_animated_tiles()                # Tier 4a: water/lava shimmer
         if self.debug_mode:
             self._render_debug_overlay()
-        self._render_chests()                       # ground, behind entities
-        self._render_items()                         # ground items, behind entities
-        self._render_entities(frame)                # depth-sorted by Y (incl. horses)
+        self._render_entities(frame)                # layer- then depth-sorted entities
         self._render_damage_numbers()
         self._render_bombs()
         self._update_and_render_projectiles(getattr(self, '_last_dt', 0.016))

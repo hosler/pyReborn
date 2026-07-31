@@ -74,6 +74,10 @@ class NpcCommandsMixin:
         # live, so the NPC's footprint (shape cells or image rect) resumes
         # blocking immediately — GTA's doors re-arm this way on timeout.
         ctx.this_obj["dontblock"] = False
+        # The command also restores the default drawing layer; otherwise an
+        # earlier under/over command would survive after blocking resumes.
+        # Preagonal/FourPlay/quattroplay/src/TServerNPCProperties.cpp:358-371
+        ctx.this_obj.pop("draw_layer", None)
 
     @_gs1_command(_GS1_NPC_COMMANDS, "destroy")
     def _cmd_destroy_npc(self, name, args, ctx, imgs):
@@ -105,4 +109,3 @@ class NpcCommandsMixin:
         if len(args) >= 2:
             npc["x"] = to_num(npc.get("x", 0)) + to_num(args[0])
             npc["y"] = to_num(npc.get("y", 0)) + to_num(args[1])
-
