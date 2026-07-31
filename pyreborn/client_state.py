@@ -278,8 +278,10 @@ class EntityState:
         # with account/nickname/level/etc.
         self.player_list: Dict[int, dict] = {}
 
-        # Items on ground: maps (x, y) -> item_type string
-        self.items: Dict[Tuple[float, float], str] = {}
+        # Ground-item coordinates are level-local on the wire. Keep the owning
+        # level or identical positions in adjacent gmap boards overwrite each
+        # other and every off-origin item is later mistaken for segment zero.
+        self.items: Dict[str, Dict[Tuple[float, float], str]] = {}
 
         # Baddies (enemies): maps baddy_id -> baddy dict with x, y, type, power, etc.
         self.baddies: Dict[int, dict] = {}

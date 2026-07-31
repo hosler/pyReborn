@@ -180,7 +180,10 @@ def handle_item_add(client, data):
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
         item_type = item_info.get('type', '')
-        client.items[(x, y)] = item_type
+        # During gmap preloading the pending board owns these streamed local
+        # coordinates, not necessarily the segment containing the player.
+        level_name = client._pending_level_name or client._current_level_name
+        client.items.setdefault(level_name, {})[(x, y)] = item_type
         if client.on_item:
             client.on_item(x, y, item_type, True)
 
@@ -192,7 +195,10 @@ def handle_item_del(client, data):
     if item_info:
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
-        item_type = client.items.pop((x, y), '')
+        # Deletions use the same stream owner as additions or an item at the
+        # same local position in an adjacent board can disappear instead.
+        level_name = client._pending_level_name or client._current_level_name
+        item_type = client.items.setdefault(level_name, {}).pop((x, y), '')
         if client.on_item:
             client.on_item(x, y, item_type, False)
 

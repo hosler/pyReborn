@@ -618,7 +618,7 @@ def _chk_lay(env):
     from reborn_protocol.constants import PLI
     _expect(PLI.ITEMADD in env.wire_ids(),
             f"lay must report the drop via PLI_ITEMADD (wire={env.wire_ids()!r})")
-    items = getattr(env.client, "items", None) or {}
+    items = env.client.items_in_level(env.client._current_level_name)
     _expect((float(NPC_X), float(NPC_Y)) in items,
             f"and register the item at the NPC's feet in client.items (got {items!r})")
 

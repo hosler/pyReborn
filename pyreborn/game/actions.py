@@ -31,9 +31,15 @@ class ActionsMixin:
         """Request a local pickup and play its sound when an item is present."""
         target_x = self.client.player.x if x is None else x
         target_y = self.client.player.y if y is None else y
+        level_resolver = getattr(self.client, "get_current_level_from_position", None)
+        level_name = level_resolver() if level_resolver is not None else ""
+        items_reader = getattr(self.client, "items_in_level", None)
+        items = (items_reader(level_name) if items_reader is not None
+                 else getattr(self.client, "items", {}))
+        local_x, local_y = world_to_local(target_x, target_y)
         nearby = min(
-            ((math.hypot(ix - target_x, iy - target_y), item_type)
-             for (ix, iy), item_type in self.client.items.items()),
+            ((math.hypot(ix - local_x, iy - local_y), item_type)
+             for (ix, iy), item_type in items.items()),
             default=None,
         )
         sent = self.client.pickup_item(x, y)

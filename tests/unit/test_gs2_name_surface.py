@@ -156,7 +156,8 @@ def test_level_object_probes_index_their_lists():
     only the (x, y) -> index-or-(-1) shape is oracle-backed."""
     rt = _runtime(_current_level_name="shop.nw")
     rt.client.signs = {"shop.nw": {(4.0, 9.0): "hi", (30.0, 2.0): "bye"}}
-    rt.client.items = {(11.0, 3.0): "bomb"}
+    rt.client.items = {"shop.nw": {(11.0, 3.0): "bomb"}}
+    rt.client.items_in_level = lambda level: rt.client.items.get(level, {})
     rt.client.bombs = {(1.0, 1.0): {}}
     rt.client.active_explosions = [{"x": 20.0, "y": 20.0}]
     level = rt.level_object

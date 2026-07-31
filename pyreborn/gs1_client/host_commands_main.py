@@ -414,8 +414,10 @@ class MainCommandsMixin:
     def _cmd_lay(self, name, args, ctx, imgs):
         # lay itemname (at the NPC's feet) / lay2 itemname,x,y
         # (scripting-gs1-commands.md; the parser hands itemname through as
-        # its literal string). The item lands in client.items -- the same
-        # registry PLO_ITEMADD fills, so rendering/pickup treat it exactly
+        # its literal string). The item lands in the current level's
+        # client.items bucket -- the same registry PLO_ITEMADD fills -- so
+        # equal local positions in adjacent gmap boards remain independent and
+        # rendering/pickup treat it exactly
         # like a server drop -- and PLI_ITEMADD tells the server, which
         # relays it level-wide (msgPLI_ITEMADD).
         rt = self.rt
@@ -442,7 +444,9 @@ class MainCommandsMixin:
         items = getattr(rt.client, "items", None)
         if items is not None:
             from ..packets import LEVEL_ITEM_NAMES
-            items[(x, y)] = LEVEL_ITEM_NAMES.get(item_id, f"item{item_id}")
+            level_name = getattr(rt.client, "_current_level_name", "") or ""
+            items.setdefault(level_name, {})[(x, y)] = LEVEL_ITEM_NAMES.get(
+                item_id, f"item{item_id}")
         try:
             rt.client.send_item_add(x, y, item_id)
         except Exception:

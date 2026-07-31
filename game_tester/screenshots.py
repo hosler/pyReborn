@@ -120,7 +120,8 @@ class ScreenshotCapture:
                             fill=(0, 255, 0), outline=(255, 255, 255))
 
         # Draw items (yellow dots)
-        for (x, y), item_type in client.items.items():
+        level_name = client.get_current_level_from_position()
+        for (x, y), item_type in client.items_in_level(level_name).items():
             if 0 <= x <= 64 and 0 <= y <= 64:
                 px = int(x * scale)
                 py = int(y * scale)
@@ -227,7 +228,7 @@ class ScreenshotCapture:
             f"Position: ({client.x:.1f}, {client.y:.1f})",
             f"Players: {len(client.players)}",
             f"NPCs: {len(client.npcs)}",
-            f"Items: {len(client.items)}",
+            f"Items: {len(client.items_in_level(client.get_current_level_from_position()))}",
             f"Tiles: {len(client.tiles) if client.tiles else 0}",
         ]
 

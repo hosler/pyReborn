@@ -1,10 +1,11 @@
 """Regression tests for the 2026-07-19 follow-up gmap frame bugs, same class
 as the chest/collision fixes in test_collision_gmap_frames.py:
 
-1. _render_chests (game/render_objects.py) passed chest-local (0-63) coords
-   straight into _world_to_screen (which expects world coords), so every
-   chest off the origin gmap segment rendered at its bare local coordinate
-   instead of its real position.
+1. _render_chests and _render_items passed level-local (0-63) coords straight
+   into _world_to_screen (which expects world coords), so every ground object
+   off the origin gmap segment rendered at its bare local coordinate instead
+   of its real position. Items also sorted with that local Y, disagreeing with
+   the folded blit frame and nearby world-frame actors.
 2. _check_sign_nearby (game/actions.py, the A-press sign-read path) used a
    raw %64 wrap to fold world touch points to level-local, the same
    wraparound bug _check_and_render_signs had (fixed via a signed
@@ -84,6 +85,9 @@ class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
         self.world_to_screen_calls.append((world_x, world_y))
         return (100.0, 100.0)  # safely on-screen, regardless of input
 
+    def _get_item_sprite(self, item_type):
+        return pygame.Surface((16, 16), pygame.SRCALPHA)
+
 
 class TestRenderChestsSegmentOrigin:
     def test_chest_world_screen_call_uses_segment_origin(self):
@@ -106,6 +110,25 @@ class TestRenderChestsSegmentOrigin:
         h._render_chests()
 
         assert h.world_to_screen_calls == [(5, 5)]
+
+
+class TestRenderItemsSegmentOrigin:
+    def test_item_blit_and_depth_use_world_frame(self):
+        c = _client_with_grid()
+        c.items = {"chicken1.nw": {(5.0, 5.0): "greenrupee"}}
+        h = _ChestRenderHarness(c)
+        entities = []
+        frame = h._frame_context()
+        frame.screen_size = h.screen.get_size()
+
+        h._collect_items(entities, frame)
+
+        # The live failure drew at local (5, 5), and a partial fix could fold
+        # the blit while still sorting at local Y. Both must describe world
+        # (69, 69), placing the item beside actors in this segment.
+        assert h.world_to_screen_calls == [(69.0, 69.0)]
+        assert len(entities) == 1
+        assert entities[0].depth == h._depth_sort_key(69.0, 1.0)
 
 
 class _SignCheckHarness(ActionsMixin, CollisionMixin, LevelObjectsRenderMixin):

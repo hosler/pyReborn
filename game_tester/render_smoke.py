@@ -202,12 +202,13 @@ def _t1b(game, c1, c2):
 def _t1c(game, c1, c2):
     game._render_items()  # empty client.items must not raise
     key = (float(int(c1.x)), float(int(c1.y)))
-    c1.items[key] = 'greenrupee'
+    items = c1.items.setdefault(c1.get_current_level_from_position(), {})
+    items[key] = 'greenrupee'
     game._render_items()
-    assert key in c1.items
-    del c1.items[key]
+    assert key in items
+    del items[key]
     game._render_items()
-    assert key not in c1.items
+    assert key not in items
 
 
 @check("tier1d_board_layer_decode_shape")

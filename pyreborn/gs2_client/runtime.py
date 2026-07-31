@@ -700,6 +700,10 @@ class ClientGS2:
             level = getattr(client, "_current_level_name", "") or ""
             return list((getattr(client, "signs", {}) or {}).get(level, {}))
         if probe == "testitem":
+            level = getattr(client, "_current_level_name", "") or ""
+            items_in_level = getattr(client, "items_in_level", None)
+            if items_in_level is not None:
+                return list(items_in_level(level))
             return list(getattr(client, "items", {}) or {})
         if probe == "testbomb":
             return list(getattr(client, "bombs", {}) or {})

@@ -231,18 +231,23 @@ class EntityCollectMixin:
 
     def _collect_items(self, out: List["_Entity"],
                        frame: FrameContext) -> None:
-        items = getattr(self.client, "items", None)
+        level_name, origin_x, origin_y = self._current_segment_info()
+        items = self.client.items_in_level(level_name)
         if not items:
             return
         surf_w, surf_h = frame.screen_size
+        # Item keys are level-local while the camera and every depth key use
+        # world coordinates. Folding only the blit reproduces the live failure
+        # where an item draws beside the player but sorts as if in segment zero.
         for (ix, iy), item_type in items.items():
             sprite = self._get_item_sprite(item_type)
-            sx, sy = self._world_to_screen(ix, iy)
+            world_x, world_y = ix + origin_x, iy + origin_y
+            sx, sy = self._world_to_screen(world_x, world_y)
             if sx < -TILE_SIZE or sx > surf_w or \
                sy < -TILE_SIZE or sy > surf_h:
                 continue
             out.append(_Entity('item', self._depth_sort_key(
-                iy, sprite.get_height() / TILE_SIZE), sx, sy, sprite))
+                world_y, sprite.get_height() / TILE_SIZE), sx, sy, sprite))
 
     def _collect_local_player(self, out: List["_Entity"],
                               frame: FrameContext) -> None:

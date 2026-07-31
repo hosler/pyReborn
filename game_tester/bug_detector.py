@@ -286,11 +286,12 @@ class BugDetector:
     @staticmethod
     def check_items_on_ground(client) -> CheckResult:
         """Check items state."""
-        count = len(client.items)
+        items = client.items_in_level(client.get_current_level_from_position())
+        count = len(items)
         return CheckResult(
             passed=True,
             message=f"{count} items on ground",
-            details={"count": count, "items": list(client.items.items())[:10]}
+            details={"count": count, "items": list(items.items())[:10]}
         )
 
     # ========== Combat Checks ==========

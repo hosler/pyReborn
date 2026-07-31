@@ -33,3 +33,15 @@ def test_chest_packet_uses_the_sign_stream_attribution_rule():
     assert client.chests == {"preloaded.nw": {(7, 9): False}}
     assert client.chest_items == {"preloaded.nw": {(7, 9): "bluerupee"}}
     assert "player.nw" not in client.chests
+
+
+def test_item_packet_uses_the_pending_board_stream_attribution_rule():
+    client = Client("localhost", 14900)
+    client._current_level_name = "player.nw"
+    client._pending_level_name = "preloaded.nw"
+
+    # PLO_ITEMADD carries gchar half-tile coordinates followed by item id.
+    client._handle_packet(PacketID.PLO_ITEMADD, bytes((32 + 14, 32 + 18, 33)))
+
+    assert client.items == {"preloaded.nw": {(7.0, 9.0): "bluerupee"}}
+    assert "player.nw" not in client.items

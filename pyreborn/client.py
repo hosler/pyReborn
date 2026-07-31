@@ -398,6 +398,14 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             return self.chests  # type: ignore[return-value]
         return self.chests.get(level_name, {})
 
+    def items_in_level(self, level_name: str) -> Dict[Tuple[float, float], str]:
+        """Return ground items for one level, or an empty mapping."""
+        # Accept the former flat shape when lightweight callers replace this
+        # attribute directly; live client state always uses the nested shape.
+        if self.items and all(isinstance(key, tuple) for key in self.items):
+            return self.items  # type: ignore[return-value]
+        return self.items.get(level_name, {})
+
 
     # =========================================================================
     # Convenience Properties

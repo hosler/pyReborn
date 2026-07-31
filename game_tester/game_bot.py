@@ -1147,7 +1147,7 @@ class GameBot:
 
     @property
     def items(self) -> Dict[Tuple[float, float], str]:
-        return self.client.items
+        return self.client.items_in_level(self._resolve_level_name())
 
     @property
     def tiles(self) -> List[int]:

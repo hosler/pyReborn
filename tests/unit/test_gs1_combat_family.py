@@ -423,7 +423,7 @@ def test_lay_drops_item_at_npc_feet():
     gs1.trigger_npc_event(5, "playertouchsme")
     # bombs = LevelItemType 3 (scripting-gs1-variables.md "Item names")
     assert _sent(client, PacketID.PLI_ITEMADD) == [build_item_add(12, 14, 3)]
-    assert client.items[(12.0, 14.0)] == "bombs"
+    assert client.items_in_level(client._current_level_name)[(12.0, 14.0)] == "bombs"
 
 
 def test_lay2_drops_item_at_position():
@@ -431,7 +431,7 @@ def test_lay2_drops_item_at_position():
     gs1 = _npc_gs1(client, 5, "if (playertouchsme) { lay2 heart,30,31; }")
     gs1.trigger_npc_event(5, "playertouchsme")
     assert _sent(client, PacketID.PLI_ITEMADD) == [build_item_add(30, 31, 5)]
-    assert client.items[(30.0, 31.0)] == "heart"
+    assert client.items_in_level(client._current_level_name)[(30.0, 31.0)] == "heart"
 
 
 def test_lay_unknown_item_is_noop():

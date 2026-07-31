@@ -172,7 +172,8 @@ class TestEntityPass:
         if kind == 'chest':
             game.client.chests = {position: False}
         else:
-            game.client.items[position] = 'greenrupee'
+            level_name = game.client.get_current_level_from_position()
+            game.client.items.setdefault(level_name, {})[position] = 'greenrupee'
         order = []
         game._ENTITY_RENDERERS = {
             entity_kind: (lambda self, ent, frame: order.append(ent.kind))
