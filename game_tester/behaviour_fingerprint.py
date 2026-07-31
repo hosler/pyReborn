@@ -66,6 +66,10 @@ REMOTE_SPACING = 3.0
 #: Loggers whose WARNING+ records count as engine noise for the fingerprint.
 _WATCHED_LOGGERS = ("pyreborn", "reborn_protocol", "game_tester")
 
+#: Warnings starting with this are server-content facts, not engine noise --
+#: see _LogCapture.emit and the assets_refused invariant.
+_REFUSAL_PREFIX = "Server refused file"
+
 
 @dataclass
 class Target:
@@ -125,9 +129,24 @@ class _LogCapture(logging.Handler):
         self.warnings = 0
         self.errors = 0
         self.samples: Dict[str, str] = {}
+        self.refused: Dict[str, int] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         if not record.name.startswith(_WATCHED_LOGGERS):
+            return
+        if str(record.msg).startswith(_REFUSAL_PREFIX):
+            # A refused file is a fact about the SERVER's content, not about
+            # our engine: the login serverlist asks for a per-server icon that
+            # most servers never published, and Zelda's scripts name art it
+            # does not ship. Counting those as engine warnings made
+            # no_new_warnings permanently red on four servers for something no
+            # client change can fix, so they get their own banded metric
+            # (assets_refused) and stay out of the strict template set.
+            try:
+                name = str(record.args[0]) if record.args else "?"
+            except Exception:
+                name = "?"
+            self.refused[name] = self.refused.get(name, 0) + 1
             return
         key = f"{record.name}|{record.levelname}|{str(record.msg)[:160]}"
         self.kinds[key] = self.kinds.get(key, 0) + 1
@@ -582,6 +601,10 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
                 "kinds": sorted(capture.kinds),
                 "samples": [capture.samples[k] for k in sorted(capture.kinds)],
             },
+            "assets": {
+                "refused": sum(capture.refused.values()),
+                "names": sorted(capture.refused),
+            },
         }
         return fingerprint
     finally:
@@ -951,6 +974,23 @@ def compare(observed: Dict[str, Any], entry: Dict[str, Any]) -> List[InvariantRe
             [k.split("|")[-1] for k in new_kinds], 3)) if new_kinds else "none",
         expected="no warning templates beyond the baseline set",
         baseline=f"{len(base.get('logs', {}).get('kinds', []))} known kinds",
+    ))
+    # Refused files get a CEILING, not a band: fewer refusals is always an
+    # improvement (2026-07-31 removed one by honouring the "-" no-image
+    # sentinel), while a jump means we started asking for art nobody has --
+    # which is a client bug even though each individual refusal is not.
+    # The allowance is proportional because refusals scale with how many
+    # servers the login list happens to be carrying.
+    base_refused = int(base.get("assets", {}).get("refused", 0))
+    now_refused = int(observed.get("assets", {}).get("refused", 0))
+    allowed_refused = int(base_refused * 1.5) + 3
+    results.append(InvariantResult(
+        name="assets_refused",
+        passed=now_refused <= allowed_refused,
+        actual=(f"{now_refused}: " + _fmt_set(
+            observed.get("assets", {}).get("names", []), 4)) if now_refused else "0",
+        expected=f"<= {allowed_refused}",
+        baseline=str(base_refused),
     ))
     base_errors = int(base.get("logs", {}).get("errors", 0))
     now_errors = int(observed.get("logs", {}).get("errors", 0))

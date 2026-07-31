@@ -177,8 +177,8 @@ That is exactly how a `gs2_compare(<object>, null)` change broke the public
 Login server on 2026-07-24 with all 754 tests passing.
 
 `--behaviour` logs into each known server with a real `GameClient`, pumps a
-fixed window of frames, and asserts ~33 invariants against
-`game_tester/behaviour_baselines.json`, in three families:
+fixed window of frames, and asserts ~34 invariants against
+`game_tester/behaviour_baselines.json`, in four families:
 
 - **structure** — GUI root / named-control / control-class counts, which
   weapons load and which must *never* load, event and host-call volumes, no
@@ -210,7 +210,15 @@ fixed window of frames, and asserts ~33 invariants against
   a layout that collapses without changing any count: an unimplemented
   `GuiFrameSetCtrl` left Global Chat's cells at their constructor defaults
   with *identical* roots/named/controls/tree_nodes/list_rows to the healthy
-  capture.
+  capture;
+- **assets** — `assets_refused`, a ceiling (not a band) on how many files the
+  server declined to send. A refusal is a fact about the SERVER's content, not
+  about our engine — the login serverlist asks for a per-server icon most
+  servers never published — so counting them as engine warnings pinned
+  `no_new_warnings` red on four servers for something no client change could
+  fix. They are counted separately instead, and only a *jump* fails: asking
+  for art nobody has is a client bug even though each refusal is not. Fewer
+  refusals always passes.
 
 A server's most interesting UI often only exists once someone opens it, so a
 target may list `open_ui` entries (`"<weapon vm>:<function>"`) that are

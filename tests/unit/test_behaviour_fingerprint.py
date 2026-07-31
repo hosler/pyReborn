@@ -86,9 +86,12 @@ def test_broken_login_failures_say_what_moved(login_baseline):
     roots = results["gui_roots"]
     assert not roots.passed
     assert roots.actual == "4"
-    # 11 since 2026-07-25: the capture now also opens the menu-driven Global
-    # Chat window (Target.open_ui), which adds its window and channel menu.
-    assert roots.baseline == "11"
+    # 11 on 2026-07-25 when the capture started opening the menu-driven Global
+    # Chat window (Target.open_ui), 9 since the 2026-07-31 rebaseline: the
+    # nine NAMED roots are identical either way (globalchat_window and its
+    # channel menu included, so the opener still runs) -- what moved is two
+    # anonymous transient roots, which is ordinary churn and not a lost window.
+    assert roots.baseline == "9"
     assert ".." in roots.expected              # a band, not a magic number
     forbidden = results["weapons_forbidden"]
     assert "-serverlist" in forbidden.actual
