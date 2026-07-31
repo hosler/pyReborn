@@ -211,6 +211,16 @@ def test_npc_empty_string_is_surfaced_as_empty():
     assert parse_npc_props(data)['message'] == ''
 
 
+def test_npc_hyphen_image_is_no_image_not_a_filename():
+    """"-" is the wire's "no image" sentinel (GServer-v2
+    loader/LevelLoader.cpp:832, C# client Levels/Level.cs:154). Kept as a
+    filename the renderer asked every server for a file named "-"."""
+    assert parse_npc_props(gint3(5) + gchar(0) + gstring("-"))['image'] == ''
+    assert parse_npc_props(gint3(5) + gchar(0) + gstring(" - "))['image'] == ''
+    assert parse_npc_props(
+        gint3(5) + gchar(0) + gstring("block.png"))['image'] == 'block.png'
+
+
 # =============================================================================
 # Baddy props
 # =============================================================================

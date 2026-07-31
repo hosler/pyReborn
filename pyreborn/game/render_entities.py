@@ -451,8 +451,46 @@ class EntityRenderMixin(
         except Exception:
             pass
 
+    @staticmethod
+    def _gani_drawn_sprite_ids(gani, defaults) -> set:
+        """The sprite ids some frame of `gani` actually places.
+
+        PARAMn frame tokens resolve against the gani's own DEFAULTPARAMn, the
+        same fallback _resolve_frame_sprites uses when the showani/setani call
+        passed no value for that slot; a caller-supplied param is unknowable
+        here and stays on the lazy blit-time path.
+        """
+        ids = set()
+        directions = getattr(gani, 'directions', ())
+        if not isinstance(directions, (list, tuple)):
+            return ids
+        for frames in directions:
+            if not isinstance(frames, (list, tuple)):
+                continue
+            for frame in frames:
+                for placement in getattr(frame, 'sprites', None) or ():
+                    try:
+                        raw = placement[0]
+                    except (TypeError, IndexError, KeyError):
+                        continue
+                    if isinstance(raw, str):
+                        raw = defaults.get(raw)
+                    try:
+                        ids.add(int(float(raw)))
+                    except (TypeError, ValueError):
+                        continue
+        return ids
+
     def _prefetch_gani_assets(self, gani) -> None:
-        """Request the static sprite sheets named by a parsed animation."""
+        """Request the static sprite sheets a parsed animation actually draws.
+
+        Only layers reached by a sprite that some frame places are requested.
+        A gani's DEFAULT* block routinely names sheets no frame ever uses (and
+        SPRITE lines routinely define sprites no frame ever places), so asking
+        for the whole block made the server log a refusal per name it doesn't
+        have - which is what trips --behaviour's no_new_warnings invariant -
+        for art that would never have been blitted anyway.
+        """
         try:
             name = getattr(gani, 'name', None)
             prefetched = getattr(self, '_prefetched_gani_names', None)
@@ -462,26 +500,31 @@ class EntityRenderMixin(
             if guardable_name and name in prefetched:
                 return
 
+            defaults = getattr(gani, 'defaults', None)
+            if not isinstance(defaults, dict):
+                defaults = {}
+            sprites = getattr(gani, 'sprites', None)
+            if not isinstance(sprites, dict):
+                sprites = {}
+
             filenames = set()
-            defaults = getattr(gani, 'defaults', {})
-            if isinstance(defaults, dict):
-                for layer, filename in defaults.items():
-                    if (isinstance(layer, str)
-                            and not layer.startswith('PARAM')
-                            and isinstance(filename, str)
-                            and '.' in filename):
-                        filenames.add(filename)
-            sprites = getattr(gani, 'sprites', {})
-            values = sprites.values() if isinstance(sprites, dict) else ()
-            for sprite in values:
-                layer = getattr(sprite, 'layer', None)
-                if isinstance(layer, str) and '.' in layer:
+            for sprite_id in self._gani_drawn_sprite_ids(gani, defaults):
+                layer = getattr(sprites.get(sprite_id), 'layer', None)
+                if not isinstance(layer, str):
+                    continue
+                if '.' in layer:
+                    # A literal-filename layer (itsasign2's SIGN1.GIF) is used
+                    # directly by the renderer; defaults are not consulted.
                     filenames.add(layer.lower())
+                    continue
+                filename = defaults.get(layer)
+                if isinstance(filename, str) and '.' in filename:
+                    filenames.add(filename)
 
             if guardable_name:
                 prefetched.add(name)
             # These are exactly the static filenames the frame blit fallback
-            # eventually discovers, but requesting the whole set here avoids
+            # eventually discovers, but requesting the set here avoids
             # serializing one server round trip behind each frame/direction.
             # Entity-owned equipment images stay at their existing call sites.
             for filename in filenames:

@@ -278,6 +278,14 @@ _NPC_PROP_HANDLERS = {
     76: _set('y'),
     77: _set('z'),
     **{pid: _set_text(key) for pid, key in _NPC_TEXT_KEYS.items()},
+    # A bare "-" image means "no image", not a filename: both GServer-v2
+    # (loader/LevelLoader.cpp:832) and the C# client
+    # (Preagonal.GameEngine/Levels/Level.cs:154) clear it on load. Left as a
+    # filename it reached the renderer's request-once path, so the client asked
+    # every server for a file literally named "-" -- which every server refuses,
+    # once per NPC that had no image.
+    0: lambda props, value: props.__setitem__(
+        'image', '' if (value or '').strip() == '-' else (value or '')),
 }
 
 
