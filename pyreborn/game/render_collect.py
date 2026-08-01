@@ -351,6 +351,51 @@ class EntityCollectMixin:
             out.append(_Entity('deferred_world', depth, 0.0, 0.0, draw))
         frame.world_draws.clear()
 
+    def _collect_showimg_layers(self, out: List["_Entity"],
+                                frame: FrameContext) -> None:
+        """Collect the vis-1 world layers into the character depth band.
+
+        A layer object inherits the level-object base
+        (Preagonal/FourPlay/quattroplay/src/TShowImg.cpp:49) and NPC
+        collection appends each one to the SAME draw list the player, the NPC
+        bodies and the baddies live in (TServerNPC.cpp:1949-1955,
+        TShowImg.cpp:710, TPlayer.cpp:3550). That list is sorted once, whole
+        (TPlayer.cpp:3640-3642, 3651-3670) - there is no nested per-NPC pass.
+        setLayer maps vis 1 onto layer 0, the body layer (TShowImg.cpp:321-344,
+        TLevelObject.cpp:17, TServerPlayer.cpp:524, TServerNPC.cpp:1110), and a
+        layer's order point is its own bottom edge (TShowImg.cpp:124-125). So a
+        vis-1 layer competes with the player by its own Y instead of riding its
+        owner's slot."""
+        stores = []
+        for npc in self.client.npcs.values():
+            npc_level = npc.get('_level')
+            if (npc_level and not self.client.in_gmap_segment and
+                    npc_level != self.client._current_level_name):
+                continue  # the level filter _collect_npcs applies to bodies
+            imgs = npc.get('imgs')
+            if imgs and npc.get('visible') is not False:
+                stores.append(imgs)
+        weapon_imgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        if weapon_imgs:
+            stores.extend(list(weapon_imgs.values()))
+
+        for imgs in stores:
+            # The (vis, index) walk _render_npc_layers uses. The depth sort is
+            # stable, so two layers whose bottoms land on one world row keep
+            # that stratum order.
+            for idx in sorted(imgs,
+                              key=lambda i: (imgs[i].get('vis', 4), i)):
+                rec = imgs[idx]
+                if (rec.get('vis', 4) != 1
+                        or rec.get('visible') is False
+                        or self._layer_is_gui(rec)):
+                    continue
+                placed = self._layer_place_for_sort(rec, frame.screen_size)
+                if placed is None:
+                    continue
+                depth, sx, sy = placed
+                out.append(_Entity('showimg', depth, sx, sy, rec))
+
     # -- entity pass: draw --------------------------------------------------
 
     def _draw_chest_entity(self, ent: "_Entity", frame: FrameContext) -> None:
@@ -379,6 +424,10 @@ class EntityCollectMixin:
                                     frame: FrameContext) -> None:
         ent.data()
 
+    def _draw_showimg_entity(self, ent: "_Entity",
+                             frame: FrameContext) -> None:
+        self._render_layer_rec(ent.data)
+
     # kind -> (collector, renderer) in COLLECTION order, which the stable
     # depth sort also makes the tie-break between two entities whose image
     # bottoms land on the same world row. A new entity kind is one row here
@@ -391,6 +440,7 @@ class EntityCollectMixin:
         ('npc', _collect_npcs, _draw_npc_entity),
         ('baddy', _collect_baddies, _draw_baddy_entity),
         ('horse', _collect_horses, _draw_horse_entity),
+        ('showimg', _collect_showimg_layers, _draw_showimg_entity),
         ('deferred_world', _collect_deferred_world,
          _draw_deferred_world_entity),
     )
@@ -401,9 +451,8 @@ class EntityCollectMixin:
         """Weapon image layers — the arena bombs/vases/explosions (world
         coords) and HUD (screen coords) are painted by the arenaGUI/arenaSYS
         weapons, which have no NPC/player anchor. Draw the under-player band,
-        then the over-player band (vis>=2), so the floor/bombs sit below and
-        the HUD on top. (Depth-sorting world bombs against players is a later
-        refinement.)"""
+        then the over-player band (vis>=2), so vis 0 stays below and the HUD
+        stays on top. Vis 1 is drawn by the entity depth sort."""
         wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
         if not wimgs:
             return

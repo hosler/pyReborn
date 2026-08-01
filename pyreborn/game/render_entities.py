@@ -857,7 +857,8 @@ class EntityRenderMixin(
                            on_screen_only: bool = False,
                            gui: bool = False):
         """Draw an NPC's GS1 image/text layers. ``changeimgvis`` (vis) is the
-        depth: layers at vis>=2 draw in front of the NPC sprite, the rest behind.
+        depth: vis 0 draws behind the NPC, vis 1 joins the live frame's entity
+        depth sort, and vis>=2 draws in front of the NPC sprite.
         GUI-band layers (_layer_is_gui) are excluded from the world passes and
         drawn by _render_gui_layers after the seteffect tint; pass gui=True to
         draw exactly that band instead.
@@ -886,6 +887,9 @@ class EntityRenderMixin(
                 continue
             if self._layer_is_gui(rec) != gui:
                 continue
+            if (not gui and rec.get('vis', 4) == 1
+                    and self._frame_context().sorts_world_layers()):
+                continue
             if not gui and (rec.get('vis', 4) >= 2) != over:
                 continue
             if on_screen_only and not self._layer_is_gui(rec):
@@ -911,19 +915,22 @@ class EntityRenderMixin(
                     if not self._entity_on_screen(sx, sy, margin=0,
                                                   width=lw, height=lh):
                         continue
-            try:
-                if rec.get('text_is'):
-                    self._render_showtext_rec(rec)
-                elif rec.get('gani'):
-                    self._render_showani_rec(rec)
-                elif rec.get('image'):
-                    self._render_showimg_rec(rec)
-                elif rec.get('poly'):
-                    self._render_showpoly_rec(rec)
-                emitter = rec.get('emitter')
-                if emitter is not None:
-                    # live particles ride their layer's pass/stratum
-                    # (render_effects._render_layer_emitter)
-                    self._render_layer_emitter(rec, emitter)
-            except Exception:
-                pass  # a bad layer must never break the frame
+            self._render_layer_rec(rec)
+
+    def _render_layer_rec(self, rec: dict) -> None:
+        """Render one image, animation, text or polygon layer safely."""
+        try:
+            if rec.get('text_is'):
+                self._render_showtext_rec(rec)
+            elif rec.get('gani'):
+                self._render_showani_rec(rec)
+            elif rec.get('image'):
+                self._render_showimg_rec(rec)
+            elif rec.get('poly'):
+                self._render_showpoly_rec(rec)
+            emitter = rec.get('emitter')
+            if emitter is not None:
+                # Live particles ride their layer's pass/stratum.
+                self._render_layer_emitter(rec, emitter)
+        except Exception:
+            pass  # A bad layer must never break the frame.

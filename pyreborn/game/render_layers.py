@@ -146,6 +146,36 @@ class LayerRenderMixin:
         return self._entity_on_screen(left, top, margin=0,
                                       width=right - left, height=bottom - top)
 
+    def _layer_place_for_sort(self, rec, screen_size=None):
+        """Screen position and depth key of one world layer, or None when it
+        is off screen. A poly carries no x/y at all -- its footprint is its
+        vertex box (see _poly_layer_on_screen), so both come from that box.
+        A rotated layer is culled against its expanded box but keeps its
+        drawn height in the depth key, which is the bottom edge the reference
+        client sorts on."""
+        if rec.get('poly'):
+            if not self._poly_layer_on_screen(rec):
+                return None
+            pts = rec.get('poly') or ()
+            stride = 3 if rec.get('poly_dim') == 3 else 2
+            xs = [pts[i] for i in range(0, len(pts) - stride + 1, stride)]
+            ys = [pts[i + 1] for i in range(0, len(pts) - stride + 1, stride)]
+            left, top = self.camera.world_to_screen(min(xs), min(ys))
+            return max(ys), left, top
+        sx, sy = self._layer_pos(rec)
+        lw, lh = self._layer_draw_size(rec)
+        depth = self._depth_sort_key(rec.get('y', 0.0), lh / self.camera.scale)
+        cull_x, cull_y, cull_w, cull_h = sx, sy, lw, lh
+        if rec.get('rotation'):
+            side = max(lw, lh) * 1.415
+            cull_x -= (side - lw) / 2
+            cull_y -= (side - lh) / 2
+            cull_w = cull_h = side
+        if not self._entity_on_screen(cull_x, cull_y, margin=0, width=cull_w,
+                                      height=cull_h, screen_size=screen_size):
+            return None
+        return depth, sx, sy
+
     def _render_showimg_rec(self, rec: dict):
         image = rec['image']
         part = rec.get('part')

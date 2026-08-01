@@ -393,3 +393,141 @@ class TestDeferredWorldObjects:
         # make it duck behind characters at the top of every arc.
         assert depth == 32.0
         assert depth != (30.0 - 8.0) + 2.0
+
+
+class TestSortedShowimgLayers:
+    @staticmethod
+    def _empty_world(game):
+        _populate(game)
+        game.client.players.clear()
+        game.client.npcs.clear()
+        game.client.baddies.clear()
+        game.client.horses.clear()
+        game.client.chests.clear()
+        game.client.items.clear()
+        game.gs1._weapon_imgs.clear()
+        game.npc_visual.clear()
+        game._layer_draw_size = lambda rec: (16.0, 16.0)
+
+    def test_vis_one_sorts_on_both_sides_of_player(self, game):
+        self._empty_world(game)
+        game.client.npcs[1] = {
+            'x': 32.0, 'y': 32.0,
+            'imgs': {
+                1: {'image': 'north.png', 'x': 32.0, 'y': 33.0, 'vis': 1},
+                2: {'image': 'south.png', 'x': 32.0, 'y': 35.0, 'vis': 1},
+            },
+        }
+        order = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, frame: order.append(
+                ent.data.get('image') if ent.kind == 'showimg' else ent.kind))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._layer_draw_size
+        assert [entry for entry in order if entry != 'npc'] == [
+            'north.png', 'player', 'south.png']
+
+    def test_vis_zero_and_two_stay_around_owner_body_regardless_of_y(self,
+                                                                     game):
+        self._empty_world(game)
+        drawn = []
+        game._render_showimg_rec = lambda rec: drawn.append(rec['image'])
+        imgs = {
+            1: {'image': 'under.png', 'x': 0.0, 'y': 999.0, 'vis': 0},
+            2: {'image': 'over.png', 'x': 0.0, 'y': -999.0, 'vis': 2},
+        }
+        try:
+            game._render_npc_layers(imgs, over=False)
+            drawn.append('body')
+            game._render_npc_layers(imgs, over=True)
+        finally:
+            del game._render_showimg_rec
+            del game._layer_draw_size
+        assert drawn == ['under.png', 'body', 'over.png']
+
+    def test_vis_one_poly_sorts_on_its_own_vertex_box(self, game):
+        """A poly carries no x/y at all, so reading rec['x']/rec['y'] would
+        place every one of them at world (0, 0) - sorted behind the whole
+        level, and culled off screen entirely. Its footprint is its vertex
+        box, the same box _poly_layer_on_screen already tests."""
+        self._empty_world(game)
+        game.client.npcs[1] = {
+            'x': 32.0, 'y': 32.0,
+            'imgs': {
+                1: {'poly': (30.0, 29.0, 31.0, 29.0, 31.0, 30.0), 'vis': 1,
+                    'name': 'north'},
+                2: {'poly': (30.0, 35.0, 31.0, 35.0, 31.0, 36.0), 'vis': 1,
+                    'name': 'south'},
+            },
+        }
+        order = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, frame: order.append(
+                ent.data.get('name') if ent.kind == 'showimg' else ent.kind))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._layer_draw_size
+        assert [entry for entry in order if entry != 'npc'] == [
+            'north', 'player', 'south']
+
+    def test_culled_owner_still_contributes_vis_one(self, game):
+        self._empty_world(game)
+        game.client.npcs[1] = {
+            'x': -1000.0, 'y': -1000.0, 'image': 'body.png',
+            'imgs': {1: {
+                'image': 'wide.png', 'x': 32.0, 'y': 32.0, 'vis': 1,
+            }},
+        }
+        kinds = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, frame: kinds.append(ent.kind))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._layer_draw_size
+        assert 'npc' not in kinds
+        assert 'showimg' in kinds
+
+    def test_weapon_store_contributes_vis_one(self, game):
+        self._empty_world(game)
+        game.gs1._weapon_imgs['weapon'] = {7: {
+            'image': 'weapon.png', 'x': 32.0, 'y': 32.0, 'vis': 1,
+        }}
+        kinds = []
+        game._ENTITY_RENDERERS = {
+            kind: (lambda self, ent, frame: kinds.append(ent.kind))
+            for kind in EntityRenderMixin._ENTITY_RENDERERS
+        }
+        try:
+            game._render_entities()
+        finally:
+            del game._ENTITY_RENDERERS
+            del game._layer_draw_size
+        assert kinds.count('showimg') == 1
+
+    def test_idle_npc_draws_its_own_vis_one_layer(self, game):
+        self._empty_world(game)
+        game._frame_ctx = FrameContext()
+        drawn = []
+        game._render_showimg_rec = lambda rec: drawn.append(rec['image'])
+        npc = {'imgs': {1: {
+            'image': 'idle.png', 'x': 32.0, 'y': 32.0, 'vis': 1,
+        }}}
+        try:
+            game._render_npc(0.0, 0.0, npc, 1)
+        finally:
+            del game._render_showimg_rec
+            del game._layer_draw_size
+        assert drawn == ['idle.png']

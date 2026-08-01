@@ -49,11 +49,15 @@ class FrameContext:
     # captured image, so deferring costs nothing and blends identically.
     world_draws: List[Tuple[Any, float]] = field(default_factory=list)
 
+    def sorts_world_layers(self) -> bool:
+        """True when the entity pass will draw queued world-layer entities."""
+        return self.in_frame and not self.gui_pass
+
     def defer_world_draw(self, draw: Any, depth: float) -> bool:
         """Queue a layer-1 world draw for the entity pass, and report whether
         it was queued. False means nothing will flush it (an idle context, or
         the GUI pass) and the caller should draw now."""
-        if not self.in_frame or self.gui_pass:
+        if not self.sorts_world_layers():
             return False
         self.world_draws.append((draw, depth))
         return True

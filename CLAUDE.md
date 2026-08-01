@@ -561,11 +561,29 @@ vis>=4 GUI band. `_Entity` carries a `band`, and the entity pass sorts on
 between layers. Chests and ground items are entity-pass rows too, first in
 `_ENTITY_PASSES` so a tie keeps them under a character.
 
-Still on layer 1 but NOT in the sort: bombs, projectiles, thrown objects and
-server explosions all draw after the whole entity pass, so they cover a player
-who is standing south of them. `showimg` layers split at `vis >= 2` only, which
-puts a `vis == 1` layer under its own NPC body instead of interleaving it with
-the player by depth.
+Bombs, projectiles, thrown objects and server explosions are entity-pass rows
+too, through the `world_draws` queue on `FrameContext`. So are world `showimg`
+layers at `vis == 1`, through `_collect_showimg_layers`, which reads the NPC
+`imgs` stores and the weapon stores and emits one row per layer.
+
+The reference client is the oracle for that last one. A layer object inherits
+the level-object base (`TShowImg.cpp:49`), and NPC collection appends each one
+to the SAME list the player, the NPC bodies and the baddies live in
+(`TServerNPC.cpp:1949-1955`, `TShowImg.cpp:710`, `TPlayer.cpp:3550`). That list
+is sorted once, whole (`TPlayer.cpp:3640-3642`), and walked in that order
+(`TPlayer.cpp:3651-3670`). There is no nested per-NPC draw. `setLayer` maps vis
+0 to layer -1, vis 1 to layer 0, vis 2 to layer 1, vis 3 to layer 8, and vis
+n >= 4 to layer n + 6 (`TShowImg.cpp:321-344`). Players, NPC bodies and baddies
+are all layer 0 (`TLevelObject.cpp:17`, `TServerPlayer.cpp:524`,
+`TServerNPC.cpp:1110`), and a layer's order point is its own bottom edge
+(`TShowImg.cpp:124-125`). A `vis == 1` layer therefore competes with the player
+by its own Y. Everything else keeps riding its owner's slot: `vis == 0` draws
+before the owner's body, `vis == 2` and `vis == 3` after it.
+
+An idle context has no entity pass to flush the row, so `_render_npc_layers`
+draws a `vis == 1` layer itself when `FrameContext.sorts_world_layers()` is
+false. That is what keeps `render_smoke` (which calls the renderers directly)
+drawing the same scene the live client does.
 
 ## GMAP Coordinate System
 
