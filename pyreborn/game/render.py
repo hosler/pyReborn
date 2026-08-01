@@ -432,11 +432,23 @@ class RenderMixin(FrameContextMixin):
                 return
             self.client._release_local_transition()
 
-        frozen = getattr(self, '_transition_frame', None)
+        # The slide does NOT need the hold to have engaged first. A
+        # destination whose board is already cached releases the hold inside
+        # warp_to_level, synchronously, before any frame renders with it
+        # engaged -- so _transition_frame stays None. That is EVERY re-entry
+        # to a level visited this session, including simply walking back the
+        # way you came, which is why gating the slide on that snapshot made
+        # the effect look intermittent: each edge link bounced once per
+        # session and then never again. _transition_scene_frame is the
+        # world-only copy of the last COMPLETED frame, which is the pre-warp
+        # scene on both paths.
         direction = getattr(
             self.client, '_local_level_transition_direction', None)
-        if frozen is not None and direction in range(4):
-            source = getattr(self, '_transition_scene_frame', frozen).copy()
+        source = getattr(self, '_transition_scene_frame', None)
+        if source is None:
+            source = getattr(self, '_transition_frame', None)
+        if source is not None and direction in range(4):
+            source = source.copy()
             self.client._local_level_transition_direction = None
             self._transition_frame = None
             if self._capture_transition_destination(source, direction, now):

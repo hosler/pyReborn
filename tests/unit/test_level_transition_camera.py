@@ -315,6 +315,33 @@ def test_renderer_state_machine_hold_slide_done(monkeypatch):
     assert not view._level_transition_input_frozen
 
 
+def test_cached_destination_slides_without_ever_holding(monkeypatch):
+    """The bounce must not be a first-visit-only effect.
+
+    warp_to_level releases the hold synchronously when the destination board
+    is already cached, so no frame renders with the hold engaged and
+    _transition_frame is never captured. Every re-entry to a level visited
+    this session takes that path -- including walking straight back the way
+    you came -- so a slide gated on that snapshot fired once per edge link
+    per session and then never again."""
+    clock = [30.0]
+    monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
+    client = _client()
+    client.player.direction = 3
+    client.levels["next.nw"] = [0] * 4096  # visited earlier this session
+    assert client.use_link(_edge_link(3))
+    assert not client._local_level_transition, "cached board releases the hold"
+    assert client._local_level_transition_direction == 3
+
+    view = _SlideHarness(client)
+    assert getattr(view, '_transition_frame', None) is None
+    view._render()
+
+    assert view._level_transition_slide is not None
+    assert view._level_transition_slide['direction'] == 3
+    assert view._level_transition_input_frozen
+
+
 def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch):
     clock = [20.0]
     monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
