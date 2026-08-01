@@ -26,7 +26,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from ..particles import ParticleEmitter
 from ..tiletypes import TileType, get_tile_type, tilestype_for_level, type_is_blocking
 from .host import GS1ClientHost
-from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope
+from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope, _current_baddies
 from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _report_gs1_error
 
 
@@ -1042,7 +1042,7 @@ class ClientGS1:
             nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
             if abs(nx - x) <= 1.0 and abs(ny - y) <= 1.0:
                 self.trigger_npc_event(npc_id, "washit")
-        for baddy_id, baddy in list(getattr(cl, "baddies", {}).items()):
+        for baddy_id, baddy in list(_current_baddies(cl).items()):
             if not isinstance(baddy, dict):
                 continue
             bx, by = to_num(baddy.get("x", 0)), to_num(baddy.get("y", 0))

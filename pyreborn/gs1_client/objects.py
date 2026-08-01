@@ -109,6 +109,22 @@ def _item_ids() -> dict:
     return _ITEM_ID_CACHE
 
 
+def _current_baddies(client) -> dict:
+    """The baddies of the level the script is running in.
+
+    The store is keyed by level name, and every GS1 baddy probe (compus[],
+    testcompu, hitcompu, hitobjects) means the level under the player's feet.
+    A harness client that stands in for the real one may carry no reader, so
+    fall back to whatever `baddies` holds -- which is the flat shape those
+    harnesses write."""
+    if client is None:
+        return {}
+    reader = getattr(client, "baddies_in_level", None)
+    if reader is None:
+        return getattr(client, "baddies", {}) or {}
+    return reader(getattr(client, "_current_level_name", "") or "")
+
+
 def _baddy_type_from_name(value) -> int:
     """Baddy name/id -> BaddyType id, the reference resolution order
     (LevelBaddy::getBaddyTypeFromString, LevelBaddy.cpp:44-66): name

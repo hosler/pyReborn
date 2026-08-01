@@ -319,7 +319,8 @@ class ActionsMixin:
         follow their normal respawn timer. Local state is updated in the same
         step because the relay excludes the sender when we are the leader."""
         ok = True
-        for baddy_id, baddy in list(self.baddies.items()):
+        baddies = self.baddies_in_level(self._current_level_name)
+        for baddy_id, baddy in list(baddies.items()):
             if isinstance(baddy, dict):
                 baddy['mode'] = int(BDMODE.DEAD)
             if self.connected and self._authenticated:

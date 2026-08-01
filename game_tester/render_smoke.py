@@ -148,11 +148,13 @@ def _t1a_arrow(game, c1, c2):
 
 @check("tier1a_server_horse_renders")
 def _t1a_horse(game, c1, c2):
-    before = dict(c1.horses)
+    level_name = c1.get_current_level_from_position()
+    before = dict(c1.horses_in_level(level_name))
     c2.mount_horse(c2.x, c2.y, image="horse.png", direction=2)
     try:
         _pump(game, 3)
-        assert len(c1.horses) > len(before), "client1.horses didn't grow after bot2 added one"
+        horses = c1.horses_in_level(c1.get_current_level_from_position())
+        assert len(horses) > len(before), "client1.horses didn't grow after bot2 added one"
         game._render_entities()  # horses draw through the entity depth-sort pass
     finally:
         # GServer-v2 horses otherwise live for `horselifetime` (default 30s,

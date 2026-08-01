@@ -72,8 +72,11 @@ def _populate(game):
     client.players[7] = {'x': 31.0, 'y': 31.0, 'nick': 'bob', 'level': ''}
     client.npcs[3] = {'x': 32.0, 'y': 32.0, 'image': 'sign.png',
                       'nickname': 'sign'}
-    client.baddies[1] = {'x': 33.0, 'y': 33.0, 'type': 0, 'mode': 2}
-    client.horses['h1'] = {'x': 34.0, 'y': 34.0}
+    # Baddies and horses key on the level, like chests and items, so populate
+    # the bucket the entity pass will actually read.
+    level = client._current_level_name
+    client.baddies[level] = {1: {'x': 33.0, 'y': 33.0, 'type': 0, 'mode': 2}}
+    client.horses[level] = {(34.0, 34.0): {'x': 34.0, 'y': 34.0}}
 
 
 class TestEntityPass:

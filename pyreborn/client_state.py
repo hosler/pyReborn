@@ -283,17 +283,22 @@ class EntityState:
         # other and every off-origin item is later mistaken for segment zero.
         self.items: Dict[str, Dict[Tuple[float, float], str]] = {}
 
-        # Baddies (enemies): maps baddy_id -> baddy dict with x, y, type, power, etc.
-        self.baddies: Dict[int, dict] = {}
+        # Baddy coordinates are level-local on the wire. Keep the owning level
+        # or identical positions in adjacent gmap boards are later folded onto
+        # whichever segment currently contains the player.
+        self.baddies: Dict[str, Dict[int, dict]] = {}
 
         # Weapons: maps weapon_name -> weapon dict with name, image, script
         self.weapons: Dict[str, dict] = {}
 
-        # Entity families (tier 2): bombs/arrows/horses keyed by (x, y) since
-        # the protocol identifies them by half-tile position, not an id.
+        # Entity families (tier 2): bombs/arrows keyed by position since the
+        # protocol identifies them by half-tile position, not an id.
         self.bombs: Dict[Tuple[float, float], dict] = {}
         self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
-        self.horses: Dict[Tuple[float, float], dict] = {}
+        # Horse coordinates are level-local on the wire. Keep the owning level
+        # or identical positions in adjacent gmap boards overwrite each other
+        # and are later folded onto the player's current segment.
+        self.horses: Dict[str, Dict[Tuple[float, float], dict]] = {}
 
         # Active explosions for rendering: list of {x, y, radius, power, time}
         self.active_explosions: List[dict] = []

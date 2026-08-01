@@ -6,7 +6,7 @@ import math
 from reborn_protocol.gs1.runtime import NAMESPACES, UNSET
 from reborn_protocol.gs1.values import to_num, to_str
 
-from .objects import _GS1ObjectRef, _color_code_slot, _color_name, _is_color_code, _pcode
+from .objects import _GS1ObjectRef, _color_code_slot, _color_name, _current_baddies, _is_color_code, _pcode
 from .registry import _CHARPROP_NPC, _CHARPROP_PLAYER, _ONWALL2_EDGE_TOL
 
 
@@ -258,7 +258,7 @@ class FunctionsMixin:
         if name == "testcompu":
             objects = [
                 (item_id, item) for item_id, item in
-                (getattr(self.rt.client, "baddies", {}) or {}).items()
+                _current_baddies(self.rt.client).items()
             ]
         elif name == "testbomb":
             objects = list(enumerate(self._bomb_list()))
@@ -443,4 +443,3 @@ class FunctionsMixin:
         if code == "#w":
             return to_str(name)
         return to_str(data.get("image", "")) if isinstance(data, dict) else ""
-

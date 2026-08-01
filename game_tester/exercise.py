@@ -87,7 +87,8 @@ def run_exercise_battery(bot: GameBot, verbose: bool = True) -> List[str]:
         # Hurt the fixture baddy (baddies respawn, so no persistent state).
         # NOTE: deliberately do NOT open the chest here - opened chests persist
         # per-account and would break the chest-dependent level_parsing QA test.
-        for bid in list(c.baddies.keys()):
+        level_name = c.get_current_level_from_position()
+        for bid in list(c.baddies_in_level(level_name)):
             c.hurt_baddy(bid, 1.0)
             bot.update(0.2)
     _step(notes, "warp_fixture", _warp_fixture, verbose)

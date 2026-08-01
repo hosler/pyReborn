@@ -125,7 +125,9 @@ def handle_baddy_hurt(client, data):
     # A baddy was hurt (packet 27) - relayed to the level leader.
     bh = parse_baddy_hurt(data)
     bid = bh['baddy_id']
-    if bid in client.baddies:
+    found = client.find_baddy(bid)
+    if found is not None:
+        _, baddy = found
         if client.is_leader:
             # We're this level's leader: GServer-v2 only ever relays
             # another player's PLI_BADDYHURT to us (see the
@@ -134,8 +136,7 @@ def handle_baddy_hurt(client, data):
             # tell the rest of the level the result.
             client._leader_apply_baddy_damage(bid, bh['power'])
         else:
-            client.baddies[bid]['power'] = max(
-                0, client.baddies[bid].get('power', 0) - bh['power'])
+            baddy['power'] = max(0, baddy.get('power', 0) - bh['power'])
     if client.on_baddy_hurt:
         client.on_baddy_hurt(bid, bh['power'])
 
@@ -175,7 +176,8 @@ def handle_arrow_add(client, data):
 def handle_horse_add(client, data):
     # Horse placed/mounted by another player (packet 17).
     info = parse_horse_add(data)
-    client.horses[(info['x'], info['y'])] = info
+    level_name = client._pending_level_name or client._current_level_name
+    client.horses.setdefault(level_name, {})[(info['x'], info['y'])] = info
     if client.on_horse_add:
         client.on_horse_add(info)
 
@@ -184,7 +186,8 @@ def handle_horse_add(client, data):
 def handle_horse_del(client, data):
     # Horse removed (packet 18).
     info = parse_horse_del(data)
-    client.horses.pop((info['x'], info['y']), None)
+    level_name = client._pending_level_name or client._current_level_name
+    client.horses.setdefault(level_name, {}).pop((info['x'], info['y']), None)
     if client.on_horse_del:
         client.on_horse_del(info['x'], info['y'])
 

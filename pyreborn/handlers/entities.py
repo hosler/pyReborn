@@ -240,10 +240,15 @@ def handle_baddy_props(client, data):
     props = parse_baddy_props(data)
     if props and 'id' in props:
         baddy_id = props['id']
-        if baddy_id in client.baddies:
-            client.baddies[baddy_id].update(props)
+        found = client.find_baddy(baddy_id)
+        if found is not None:
+            _, baddy = found
+            baddy.update(props)
         else:
-            client.baddies[baddy_id] = props
+            # During gmap preloading the pending board owns these streamed
+            # local coordinates, not necessarily the player's segment.
+            level_name = client._pending_level_name or client._current_level_name
+            client.baddies.setdefault(level_name, {})[baddy_id] = props
         if client.on_baddy:
             client.on_baddy(baddy_id, props)
 

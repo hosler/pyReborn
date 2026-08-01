@@ -7,7 +7,7 @@ from reborn_protocol.coords import world_to_local
 from reborn_protocol.gs1.values import to_num, to_str
 
 from ..sprites import REBORN_PALETTE
-from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _item_ids, _push_dir
+from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _current_baddies, _item_ids, _push_dir
 from .registry import _FALL_THROUGH, _GS1_MAIN_COMMANDS, _gs1_command
 
 
@@ -251,7 +251,7 @@ class MainCommandsMixin:
             return
         bid = ids[idx]
         hh = max(0, math.floor(to_num(args[1])))
-        baddy = rt.client.baddies.get(bid) or {}
+        baddy = _current_baddies(rt.client).get(bid) or {}
         dx, dy = _push_dir(baddy.get("x", 0), baddy.get("y", 0),
                            to_num(args[2]) if len(args) > 2 else None,
                            to_num(args[3]) if len(args) > 3 else None)

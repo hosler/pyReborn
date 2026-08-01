@@ -939,7 +939,9 @@ class DeepCrawler:
         npcs = [npc for npc in getattr(client, "npcs", {}).values()
                 if (not isinstance(npc, dict) or not npc.get("_level")
                     or npc.get("_level") == level)]
-        baddies = list(getattr(client, "baddies", {}).values())
+        reader = getattr(client, "baddies_in_level", None)
+        baddies = list((reader(level) if reader is not None
+                        else getattr(client, "baddies", {})).values())
         chests = getattr(client, "chests_in_level", lambda _level: {})(level)
         entry = {"name": level, "board_parsed": bool(tiles),
                  "tiles_valid": len(tiles) == 4096 and all(isinstance(x, int) for x in tiles),

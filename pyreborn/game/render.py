@@ -170,16 +170,17 @@ class RenderMixin(FrameContextMixin):
         # Baddy anims were created on first draw but never advanced, leaving
         # them frozen on frame 0. Advance them here too.
         #
-        # Baddies and horses aren't tracked in a visual dict, so their
-        # positions come straight off client.baddies/client.horses — LEVEL-local
-        # coords, unlike the world-frame positions the two dicts above hold
-        # (same assumption _collect_baddies makes). Comparing those against the
-        # world-frame listener is what the discarded-return-value here used to
-        # avoid; take the difference in the local frame instead, which is equal
-        # to the world-frame difference because a baddy is always in the local
-        # player's own segment.
+        # Baddies and horses aren't tracked in a visual dict. Resolve their
+        # level-local positions from the player's current level and compare
+        # them with the listener in the same local frame.
+        level_resolver = getattr(self.client, "get_current_level_from_position", None)
+        level_name = (level_resolver() if level_resolver is not None
+                      else getattr(self.client, "_current_level_name", "") or "")
+        baddy_reader = getattr(self.client, "baddies_in_level", None)
+        baddies = (baddy_reader(level_name) if baddy_reader is not None
+                   else getattr(self.client, "baddies", {}) or {})
         for bid, anim in list(self.baddy_anims.items()):
-            baddy = self.client.baddies.get(bid)
+            baddy = baddies.get(bid)
             if baddy is None:
                 del self.baddy_anims[bid]
                 continue
@@ -187,11 +188,12 @@ class RenderMixin(FrameContextMixin):
                                      (baddy.get('x'), baddy.get('y')),
                                      local_frame=True)
 
-        # Same bug class as baddies above: horse_anims entries (keyed by the
-        # horse's (x, y), like client.horses) were created on first draw but
-        # never advanced, so mounts sat frozen on frame 0.
+        # Horse anim entries remain keyed by their level-local (x, y).
+        horse_reader = getattr(self.client, "horses_in_level", None)
+        horses = (horse_reader(level_name) if horse_reader is not None
+                  else getattr(self.client, "horses", {}) or {})
         for hkey, anim in list(self.horse_anims.items()):
-            horse = self.client.horses.get(hkey)
+            horse = horses.get(hkey)
             if horse is None:
                 del self.horse_anims[hkey]
                 continue

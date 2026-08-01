@@ -47,12 +47,8 @@ Agent-prompt caveats:
     reported position directly. players_visible, chests, signs, baddies_nearby
     and links are LEVEL-LOCAL (0-63) - what the wire protocol actually sends
     for another entity. npcs_nearby and signs are filtered to the bot's
-    CURRENT level (npcs via their '_level' tag, signs because client.signs is
-    already keyed per level). Chests/baddies have no level attribution
-    available here at all (see GameBot._resolve_level_name's docstring for
-    why that is the hard part on a GMAP) so they can still include stale
-    entries from a previously-visited segment - _pump_on_level_change() below
-    narrows but does not eliminate that window right after a level change.
+    CURRENT level (npcs via their '_level' tag; signs, chests and baddies via
+    their per-level stores).
     /act's warp param is also level-local, matching client.warp_to_level().
 """
 import json
@@ -170,7 +166,7 @@ def bot_state(bot):
                     'y': npc.get('world_y', npc.get('y')),
                     'image': npc.get('image', '')[:30]}
     baddies = {}
-    for bid, b in list(c.baddies.items())[:30]:
+    for bid, b in list(c.baddies_in_level(bot.level).items())[:30]:
         if isinstance(b, dict):
             baddies[bid] = {'type': b.get('type'), 'x': b.get('x'), 'y': b.get('y'),
                             'alive': b.get('power', 1) > 0}
@@ -249,7 +245,7 @@ def bot_map(bot, radius=14):
         # function's comment on why the flat npcs dict needs it.
         if isinstance(npc, dict) and npc.get('_level', bot.level) == bot.level:
             mark(npc.get('x', -1), npc.get('y', -1), 'N')
-    for b in c.baddies.values():
+    for b in c.baddies_in_level(bot.level).values():
         if isinstance(b, dict) and b.get('power', 1) > 0:
             mark(b.get('x', -1), b.get('y', -1), 'D')
     for pl in (bot.players or {}).values():

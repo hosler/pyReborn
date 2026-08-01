@@ -187,6 +187,15 @@ def _initial_version(entry: ServerEntry) -> str:
     return match.group(1) if match else "6.037"
 
 
+def _baddies_here(client: Any) -> dict:
+    """The baddies of the level the probe is standing in. The store is keyed
+    by level name; a stub client may carry no reader."""
+    reader = getattr(client, "baddies_in_level", None)
+    if reader is None:
+        return getattr(client, "baddies", {}) or {}
+    return reader(getattr(client, "_current_level_name", "") or "")
+
+
 def _client_snapshot(client: Any, auto_retry: bool, version: str) -> dict[str, Any]:
     stats = getattr(client, "packet_stats", {})
     received = {str(pid): int(values.get("received", 0)) for pid, values in stats.items()}
@@ -228,7 +237,7 @@ def _client_snapshot(client: Any, auto_retry: bool, version: str) -> dict[str, A
         "gmap_detected": bool(getattr(client, "is_gmap", False)),
         "npc_count": len(getattr(client, "npcs", {})),
         "weapon_count": len(getattr(client, "weapons", {})),
-        "baddy_count": len(getattr(client, "baddies", {})),
+        "baddy_count": len(_baddies_here(client)),
         "other_players_seen": max(len(getattr(client, "players", {})),
                                   len(getattr(client, "player_list", {}))),
         "files_auto_downloaded_ok": bool(getattr(client, "_received_files", {})) and not bool(getattr(client, "_failed_files", set())),

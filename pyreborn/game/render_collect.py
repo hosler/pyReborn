@@ -313,21 +313,14 @@ class EntityCollectMixin:
 
     def _collect_baddies(self, out: List["_Entity"],
                          frame: FrameContext) -> None:
-        """Baddies (enemies). Their x/y are local to the current segment, so
-        fold in that segment's gmap offset to line them up with the world.
-
-        Unlike items and chests, this store is flat: it holds no level, so the
-        fold assumes every baddy belongs to the player's own segment. Two
-        server-side facts keep that true today, and a gmap world with a BADDY
-        line under pygserver would break it. CLAUDE.md "Per-level stores, and
-        the two that are not" records both, and what the fix costs."""
-        off_x, off_y = frame.segment_offset
-        for bid, baddy in self.client.baddies.items():
+        """Collect the current level's baddies in folded world coordinates."""
+        level_name, origin_x, origin_y = self._current_segment_info()
+        for bid, baddy in self.client.baddies_in_level(level_name).items():
             bx = baddy.get('x')
             by = baddy.get('y')
             if bx is None or by is None:
                 continue
-            wx, wy = bx + off_x, by + off_y
+            wx, wy = bx + origin_x, by + origin_y
             sx, sy = self.camera.world_to_screen(wx, wy)
             if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
                 out.append(_Entity('baddy', self._depth_sort_key(
@@ -335,15 +328,14 @@ class EntityCollectMixin:
 
     def _collect_horses(self, out: List["_Entity"],
                         frame: FrameContext) -> None:
-        """Horses (Tier 1a) - other players' PLI_HORSEADD mounts. Local coords
-        like baddies, so fold in the current segment's gmap offset."""
-        off_x, off_y = frame.segment_offset
-        for hkey, horse in self.client.horses.items():
+        """Collect the current level's horses in folded world coordinates."""
+        level_name, origin_x, origin_y = self._current_segment_info()
+        for hkey, horse in self.client.horses_in_level(level_name).items():
             hx = horse.get('x')
             hy = horse.get('y')
             if hx is None or hy is None:
                 continue
-            wx, wy = hx + off_x, hy + off_y
+            wx, wy = hx + origin_x, hy + origin_y
             sx, sy = self.camera.world_to_screen(wx, wy)
             if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
                 out.append(_Entity('horse', self._depth_sort_key(

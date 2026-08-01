@@ -1,5 +1,5 @@
 from pyreborn import Client
-from pyreborn.packets import PacketID
+from pyreborn.packets import BDPROP, PacketID, build_baddy_props
 
 
 def _chest_packet(opened, x, y, item=None, sign=0):
@@ -45,3 +45,16 @@ def test_item_packet_uses_the_pending_board_stream_attribution_rule():
 
     assert client.items == {"preloaded.nw": {(7.0, 9.0): "bluerupee"}}
     assert "player.nw" not in client.items
+
+
+def test_baddy_props_update_finds_the_existing_owning_level():
+    client = Client("localhost", 14900)
+    client._current_level_name = "east.nw"
+    client.baddies = {"west.nw": {5: {"id": 5, "power": 3}}}
+
+    client._handle_packet(
+        PacketID.PLO_BADDYPROPS,
+        build_baddy_props(5, {BDPROP.POWERIMAGE: (1, "baddygray.png")}))
+
+    assert client.baddies["west.nw"][5]["power"] == 1
+    assert "east.nw" not in client.baddies

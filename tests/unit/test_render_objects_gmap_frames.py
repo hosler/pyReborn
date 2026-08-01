@@ -75,6 +75,7 @@ class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
 
     def __init__(self, client):
         self.client = client
+        self.camera = self
         self.screen = pygame.Surface((800, 600))
         self.world_to_screen_calls = []
 
@@ -85,8 +86,16 @@ class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
         self.world_to_screen_calls.append((world_x, world_y))
         return (100.0, 100.0)  # safely on-screen, regardless of input
 
+    world_to_screen = _world_to_screen
+
     def _get_item_sprite(self, item_type):
         return pygame.Surface((16, 16), pygame.SRCALPHA)
+
+    def _baddy_height_tiles(self, baddy):
+        return 2.0
+
+    def _horse_height_tiles(self, horse):
+        return 2.0
 
 
 class TestRenderChestsSegmentOrigin:
@@ -129,6 +138,66 @@ class TestRenderItemsSegmentOrigin:
         assert h.world_to_screen_calls == [(69.0, 69.0)]
         assert len(entities) == 1
         assert entities[0].depth == h._depth_sort_key(69.0, 1.0)
+
+
+class TestRenderBaddiesSegmentOrigin:
+    def test_baddy_blit_and_depth_use_owning_segment_world_frame(self):
+        c = _client_with_grid()
+        c.baddies = {
+            "chicken1.nw": {1: {"x": 5.0, "y": 5.0}},
+            "chicken7.nw": {2: {"x": 5.0, "y": 5.0}},
+        }
+        h = _ChestRenderHarness(c)
+        entities = []
+        frame = h._frame_context()
+        frame.screen_size = h.screen.get_size()
+
+        h._collect_baddies(entities, frame)
+
+        assert h.world_to_screen_calls == [(69.0, 69.0)]
+        assert [entity.key for entity in entities] == [1]
+        assert entities[0].depth == h._depth_sort_key(
+            69.0, h._baddy_height_tiles(c.baddies["chicken1.nw"][1]))
+
+    def test_same_local_position_in_adjacent_segments_stays_independent(self):
+        c = _client_with_grid()
+        west = {"x": 5.0, "y": 5.0, "power": 2}
+        east = {"x": 5.0, "y": 5.0, "power": 4}
+        c.baddies = {"chicken1.nw": {1: west}, "chicken7.nw": {2: east}}
+
+        assert c.baddies_in_level("chicken1.nw") == {1: west}
+        assert c.baddies_in_level("chicken7.nw") == {2: east}
+
+
+class TestRenderHorsesSegmentOrigin:
+    def test_horse_blit_and_depth_use_owning_segment_world_frame(self):
+        c = _client_with_grid()
+        key = (5.0, 5.0)
+        c.horses = {
+            "chicken1.nw": {key: {"x": 5.0, "y": 5.0}},
+            "chicken7.nw": {key: {"x": 5.0, "y": 5.0}},
+        }
+        h = _ChestRenderHarness(c)
+        entities = []
+        frame = h._frame_context()
+        frame.screen_size = h.screen.get_size()
+
+        h._collect_horses(entities, frame)
+
+        assert h.world_to_screen_calls == [(69.0, 69.0)]
+        assert [entity.key for entity in entities] == [key]
+        assert entities[0].depth == h._depth_sort_key(
+            69.0, h._horse_height_tiles(c.horses["chicken1.nw"][key]))
+
+    def test_same_local_position_in_adjacent_segments_stays_independent(self):
+        c = _client_with_grid()
+        key = (5.0, 5.0)
+        west = {"x": 5.0, "y": 5.0, "image": "west.png"}
+        east = {"x": 5.0, "y": 5.0, "image": "east.png"}
+        c.horses = {"chicken1.nw": {key: west}, "chicken7.nw": {key: east}}
+
+        assert c.horses_in_level("chicken1.nw") == {key: west}
+        assert c.horses_in_level("chicken7.nw") == {key: east}
 
 
 class _SignCheckHarness(ActionsMixin, CollisionMixin, LevelObjectsRenderMixin):

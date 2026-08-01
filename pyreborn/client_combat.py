@@ -169,7 +169,8 @@ class CombatMixin:
                 seg_off_x, seg_off_y = segment_origin(*seg)
         # Half a heart per sword power level, matching the classic client.
         damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
-        for bid, b in list(self.baddies.items()):
+        baddies = self.baddies_in_level(self._current_level_name)
+        for bid, b in list(baddies.items()):
             bx, by = b.get('x'), b.get('y')
             if bx is None or by is None:
                 continue
@@ -211,9 +212,10 @@ class CombatMixin:
         this task), so the units are kept consistent with that existing
         convention rather than introduced fresh here.
         """
-        baddy = self.baddies.get(baddy_id)
-        if baddy is None:
+        found = self.find_baddy(baddy_id)
+        if found is None:
             return False
+        _, baddy = found
         new_power = max(0, baddy.get('power', 0) - damage_half_hearts)
         baddy['power'] = new_power
         baddy['mode'] = int(BDMODE.DEAD) if new_power <= 0 else int(BDMODE.HURT)

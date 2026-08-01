@@ -406,6 +406,33 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             return self.items  # type: ignore[return-value]
         return self.items.get(level_name, {})
 
+    def baddies_in_level(self, level_name: str) -> Dict[int, dict]:
+        """Return baddies for one level, or an empty mapping."""
+        # Accept the former flat shape when lightweight callers replace this
+        # attribute directly; live client state always uses the nested shape.
+        if self.baddies and all(isinstance(key, int) for key in self.baddies):
+            return self.baddies  # type: ignore[return-value]
+        return self.baddies.get(level_name, {})
+
+    def horses_in_level(
+            self, level_name: str) -> Dict[Tuple[float, float], dict]:
+        """Return horses for one level, or an empty mapping."""
+        # Accept the former flat shape when lightweight callers replace this
+        # attribute directly; live client state always uses the nested shape.
+        if self.horses and all(isinstance(key, tuple) for key in self.horses):
+            return self.horses  # type: ignore[return-value]
+        return self.horses.get(level_name, {})
+
+    def find_baddy(self, baddy_id: int) -> Optional[Tuple[str, dict]]:
+        """Return the owning level and baddy for an existing id, if any."""
+        if self.baddies and all(isinstance(key, int) for key in self.baddies):
+            baddy = self.baddies.get(baddy_id)
+            return (self._current_level_name, baddy) if baddy is not None else None
+        for level_name, baddies in self.baddies.items():
+            if baddy_id in baddies:
+                return level_name, baddies[baddy_id]
+        return None
+
 
     # =========================================================================
     # Convenience Properties

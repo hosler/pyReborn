@@ -585,40 +585,17 @@ from reborn_protocol.coords import (
 Local coords are 0-63 within a segment. The world coordinate is
 `local + grid * 64`.
 
-### Per-level stores, and the two that are not
+### Per-level stores
 
 Signs, chests and ground items use the level name as their first key. Their wire
 coordinates are level-local, and two segments can hold the same local position.
 Items stayed flat until 2026-07-31, so every item off the origin segment drew in
 segment zero.
 
-**Baddies and horses are still flat.** They key on baddy id and on `(x, y)`, and
-they hold level-local coordinates. `_collect_baddies` and `_collect_horses` fold
-the CURRENT segment's origin onto them. That is right only while every entry in
-the store belongs to the player's own segment. `game/render.py` states the same
-assumption where it advances their animation sounds.
-
-Two server-side facts keep it true. Neither one is the client's doing:
-
-- GServer-v2 never streams baddies on a gmap at all. `Level::sendBaddiesToPlayer`
-  returns early on `isGmap()` (`GServer-v2/server/src/level/Level.cpp:1344`).
-- pygserver sends baddies and horses on level ENTRY only (`pygserver/player.py`
-  `_send_level_data`), and its adjacent-segment preload sends the level name and
-  board and nothing else (`pygserver/handlers/movement.py` `PLI_ADJACENTLEVEL`,
-  which spells out that sending signs there leaked them into the current level).
-
-Nothing clears `baddies`/`horses` on a seamless segment crossing. A crossing
-skips `_reset_level_state` by design.
-
-A pygserver gmap world with a `BADDY` line in any segment therefore breaks the
-invariant. The entry segment's baddies stay in the store and re-anchor to each
-new segment's origin, so they follow the player across the world. No level in
-`chicken.gmap` has one, which is why this has never bitten (checked 2026-07-31).
-
-The fix is per-level keying, exactly as items got. It carries one wrinkle items
-did not: a `PLO_BADDYPROPS` update carries an id and no level, so it must find
-the bucket that already holds that id. Attributing it to the player's current
-segment creates a duplicate.
+Baddies and horses follow the same rule. Their wire coordinates are level-local,
+so both stores use the level name as their first key. A `PLO_BADDYPROPS` update
+carries an id but no level; it searches for the bucket already holding that id,
+and uses the pending-or-current level only when the id is new.
 
 **Segment selection must use `math.floor(world / 64)`.** `int(world / 64)`
 truncates toward zero and disagrees for negative coordinates. World `-1.5` is

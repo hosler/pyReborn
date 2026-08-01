@@ -7,7 +7,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import tokens_count
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
-from .objects import _num_or_str, _version_number
+from .objects import _current_baddies, _num_or_str, _version_number
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
 
 
@@ -129,7 +129,7 @@ class BuiltinsMixin:
         cl = self.rt.client
         if cl is None:
             return []
-        return sorted(getattr(cl, "baddies", {}) or {})
+        return sorted(_current_baddies(cl))
 
     def _bomb_array_attr(self, attr, indices):
         bombs = self._bomb_list()
@@ -163,7 +163,7 @@ class BuiltinsMixin:
         i = int(indices[0]) if indices else 0
         if not 0 <= i < len(ids):
             return 0.0
-        baddy = self.rt.client.baddies.get(ids[i])
+        baddy = _current_baddies(self.rt.client).get(ids[i])
         if not isinstance(baddy, dict):
             return 0.0
         key = {"dir": "direction", "headdir": "direction"}.get(attr, attr)

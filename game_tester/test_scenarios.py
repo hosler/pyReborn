@@ -804,7 +804,8 @@ class TestScenarios:
         checks["link"] = any(l.get("dest_level") == "onlinestartlocal.nw" for l in links)
 
         # Baddy: a graysoldier (type 0) should be present.
-        checks["baddy"] = any(b.get("type") == 0 for b in bot.client.baddies.values())
+        baddies = bot.client.baddies_in_level("qa_testlevel.nw")
+        checks["baddy"] = any(b.get("type") == 0 for b in baddies.values())
 
         # Chest: a bluerupee chest announced with its item name.
         chest_item_levels = bot.client.chest_items.values()
@@ -816,7 +817,7 @@ class TestScenarios:
                 issues.append(Issue(timestamp=time.time(), severity="MEDIUM", category="level",
                                     description=f"Level feature not parsed: {name}",
                                     context={"signs": sign_texts, "links": links,
-                                             "baddies": list(bot.client.baddies.values()),
+                                             "baddies": list(baddies.values()),
                                              "chest_items": [it for items in
                                                              bot.client.chest_items.values()
                                                              for it in items.values()]}))
