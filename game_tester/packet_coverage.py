@@ -198,7 +198,10 @@ class CoverageReport:
     def coverage_pct(self) -> float:
         rows = [r for r in self.plo_status() if r[6] != "IGNORED"]
         if not rows:
-            return 100.0
+            # Nothing observed. Report 0, not 100: an RC/NC run against an
+            # account without rights sees no packets at all, and calling that
+            # full coverage hid a suite that tested nothing.
+            return 0.0
         ok = sum(1 for r in rows if r[6] == "OK")
         return 100.0 * ok / len(rows)
 
@@ -234,6 +237,15 @@ class CoverageReport:
             print("  [!] No packet trace found - is GS_PKTLOG=1 set on the server?")
             print(f"      expected: {_DEFAULT_TRACE}")
         rows = self.plo_status()
+        if self.notes:
+            for note in self.notes:
+                print(f"  [!] {note}")
+        if not rows:
+            # An empty session is not full coverage. The RC/NC runs go empty
+            # whenever the account has no rights, and printing "100%" over
+            # zero packets read as a pass for a session that tested nothing.
+            print("  [!] NO PACKETS: the session exercised nothing "
+                  "(wrong account, or no RC/NC rights on this server?)")
         print(f"  server sent {len(rows)} distinct PLO types this session")
         print(f"  PLI types exercised: {len(self.server_in)}")
         print(f"  PLO coverage: {self.coverage_pct():.0f}%")

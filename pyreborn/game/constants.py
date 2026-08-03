@@ -8,7 +8,6 @@ from pathlib import Path
 # file a method was split into.
 PACKAGE_DIR = Path(__file__).parent.parent
 
-TILE_CORRECTIONS_FILE = PACKAGE_DIR / "tile_corrections.json"
 
 TILE_SIZE = 16
 SCREEN_WIDTH = 640

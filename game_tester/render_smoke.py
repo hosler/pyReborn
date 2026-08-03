@@ -32,6 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from reborn_protocol.coords import segment_at, segment_origin
+
 from pyreborn import Client
 from pyreborn.pygame_game import GameClient
 from pyreborn.game.constants import TILE_SIZE
@@ -77,6 +79,16 @@ def _pump(game, n=8, dt=0.05):
         game._update_animations(dt)
         game._last_dt = dt
         game._render()
+
+
+@check("debug_mode_frame_renders")
+def _debug_mode_frame(game, c1, c2):
+    previous = game.debug_mode
+    try:
+        game.debug_mode = True
+        game._render()
+    finally:
+        game.debug_mode = previous
 
 
 def _quiet_disconnect(client: Client) -> None:
@@ -581,6 +593,85 @@ def _t4c(game, c1, c2):
     finally:
         tm.default_tileset = original
         game.world_surface = None
+
+
+@check("tier5a_editor_overlay_and_palette_render")
+def _t5a_editor(game, c1, c2):
+    # Edit mode draws over the live world: grid, object markers, brush cursor,
+    # toolbar, and the tileset palette. None of it goes through pytest (no
+    # display there), and _render() is exactly where a bad rect or a missing
+    # camera call shows up - the same gap that let the client crash on its
+    # first frame while 1295 unit tests passed.
+    editor = game._ensure_editor()
+    dev = game._ensure_dev_ui()
+    try:
+        editor.toggle()
+        assert editor.state.enabled
+        editor.state.palette_visible = True
+        game._render()
+
+        # Every tool decorates differently (brush footprint, selection plate,
+        # object kind in the toolbar), so render each one.
+        for tool in ("paint", "rect", "picker", "select", "object"):
+            editor.state.set_tool(tool)
+            game._render()
+        editor.state.set_selection(2, 2, 6, 8)
+        game._render()
+
+        # The panel over the top, including its text editor viewport.
+        dev.visible = True
+        for index in range(5):
+            dev.tab = index
+            game._render()
+    finally:
+        dev.visible = False
+        if editor.state.enabled:
+            editor.toggle()
+        editor.state.palette_visible = False
+        editor.state.clear_selection()
+        game._render()
+
+
+@check("tier5b_editor_paints_over_the_wire")
+def _t5b_editor_paint(game, c1, c2):
+    # The board edit a brush stroke makes must reach the server and come back
+    # on the OTHER client - that relay is the whole point of live editing.
+    editor = game._ensure_editor()
+    level = c1.get_current_level_from_position()
+    x, y = 5, 5
+    # The editor takes WORLD coordinates and only edits the segment the
+    # player stands in, so on a gmap local (5, 5) has to be offset by that
+    # segment's origin - world (5, 5) is a different segment entirely, and
+    # the editor refuses it (as the server would silently mis-apply it).
+    if c1.in_gmap_segment:
+        ox, oy = segment_origin(*segment_at(c1.x, c1.y))
+    else:
+        ox, oy = 0.0, 0.0
+    wx, wy = ox + x, oy + y
+    original = editor.read_tile(x, y)
+    painted = (original + 1) % 512
+    editor.toggle()
+    try:
+        editor.state.set_tool("paint")     # a previous check may have left
+        editor.state.tile = painted        # the object tool selected
+        editor.mouse_down(wx, wy, 1)
+        editor.mouse_up(wx, wy, 1)
+        _pump(game, 4)
+        for _ in range(10):
+            c2.update(timeout=0.05)
+        assert editor.read_tile(x, y) == painted, (
+            f"the painter's own board: read {editor.read_tile(x, y)}, "
+            f"wanted {painted} (level {level}, tiles level "
+            f"{c1._tiles_level_name}, pending {c1._pending_level_name})")
+        assert c2.get_tile(x, y) == painted, (
+            "the edit never reached the other client")
+
+        editor.undo()
+        _pump(game, 4)
+        assert editor.read_tile(x, y) == original
+    finally:
+        if editor.state.enabled:
+            editor.toggle()
 
 
 def _tiny_png() -> bytes:

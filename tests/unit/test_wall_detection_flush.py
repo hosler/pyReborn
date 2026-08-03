@@ -67,7 +67,6 @@ from .test_onwall2_flush_slide import BLOCK, _onwall2
 class _GameHarness(ActionsMixin, CollisionMixin):
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {BLOCK: TileType.BLOCKING}
         self.noclip = False
 
 

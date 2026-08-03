@@ -28,10 +28,16 @@ from pyreborn import Client
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
 from pyreborn.game.setup import SetupMixin
-from pyreborn.tiletypes import TileType
+from pyreborn.tiletypes import TileType, get_tile_type
 
-WATER_LEVEL = [1] * 4096  # tile id 1 forced to WATER via tile_corrections
-SHALLOW_LEVEL = [2] * 4096  # tile id 2 forced to NEAR_WATER
+# Derived from the loaded type table. These used to be tile ids 1 and 2,
+# forced to these types by a per-client override layer that no longer exists.
+DEEP = next(t for t in range(4096) if get_tile_type(t) == TileType.WATER)
+SHALLOW = next(t for t in range(4096)
+               if get_tile_type(t) == TileType.NEAR_WATER)
+
+WATER_LEVEL = [DEEP] * 4096
+SHALLOW_LEVEL = [SHALLOW] * 4096
 DRY_LEVEL = [0] * 4096
 
 
@@ -82,7 +88,6 @@ class _SwimHarness(CollisionMixin, ActionsMixin):
         self.current_anim_name = "idle"
         self.is_moving = False
         self.noclip = False
-        self.tile_corrections = {1: TileType.WATER, 2: TileType.NEAR_WATER}
         self.sound_mgr = _NoopSound()
         self.player_anim = _NoopAnim()
         self.npc_handler = _NoopNpcHandler()
@@ -106,7 +111,6 @@ class _SwimHarnessWithSetup(SetupMixin, CollisionMixin, ActionsMixin):
         self.current_anim_name = "idle"
         self.is_moving = False
         self.noclip = False
-        self.tile_corrections = {1: TileType.WATER, 2: TileType.NEAR_WATER}
         self.sound_mgr = _NoopSound()
         self.player_anim = _NoopAnim()
 
@@ -136,7 +140,7 @@ class TestSwimmingStateRecompute:
         tiles = list(SHALLOW_LEVEL)
         for y in range(64):
             for x in range(32, 64):
-                tiles[y * 64 + x] = 1
+                tiles[y * 64 + x] = DEEP
         c.levels["chicken5.nw"] = tiles
         c.tiles = tiles
         h = _SwimHarness(c)

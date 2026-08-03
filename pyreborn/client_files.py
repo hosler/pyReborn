@@ -40,7 +40,16 @@ class FileTransferMixin:
         if len(tiles) < width * height:
             return False
 
-        level_name = self._pending_level_name or self._current_level_name
+        # The level the SERVER will apply this to is the one the player is
+        # standing in (its own `self.level`), so the optimistic local patch
+        # has to use that same level - segment-aware, because on a gmap the
+        # board is one segment. It used to read _pending_level_name first,
+        # but that is stream-routing state: an adjacent-level PRELOAD moves
+        # it without moving the player, and the edit then patched the
+        # preloaded neighbour's cached board while the painter's own view
+        # never changed.
+        level_name = (self.get_current_level_from_position()
+                      or self._current_level_name)
         if level_name:
             self._apply_board_modify(level_name, {
                 'layer': 0, 'x': x, 'y': y, 'width': width, 'height': height,
@@ -259,6 +268,8 @@ class FileTransferMixin:
         self, filename: str, file_data: bytes, mod_time: int
     ) -> None:
         """Persist a completed download, ignoring every cache failure."""
+        if not self.persist_downloads:
+            return
         key = normalize_asset_name(filename)
         # Empty assets are not legitimate downloads. A zero-byte tileset from
         # a cut-off large transfer was persisted and then shadowed a good user

@@ -238,3 +238,41 @@ def test_disk_verification_runs_once_per_name(tmp_path, monkeypatch):
     assert second.get_file("image.png") == b"cached"
     assert second.get_file("image.png") == b"cached"
     assert calls == 1
+
+
+_GMAP = (
+    "GRMAP001\n"
+    "WIDTH 2\nHEIGHT 1\n"
+    "LEVELNAMES\n"
+    '"a.nw","b.nw"\n'
+    "LEVELNAMESEND\n"
+)
+
+
+def test_uptodate_gmap_still_builds_the_world_grid(tmp_path, monkeypatch):
+    """A revalidated .gmap carries no bytes, and the grid still has to appear.
+
+    The transfer branches only run when the server SENDS the file, so on the
+    second run against a gmap server the client kept gmap_width == 0, asked
+    for no neighbouring segment, and the player could not walk off the edge of
+    their own level.
+    """
+    monkeypatch.setenv("PYREBORN_CACHE_DIR", str(tmp_path))
+    first = _client()
+    first._handle_packet(
+        PacketID.PLO_FILE, _file_packet("world.gmap", _GMAP.encode(), 7)
+    )
+    assert first.gmap_width == 2, "sanity: the transfer path builds the grid"
+
+    second = _client()
+    second.request_file("world.gmap")
+    second._received_files.clear()
+
+    second._handle_packet(PacketID.PLO_FILEUPTODATE, b"world.gmap")
+
+    assert second.gmap_name == "world.gmap"
+    assert (second.gmap_width, second.gmap_height) == (2, 1)
+    assert sorted(second.gmap_grid.values()) == ["a.nw", "b.nw"]
+    assert any(packet_id == PacketID.PLI_ADJACENTLEVEL
+               for packet_id, _ in second._protocol.sent), \
+        "the neighbours have to be requested, or the world stays one segment"

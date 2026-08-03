@@ -21,7 +21,13 @@ import pytest
 from pyreborn import Client
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
-from pyreborn.tiletypes import TileType
+from pyreborn.tiletypes import TileType, is_blocking
+
+
+# Derived from the loaded type table, the same way
+# test_onwall2_flush_slide.py does it. These ids used to be fabricated by a
+# per-client tile-type override layer, which no longer exists.
+WALL = next(t for t in range(4096) if is_blocking(t))
 
 
 class _GameHarness(ActionsMixin, CollisionMixin):
@@ -30,7 +36,6 @@ class _GameHarness(ActionsMixin, CollisionMixin):
 
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {1: TileType.BLOCKING}
         self.noclip = False
 
 
@@ -55,7 +60,7 @@ def _wall_row_with_doorway(row: int, doorway_cols=(32, 33, 34)) -> list:
     lvl = [0] * 4096
     for tx in range(64):
         if tx not in doorway_cols:
-            lvl[row * 64 + tx] = 1
+            lvl[row * 64 + tx] = WALL
     return lvl
 
 
@@ -64,7 +69,7 @@ def _wall_row_flat(row: int, span=(20, 45)) -> list:
     doorway anywhere nearby."""
     lvl = [0] * 4096
     for tx in range(*span):
-        lvl[row * 64 + tx] = 1
+        lvl[row * 64 + tx] = WALL
     return lvl
 
 

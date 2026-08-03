@@ -12,6 +12,7 @@ import pygame
 from reborn_protocol.coords import in_level_bounds
 
 from ..gani import AnimationState
+from ..liftobjects import BUSH_REPLACE, match_bush
 from ..prefs import Prefs
 from ..tiletypes import TileType
 from .constants import TILE_SIZE
@@ -369,26 +370,50 @@ class EffectsRenderMixin(FrameContextMixin):
             self._camera_shake_started = now
         return True
 
+    def _clear_bush_tiles(self, ox: int, oy: int, index: int) -> None:
+        """Replace a cut bush's 2x2 with its own stump tiles.
+
+        `bushobjreplace` gives one stump per bush row (TInitStatics.cpp:1502),
+        so this is not a blanket fill with the level's grass tile. Sent over
+        the wire when the bush sits in the segment the player stands in, the
+        way the reference cuts (TPlayer::slayBushes -> modifyBoard with its
+        send flag set).
+        """
+        from reborn_protocol.coords import level_index, world_to_local
+
+        replacement = BUSH_REPLACE[index]
+        standing = self.client.get_current_level_from_position()
+        for i, (dx, dy) in enumerate(((0, 0), (0, 1), (1, 0), (1, 1))):
+            wx, wy = ox + dx, oy + dy
+            level_name, tiles = self._level_tiles_at(wx, wy)
+            if not level_name:
+                continue
+            lx, ly = world_to_local(wx, wy)
+            if level_name == standing:
+                self.client.modify_board(lx, ly, 1, 1, [replacement[i]])
+            elif tiles:
+                tiles[level_index(lx, ly)] = replacement[i]
+
     def _break_bushes_in_blast(self, x: float, y: float, power: int):
         """Remove vegetation objects whose tiles overlap the circular blast."""
         radius = 2.5 + power * 0.5
-        origins = set()
+        # A bush is one of the reference client's `bushobj` 2x2 tile patterns
+        # (pyreborn/liftobjects.py), not a tile type - matching on the whole
+        # pattern is also what stops a lone bush-coloured tile from popping.
+        matches = {}
         lo_x, hi_x = math.floor(x - radius), math.ceil(x + radius)
         lo_y, hi_y = math.floor(y - radius), math.ceil(y + radius)
         for ty in range(lo_y, hi_y + 1):
             for tx in range(lo_x, hi_x + 1):
                 if math.hypot(tx + 0.5 - x, ty + 0.5 - y) > radius:
                     continue
-                tile_id = self._get_tile_at(tx, ty)
-                if self._get_corrected_tile_type(tile_id) != TileType.BUSH:
-                    continue
-                origin = self._find_2x2_object_origin(tx, ty)
-                if origin:
-                    origins.add(origin)
-        for ox, oy in origins:
-            tile_id = self._get_tile_at(ox, oy)
-            tile_type = self._get_corrected_tile_type(tile_id)
-            self._remove_2x2_tiles(ox, oy, tile_type)
+                hit = match_bush(self._get_tile_at, tx, ty)
+                if hit is not None:
+                    index, ox, oy = hit
+                    matches[(ox, oy)] = index
+        origins = set(matches)
+        for (ox, oy), index in matches.items():
+            self._clear_bush_tiles(ox, oy, index)
             self._spawn_hit_break_effect(ox + 1.0, oy + 1.0)
             self._spawn_leaf_particles(ox + 1.0, oy + 1.0)
         if origins:

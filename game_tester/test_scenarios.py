@@ -102,6 +102,18 @@ def _reset_pygserver_account(account_name: str, level: str,
         return False
 
 
+def _flat_int(lines: List[str], key: str) -> int:
+    """Read one integer value out of a GServer flat-file account, else 0."""
+    for line in lines:
+        parts = line.split(" ", 1)
+        if parts[0] == key and len(parts) == 2:
+            try:
+                return int(float(parts[1].strip()))
+            except ValueError:
+                return 0
+    return 0
+
+
 def reset_account_position(account_name: str,
                            level: str = "onlinestartlocal.nw",
                            x: float = 30.0, y: float = 30.0,
@@ -141,6 +153,13 @@ def reset_account_position(account_name: str,
             text = f.read()
         eol = "\r\n" if "\r\n" in text else "\n"
         lines = text.split(eol)
+        # Restock ammo to the same floor the pygserver twin above uses. GServer
+        # persists the post-fire count, so a suite that shoots leaves the
+        # account at ARROWS 0 and the next run's projectile checks fail with no
+        # PLO_ARROWADD ever sent - which reads exactly like a renderer
+        # regression. Raise the stored value, never lower it.
+        for key, floor in (("ARROWS", 5), ("BOMBS", 10)):
+            repl[key] = f"{key} {max(_flat_int(lines, key), floor)}"
         seen = {k: False for k in repl}
         out = []
         for line in lines:

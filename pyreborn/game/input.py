@@ -10,11 +10,9 @@ from pygame.locals import (
     QUIT, KEYDOWN, MOUSEBUTTONDOWN,
     K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
     K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE, K_TAB,
-    K_F1, K_F2, K_F7, K_F8, K_F9, K_PAGEUP, K_PAGEDOWN,
-    K_1, K_2, K_3, K_4, K_5, K_6, K_7
+    K_F1, K_F2, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12, K_PAGEUP, K_PAGEDOWN,
 )
 
-from ..tiletypes import TileType
 from .constants import (
     MOVE_STEP, pygame_key_to_vk,
 )
@@ -55,6 +53,45 @@ class InputMixin:
             su.apply_saved_prefs()
         return su
 
+    def _ensure_dev_ui(self):
+        """Create the F12 dev playground panel (script editing + console).
+
+        Like the RC panel, building it opens no connection: the NC login
+        happens on the first F12 press.
+        """
+        dev = getattr(self, 'dev_ui', None)
+        if dev is None:
+            from .dev_ui import DevOverlay
+            dev = self.dev_ui = DevOverlay(self)
+        return dev
+
+    def _ensure_editor(self):
+        """Create the F11 level editor and its palette/overlay.
+
+        Lazy like the other overlays, and inert until edit mode is toggled on:
+        constructing it opens no connection and draws nothing.
+        """
+        editor = getattr(self, 'level_editor', None)
+        if editor is None:
+            from .editor import EditorOverlay, LevelEditor, TilePalette
+            editor = self.level_editor = LevelEditor(self)
+            self.tile_palette = TilePalette(self)
+            self.editor_overlay = EditorOverlay(self, editor)
+        return editor
+
+    def _ensure_rc_ui(self):
+        """Create the F10 RC tools overlay.
+
+        Constructed lazily like the settings overlay, and cheap: it does NOT
+        open the RC connection. That only happens on the first F10 press, so
+        players without RC rights never make a second login.
+        """
+        rc = getattr(self, 'rc_ui', None)
+        if rc is None:
+            from .rc_ui import RCOverlay
+            rc = self.rc_ui = RCOverlay(self)
+        return rc
+
     def _gs2_gui_event(self, event) -> bool:
         """Offer an event to the GS2 GUI layer (topmost overlay). True =
         consumed. Mouse positions are remapped to virtual-canvas coordinates
@@ -81,11 +118,31 @@ class InputMixin:
         mgr = getattr(gs2, 'gui', None) if gs2 is not None else None
         return bool(mgr is not None and mgr.keyboard_captured)
 
+    def _admin_overlay_captures_keys(self) -> bool:
+        """True while the F10 RC panel or the F12 dev playground is open.
+
+        Those two are modal in `_handle_events`, but movement does not run off
+        events - `_handle_input` polls `key.get_pressed()` every frame. Without
+        this the panel ate the KEYDOWN and the player still walked off under
+        it, because the arrow keys that scroll a row are physically held down.
+
+        F11 edit mode is deliberately NOT here: it is non-modal by design, so a
+        builder walks around with the arrows while painting with the mouse.
+        """
+        for name in ('rc_ui', 'dev_ui'):
+            overlay = getattr(self, name, None)
+            if overlay is not None and overlay.visible:
+                return True
+        return False
+
     def _handle_events(self):
         """Handle pygame events."""
         # Make sure the settings overlay exists before the dispatch chain
         # below checks its .visible flag (see _ensure_settings_ui).
         self._ensure_settings_ui()
+        self._ensure_rc_ui()
+        self._ensure_dev_ui()
+        self._ensure_editor()
 
         # Reset just-pressed flags
         self.key_just_pressed.clear()
@@ -108,9 +165,21 @@ class InputMixin:
                 self.key_just_pressed[event.key] = True
 
                 # Modal overlays consume input while open, in priority order:
-                # composing a PM > player list > server list > settings > map
-                # > chat > dialogue > inventory > gameplay.
-                if self.pm_target_id is not None:
+                # RC tools > composing a PM > player list > server list >
+                # settings > map > chat > dialogue > inventory > gameplay.
+                # RC sits on top because it types free text (chat, ban
+                # reasons, file paths) into its own prompt, so no letter of
+                # it may fall through to a gameplay action.
+                if self.rc_ui.visible:
+                    self.rc_ui.handle_key(event)
+                elif self.dev_ui.visible:
+                    self.dev_ui.handle_key(event)
+                # Edit mode is NOT modal: it claims its own tool keys and
+                # lets everything else through, so a builder still walks
+                # around with the arrows and chats while the grid is up.
+                elif self.level_editor.handle_key(event):
+                    pass
+                elif self.pm_target_id is not None:
                     self._handle_pm_input(event)
                 elif self.show_player_list:
                     self._handle_player_list_key(event)
@@ -141,7 +210,8 @@ class InputMixin:
                             K_PAGEDOWN: self.dialogue_pager.page_size,
                         }[event.key]
                         self.dialogue_pager.scroll(amount)
-                    elif event.key in (K_F1, K_F2, K_F7, K_F8, K_F9):
+                    elif event.key in (K_F1, K_F2, K_F7, K_F8, K_F9, K_F10,
+                                       K_F11, K_F12):
                         self._handle_key_press(event)
                 elif self.inventory_ui.visible:
                     # The inventory owns its opener while visible, plus grid
@@ -171,15 +241,17 @@ class InputMixin:
                 # inventory, editor, camera zoom, or world underneath it.
                 pass
 
+            # Edit mode owns the mouse over the world: painting, picking,
+            # rectangle drags and the palette. It consumes nothing while off.
+            elif self.level_editor.handle_mouse(event, self.tile_palette):
+                pass
+
             elif event.type == pygame.MOUSEMOTION and self.inventory_ui.visible:
                 self.inventory_ui.handle_mouse_motion(event.pos)
 
             elif event.type == MOUSEBUTTONDOWN and self.inventory_ui.visible:
                 if event.button == 1:
                     self.inventory_ui.handle_click(event.pos, self.client.weapons)
-
-            elif event.type == MOUSEBUTTONDOWN and self.debug_mode:
-                self._handle_tile_click(event)
 
             elif event.type == pygame.MOUSEWHEEL and not self.debug_mode:
                 # Zoom the world layer; the camera clamps to its min/max.
@@ -311,28 +383,12 @@ class InputMixin:
             self.camera.zoom = 1.0
 
         elif event.key == K_F1:
-            # Toggle debug/tile editing mode
+            # Toggle the debug overlay (tile types, collision boxes, hover
+            # readouts). It used to double as a tile-type EDITOR that wrote
+            # per-install overrides; liftable objects come from the reference
+            # pattern table now (pyreborn/liftobjects.py), so there is nothing
+            # left to hand-tag.
             self.debug_mode = not self.debug_mode
-            if self.debug_mode:
-                print("Debug mode ON - Use 1-7 to select type, click to apply:")
-                print("  1=Walkable, 2=Blocking, 3=Water, 4=Chair, 5=Bush, 6=Pot, 7=Rock")
-            else:
-                self._save_tile_corrections()
-                print("Debug mode OFF - Corrections saved")
-
-        elif self.debug_mode and event.key in (K_1, K_2, K_3, K_4, K_5, K_6, K_7):
-            # Number keys select tile type in debug mode
-            type_map = {
-                K_1: (TileType.NONBLOCK, "Walkable"),
-                K_2: (TileType.BLOCKING, "Blocking"),
-                K_3: (TileType.WATER, "Water"),
-                K_4: (TileType.CHAIR, "Chair"),
-                K_5: (TileType.BUSH, "Bush"),
-                K_6: (TileType.POT, "Pot"),
-                K_7: (TileType.ROCK, "Rock"),
-            }
-            self.debug_selected_type, type_name = type_map[event.key]
-            print(f"Selected type: {type_name}")
 
         elif event.key == K_F2:
             # Emergency warp to (30, 30) on current level
@@ -360,6 +416,26 @@ class InputMixin:
             self.settings_ui.toggle()
             self.show_player_list = False
             self.show_server_list = False
+
+        elif event.key == K_F10:
+            # Toggle the RC tools overlay. The first press also opens the RC
+            # connection, and the panel reports the outcome (connecting, no
+            # RC access, or a live session) rather than the key going dead.
+            self.rc_ui.toggle()
+            self.settings_ui.close()
+            self.show_player_list = False
+            self.show_server_list = False
+
+        elif event.key == K_F11:
+            # Toggle level edit mode (paint tiles, place objects). Not modal:
+            # the world stays live underneath and the player can still walk.
+            self.level_editor.toggle()
+
+        elif event.key == K_F12:
+            # Toggle the dev playground (scripts + console). Opens the NC
+            # connection on first use, same contract as F10 and RC.
+            self.dev_ui.toggle()
+            self.settings_ui.close()
 
         elif event.key == K_PAGEUP:
             # Scroll the chat log backward 5 messages at a time, up to the
@@ -490,6 +566,7 @@ class InputMixin:
                 or getattr(self.client, 'input_frozen', False)
                 or getattr(self.client, '_local_level_transition', '')
                 or getattr(self, '_level_transition_input_frozen', False)
+                or self._admin_overlay_captures_keys()
                 or self._gs2_gui_captures_keys()):
             self._clear_gs1_input()
             return

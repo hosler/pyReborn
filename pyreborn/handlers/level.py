@@ -34,15 +34,13 @@ logger = logging.getLogger(__name__)
 def _load_cached_gmap(client, filename: str, blob: bytes) -> None:
     """Restore the gmap world frame from an already-downloaded .gmap.
 
-    The function matches the .gmap branch in handlers/files.handle_file, but it
-    does not download the file. That branch is the only other place that makes
-    a grid from a .gmap.
+    Shares handlers/files.adopt_gmap with every other path that builds a grid,
+    and adds the one thing only this caller can do about a bad parse: ask for
+    the file again.
     """
-    try:
-        client.load_gmap(blob.decode('latin-1', errors='replace'))
-        client.gmap_name = filename
-        client.request_adjacent_levels()
-    except Exception:
+    from .files import adopt_gmap
+
+    if not adopt_gmap(client, filename, blob):
         logger.warning("cached %s failed to parse; re-requesting", filename)
         client.request_file(filename)
 
@@ -358,9 +356,13 @@ def handle_level_chest(client, data):
         lvl = client._pending_level_name or client._current_level_name
         key = (chest['x'], chest['y'])
         client.chests.setdefault(lvl, {})[key] = chest['opened']
-        # Remember the item an unopened chest holds (only sent on warp).
+        # Remember the item an unopened chest holds (only sent on warp), and
+        # the sign index beside it: the level editor's export has to write
+        # that index back out, and the 3-byte form never carries it.
         if 'item' in chest:
             client.chest_items.setdefault(lvl, {})[key] = chest['item']
+        if 'sign' in chest:
+            client.chest_signs.setdefault(lvl, {})[key] = chest['sign']
         if client.on_chest:
             client.on_chest(chest['x'], chest['y'], chest['opened'])
 
@@ -411,9 +413,17 @@ def handle_board_layer(client, data):
 
 @handles(PacketID.PLO_BOARDMODIFY)
 def handle_board_modify(client, data):
-    # Single-level tile delta (packet 7) - non-gmap board edit.
+    # Single-level tile delta (packet 7). It carries no level, and the server
+    # only relays it to players in (or beside) the sender's own level, so the
+    # target is the level WE are standing in - segment-aware, exactly like
+    # Client.modify_board's local patch. Reading _pending_level_name first
+    # broke this on a gmap: streaming an adjacent segment moves that field
+    # without moving the player, so another builder's edit landed on whichever
+    # neighbour preloaded last and the painted tile never appeared.
     info = parse_board_modify(data)
-    level_name = client._pending_level_name or client._current_level_name
+    level_name = (client.get_current_level_from_position()
+                  or client._pending_level_name
+                  or client._current_level_name)
     if level_name:
         client._apply_board_modify(level_name, info)
     if client.on_board_modify:

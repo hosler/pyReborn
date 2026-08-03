@@ -54,13 +54,10 @@ class TileType(IntEnum):
     THROW_THROUGH = 20     # Can throw items through but blocks walking
     JUMP_STONE = 21        # Jump tiles (block walking)
     BLOCKING = 22          # Solid walls and obstacles
-    # Liftable objects (a pyReborn client mechanic, not in the base type data).
-    # The standard tile data only knows these as blocking; object kinds are
-    # distinguished via the tile-corrections overlay so glove power can gate them.
-    BUSH = 23              # Bushes - bare-handed (glove power 0)
-    ROCK = 24              # Rocks - need a glove (power 1)
-    POT = 25               # Pots - bare-handed (glove power 0)
-    SIGN = 26              # Standalone post signs - bare-handed
+    # There are no liftable-object types. A bush, a pot or a sign is a 2x2
+    # TILE-ID PATTERN in the reference client, not a type - see
+    # pyreborn/liftobjects.py. Ids 23-26 used to hold invented BUSH/ROCK/POT/
+    # SIGN types, which only ever existed in a hand-tagged per-install overlay.
 
 
 _DAT_PATH = os.path.join(os.path.dirname(__file__), "tiletypes1.dat")

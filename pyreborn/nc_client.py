@@ -76,6 +76,7 @@ class NCClient(Client):
     def __init__(self, host: str = "localhost", port: int = 14900,
                  version: str = "6.037"):
         super().__init__(host, port, version)
+        self.persist_downloads = False
 
         # NC uses PLTYPE_NC + ENCRYPT_GEN_2 framing.
         self._protocol.client_type_override = ClientType.TYPE_NC

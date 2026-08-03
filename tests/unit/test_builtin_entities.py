@@ -2,9 +2,12 @@ import os
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
+from types import SimpleNamespace
+
 import pygame
 
 from pyreborn.game.render_effects import EffectsRenderMixin
+from pyreborn.liftobjects import BUSH_OBJECTS, BUSH_REPLACE
 from pyreborn.tiletypes import TileType
 
 
@@ -34,24 +37,29 @@ class _Harness(EffectsRenderMixin):
         self.explosion_duration = 0.5
         self.world_surface = object()
         self.board = {}
-        self.client = type('Client', (), {
-            'player': type('Player', (), {'x': 4.0, 'y': 5.0})(),
-        })()
+        self.sent = {}                # tiles the blast pushed over the wire
+        self.client = SimpleNamespace(
+            player=SimpleNamespace(x=4.0, y=5.0),
+            get_current_level_from_position=lambda: "test.nw",
+            modify_board=self._modify_board,
+        )
 
     def _get_tile_at(self, x, y):
         return self.board.get((int(x), int(y)), 0)
 
-    def _get_corrected_tile_type(self, tile_id):
-        return TileType.BUSH if tile_id == 23 else 0
+    def _tile_type(self, tile_id):
+        return 0
 
     def _is_tile_blocking(self, tile_id):
         return tile_id == 99
 
-    def _find_2x2_object_origin(self, x, y):
-        return int(x), int(y)
+    def _level_tiles_at(self, x, y):
+        return "test.nw", []        # non-empty level name; sends go to the wire
 
-    def _remove_2x2_tiles(self, ox, oy, tile_type):
-        self.board[(ox, oy)] = 0
+    def _modify_board(self, x, y, w, h, tiles):
+        self.sent[(x, y)] = tiles[0]
+        self.board[(x, y)] = tiles[0]
+        return True
 
     def _spawn_hit_break_effect(self, x, y):
         self.break_effects.append((x, y))
@@ -112,11 +120,26 @@ def test_arrow_stops_at_wall_then_spark_expires(monkeypatch):
     assert h.active_projectiles == []
 
 
+def _plant_bush(harness, ox, oy):
+    """Lay BUSH_OBJECTS row 0 as its 2x2 pattern (column-major table)."""
+    tl, bl, tr, br = BUSH_OBJECTS[0]
+    harness.board[(ox, oy)] = tl
+    harness.board[(ox, oy + 1)] = bl
+    harness.board[(ox + 1, oy)] = tr
+    harness.board[(ox + 1, oy + 1)] = br
+
+
 def test_blast_breaks_bushes_inside_radius_only():
+    """A bush is a whole 2x2 pattern, so a lone matching tile does not pop."""
     h = _Harness()
-    h.board[(11, 10)] = 23
-    h.board[(15, 10)] = 23
+    _plant_bush(h, 11, 10)
+    _plant_bush(h, 15, 10)
+    h.board[(9, 10)] = BUSH_OBJECTS[0][0]      # one tile of a bush: not a bush
+
     broken = h._break_bushes_in_blast(10.0, 10.0, power=1)
+
     assert (11, 10) in broken
-    assert h.board[(11, 10)] == 0
-    assert h.board[(15, 10)] == 23
+    assert (15, 10) not in broken, "outside the blast radius"
+    assert (9, 10) not in broken
+    tl, bl, tr, br = BUSH_REPLACE[0]
+    assert h.sent[(11, 10)] == tl and h.sent[(12, 11)] == br

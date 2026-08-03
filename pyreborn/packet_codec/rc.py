@@ -269,12 +269,11 @@ def parse_rc_player_ban(data: bytes) -> dict:
 
 def parse_rc_filebrowser_dirlist(data: bytes) -> dict:
     """
-    Parse PLO_RC_FILEBROWSER_DIRLIST (packet 65) - Directory listing.
-    Format: tokenized list of folder names
+    Parse PLO_RC_FILEBROWSER_DIRLIST (packet 65) - browseable folder rights.
+    Format: quoted CSV of folder-rights entries
     """
     text = data.decode('latin-1', errors='replace')
-    folders = [f.strip() for f in text.split('\n') if f.strip()]
-    return {'folders': folders}
+    return {'folders': _parse_reborn_csv(text)}
 
 
 def parse_rc_filebrowser_dir(data: bytes) -> dict:
@@ -287,19 +286,18 @@ def parse_rc_filebrowser_dir(data: bytes) -> dict:
 
     reader = PacketReader(data)
     folder = reader.read_gstring()
-    files_data = reader.remaining().decode('latin-1', errors='replace')
-
-    # Parse file list (tokenized: filename, size, modtime per entry)
     files = []
-    lines = files_data.split('\n')
-    for line in lines:
-        parts = line.split(',')
-        if len(parts) >= 3:
-            files.append({
-                'name': parts[0],
-                'size': int(parts[1]) if parts[1].isdigit() else 0,
-                'modified': int(parts[2]) if parts[2].isdigit() else 0
-            })
+    while reader.has_data():
+        if reader.read_gchar() != ord(' ') - 32 or not reader.has_data():
+            break
+        block_len = reader.read_gchar()
+        block = PacketReader(reader.read_string(block_len).encode('latin-1'))
+        files.append({
+            'name': block.read_gstring(),
+            'rights': block.read_gstring(),
+            'size': block.read_gint5(),
+            'modified': block.read_gint5(),
+        })
 
     return {
         'folder': folder,

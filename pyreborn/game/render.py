@@ -13,7 +13,8 @@ from reborn_protocol.coords import (
 )
 
 from .camera import Camera2D
-from ..tiletypes import TileType
+from ..liftobjects import match_lift_object
+from ..tiletypes import TileType, active_tilestype
 from .constants import (
     TILE_SIZE,
     PLAYER_STAND_X, PLAYER_STAND_Y,
@@ -616,14 +617,8 @@ class RenderMixin(FrameContextMixin):
         chair_color = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
         chair_color.fill((255, 200, 0, 120))  # Yellow/orange for chairs
 
-        bush_color = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-        bush_color.fill((0, 180, 0, 120))  # Dark green for bushes
-
-        pot_color = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-        pot_color.fill((180, 100, 50, 120))  # Brown for pots
-
-        rock_color = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-        rock_color.fill((128, 128, 128, 120))  # Gray for rocks
+        liftable_color = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        liftable_color.fill((0, 180, 0, 120))  # Green for liftable objects
 
         # Draw overlay for each visible tile
         for ty in range(start_tile_y, end_tile_y):
@@ -633,7 +628,7 @@ class RenderMixin(FrameContextMixin):
                 if tile_id == 0:
                     continue
 
-                tile_type = self._get_corrected_tile_type(tile_id)
+                tile_type = self._tile_type(tile_id)
 
                 # Calculate screen position
                 screen_x, screen_y = self.camera.world_to_screen(tx, ty)
@@ -651,12 +646,9 @@ class RenderMixin(FrameContextMixin):
                     self.screen.blit(water_color, (screen_x, screen_y))
                 elif tile_type == TileType.CHAIR:
                     self.screen.blit(chair_color, (screen_x, screen_y))
-                elif tile_type == TileType.BUSH:
-                    self.screen.blit(bush_color, (screen_x, screen_y))
-                elif tile_type == TileType.POT:
-                    self.screen.blit(pot_color, (screen_x, screen_y))
-                elif tile_type == TileType.ROCK:
-                    self.screen.blit(rock_color, (screen_x, screen_y))
+                elif match_lift_object(self._get_tile_at, tx, ty,
+                                       self.client.player.glove_power):
+                    self.screen.blit(liftable_color, (screen_x, screen_y))
                 else:
                     self.screen.blit(walkable_color, (screen_x, screen_y))
     def _render_ui(self):
@@ -690,19 +682,8 @@ class RenderMixin(FrameContextMixin):
             self._draw_text_with_bg(line, 10, ui_y, (140, 220, 140))
             ui_y += 20
 
-        type_names = {
-            TileType.NONBLOCK: "Walkable",
-            TileType.BLOCKING: "Blocking",
-            TileType.WATER: "Water",
-            TileType.NEAR_WATER: "Shallow",
-            TileType.CHAIR: "Chair",
-            TileType.BUSH: "Bush",
-            TileType.POT: "Pot",
-            TileType.ROCK: "Rock",
-        }
-        selected_name = type_names.get(self.debug_selected_type, "?")
-        debug_text = (f"TILE EDIT - Selected: {selected_name} - "
-                      f"Corrections: {len(self.tile_corrections)}")
+        debug_text = (f"DEBUG - tilestype {active_tilestype()} - "
+                      f"F11 level edit, F12 dev tools")
         # Anchor to the live window width, not the SCREEN_WIDTH constant -
         # this drew centred/right-aligned for a 640px window regardless of the
         # window's real (WM-imposed) size, so on anything wider the text sat
@@ -716,10 +697,19 @@ class RenderMixin(FrameContextMixin):
 
         # Tile info under the cursor (mapped to virtual-canvas space)
         mouse_x, mouse_y = self.viewport.mouse_pos()
-        tile_info = self._get_tile_info_at_screen_pos(mouse_x, mouse_y)
-        if tile_info:
-            tile_id, tile_type, tx, ty = tile_info
-            type_name = type_names.get(tile_type, f"Type {tile_type}")
+        world_x, world_y = self.camera.screen_to_world(mouse_x, mouse_y)
+        tx, ty = self._world_to_level_local(world_x, world_y)
+        tile_id = self._get_tile_at(world_x, world_y)
+        if tile_id != 0:
+            tile_type = self._tile_type(tile_id)
+            try:
+                type_name = TileType(tile_type).name.replace("_", " ").title()
+            except ValueError:
+                type_name = f"Type {tile_type}"
+            if tile_type == TileType.NONBLOCK:
+                type_name = "Walkable"
+            elif tile_type == TileType.NEAR_WATER:
+                type_name = "Shallow"
             info_text = f"Tile {tile_id} ({tx},{ty}): {type_name}"
             self._draw_text_with_bg(info_text, mouse_x + 15, mouse_y + 15,
                                     (255, 255, 255))

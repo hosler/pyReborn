@@ -69,7 +69,6 @@ def _gmap_client():
 class _Harness(CollisionMixin, LevelObjectsRenderMixin):
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {}
 
 
 # =============================================================================

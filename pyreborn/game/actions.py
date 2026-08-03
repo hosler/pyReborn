@@ -13,6 +13,7 @@ from pygame.locals import (
 from reborn_protocol.coords import level_index, segment_at, world_to_local
 
 from ..gani import direction_from_delta
+from ..liftobjects import match_lift_object
 from ..tiletypes import TileType
 from .constants import (
     MOVE_STEP, PUSH_HOLD_TIME,
@@ -368,7 +369,9 @@ class ActionsMixin:
         # gani over top of it.
         points = self._touch_points(direction)
         interactable = (
-            any(self._is_tile_liftable(self._get_tile_at(tx, ty)) for tx, ty in points)
+            any(match_lift_object(self._get_tile_at, math.floor(tx),
+                                  math.floor(ty), player.glove_power) is not None
+                for tx, ty in points)
             or self._find_chest_in_front() is not None
             or self._get_non_edge_door() is not None
             or self._check_sign_nearby() is not None
@@ -542,44 +545,31 @@ class ActionsMixin:
             self._pickup_ground_item(px, py)
 
     def _lift_in_front(self, direction: int) -> bool:
-        """Lift the 2x2 liftable at the touch points for the
-        given facing, if any and glove power allows. Returns True if lifted."""
+        """Lift the 2x2 object at the touch points for the given facing.
+
+        The object is one of the reference client's five tile-id patterns
+        (pyreborn/liftobjects.py). Glove power selects how far down that table
+        the search may go - it is not a per-object requirement - so there is
+        no "you need a glove for this" message to print: a row out of reach
+        simply never matches, exactly as `TPlayer::liftObjects` behaves.
+        """
         player = self.client.player
 
-        # Probe the per-direction touch points and take the first liftable tile.
-        points = self._touch_points(direction)
-        target = next(((tx, ty) for tx, ty in points
-                       if self._is_tile_liftable(self._get_tile_at(tx, ty))), None)
-        if target is None:
+        for tx, ty in self._touch_points(direction):
+            match = match_lift_object(self._get_tile_at, math.floor(tx),
+                                      math.floor(ty), player.glove_power)
+            if match is None:
+                continue
+
+            self._replace_lifted_tiles(match)
+            # The renderer draws the carried tiles row-major (TL, TR, BL, BR);
+            # the reference table is column-major.
+            tl, bl, tr, br = match.tiles
+            player.pickup_object(match.name, (tl, tr, bl, br),
+                                 (match.origin_x, match.origin_y))
+            break
+        else:
             return False
-
-        target_x, target_y = target
-        tile_id = self._get_tile_at(target_x, target_y)
-        tile_type = self._get_corrected_tile_type(tile_id)
-        required_power = self._get_tile_lift_power(tile_id)
-        object_name = self._get_liftable_name(tile_id)
-
-        if player.glove_power < required_power:
-            print(f"Need glove power {required_power} to lift {object_name} "
-                  f"(have {player.glove_power})")
-            return False
-
-        # Find the 2x2 object origin (top-left corner)
-        obj_origin = self._find_2x2_object_origin(target_x, target_y)
-        if not obj_origin:
-            return False
-
-        ox, oy = obj_origin
-        # tile_type/tile_id let _get_2x2_tiles and _remove_2x2_tiles tell a real
-        # quadrant of the object from a neighbor that only happens to sit in the
-        # 2x2 box (the corrections overlay may only cover some of an object's 4
-        # tiles, so the single-tile fallback origin above can pull in plain
-        # grass/other decor on the other 3).
-        tile_ids = self._get_2x2_tiles(ox, oy, tile_type, tile_id)
-
-        # Remove the object's tiles (replaced with grass) and hoist it overhead.
-        self._remove_2x2_tiles(ox, oy, tile_type)
-        player.pickup_object(object_name, tile_ids, (ox, oy))
 
         # Play lift animation then switch to carry
         self.player_anim.set_animation("lift", direction, force=True)
@@ -589,87 +579,28 @@ class ActionsMixin:
         # Invalidate world surface to show removed tiles
         self.world_surface = None
         return True
-    def _find_2x2_object_origin(self, x: float, y: float) -> Optional[Tuple[int, int]]:
-        """Find the top-left corner of a 2x2 liftable object.
+    def _replace_lifted_tiles(self, match) -> None:
+        """Put the object's replacement tiles on the board, and on the wire.
 
-        Checks if the clicked tile is part of a 2x2 group of the same type.
-        Returns (origin_x, origin_y) or None if not found.
+        Each row has its OWN ground (liftobjreplace), so this is not a blanket
+        "fill with grass": the stump left by a bush is not the tile under a
+        pot. The reference lifts through modifyBoard with its send flag set
+        (TPlayer.cpp:1974), so other players see the object go. A gmap object
+        that straddles a seam cannot be sent - PLI_BOARDMODIFY only ever
+        addresses the sender's own segment - so those tiles are patched
+        locally and the rest of the object still goes out.
         """
-        # floor, not int(): the same truncation-vs-floor split collision.py's
-        # _world_to_level_local documents. Equivalent for every reachable
-        # probe (a negative world coord only arrives here from an off-board
-        # touch point, whose tile is -1 and so never liftable), but the two
-        # spellings must not disagree on the frame this returns origins in.
-        tx, ty = math.floor(x), math.floor(y)
-        tile_id = self._get_tile_at(tx, ty)
-        if not self._is_tile_liftable(tile_id):
-            return None
-
-        tile_type = self._get_corrected_tile_type(tile_id)
-
-        # Check all 4 possible positions this tile could be in a 2x2 grid
-        # and find which arrangement has all matching tiles
-        possible_origins = [
-            (tx, ty),      # This is top-left
-            (tx - 1, ty),  # This is top-right
-            (tx, ty - 1),  # This is bottom-left
-            (tx - 1, ty - 1),  # This is bottom-right
-        ]
-
-        for ox, oy in possible_origins:
-            # Check if all 4 tiles in this 2x2 are the same type
-            all_match = True
-            for dy in range(2):
-                for dx in range(2):
-                    check_tile = self._get_tile_at(ox + dx, oy + dy)
-                    check_type = self._get_corrected_tile_type(check_tile)
-                    if check_type != tile_type:
-                        all_match = False
-                        break
-                if not all_match:
-                    break
-
-            if all_match:
-                return (ox, oy)
-
-        # Fallback: just use this tile as origin (for single-tile objects)
-        return (tx, ty)
-    def _get_2x2_tiles(self, ox: int, oy: int, tile_type: int, anchor_tile_id: int) -> Tuple[int, int, int, int]:
-        """Get the 4 tile IDs of a 2x2 object starting at origin.
-
-        Only quadrants whose corrected type matches the lifted object's type
-        are real pieces of it (the corrections overlay may only cover some of
-        an object's 4 tiles). A mismatched quadrant reports anchor_tile_id
-        (the tile that was actually lifted) instead of its own unrelated tile
-        — the carried-object renderer (render_entities.py _render_carried_object)
-        indexes tile_ids directly into a tileset lookup with no None/0 handling,
-        so a real tile id is required; anchor_tile_id renders fine there and
-        _remove_2x2_tiles below leaves that quadrant's actual tile in place.
-        """
-        tiles = []
-        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            t = self._get_tile_at(ox + dx, oy + dy)
-            tiles.append(t if self._get_corrected_tile_type(t) == tile_type else anchor_tile_id)
-        return tuple(tiles)
-    def _remove_2x2_tiles(self, ox: int, oy: int, tile_type: int):
-        """Remove the 2x2 object's tiles from the level, replacing with grass.
-
-        Skips any quadrant whose corrected type doesn't match tile_type — that
-        position isn't part of the object (see _get_2x2_tiles), so its tile
-        stays on the ground untouched."""
-        # Per-tile segment lookup so an object straddling a GMAP boundary (or
-        # lifted from the adjacent segment) edits the right level's tiles.
-        positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        for dx, dy in positions:
-            wx, wy = ox + dx, oy + dy
-            check_tile = self._get_tile_at(wx, wy)
-            if self._get_corrected_tile_type(check_tile) != tile_type:
-                continue
+        standing = self.client.get_current_level_from_position()
+        for wx, wy, _current, replacement in match.quadrants():
             level_name, tiles = self._level_tiles_at(wx, wy)
-            if not level_name or not tiles:
+            if not level_name:
                 continue
             lx, ly = world_to_local(wx, wy)
-            tiles[level_index(lx, ly)] = self.grass_tile_id
+            if level_name == standing:
+                self.client.modify_board(lx, ly, 1, 1, [replacement])
+            elif tiles:
+                tiles[level_index(lx, ly)] = replacement
+
     def _throw_object(self):
         """Throw the carried object: it flies ahead in an arc and breaks on
         landing (or on the first wall it hits), classic style. It does NOT

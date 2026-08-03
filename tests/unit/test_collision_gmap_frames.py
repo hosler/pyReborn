@@ -41,7 +41,6 @@ class _GameHarness(ActionsMixin, CollisionMixin):
 
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {}
 
 
 def _fake_connected_client():

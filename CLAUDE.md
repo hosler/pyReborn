@@ -30,6 +30,7 @@ pyreborn/
 ├── player.py             # Player dataclass
 ├── listserver.py         # Listserver authentication
 ├── rc_client.py          # Remote Control client
+├── rc_link.py            # RCClient on a worker thread, for the F10 RC tools
 ├── nc_client.py          # NPC Control client
 ├── npc_handler.py        # NPC state tracking
 ├── gani.py               # GANI animation parser
@@ -58,6 +59,7 @@ pyreborn/
 │   ├── host_*.py         # One mixin per builtin table
 │   └── runtime.py        # ClientGS2
 ├── tiletypes.py          # Tile collision data
+├── liftobjects.py        # Liftable/cuttable 2x2 tile patterns
 ├── sprites.py            # Sprite/tileset managers
 ├── sounds.py             # Sound manager
 ├── inventory_ui.py       # Inventory UI overlay
@@ -66,7 +68,6 @@ pyreborn/
 ├── pygame_game.py        # GameClient - composes game/ mixins
 ├── pygame_screens.py     # Login/ServerSelect/browser screens
 ├── assets/
-│   └── tile_corrections.json
 └── game/                 # GameClient mixins (rendering, input, world logic)
     ├── actions.py        # Player actions (grab/sword/attack/etc.)
     ├── assets.py         # Asset loading
@@ -80,6 +81,7 @@ pyreborn/
     ├── hud.py            # HUD rendering
     ├── input.py          # Keyboard/input handling
     ├── minimap.py        # GMAP minimap
+    ├── rc_ui.py          # F10 RC tools overlay (staff admin panel)
     ├── render.py         # Core render loop
     ├── render_collect.py # Entity collection, sorting, and interpolation
     ├── render_effects.py # Particle/effect rendering
@@ -92,7 +94,6 @@ pyreborn/
     ├── render_world.py   # Tile/level rendering
     ├── setup.py          # GameClient init/setup
     ├── theme.py          # UI palette + emblem/panel helpers (reskin here)
-    ├── tile_editor.py    # In-client tile editor
     ├── ui.py             # Menus/dialogs
     └── viewport.py       # Viewport sizing/scaling
 
@@ -133,7 +134,220 @@ python -m pyreborn.example_pygame <username> <password> localhost 14900
 python -m game_tester --host localhost --port 14900
 ```
 
-**Controls:** Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory, Enter=Chat, F1=Debug, F2=Warp
+**Controls:** Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory,
+Enter=Chat, F1=Debug, F2=Warp, F10=RC tools, F11=Level edit, F12=Dev playground
+
+---
+
+## In-game RC tools (F10)
+
+A staff account gets the admin surface inside the game client. F10 opens a
+five-tab panel: Chat (RC chat + broadcast), Players (props, kick, warp-to-me,
+ban/unban, comments, rights), Accounts (list, details, create, delete, ban),
+Server (flags, options, folder config, reload levels) and Files (the RC file
+browser: browse, download, upload, rename, move, delete).
+
+**RC is a SECOND connection, not a mode of the game one.** The reference
+server hands RC logins to its own player class (GServer-v2 `PlayerRC`). A
+game-client connection never handles RC packets. It bubbles them to the base
+handler, which drops them. So `rc_link.RCLink` logs in again as client type
+RC2, on a worker thread. The panel talks to it through a command queue and an
+immutable `snapshot`, so no RC work touches the frame loop's socket.
+
+Know these consequences before you change any of it:
+
+- The first F10 press opens that connection. Before then no second login
+  exists, so a player without rights never makes one. `GameClient(client,
+  password=...)` carries the credentials (`example_pygame.py` passes them).
+- **Authenticating is not proof of RC access.** A server that ignores the
+  client type logs the account in as an ordinary player, then silently drops
+  every RC packet. `RCLink` therefore waits for a packet only an RC is ever
+  sent (`_EVIDENCE_IDS`: the login chat lines, the upload ceiling, or a
+  probe's answer) before it reports `ready`. Without one it says "no RC
+  access".
+- An RC connection must NOT enter the world. pygserver skips the start-level
+  warp for it, exactly as `PlayerRC::sendLogin` does. A staff player holding
+  both connections would otherwise spawn a visible duplicate of themselves.
+- Every destructive action confirms first (Y/N). A single-flag edit sends the
+  whole flag set back, because `PLI_RC_SERVERFLAGSSET` replaces all of them
+  server-side.
+- RC downloads land in `~/.local/share/pyreborn/rc_downloads/{host}_{port}/`
+  (`$PYREBORN_RC_DOWNLOAD_DIR`), deliberately NOT the asset download cache.
+  That cache is keyed by normalized basename and revalidated every login, so
+  an arbitrary admin download written into it would poison it.
+
+## The dev playground: level editor (F11) and script tools (F12)
+
+Staff get a live world-building environment on top of the RC session.
+
+**F11 — level edit mode.** Not modal. The world stays live and the player
+keeps walking while the grid is up. Tools are `1` paint, `2` rectangle, `3`
+pick, `4` select and `5` object. `P` opens the tileset palette, `G` the grid,
+`[`/`]` size the brush, and right-click always picks. Ctrl+Z/Y undo and redo,
+Ctrl+C/V copy and paste a selection, Ctrl+S saves the level, Ctrl+R reloads
+it. `game/editor/state.py` holds the pure rules (brush geometry, undo,
+selection) and needs no display to test. `game/editor/editor.py` owns the
+wire.
+
+**F12 — dev playground.** Tabs for NPCs, weapons, classes, a script console
+and the level list. It owns the NC (NPC Control) connection through
+`nc_link.NCLink`, a THIRD login next to the game and RC ones, on the same
+worker-thread contract as `RCLink`. Scripts open in `game/text_editor.py` and
+reach the server only on an explicit Ctrl+S.
+
+**On a gmap, only the segment you stand in is editable.**
+`PLI_BOARDMODIFY` carries no level name. The server resolves the tiles against
+the SENDER's own sub-level origin (GServer-v2 PlayerClientPackets.cpp:122).
+Painting the segment next door paints the same local square of your own
+segment instead. That is a mirrored edit to a level you never looked at.
+`LevelEditor._reject_other_segment` refuses those clicks and names the segment
+to walk into. The inbound delta follows the same rule.
+`handle_board_modify` applies it to the level the receiver stands in, not to
+`_pending_level_name`. An adjacent-segment preload moves that field without
+moving the player.
+
+**F10 and F12 stop movement. F11 does not, on purpose.** The panels are modal
+for events, but `_handle_input` polls `key.get_pressed()` every frame. The
+arrow keys that scroll a row also walked the player around under the open
+panel. `InputMixin._admin_overlay_captures_keys` gates the held-key path. Edit
+mode stays walkable, because that is how a builder reaches the tile to paint.
+
+Panel key hints are (key, label) pairs that `theme.draw_key_hints` renders as
+key caps. They are not a "K kick · B ban" string. A run of dim same-size text
+reads as noise, and no split rule fits every hint ("Ctrl+S save",
+"F10/Esc close" and prose all start differently). Use only glyphs pygame's
+default font has. "↑↓" draws as tofu boxes, so the hints say "Up/Dn".
+
+### What works against a non-pygserver server
+
+Verified live against GServer-v2 (the `xtjoeytx/gserver-v2:latest` image, driven
+through `game_tester/fake_listserver.py` — GServer defers EVERY login, including
+RC and NC, to a list server, so testing it offline needs one):
+
+| Feature | GServer-v2 | Why |
+|---|---|---|
+| game login, RC login, NC login | works | RC needs `isStaff()` AND an account `IPRANGE` the connecting IP matches; NC needs the same |
+| RC panel reads: options, accounts, player props, rights, comments, bans | works | reference packet shapes |
+| RC file browser: rights, cd, listing, download | works | needs `FOLDERRIGHT` lines on the account |
+| tile painting + undo | works | `PLI_BOARDMODIFY` is gameplay |
+| NC weapon list, weapon scripts, level list, NPC scripts | works | `PlayerNC.cpp` handles the whole set |
+| `/updatelevel <level>` | works | GServer's own RC command (Server.cpp:2370) |
+| level export (serialize + file-browser upload) | works | the upload is ordinary protocol. See "What the export used to lose" below |
+| `/savelevel`, `/eval`, `/sign`, `/chest`, `/link` | pygserver only | invented here; GServer ignores unknown RC commands |
+
+Two facts the reference server taught us, both now handled in the client:
+
+- Its file browser answers `FILEBROWSER_START` with the account's folder
+  RIGHTS and no listing. It then accepts a `CD` only for a name that matches
+  one of them, trailing slash included (`world/`, not `world`). The Files tab
+  therefore lists those rights as its rows until a directory is open.
+  `folder_targets()` derives them.
+- The `localhost = true` option skips list-server verification. Only a build
+  newer than the published image has it.
+
+#### Running the QA suites against GServer-v2
+
+The whole suite passes against the reference server, but four environment facts
+have to hold first. Each one fails as a plausible-looking client bug:
+
+```bash
+/usr/bin/python3.13 -m game_tester.fake_listserver      # 127.0.0.1:14922
+docker restart opengraal2-reborn-server-1               # it links on startup
+GSERVER_ACCOUNTS_DIR=<world>/accounts /usr/bin/python3.13 -m game_tester
+```
+
+- The container writes its account files as **root**, so the QA fixture cannot
+  rewrite them and `reset_account_position` reports nothing. render_smoke's
+  `[ENV WARNING]` block names the checks that then fail. Take ownership of the
+  `testbot*.txt` files once, and GServer keeps writing them in place.
+- The fixture must also **restock ammo**. GServer persists the count after a
+  shot, so the run that fires leaves `ARROWS 0` and the next run sees no
+  `PLO_ARROWADD` at all.
+- `level_parsing` needs the `qa_testlevel.nw` fixture in the served world
+  directory. It ships in `GServer-v2/bin/servers/default/world/`.
+- GServer indexes its file system at **startup**. A level file copied in while
+  it runs stays invisible until a restart.
+
+Which transport carries which edit, and why it matters:
+
+| Edit | Transport | Live for others? |
+|---|---|---|
+| tiles | `PLI_BOARDMODIFY` | immediately |
+| NPC add/move/delete/script | NC | immediately |
+| signs, chests, links | RC chat commands (`/sign`, `/chest`, `/link`) | after the server resends the level |
+| the level file | `/savelevel` over RC | on `/reloadlevel` |
+
+Board editing is deliberately NOT staff-gated. `PLI_BOARDMODIFY` is ordinary
+gameplay (cutting bushes, lifting pots, GS1 `updateboard`), so a rights check
+there would break the game for everyone. Only the SAVE is gated, on
+`PLPERM.UPDATELEVEL`.
+
+**The client never writes a level file.** `/savelevel` asks the SERVER to
+serialize the level it holds, because that copy is the only one that knows
+every NPC's script. A client that serialized its own view would drop the
+scripts it never fetched and overwrite a working level with the loss.
+
+Three wire bugs this work uncovered, all of which had been invisible because
+nothing ever read the state back:
+
+- pygserver decoded board-modify tile ids as raw little-endian bytes instead
+  of GSHORT (the encoding `Level::alterBoard` reads, Level.cpp:1494). It
+  relayed the sender's bytes verbatim, so the QA relay test passed while the
+  server's own board filled with garbage ids — tile 314 stored as 23074. It
+  surfaced only when a save refused to write an id above 4095.
+- `Client.modify_board` patched the level named by `_pending_level_name`,
+  which is stream-routing state: preloading an adjacent gmap segment moves it
+  without moving the player. The edit went to the server correctly and then
+  patched the wrong cached board, so the painter's own view never changed.
+- NC logins could not work at all. pygserver's login parser always consumed an
+  encryption-key byte, but gen-2 client types (RC and NC) never send one, so
+  every NC login desynced by one byte and was refused as an unknown protocol.
+
+### What the export used to lose
+
+The export was first tested end to end against GServer-v2 on 2026-08-02. It
+uploaded a level, the server wrote the file, and the server read it back. The
+proof is a diff of the exported file against the reference server's own copy of
+the same level. That diff found three losses. All three were silent, and all
+three destroyed content the client already held:
+
+- **Every baddy vanished.** `serialize_level` wrote no `BADDY` block at all.
+  Position, type and all three verses ride `PLO_BADDYPROPS` (`BADDY_PROPS`
+  8-10), so the client always had them. The writer now emits the reference
+  server's own format (Level.cpp:900-908): `BADDY x y type`, then exactly
+  three verse lines, then `BADDYEND`. An unset verse must still write an EMPTY
+  line, because the reader counts lines (LevelLoader.cpp:804). The type goes
+  out as the numeric id, which is what the reference writer emits and what its
+  reader takes beside a name (LevelBaddy.cpp:44-62).
+- **Every chest lost its sign index.** `_chest_records` hard-coded -1. The
+  index is the last byte of `PLO_LEVELCHEST` for an unopened chest
+  (Level.cpp:153), and the parser already decoded it, but the handler threw it
+  away. `client.chest_signs` now keeps it. -1 stays the fallback for a chest
+  this session only ever saw already open, because the 3-byte form carries no
+  index.
+- **Every sign grew a blank line per round trip.** A sign arrives with a
+  trailing newline, and `SIGNEND` goes on the line below it. Writing that
+  newline put a blank line INSIDE the block, which reads back as part of the
+  sign. `_block_text` strips it now.
+
+A level with a baddy is the common case, so the first one turned any export
+into content destruction. Nothing caught it, because no test ever read an
+exported level back.
+
+`tests/unit/test_level_editor.py` and `tests/unit/test_dev_playground.py`
+cover the editing rules offline. `game_tester/render_smoke.py`'s `tier5a`/
+`tier5b` checks draw every tool and paint a tile through a live server, which
+is the only place the overlay's rects and the wire round trip are exercised
+together.
+
+`tests/unit/test_rc_tools.py` pins the panel's gating and the link's threading
+contract offline. RC packet SHAPES are pinned by
+`tests/unit/test_rc_filebrowser_wire.py` here and
+`pygserver/tests/test_rc_reference_packets.py` on the server. Both build their
+fixtures from hand-written reference bytes, so the two sides cannot drift
+together again. They had: pygserver's flags, file-browser, player-props, ban
+and account responses all crashed or sent the wrong layout until 2026-08-01.
+Nothing noticed, because no client had ever asked for them.
 
 ---
 
@@ -526,6 +740,41 @@ self.screen.blit(sprite, (x, y))
 self.screen.blit(sprite, (x - w//2, y - h//2))  # NO!
 ```
 
+## Liftable objects are tile PATTERNS, not a tile type
+
+A bush, a sign, a pot and a stone are not tile types. The reference client
+carries a table of five 2x2 TILE-ID PATTERNS, the tiles that replace each one
+when it comes off the ground, and the sprite to draw over the player's head:
+`liftobj` / `liftobjreplace` / `liftsprites`, at
+`Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1510-1523`, driven by
+`TPlayer::liftObjects` (TPlayer.cpp:1926). `bushobj` / `bushobjreplace`
+(TInitStatics.cpp:1502) are the separate set a SWORD cuts, used by
+`TPlayer::slayBushes`. `pyreborn/liftobjects.py` transcribes all of it.
+
+Three rules fall out of the table, and this client used to break all three:
+
+- **Glove power is an index ceiling, not a per-object cost.** The loop is
+  `for (i = 0; i <= getGlovePower() + 1; ++i)`, so a bare hand reaches rows 0
+  and 1, and each glove adds one row. There is no "a rock costs power 1"
+  attribute anywhere. A row out of reach simply never matches, so there is
+  also no "you need a better glove" message to print.
+- **An object is all four tiles**, matched at whichever of the four alignments
+  puts the touched tile inside it. Three matching tiles are not an object.
+- **Lifting writes that row's own replacement tiles**, not the level's grass
+  tile. The stump under a bush is not the ground under a pot. The reference
+  sends the change (`modifyBoard(..., true)`), so other players see it.
+
+This replaced `assets/tile_corrections.json`, a hand-tagged overlay of invented
+tile types (BUSH/POT/ROCK/SIGN) that a person authored through an in-client
+editor. It was gitignored, so a fresh clone had NO liftable objects at all and
+grab silently did nothing. The five-row table needs no per-install data and
+finds every bush in a level on the first run.
+
+Tile types themselves still come from `tiletypes1.dat` / `tiletypesnw.dat`
+(see tiletypes.py), and nothing overrides them per client any more. Tests that
+need a blocking or water tile derive the id from the loaded table rather than
+inventing one.
+
 ## Draw layers and depth sort
 
 Every drawable object has a layer index. The layer decides the stage at which
@@ -791,6 +1040,14 @@ Three traps this replaced, all of which cost a real outage:
   recorded modtime, so the server declared it current every time. The client
   searches the download tier first, so that poisoned entry also shadowed a good
   user copy. The whole world stayed placeholder-colored across restarts.
+
+**A revalidated file still has to be ACTED ON, not just resolved.** A `.gmap`
+answered by `PLO_FILEUPTODATE` carries no bytes, so the two transfer branches
+never run. Only the first run against a gmap server built the world grid. Every
+later run left `gmap_width == 0`, requested no neighbouring segment, and
+trapped the player on one segment with nothing stitched to it. Every path that
+resolves a `.gmap` now goes through `handlers/files.adopt_gmap`, including the
+uptodate one. `test_uptodate_gmap_still_builds_the_world_grid` pins it.
 
 ## Running the tests
 

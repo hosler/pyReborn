@@ -40,7 +40,6 @@ class _Harness(ActionsMixin, CollisionMixin):
     def __init__(self, client):
         self.client = client
         self.gs1 = _Gs1Stub()
-        self.tile_corrections = {}
         self.warped = []
 
     def _try_link_warp(self):

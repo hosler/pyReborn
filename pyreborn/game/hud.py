@@ -293,6 +293,9 @@ class HUD:
         ("F7", "Player list / PM"),
         ("F8", "Server list"),
         ("F9", "Settings"),
+        ("F10", "RC tools (staff)"),
+        ("F11", "Level edit mode (staff)"),
+        ("F12", "Dev playground (staff)"),
         ("PageUp/Down", "Scroll chat log"),
         ("H", "Close this help"),
     ]
@@ -409,6 +412,22 @@ class HUD:
         settings_ui = getattr(self.game, 'settings_ui', None)
         if settings_ui is not None and settings_ui.visible:
             self._draw_settings(surf)
+        # Edit mode decorates the WORLD, so it goes under the panels: grid,
+        # object markers and toolbar first, then the palette it opens.
+        overlay = getattr(self.game, 'editor_overlay', None)
+        if overlay is not None:
+            overlay.draw(surf)
+            editor = self.game.level_editor
+            if editor.state.enabled and editor.state.palette_visible:
+                self.game.tile_palette.draw(surf, editor.state.tile)
+        dev_ui = getattr(self.game, 'dev_ui', None)
+        if dev_ui is not None:
+            dev_ui.draw(surf)
+        rc_ui = getattr(self.game, 'rc_ui', None)
+        if rc_ui is not None:
+            # Draws nothing while closed; it is last so RC tools sit over
+            # every other overlay, matching their input priority.
+            rc_ui.draw(surf)
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):

@@ -127,7 +127,6 @@ class _SitHarness(CollisionMixin, ActionsMixin):
     def __init__(self, client, gs1):
         self.client = client
         self.gs1 = gs1
-        self.tile_corrections = {}
         self.is_swimming = False
         self.is_moving = False
         self.animations = {}
@@ -152,7 +151,7 @@ def test_walking_onto_an_npc_chair_seats_the_player():
     # The live failure: the board says type 0 everywhere, only the NPC's
     # setshape2 array says chair.
     c, gs1, game = _sitting_harness([(20, 30)])
-    assert game._get_corrected_tile_type(game._get_tile_at(20.5, 30.5)) == 0
+    assert game._tile_type(game._get_tile_at(20.5, 30.5)) == 0
     c.player.x = 20.5 - game.PLAYER_GROUND_DX
     c.player.y = 30.5 - game.PLAYER_GROUND_DY
     game._update_sitting_state()

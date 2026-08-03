@@ -116,6 +116,7 @@ class RCClient(Client):
             version: Protocol version ("2.22" or "6.037")
         """
         super().__init__(host, port, version)
+        self.persist_downloads = False
 
         # Set client type to RC2 for modern protocol login (2.22+)
         # TYPE_RC (1) is for old protocol, TYPE_RC2 (6) is for 2.22+ with ENCRYPT_GEN_5
@@ -144,10 +145,15 @@ class RCClient(Client):
         # File browser state
         self.file_current_folder: str = ""
         self.file_list: List[dict] = []
+        self.file_folders: List[str] = []
+
+        # Upload ceiling the server announces during RC login (0 = unknown).
+        self.max_upload_size: int = 0
 
         # Cached server data (populated on request)
         self._server_flags: List[str] = []
         self._server_options: Dict[str, str] = {}
+        self._server_option_lines: List[str] = []
         self._account_list: List[str] = []
         self._folder_config: Dict[str, str] = {}
 
@@ -162,6 +168,8 @@ class RCClient(Client):
         self.on_rc_chat: Optional[Callable[[str], None]] = None
         self.on_admin_message: Optional[Callable[[str, str], None]] = None
         self.on_filebrowser_update: Optional[Callable[[str, List[dict]], None]] = None
+        self.on_filebrowser_folders: Optional[Callable[[List[str]], None]] = None
+        self.on_filebrowser_message: Optional[Callable[[str], None]] = None
 
         # Callbacks for RC response data
         self.on_player_props: Optional[Callable[[Dict], None]] = None
@@ -170,6 +178,20 @@ class RCClient(Client):
         self.on_player_comments: Optional[Callable[[Dict], None]] = None
         self.on_player_ban: Optional[Callable[[Dict], None]] = None
         self.on_folder_config: Optional[Callable[[Dict], None]] = None
+        self.on_server_options: Optional[Callable[[Dict], None]] = None
+        self.on_server_flags: Optional[Callable[[List[str]], None]] = None
+        self.on_account_list: Optional[Callable[[List[str]], None]] = None
+
+    @property
+    def is_rc(self) -> bool:
+        """True once the server has answered as an RC would.
+
+        Authenticating is NOT proof of RC access: a server that ignores the
+        client type logs the account straight in as an ordinary player and
+        silently drops every RC packet afterwards. Only an RC-only packet
+        (the login chat lines, or the upload ceiling) proves the session.
+        """
+        return self._is_rc_mode
 
     # =========================================================================
     # RC Chat
@@ -245,6 +267,29 @@ class RCClient(Client):
 
         data = build_rc_warp_player(player_id, x, y, level)
         return self._protocol.send_packet(PacketID.PLI_RC_WARPPLAYER, data)
+
+    def get_player_props(self, player_id: int) -> bool:
+        """Request an ONLINE player's properties by player id
+        (PLI_RC_PLAYERPROPSGET2). Response arrives via PLO_RC_PLAYERPROPSGET."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_player_props_get(player_id)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSGET2, data)
+
+    def set_player_props(self, player_id: int, world: str = '', props: bytes = b'',
+                         flags=(), chests=(), weapons=()) -> bool:
+        """Replace an ONLINE player's account state by player id
+        (PLI_RC_PLAYERPROPSSET).
+
+        DESTRUCTIVE: flags, chests and weapons are replaced wholesale, so read
+        the current state first and send it back with your edit applied.
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_playerprops_set(player_id, world, props, flags, chests, weapons)
+        return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSSET, data)
 
     def get_player_props_by_name(self, account: str) -> bool:
         """
@@ -477,6 +522,34 @@ class RCClient(Client):
         data = build_rc_update_levels()
         return self._protocol.send_packet(PacketID.PLI_RC_UPDATELEVELS, data)
 
+    def set_server_flags(self, flags: Dict[str, str]) -> bool:
+        """Replace ALL server flags (PLI_RC_SERVERFLAGSSET).
+
+        DESTRUCTIVE: the server clears every flag missing from `flags`, so
+        send back the full set you read with get_server_flags().
+        """
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_serverflags_set(flags)
+        return self._protocol.send_packet(PacketID.PLI_RC_SERVERFLAGSSET, data)
+
+    def set_server_options(self, options_text: str) -> bool:
+        """Replace the server options text wholesale (PLI_RC_SERVEROPTIONSSET)."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_serveroptions_set(options_text)
+        return self._protocol.send_packet(PacketID.PLI_RC_SERVEROPTIONSSET, data)
+
+    def set_folder_config(self, config_text: str) -> bool:
+        """Replace the folder-rights config wholesale (PLI_RC_FOLDERCONFIGSET)."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_folderconfig_set(config_text)
+        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERCONFIGSET, data)
+
     # =========================================================================
     # File Browser
     # =========================================================================
@@ -540,6 +613,41 @@ class RCClient(Client):
 
         data = build_rc_filebrowser_delete(filename)
         return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_DELETE, data)
+
+    def filebrowser_download(self, filename: str) -> bool:
+        """Request a file from the RC's current folder
+        (PLI_RC_FILEBROWSER_DOWN). The bytes arrive over the ordinary file
+        transfer path, so they land in `received_files` and fire `on_file`."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_filebrowser_download(filename)
+        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_DOWN, data)
+
+    def filebrowser_rename(self, old_name: str, new_name: str) -> bool:
+        """Rename a file in the RC's current folder (PLI_RC_FILEBROWSER_RENAME)."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_filebrowser_rename(old_name, new_name)
+        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_RENAME, data)
+
+    def filebrowser_move(self, destination_dir: str, filename: str) -> bool:
+        """Move a file out of the RC's current folder (PLI_RC_FILEBROWSER_MOVE)."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_filebrowser_move(destination_dir, filename)
+        return self._protocol.send_packet(PacketID.PLI_RC_FILEBROWSER_MOVE, data)
+
+    def folder_delete(self, folder: str) -> bool:
+        """Delete an empty folder, path relative to the server root
+        (PLI_RC_FOLDERDELETE)."""
+        if not self.connected or not self._authenticated:
+            return False
+
+        data = build_rc_folder_delete(folder)
+        return self._protocol.send_packet(PacketID.PLI_RC_FOLDERDELETE, data)
 
     # =========================================================================
     # Write-side admin operations (tier 6)
@@ -711,23 +819,36 @@ class RCClient(Client):
         if packet_id == PacketID.PLO_RC_SERVERFLAGSGET:
             info = parse_rc_server_flags(data)
             self._server_flags = info.get('flags', [])
+            if self.on_server_flags:
+                self.on_server_flags(self._server_flags)
             return
 
         # Server Options
         if packet_id == PacketID.PLO_RC_SERVEROPTIONSGET:
             info = parse_rc_server_options(data)
             self._server_options = info.get('options', {})
+            # Keep the raw lines as well: comments and blank lines carry no
+            # '=' and are dropped from the dict, so an editor that round-trips
+            # the dict would silently delete them from serveroptions.txt.
+            self._server_option_lines = info.get('lines', [])
+            if self.on_server_options:
+                self.on_server_options(info)
             return
 
         # Account List
         if packet_id == PacketID.PLO_RC_ACCOUNTLISTGET:
             info = parse_rc_account_list(data)
             self._account_list = info.get('accounts', [])
+            if self.on_account_list:
+                self.on_account_list(self._account_list)
             return
 
         # File Browser: Directory List
         if packet_id == PacketID.PLO_RC_FILEBROWSER_DIRLIST:
             info = parse_rc_filebrowser_dirlist(data)
+            self.file_folders = info.get('folders', [])
+            if self.on_filebrowser_folders:
+                self.on_filebrowser_folders(self.file_folders)
             return
 
         # File Browser: Directory Contents
@@ -739,8 +860,11 @@ class RCClient(Client):
                 self.on_filebrowser_update(self.file_current_folder, self.file_list)
             return
 
-        # File Browser: Message
+        # File Browser: Message (the server's answer to an upload/delete/
+        # rename - the only feedback those write ops ever get).
         if packet_id == PacketID.PLO_RC_FILEBROWSER_MESSAGE:
+            if self.on_filebrowser_message:
+                self.on_filebrowser_message(parse_rc_filebrowser_message(data))
             return
 
         # Player Properties (RC format)
@@ -791,8 +915,11 @@ class RCClient(Client):
                 self.on_folder_config(info)
             return
 
-        # Max upload file size (sent during RC login).
+        # Max upload file size (sent during RC login). Arriving at all proves
+        # the server accepted us as an RC, so it also flips _is_rc_mode.
         if packet_id == PacketID.PLO_RC_MAXUPLOADFILESIZE:
+            self.max_upload_size = parse_rc_max_upload_size(data)
+            self._is_rc_mode = True
             return
 
         # Playerlist entry (RC sees players join). Track id -> account so

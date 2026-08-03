@@ -34,7 +34,12 @@ from pyreborn import Client
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
 from pyreborn.game.constants import PUSH_HOLD_TIME
-from pyreborn.tiletypes import TileType
+from pyreborn.tiletypes import TileType, is_blocking
+
+
+# Derived from the loaded type table; the per-client tile-type override layer
+# that used to fabricate a blocking id is gone.
+WALL = next(t for t in range(4096) if is_blocking(t))
 
 
 class _NoopSound:
@@ -85,7 +90,6 @@ class _Harness(ActionsMixin, CollisionMixin):
 
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {1: TileType.BLOCKING}
         self.noclip = False
         self.is_swimming = False
         self.current_anim_name = "idle"
@@ -131,7 +135,7 @@ def _fake_connected_client():
 def _flat_wall_level(row: int = 20, span=(20, 45)) -> list:
     lvl = [0] * 4096
     for tx in range(*span):
-        lvl[row * 64 + tx] = 1
+        lvl[row * 64 + tx] = WALL
     return lvl
 
 

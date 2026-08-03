@@ -97,6 +97,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self.port = port
         self.version = version
         self.proxy_url = proxy_url
+        self.persist_downloads = True
 
         # Grouped state (see client_state.py). Every field on these components
         # is also reachable under its historical flat name on the client
@@ -518,6 +519,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'links': ('level_state', 'links'),
     'chests': ('level_state', 'chests'),
     'chest_items': ('level_state', 'chest_items'),
+    'chest_signs': ('level_state', 'chest_signs'),
     'signs': ('level_state', 'signs'),
     'sign_lists': ('level_state', 'sign_lists'),
     'board_layers': ('level_state', 'board_layers'),

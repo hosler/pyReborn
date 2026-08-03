@@ -2,7 +2,6 @@
 
 import os
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -32,7 +31,6 @@ class _InputHarness(InputMixin):
         self.camera = Camera2D(800, 600)
         self.camera.zoom = 1.75
         self.camera.set_center(80.25, 50.5)
-        self._save_tile_corrections = Mock()
 
 
 def test_debug_toggle_round_trips_camera_state():
@@ -47,7 +45,6 @@ def test_debug_toggle_round_trips_camera_state():
     game._handle_key_press(event)
     assert not game.debug_mode
     assert (game.camera.center, game.camera.zoom, game.camera.origin) == before
-    game._save_tile_corrections.assert_called_once_with()
 
 
 class _DebugRenderHarness(RenderMixin, WorldRenderMixin):
@@ -102,3 +99,42 @@ def test_debug_zoom_uses_composition_camera_and_culls_adjacent_segments():
     assert {entry[3] for entry in game.segments} == {
         real_camera.visible_tile_range()
     }
+
+
+class _DebugOverlayCamera:
+    def visible_tile_range(self):
+        return (0, 0, 1, 1)
+
+    def world_to_screen(self, x, y):
+        return (x * 16, y * 16)
+
+
+class _DebugOverlayHarness(RenderMixin):
+    def __init__(self):
+        self.screen = pygame.Surface((16, 16))
+        self.camera = _DebugOverlayCamera()
+        self.client = SimpleNamespace(player=SimpleNamespace(glove_power=0))
+        self.tile_type_calls = []
+
+    @property
+    def screen_w(self):
+        return self.screen.get_width()
+
+    @property
+    def screen_h(self):
+        return self.screen.get_height()
+
+    def _get_tile_at(self, x, y):
+        return 1
+
+    def _tile_type(self, tile_id):
+        self.tile_type_calls.append(tile_id)
+        return 22
+
+
+def test_debug_overlay_uses_collision_tile_type_helper():
+    game = _DebugOverlayHarness()
+
+    game._render_debug_overlay()
+
+    assert game.tile_type_calls

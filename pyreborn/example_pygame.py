@@ -309,8 +309,9 @@ def main():
 
         # Create and run game client
         print("\nStarting game client...")
-        print("Controls: Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory, F7=Players, F8=Servers")
-        game = GameClient(client)
+        print("Controls: Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory, "
+              "F7=Players, F8=Servers, F10=RC tools")
+        game = GameClient(client, password=password)
         game.servers = servers      # populate the in-game F8 server switcher
         switch = game.run()
 

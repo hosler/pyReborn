@@ -84,7 +84,6 @@ class _Harness(CollisionMixin, ActionsMixin):
         self.current_anim_name = "idle"
         self.is_moving = False
         self.noclip = False
-        self.tile_corrections = {}
         self.sound_mgr = _NoopSound()
         self.player_anim = _NoopAnim()
         self.npc_handler = _NoopNpcHandler()

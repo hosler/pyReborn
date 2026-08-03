@@ -136,6 +136,10 @@ class LevelState:
         # Items held by chests, keyed in the same per-level shape. Item names
         # are known only for unopened chests announced on level entry.
         self.chest_items: Dict[str, Dict[Tuple[int, int], str]] = {}
+        # The chest's sign index, same shape and same availability rule. The
+        # level editor's export writes it back out, so a level round trip
+        # must not lose it.
+        self.chest_signs: Dict[str, Dict[Tuple[int, int], int]] = {}
 
         # Level signs: maps (x, y) -> text
         self.signs: Dict[str, Dict[Tuple[float, float], str]] = {}  # level -> {(x,y): text}

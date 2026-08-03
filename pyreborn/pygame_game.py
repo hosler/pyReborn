@@ -31,7 +31,6 @@ from .game.hud import HUD
 from .game.combat_presentation import CombatPresentation
 from .game.setup import SetupMixin
 from .game.minimap import MinimapMixin
-from .game.tile_editor import TileEditorMixin
 from .game.collision import CollisionMixin
 from .game.input import InputMixin
 from .game.actions import ActionsMixin
@@ -45,7 +44,6 @@ from .game.render_objects import LevelObjectsRenderMixin
 class GameClient(
     SetupMixin,
     MinimapMixin,
-    TileEditorMixin,
     CollisionMixin,
     InputMixin,
     ActionsMixin,
@@ -87,9 +85,13 @@ class GameClient(
         except ValueError:
             return -1
 
-    def __init__(self, client: Client):
+    def __init__(self, client: Client, password: Optional[str] = None):
         self.client = client
         self.running = True
+        # Kept for the F10 RC tools only: RC is a separate connection and has
+        # to log in again (see rc_link.py). Without it the overlay says so
+        # instead of silently having no RC.
+        self.rc_password = password
 
         # Initialize pygame
         pygame.init()
@@ -352,9 +354,6 @@ class GameClient(
         # walls. Mainly an escape hatch for bad server spawns (e.g. classic 2.22
         # servers that warp you into a border-wall tile and leave you stuck).
         self.noclip = False
-        self.tile_corrections: Dict[int, int] = {}  # tile_id -> corrected TileType
-        self.debug_selected_type = TileType.NONBLOCK  # Currently selected tile type for editing
-        self._load_tile_corrections()
 
         # Minimap state
         self.minimap_data: Optional[bytes] = None
@@ -558,6 +557,14 @@ class GameClient(
         except Exception:
             pass
         self.client.disconnect()
+        # The RC link is a second connection on its own thread; drop it with
+        # the game one so a server switch doesn't leave it logged in.
+        rc_ui = getattr(self, 'rc_ui', None)
+        if rc_ui is not None:
+            rc_ui.shutdown()
+        dev_ui = getattr(self, 'dev_ui', None)
+        if dev_ui is not None:
+            dev_ui.shutdown()
         self.sound_mgr.stop_all()
         self.sound_mgr.stop_music()
         pygame.quit()

@@ -32,6 +32,29 @@ _MAX_FILE_ATTEMPTS = 3
 MAX_CONCURRENT_LARGE_FILE_TRANSFERS = 16
 
 
+def adopt_gmap(client, filename: str, blob: bytes) -> bool:
+    """Build the world grid from a .gmap's bytes. True if the grid was built.
+
+    EVERY path that resolves a .gmap request has to do this, not only the ones
+    that transfer bytes. A server answers a revalidation with
+    PLO_FILEUPTODATE and sends nothing, so on the second run against a gmap
+    server - once the file is in the download cache - the transfer branches
+    below never fire. Without this the client keeps `gmap_width == 0`, no
+    neighbouring segment is ever requested, and the player cannot walk off the
+    edge of their own level: the world is one lone segment with nothing
+    stitched to it.
+    """
+    try:
+        client.load_gmap(blob.decode('latin-1', errors='replace'))
+    except Exception:
+        return False
+    client.gmap_name = filename
+    # Now that the grid is known, pull in the neighbouring segments so the
+    # world renders stitched instead of a lone current segment.
+    client.request_adjacent_levels()
+    return True
+
+
 def _large_file_caps():
     """Return (absolute cap, announced-size slack) for an active large transfer.
 
@@ -87,15 +110,7 @@ def handle_file(client, data):
             client._file_attempts.pop(filename, None)
             # A downloaded .gmap file is the world grid - parse it.
             if filename.endswith('.gmap'):
-                try:
-                    client.load_gmap(file_data.decode('latin-1', errors='replace'))
-                    client.gmap_name = filename
-                    # Now that the grid is known, pull in the neighbouring
-                    # segments so the world renders stitched instead of a
-                    # lone current segment.
-                    client.request_adjacent_levels()
-                except Exception:
-                    pass
+                adopt_gmap(client, filename, file_data)
             if client.on_file:
                 client.on_file(filename, file_data)
 
@@ -188,12 +203,7 @@ def handle_large_file_end(client, data):
     client._pending_files.discard(filename)
     client._file_attempts.pop(filename, None)
     if filename.endswith('.gmap'):
-        try:
-            client.load_gmap(file_data.decode('latin-1', errors='replace'))
-            client.gmap_name = filename
-            client.request_adjacent_levels()
-        except Exception:
-            pass
+        adopt_gmap(client, filename, file_data)
     if client.on_file:
         client.on_file(filename, file_data)
 
@@ -204,7 +214,11 @@ def handle_file_uptodate(client, data):
     # request_file_if_modified() call with no data transfer.
     filename = parse_file_uptodate(data)
     if filename:
-        client.get_file(filename)
+        cached = client.get_file(filename)
+        # The answer to a .gmap revalidation carries no bytes, so this is the
+        # only place the grid can be built on a warm cache (see adopt_gmap).
+        if cached and filename.endswith('.gmap'):
+            adopt_gmap(client, filename, cached)
         client._uptodate_files.add(filename)
         key = normalize_asset_name(filename)
         for pending_name in list(client._pending_files):

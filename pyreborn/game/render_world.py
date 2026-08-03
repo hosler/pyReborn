@@ -171,7 +171,7 @@ class WorldRenderMixin:
 
     def _apply_pending_full_invalidate(self):
         """Several call sites (level warps, tile-editor corrections, lift/throw
-        tile swaps, board-layer streams — setup.py/actions.py/tile_editor.py)
+        tile swaps, board-layer streams — setup.py/actions.py/editor/)
         still poke `self.world_surface = None` as a holdover from the old
         single-surface design, to force a full redraw. Honor that as "drop
         every cached segment"; segments simply rebuild lazily as they re-enter

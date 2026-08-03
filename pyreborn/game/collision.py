@@ -11,7 +11,7 @@ from reborn_protocol.coords import (
 )
 
 from ..tiletypes import (
-    TileType, active_tilestype, get_tile_type, type_is_blocking,
+    TileType, get_tile_type, type_is_blocking,
 )
 from .constants import (
     MOVE_STEP, CORNER_ASSIST_MAX,
@@ -26,25 +26,28 @@ from .constants import (
 class CollisionMixin:
     """Mixin providing the above methods for GameClient."""
 
-    def _get_corrected_tile_type(self, tile_id: int) -> int:
-        """Get tile type, using corrections if available.
+    def _tile_type(self, tile_id: int) -> int:
+        """The tile's type, straight from the loaded type table.
 
-        The corrections overlay (liftable bushes/pots/rocks/signs) encodes
-        knowledge about the CLASSIC tileset's art, so it only applies while
-        the level's tilestype is 0; a new-world tileset (tilestype 1/2)
-        shows different art at those tile ids."""
-        if active_tilestype() == 0 and tile_id in self.tile_corrections:
-            return self.tile_corrections[tile_id]
+        There is no per-client override layer. The only thing the old
+        `tile_corrections.json` overlay still encoded was which tile ids are
+        liftable objects, and those are not a tile type at all in the
+        reference client - see pyreborn/liftobjects.py.
+        """
         return get_tile_type(tile_id)
-    def _is_tile_blocking(self, tile_id: int) -> bool:
-        """Check if tile is blocking, using corrections.
 
-        Uses the shared threshold predicate (the C# client's style) so the blocking
-        rule lives in one place instead of being duplicated as a type set."""
-        return type_is_blocking(self._get_corrected_tile_type(tile_id))
+    def _is_tile_blocking(self, tile_id: int) -> bool:
+        """Check if tile is blocking.
+
+        Uses the shared threshold predicate (the C# client's style) so the
+        blocking rule lives in one place instead of being duplicated as a
+        type set."""
+        return type_is_blocking(self._tile_type(tile_id))
+
     def _is_tile_swimming_water(self, tile_id: int) -> bool:
-        """Check if tile is deep enough for swimming, using corrections."""
-        return self._get_corrected_tile_type(tile_id) == TileType.WATER
+        """Check if tile is deep enough for swimming."""
+        return self._tile_type(tile_id) == TileType.WATER
+
     def _effective_tile_type(self, x: float, y: float) -> int:
         """Tile TYPE in force at world (x, y): a script NPC's setshape2 overlay
         first, the board's own type second.
@@ -64,36 +67,7 @@ class CollisionMixin:
                 ttype = 0
             if ttype > 1:
                 return ttype
-        return self._get_corrected_tile_type(self._get_tile_at(x, y))
-    def _is_tile_liftable(self, tile_id: int) -> bool:
-        """Check if tile is liftable, using corrections."""
-        tile_type = self._get_corrected_tile_type(tile_id)
-        return tile_type in (TileType.BUSH, TileType.ROCK, TileType.POT,
-                             TileType.SIGN)
-    def _get_tile_lift_power(self, tile_id: int) -> int:
-        """Get required glove power to lift tile, using corrections.
-
-        Bushes, pots, and post signs lift bare-handed; rocks need a glove.
-        """
-        tile_type = self._get_corrected_tile_type(tile_id)
-        if tile_type in (TileType.BUSH, TileType.POT, TileType.SIGN):
-            return 0
-        elif tile_type == TileType.ROCK:
-            return 1
-        return 0
-    def _get_liftable_name(self, tile_id: int) -> str:
-        """Get the name of a liftable object, using corrections."""
-        tile_type = self._get_corrected_tile_type(tile_id)
-        if tile_type == TileType.BUSH:
-            return "bush"
-        elif tile_type == TileType.POT:
-            return "pot"
-        elif tile_type == TileType.ROCK:
-            return "rock"
-        elif tile_type == TileType.SIGN:
-            return "sign"
-        return ""
-
+        return self._tile_type(self._get_tile_at(x, y))
     # Ground sampling uses the standing point between the feet. It is distinct
     # from the collision box's centre after the box's half-tile upward shift.
     PLAYER_FEET_DX = PLAYER_STAND_X

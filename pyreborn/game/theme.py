@@ -89,6 +89,64 @@ def plate_rgba(alpha: int = 150) -> Tuple[int, int, int, int]:
     return (*PLATE, alpha)
 
 
+# -- key hints ---------------------------------------------------------------
+
+# The key cap and its wording, drawn as one hint. Panels keep their hints as
+# (key, label) pairs rather than one "K kick · B ban" string so the key can be
+# drawn as a cap: a run of dim same-size text is what made the admin panels
+# unreadable, and a string cannot be split reliably ("Ctrl+S save",
+# "F10/Esc close", "use F11 edit mode to paint" all start differently).
+KEYCAP_BG = (16, 46, 30)
+KEYCAP_BORDER = EMERALD
+KEYCAP_FG = MINT_PALE
+
+_CAP_PAD_X = 5
+_CAP_GAP = 5          # cap -> its label
+_HINT_GAP = 14        # one hint -> the next
+
+
+def key_hints_height(font: "pygame.font.Font", lines: int = 1) -> int:
+    """Pixels `draw_key_hints` needs for `lines` rows of hints."""
+    return lines * (font.get_height() + 8)
+
+
+def draw_key_hints(surf: "pygame.Surface", font: "pygame.font.Font",
+                   x: int, y: int, hints, *, width: Optional[int] = None,
+                   label_color: Tuple[int, int, int] = TEXT,
+                   max_lines: int = 2) -> int:
+    """Draw (key, label) hints as key caps with wording, wrapping on `width`.
+
+    Returns the y below the last line drawn. A hint whose key is empty is
+    drawn as plain wording, which is how prose ("use F11 edit mode") stays
+    readable next to real bindings. Hints past `max_lines` are dropped rather
+    than silently overdrawing the rows above.
+    """
+    line_h = font.get_height() + 8
+    start_x, cursor_x, line = x, x, 0
+    for key, label in hints:
+        cap = font.render(key, True, KEYCAP_FG) if key else None
+        text = font.render(label, True, label_color) if label else None
+        cap_w = (cap.get_width() + _CAP_PAD_X * 2 + _CAP_GAP) if cap else 0
+        need = cap_w + (text.get_width() if text else 0)
+        if width is not None and cursor_x > start_x and \
+                cursor_x + need > start_x + width:
+            line += 1
+            if line >= max_lines:
+                return y + line * line_h
+            cursor_x = start_x
+        if cap is not None:
+            box = pygame.Rect(cursor_x, y + line * line_h - 2,
+                              cap.get_width() + _CAP_PAD_X * 2,
+                              cap.get_height() + 4)
+            pygame.draw.rect(surf, KEYCAP_BG, box, border_radius=3)
+            pygame.draw.rect(surf, KEYCAP_BORDER, box, width=1, border_radius=3)
+            surf.blit(cap, (cursor_x + _CAP_PAD_X, y + line * line_h))
+        if text is not None:
+            surf.blit(text, (cursor_x + cap_w, y + line * line_h))
+        cursor_x += need + _HINT_GAP
+    return y + (line + 1) * line_h
+
+
 # -- surface helpers ---------------------------------------------------------
 
 def draw_panel(surf: "pygame.Surface", rect: "pygame.Rect", *,

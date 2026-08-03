@@ -180,6 +180,12 @@ Examples:
                        help="Run the RC admin packet-coverage harness")
     parser.add_argument("--coverage-nc", action="store_true",
                        help="Run the NC (npc-control) packet-coverage harness")
+    parser.add_argument("--account", default=None,
+                       help="Account for the coverage runs. The RC/NC ones "
+                            "need STAFF rights, so the default testbot1 is "
+                            "refused by a server that enforces them")
+    parser.add_argument("--password", default=None,
+                       help="Password for --account (default: testpass)")
     parser.add_argument("--gmap", action="store_true",
                        help="Run the GMAP world test suite (needs gmaps=chicken.gmap)")
     parser.add_argument("--tier1", action="store_true",
@@ -395,7 +401,12 @@ Examples:
             runner, suffix = run_coverage_rc, "_coverage_rc"
         else:
             runner, suffix = run_coverage, "_coverage"
-        report = runner(host=args.host, port=args.port)
+        credentials = {}
+        if args.account:
+            credentials["account"] = args.account
+        if args.password:
+            credentials["password"] = args.password
+        report = runner(host=args.host, port=args.port, **credentials)
         report.print_summary()
         if args.report:
             import json

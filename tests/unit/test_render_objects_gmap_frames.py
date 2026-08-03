@@ -203,7 +203,6 @@ class TestRenderHorsesSegmentOrigin:
 class _SignCheckHarness(ActionsMixin, CollisionMixin, LevelObjectsRenderMixin):
     def __init__(self, client):
         self.client = client
-        self.tile_corrections = {}
 
 
 class TestCheckSignNearbySegmentOrigin:
