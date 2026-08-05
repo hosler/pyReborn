@@ -48,6 +48,9 @@ class GaniFrame:
     # as a volume silenced the sound outright. A frame may carry more than one
     # (the editor's own model is a list: Ani.cpp:721 `frame->sounds.push_back`).
     sounds: List[Tuple[str, float, float]] = field(default_factory=list)
+    # Parsed `WAIT n` from the frame trailer. It is retained as source metadata
+    # but deliberately does not affect playback timing (see frame_index_at).
+    wait: float = 0.0
 
     @property
     def sound(self) -> Optional[Tuple[str, float, float]]:
@@ -116,6 +119,21 @@ class Gani:
         if dir_idx >= len(self.directions):
             return 0
         return len(self.directions[dir_idx])
+
+    def frame_index_at(self, elapsed: float, direction: int = 0) -> int:
+        """Frame selected after ``elapsed`` seconds of normal playback."""
+        frame_count = self.get_frame_count(direction)
+        if frame_count == 0:
+            return 0
+        # Canonical decompiled playback parses no WAIT directive
+        # (TGraalAni.cpp:419-442); TGraalAniStep.cpp:5 defaults every step to
+        # one tick. Keep parsed WAIT metadata, but never apply it to timing.
+        frame_index = int(max(0.0, elapsed) / AnimationState.FRAME_DURATION)
+        if self.loops:
+            return frame_index % frame_count
+        if frame_index >= frame_count:
+            return frame_count - 1
+        return frame_index
 
 
 class GaniParser:
@@ -219,6 +237,9 @@ class GaniParser:
         frame_lines: List[str] = []  # Sprite lines of the frame being collected
         # PLAYSOUNDs of the frame being collected (its trailer).
         frame_sounds: List[Tuple[str, float, float]] = []
+        # WAIT of the frame being collected (its trailer), retained as source
+        # metadata even though playback deliberately ignores it.
+        frame_wait = 0.0
 
         # We'll collect frames per direction
         direction_frames: Dict[int, List[GaniFrame]] = {0: [], 1: [], 2: [], 3: []}
@@ -228,7 +249,7 @@ class GaniParser:
 
         def process_frame_group():
             """Emit the collected frame: one GaniFrame per direction line."""
-            nonlocal frame_lines, frame_sounds
+            nonlocal frame_lines, frame_sounds, frame_wait
 
             if not frame_lines:
                 # A stray trailer with no sprite line of its own (e.g. a
@@ -243,10 +264,12 @@ class GaniParser:
                     # every direction's frame the same sounds -- they fire no
                     # matter which way the emitter is facing.
                     frame.sounds = list(frame_sounds)
+                    frame.wait = frame_wait
                     direction_frames[dir_idx].append(frame)
 
             frame_lines = []
             frame_sounds = []
+            frame_wait = 0.0
 
         for line in lines:
             line = line.strip()
@@ -364,13 +387,20 @@ class GaniParser:
                         frame_sounds.append(sound)
                     continue
 
-                # WAIT <n> holds the current frame for n extra ticks. We don't
-                # model per-frame duration yet, but it MUST NOT fall through to
-                # the sprite-line branch below: doing so consumed a direction
-                # slot and (worse) flushed the frame group, discarding the
-                # PLAYSOUND that shares the trailer with it. That silenced 728
-                # of the ~1500 PLAYSOUNDs in the reference content.
+                # WAIT <n> is retained on GaniFrame as source metadata. It is
+                # part of the frame's trailer, like
+                # PLAYSOUND: it MUST NOT fall through to the sprite-line
+                # branch below -- doing so consumed a direction slot and
+                # (worse) flushed the frame group, discarding the PLAYSOUND
+                # that shares the trailer with it. That silenced 728 of the
+                # ~1500 PLAYSOUNDs in the reference content.
                 if line.upper().startswith('WAIT'):
+                    parts = line.split(None, 1)
+                    if len(parts) > 1:
+                        try:
+                            frame_wait = max(0.0, float(parts[1].strip()))
+                        except ValueError:
+                            pass
                     continue
 
                 # Blank line = end of this frame (sprite lines + trailer).
@@ -706,7 +736,8 @@ class AnimationState:
         if frame_count == 0:
             return sounds
 
-        # Advance frames based on time
+        # Advance all frames at the canonical flat 20fps cadence. Parsed WAIT
+        # values are metadata only; frame_index_at documents the oracle.
         while self.frame_time >= self.FRAME_DURATION:
             self.frame_time -= self.FRAME_DURATION
             old_frame = self.frame

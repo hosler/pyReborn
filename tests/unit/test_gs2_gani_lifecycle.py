@@ -274,3 +274,28 @@ def test_remote_player_and_npc_player_objects_refresh_from_live_wearer():
     assert player_vm._gs2_player.get("dir") == pytest.approx(3.0)
     assert npc_vm._gs2_player.get("x") == pytest.approx(16.0)
     assert npc_vm._gs2_player is not rt2.player_object
+
+
+def test_timeout_handler_freeing_another_vm_does_not_crash_the_step():
+    """A fired onTimeout may tear down another armed VM mid-step (a script
+    changing the player's gani makes _free_gani_vm pop that VM's _timeouts
+    entry from under the snapshot the step iterates). The stale key must be
+    skipped, not raise KeyError -- live crash on the Zelda server,
+    2026-08-05, key ('gani', ('local', 0))."""
+    client, _ = _client()
+    rt2 = ClientGS2(client)
+    rt2.load_bytecode("weapon", "a", _events("onTimeout"))
+    rt2.load_bytecode("weapon", "b", _events("onTimeout"))
+    rt2._timeouts[("weapon", "a")] = 0.005
+    rt2._timeouts[("weapon", "b")] = 0.005
+    fired = []
+
+    def run(vm, event, *args):
+        fired.append(event)
+        for key in list(rt2._timeouts):    # the teardown-during-step
+            rt2._timeouts.pop(key, None)
+
+    rt2._run = run
+    rt2._process_timeout_step(0.01)
+
+    assert fired == ["onTimeout"]

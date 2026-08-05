@@ -70,6 +70,8 @@ class ClientGS2:
     def __init__(self, client=None, gs1=None):
         self.client = client
         self.gs1 = gs1                     # ClientGS1 runtime (shared host surface)
+        if gs1 is not None:
+            gs1.gs2 = self
         self.host = GS2ClientHost(self)
         # kind -> {key(lowered str or npc id): GS2VM}
         self.vms: Dict[str, Dict[Any, GS2VM]] = {
@@ -1658,7 +1660,13 @@ class ClientGS2:
         """Advance script timers by one fixed update quantum."""
         self._process_scheduled_events(dt)
         for vm_key in list(self._timeouts):
-            t = self._timeouts[vm_key] - dt
+            left = self._timeouts.get(vm_key)
+            if left is None:
+                # an earlier handler this step tore the VM down (e.g. an
+                # onTimeout changed the player's gani -> _free_gani_vm
+                # popped that gani VM's entry from under the snapshot)
+                continue
+            t = left - dt
             if t > 0:
                 self._timeouts[vm_key] = t
                 continue

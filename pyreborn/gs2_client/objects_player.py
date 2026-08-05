@@ -12,6 +12,7 @@ from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .helpers import FREEZE_MAX_TICKS, FREEZE_TICKS_PER_SECOND, ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN, _GANI_TRANSFORM_DEFAULTS
 from .registry import TIMER_RESOLUTION, _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READONLY, _TIMER_CANCEL
+from ..gs1_client.objects import ENGINE_PLAYER_PROPS
 
 class _EngineObject(GS2Object):
     """Stand-in for the v6 C# client's engine-object surface (the Unity-side
@@ -60,6 +61,25 @@ def _engine_object(rt2: "ClientGS2", key: str,
     return obj
 
 
+#: Registered player-property names from the reference's class property
+#: tables (quattroplay/src: TPlayerProperties.cpp:66-443,
+#: TServerPlayerProperties.cpp:798-1670, TGaniObjectProperties.cpp:321-616 --
+#: the TPlayer -> TServerPlayer -> TGaniObject chain a player object carries).
+#: `client`/`clientr`/`serverr` resolve to the EXECUTING PLAYER
+#: (TScriptMachine.cpp:5123-5130), and member resolution consults the class
+#: property tables BEFORE any attached flag storage (TGraalVar::getProperty,
+#: TGraalVar.cpp:1682-1705: `this->properties` first, `propertyObjects`
+#: second). A registered property name on `clientr.` is therefore the ENGINE
+#: property, never a flag: LTTP's -Player/Movement gates DoMovement on
+#: `clientr.freezetime == -1`, which is the live freeze counter -- its own
+#: scripts *write* `clientr.freezetime` too, and in the reference that write
+#: IS propfun_player_freezetime_w. Function-valued rows ('v' void and the
+#: findweapon/weapon/weapons function objects) are deliberately left out:
+#: method dispatch has its own path here and rerouting it is not what this
+#: table is for.
+_ENGINE_PLAYER_PROPS = ENGINE_PLAYER_PROPS
+
+
 class _FlagScopeObject(GS2Object):
     """GS2 view of a GS1 flag scope: `server.x` / `serverr.x` / `client.x` /
     `clientr.x` member reads and writes bridge to the shared GS1 scopes (see
@@ -96,6 +116,16 @@ class _FlagScopeObject(GS2Object):
         return self._prefix + key if self._prefix else key
 
     def get(self, key: str) -> Any:
+        # Registered player properties win over flags, per the reference's
+        # member resolution (see _ENGINE_PLAYER_PROPS above). Before this,
+        # LTTP's own `clientr.freezetime = -1` write left a flag that then
+        # SHADOWED the live freeze counter, so DoMovement's
+        # `clientr.freezetime == -1` gate stayed true mid-swing and the
+        # player kept walking through freezeplayer(0.6).
+        if self._player is not None and key.lower() in _ENGINE_PLAYER_PROPS:
+            value = self._player.get(key)
+            if value is not None:
+                return value
         k = self._key(key)
         if k in self._scope:
             return self._scope[k]
@@ -114,6 +144,12 @@ class _FlagScopeObject(GS2Object):
         return ""
 
     def set(self, key: str, value: Any) -> None:
+        # Same resolution order as get(): a registered player property is
+        # the ENGINE property in the reference, so `clientr.freezetime = 2`
+        # calls propfun_player_freezetime_w (a 2s freeze), not a flag write.
+        if self._player is not None and key.lower() in _ENGINE_PLAYER_PROPS:
+            self._player.set(key, value)
+            return
         if self._local_writes:
             dict.__setitem__(self._scope, self._key(key), value)
         else:

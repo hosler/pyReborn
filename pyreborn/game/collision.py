@@ -17,7 +17,6 @@ from .constants import (
     MOVE_STEP, CORNER_ASSIST_MAX,
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
-    PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
     PLAYER_STAND_X, PLAYER_STAND_Y,
     PLAYER_GROUND_X, PLAYER_GROUND_Y,
 )
@@ -176,51 +175,85 @@ class CollisionMixin:
 
         return tiles[tile_idx]
     def _is_position_blocked(self, x: float, y: float, dx: int = 0, dy: int = 0) -> bool:
-        """Check if a destination position is blocked.
-
-        Uses corrected tile types from user edits.
+        """Is the destination (x, y) blocked for a move in direction (dx, dy)?
 
         Player world position (x, y) is the TOP-LEFT of the 3x3-tile sprite.
-        Collision is checked against the 2x2-tile box spanning
-        x+0.5..x+2.5 horizontally and y+1.0..y+3.0 vertically. (dx, dy) is
-        the movement direction.
+        The reference's default movement is NOT a box scan: it tests exactly
+        TWO POINTS at the destination (TPlayer::movementAction,
+        Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:7503-7521):
+
+            P1 = (nx + 1.5, ny + 2.0)                       always
+            P2 = (nx + (dir==left ? 1.0 : 2.0),
+                  ny + (dir==up   ? 1.0 : 0.5))
+
+        with the constants at TInitStatics.cpp:1243-1278 (DOUBLE_00402400 =
+        1.5, 00402408 = 2.0, 004023d8 = 1.0, 00402658 = 2.0, 00402410 = 0.5)
+        and isOnWall a pure point test (TServerLevel.cpp:2642-2653). The
+        upper-body probe pair is what lets the sprite's head row overlap a
+        wall above and its feet row overlap a wall below — the classic
+        walk-behind/walk-under feel. The previous 3x3 sample grid over a
+        full 2x2-tile box blocked on ALL of the sprite's body rows, which is
+        the "collision box is the whole sprite" bug.
+
+        A diagonal move has no probe table of its own: the reference walks
+        each held direction as its own movementAction call (TPlayer.cpp:
+        7415 on, driven per direction), so a diagonal candidate here checks
+        both cardinals' probe pairs; _move's axis-slide fallback reproduces
+        the reference's independent per-axis motion.
         """
-        for cx, cy in self._feet_samples(x, y):
+        for cx, cy in self._probe_points(x, y, dx, dy):
             if self._is_blocked_at(cx, cy):
                 return True
 
         return False
 
-    # Collision box geometry: a 2x2-tile box centred on (x+1.5, y+2.0),
-    # spanning x+0.5..x+2.5 and y+1.0..y+3.0. (Previously this was a narrower, off-centre "feet" box
-    # (x+0.4..x+1.6, y+2.0..y+3.0) that put the horizontal centre at x+1.0
-    # instead of x+1.5 — exactly the "lands 0.5 tiles left of doorways" bug.)
-    # The box is half-open: its right/bottom edge sitting exactly on a tile
-    # boundary does NOT occupy the next tile. Without the epsilon, an edge
-    # flush against a wall (e.g. 35.0) floors into the wall tile and the
-    # player stops a step (~4px) short. Inset the far edges so you can move
-    # flush against walls.
-    _FEET_EPS = 1e-3
+    # Probe-point geometry (see _is_position_blocked). P1 is the shared
+    # body-centre point; P2 leans toward the moved direction.
+    _PROBE_P1 = (1.5, 2.0)
+    _PROBE_P2 = {
+        0: (2.0, 1.0),   # up
+        1: (1.0, 0.5),   # left
+        2: (2.0, 0.5),   # down
+        3: (2.0, 0.5),   # right
+    }
+    # Box extents, still used for world-bounds clamping and the stuck-escape
+    # accounting (not for wall tests).
     _FEET_LEFT, _FEET_RIGHT = PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT
     _FEET_TOP, _FEET_BOTTOM = PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM
 
-    def _feet_samples(self, x: float, y: float):
-        """Sample points covering the collision box at player position (x, y).
+    def _probe_points(self, x: float, y: float, dx: int = 0, dy: int = 0):
+        """The reference probe points for a move to (x, y) in (dx, dy)."""
+        points = [(x + self._PROBE_P1[0], y + self._PROBE_P1[1])]
+        directions = []
+        if dy < 0:
+            directions.append(0)
+        if dx < 0:
+            directions.append(1)
+        if dy > 0:
+            directions.append(2)
+        if dx > 0:
+            directions.append(3)
+        if not directions:
+            # Direction-less probes (corner assist, stuck checks): the
+            # else-branch constants, i.e. the down/right-shaped P2.
+            directions.append(2)
+        for direction in directions:
+            ox, oy = self._PROBE_P2[direction]
+            point = (x + ox, y + oy)
+            if point not in points:
+                points.append(point)
+        return points
 
-        Three x-samples AND three y-samples: the box is 2.0 tiles wide/tall
-        on both axes, so an unaligned position can span 3 tile columns *and*
-        3 tile rows (e.g. box top/bottom at y+1.8/y+3.8 covers rows y+1,
-        y+2, y+3) — corner-only sampling would miss the middle row/column.
-        (The old box was only 1.0 tile tall, which by construction can never
-        span more than 2 rows, so 2 y-samples used to be enough; growing the
-        box to the spec's 2x2 size reopened that same class of tunneling gap
-        on the y-axis, so the fix is mirrored here too.)
-        """
-        for cx in (x + self._FEET_LEFT, x + PLAYER_BODY_CENTER_X,
-                   x + self._FEET_RIGHT - self._FEET_EPS):
-            for cy in (y + self._FEET_TOP, y + PLAYER_BODY_CENTER_Y,
-                       y + self._FEET_BOTTOM - self._FEET_EPS):
-                yield cx, cy
+    def _feet_samples(self, x: float, y: float):
+        """The union of every direction's probe points at (x, y) — the
+        overlap-accounting sample set for the stuck-escape below."""
+        seen = []
+        for direction in range(4):
+            dx, dy = ((0, -1), (-1, 0), (0, 1), (1, 0))[direction]
+            for point in self._probe_points(x, y, dx, dy):
+                if point not in seen:
+                    seen.append(point)
+        return seen
 
     def _blocked_sample_count(self, x: float, y: float) -> int:
         """How many feet-box samples at (x, y) are blocked. Used by _move's

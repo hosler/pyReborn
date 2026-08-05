@@ -16,6 +16,31 @@ from .registry import NPC_ATTR, PLAYER_ATTR
 logger = logging.getLogger(__name__)
 
 
+# Registered player-property names shared by the GS1 and GS2 `clientr`
+# scopes. Class properties resolve before attached flag storage; names not in
+# this table retain ordinary flag behavior.
+ENGINE_PLAYER_PROPS = frozenset({
+    "defaultwalkspeed", "diagonalwalkspeed", "freezetime", "hurtdx",
+    "hurtdy", "hurtpower", "hurt", "hurted", "isfemale", "isinvincible",
+    "isinvincible2", "isjumping", "ismale", "isobserver", "map", "onhorse",
+    "online", "reading", "swimming", "zoomfactor", "getnohit", "letters",
+    "alliedguilds", "account", "ap", "attached", "attachedtoobject", "bombs",
+    "chat", "chatoffset", "communityname", "darts", "fullhearts",
+    "glovepower", "gralats", "guild", "head", "headimg", "headset",
+    "hearts", "horseimg", "hp", "id", "isadmin", "isblocking", "isbuddy",
+    "ischannel", "ischannelopen", "ischanneluser", "isexternal", "isguildpm",
+    "isignored", "isignoring", "isloggedin", "ismasspm", "language",
+    "languagedomain", "levelname", "maxhp", "messagebubble", "mp", "nick",
+    "paused", "platform", "playerlisticon", "playersindex", "pmswaiting",
+    "rating", "ratingd", "rupees", "shield", "shieldimg", "shieldpower",
+    "sword", "swordimg", "swordpower", "x", "y", "alpha", "ani",
+    "aniparams", "anistep", "attachid", "attachtype", "attr", "blue",
+    "body", "bodyimg", "colors", "dir", "gmap", "green", "mode", "red",
+    "rotation", "rotationcenter", "sprite", "stretchx", "stretchy",
+    "useowncenter", "zoom",
+})
+
+
 class _GS1ObjectRef:
     """Live player/NPC handle used as a GS1 with-target."""
 
@@ -290,8 +315,31 @@ class _ClientScopeVarStore(VarStore):
     #: `clientr.`-spelled reference was the last thing resolved.
     _ref_namespace = "client"
 
+    def _engine_player(self, key):
+        if (self._ref_namespace == "clientr"
+                and key.lower() in ENGINE_PLAYER_PROPS):
+            scope = self.scopes.get("client")
+            rt = scope._rt if isinstance(scope, _PlayerFlagScope) else None
+            rt2 = getattr(rt, "gs2", None)
+            if rt2 is None:
+                rt2 = getattr(getattr(rt, "client", None), "gs2_host", None)
+            return getattr(rt2, "player_object", None)
+        return None
+
+    def get(self, scope, key, index=None):
+        if scope == "client" and index is None:
+            player = self._engine_player(key)
+            if player is not None:
+                value = player.get(key)
+                return UNSET if value is None else value
+        return super().get(scope, key, index)
+
     def set(self, scope, key, value, index=None):
         if scope == "client" and index is None and self._ref_namespace != "client":
+            player = self._engine_player(key)
+            if player is not None:
+                player.set(key, value)
+                return
             table = self.scopes.get("client")
             if isinstance(table, _PlayerFlagScope):
                 table.set_local(key, value)

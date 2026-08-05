@@ -183,7 +183,7 @@ class EffectsRenderMixin(FrameContextMixin):
         anim = AnimationState(self.gani_parser)
         anim.gani = gani
         anim.direction = direction
-        anim.frame = int(max(0.0, elapsed) / AnimationState.FRAME_DURATION)
+        anim.frame = gani.frame_index_at(elapsed, direction)
         ox = screen_x - TILE_SIZE
         oy = screen_y - TILE_SIZE / 2
         self._render_animated_entity(ox, oy, anim, {})

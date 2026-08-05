@@ -92,18 +92,25 @@ class TestCornerAssistClearableDoorway:
     """A blocked cardinal press near a doorway/corner nudges perpendicular
     toward the opening."""
 
+    # Under the reference two-point probes (TPlayer.cpp:7503-7521; see
+    # collision.py _is_position_blocked) an upward move into a wall row is
+    # decided by the P2 point at x+2.0 alone (P1's y+2.0 sits below the
+    # row), so a doorway at columns 32..34 is clear for x in [30, 33). The
+    # blocked-but-assistable approach positions sit one MOVE_STEP outside
+    # that window.
+
     def test_offset_left_of_doorway_nudges_right(self):
         lvl = _wall_row_with_doorway(20)
         c, h = _harness_with_level(lvl)
-        c.player.x, c.player.y = 31.0, APPROACH_Y  # 0.5 tile left of center
+        c.player.x, c.player.y = 29.75, APPROACH_Y  # window starts at 30.0
 
-        assert h._is_position_blocked(31.0, APPROACH_Y - 0.25, 0, -1) is True
+        assert h._is_position_blocked(29.75, APPROACH_Y - 0.25, 0, -1) is True
         assert h._corner_assist_offset(0, -1) == (1, 0)
 
     def test_offset_right_of_doorway_nudges_left(self):
         lvl = _wall_row_with_doorway(20)
         c, h = _harness_with_level(lvl)
-        c.player.x, c.player.y = 33.0, APPROACH_Y  # 0.5 tile right of center
+        c.player.x, c.player.y = 33.0, APPROACH_Y  # window ends at 33.0
 
         assert h._is_position_blocked(33.0, APPROACH_Y - 0.25, 0, -1) is True
         assert h._corner_assist_offset(0, -1) == (-1, 0)

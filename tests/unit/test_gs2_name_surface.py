@@ -80,8 +80,8 @@ def test_flag_scopes_resolve_player_properties():
 
 
 def test_flag_scopes_keep_flag_behaviour():
-    """The player fallback is an EXTENSION: flags still read, write and
-    shadow exactly as before, including a flag that shares a property name."""
+    """Names OUTSIDE the registered property tables stay flags: read, write
+    and storage exactly as before."""
     rt = _runtime()
     client_scope = rt.host.get_object("client")
     clientr = rt.host.get_object("clientr")
@@ -92,11 +92,21 @@ def test_flag_scopes_keep_flag_behaviour():
     serverr.set("quest", "done")
     assert serverr.get("quest") == "done"
     assert rt.gs1._shared["server"]["serverr.quest"] == "done"
-    # a flag wins over the player property it collides with, and the write
-    # must not have moved the player
+    # A REGISTERED property name is the engine property, not a flag: member
+    # resolution consults the class property tables before attached flag
+    # storage (TGraalVar::getProperty, src/TGraalVar.cpp:1682-1705), so
+    # `clientr.x = 99` IS a player-x write in the reference. This replaced
+    # the earlier flags-shadow-properties pin, which was a model guess and
+    # the root cause of LTTP's walk-through-freezeplayer bug: the server's
+    # own `clientr.freezetime = -1` flag write shadowed the live freeze
+    # counter (see test_clientr_engine_properties.py).
     clientr.set("x", 99)
-    assert clientr.get("x") == 99
-    assert rt.client.player.x == 0.0
+    assert rt.client.player.x == 99.0
+    assert "x" not in rt.gs1._shared["client"]
+    # (clientr.get("x") reads client.x, which on the real Client is a
+    # property over player.x -- this harness's SimpleNamespace stub does not
+    # delegate, so the read-back is pinned in
+    # test_clientr_engine_properties.py against the real Client instead.)
     # ... and has() still reports flags only, so `with(client){...}` locals
     # do not get redirected into player properties
     assert clientr.has("myflag") and not clientr.has("nick")
