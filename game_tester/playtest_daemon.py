@@ -33,9 +33,8 @@ Run: python -m game_tester.playtest_daemon [port]   (default 14990)
 Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
 
 Agent-prompt caveats:
-  - /map draws @ at the sprite's TOP-LEFT while collision is a 2x2-tile box
-    centred on (x+1.5, y+2.0) (spans x+0.5..x+2.5, y+1.0..y+3.0) — tell
-    agents or they report false wall-clips.
+  - /map draws @ at the sprite's TOP-LEFT while movement collision uses two
+    direction-sensitive body probes — tell agents or they report false clips.
   - npc_dialogue (PLO_SAY2 text: sign reads / NPC chatter) is in BOTH /state
     and /log, not just one - without it in /state, an agent polling only
     /state never sees scripted NPC dialogue at all.

@@ -369,12 +369,10 @@ class TestScenarios:
 
         # 2) A known wall (row 17) must actually block movement - walk north
         # into it and confirm the bot stops before tunnelling through.
-        # Collision is the classic-engine spec's 2x2-tile box centred on
-        # (x+1.5, y+2.5) - box top edge at y+1.5 (the head/sprite above that
-        # may still overlap walls) - so walking north the bot may legally
-        # stand as high as the box top would land on row 18 (y=16.5); it
-        # must be blocked once the box top would land on row 17, i.e. it can
-        # never get below y=15.5. (Live-verified: real stop is ~y=17.2, well
+        # Northward collision uses P1 at destination ny+2.0. The bot checks a
+        # full tile ahead, so from current y this is (y-1)+2 = y+1: row 17
+        # first blocks at y=16.0, and the bot can never get below that. (The
+        # live stop is ~y=17.2, well
         # inside this bound with room for the bot's 0.25-tile step
         # granularity and the one-tile lookahead check.)
         hit_wall = False
@@ -388,14 +386,14 @@ class TestScenarios:
 
         if not hit_wall:
             issues.append(
-                f"Expected the collision box to be blocked by the wall at "
+                f"Expected the movement probes to be blocked by the wall at "
                 f"row 17, but reached ({bot.x:.1f}, {bot.y:.1f}) unobstructed")
-        elif bot.y < 15.5:
+        elif bot.y < 16.0:
             issues.append(
                 f"Walked through the wall: stopped at y={bot.y:.1f} "
-                f"(wall row 17 = box-top-blocked at y>=15.5)")
+                f"(wall row 17 = north-P1-blocked at y>=16.0)")
 
-        passed = floor_ok and hit_wall and bot.y >= 15.5
+        passed = floor_ok and hit_wall and bot.y >= 16.0
 
         return TestResult(
             name="collision_detection",

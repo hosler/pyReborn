@@ -134,19 +134,8 @@ class BotAction:
 
 def _blocking_tile_in_footprint(board: List[int], x: float,
                                 y: float) -> Optional[int]:
-    """Return the first blocking tile id found under the collision-box
-    footprint at local (x, y) on `board` (a 4096-tile level array), or None
-    if clear.
-
-    Same collision box GameBot._is_position_blocked() checks (a 2x2-tile box
-    centred on x+1.5/y+2.0, spanning x+0.5..x+2.5 by y+1.0..y+3.0, of a
-    3-wide x 3-tall top-left-anchored sprite), not just the single tile under
-    (x, y) - a warp landing with only its top-left corner clear but its feet
-    in a wall still strands the bot.
-    """
-    for ox, oy in ((0.5, 1.0), (1.5, 1.0), (2.5, 1.0),
-                   (0.5, 2.0), (1.5, 2.0), (2.5, 2.0),
-                   (0.5, 3.0), (1.5, 3.0), (2.5, 3.0)):
+    """Return a blocking tile under the direction-less movement probes."""
+    for ox, oy in ((1.5, 2.0), (2.0, 0.5)):
         tx, ty = math.floor(x + ox), math.floor(y + oy)
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
             continue
@@ -656,39 +645,26 @@ class GameBot:
 
         (x, y) here is already the full-tile-ahead destination (see move()'s
         parity note), so this probes the LEADING EDGE of the sprite's
-        footprint in the direction of travel, not a fixed point. Duplicated
-        inline rather than importing pyreborn/game/collision.py's box-based
-        _is_position_blocked (a 2x2-tile box centred on x+1.5/y+2.0, spanning
-        x+0.5..x+2.5 by y+1.0..y+3.0 from the sprite's top-left) to avoid a
-        pygame-dependent import in the headless bot. The sprite itself is 3
-        tiles wide x 3 tall, top-left anchored.
-
-        The probed points are the leading edge of collision.py's collision
-        box. A single feet-center point (an early version) missed walls
-        that clip only one side of the box, and probing the head row for
-        upward moves blocked the bot where the real client walks.
+        footprint in the direction of travel. This mirrors collision.py's
+        two-point tables inline to keep the headless bot pygame-free.
         """
-        box_l, box_r, box_cx = 0.5, 2.5, 1.5
-        box_t, box_b, box_cy = 1.0, 3.0, 2.0
-        check_offsets = []
-
-        # The box is now 2.0 tiles tall/wide on both axes (it grew from the
-        # old 1.0-tall box), so a leading-edge column/row can itself span 3
-        # tile rows/columns when unaligned - sample the middle too, mirroring
-        # collision.py's _feet_samples fix for the same reason.
-        if dx < 0:      # Moving left: leading edge is the box's left column
-            check_offsets += [(box_l, box_t), (box_l, box_cy), (box_l, box_b)]
-        elif dx > 0:    # Moving right: the box's right column
-            check_offsets += [(box_r, box_t), (box_r, box_cy), (box_r, box_b)]
-
-        if dy < 0:      # Moving up: leading edge is the box's top row
-            check_offsets += [(box_l, box_t), (box_cx, box_t), (box_r, box_t)]
-        elif dy > 0:    # Moving down: the box's bottom (feet) row
-            check_offsets += [(box_l, box_b), (box_cx, box_b), (box_r, box_b)]
-
-        # If no direction, just check the feet center (standing still)
-        if not check_offsets:
-            check_offsets = [(box_cx, box_b)]
+        check_offsets = [(1.5, 2.0)]
+        directions = []
+        if dy < 0:
+            directions.append(0)
+        if dx < 0:
+            directions.append(1)
+        if dy > 0:
+            directions.append(2)
+        if dx > 0:
+            directions.append(3)
+        if not directions:
+            directions.append(2)
+        p2 = {0: (2.0, 1.0), 1: (1.0, 0.5),
+              2: (2.0, 0.5), 3: (2.0, 0.5)}
+        for direction in directions:
+            if p2[direction] not in check_offsets:
+                check_offsets.append(p2[direction])
 
         for ox, oy in check_offsets:
             check_x = x + ox
@@ -709,7 +685,7 @@ class GameBot:
 
         Matches pygame_game.py:_update_swimming_state() for parity: sample the
         standing point between the feet (sprite top-left + (1.5, 2.5)), not
-        the collision box centre or top-left corner.
+        either movement probe or the sprite's top-left corner.
         """
         self.is_swimming = self._check_water_at_position(self.client.x + 1.5,
                                                          self.client.y + 2.5)

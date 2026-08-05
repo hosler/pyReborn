@@ -270,13 +270,12 @@ def _probe_position_clear(client: Any, x: float, y: float) -> bool:
     tiles = getattr(client, "tiles", [])
     if len(tiles) != 4096 or getattr(client, "in_gmap_segment", False):
         return True
-    for sample_x in (x + 0.5, x + 1.5, x + 2.5 - 1e-3):
-        for sample_y in (y + 1.0, y + 2.0, y + 3.0 - 1e-3):
-            tile_x, tile_y = math.floor(sample_x), math.floor(sample_y)
-            if not (0 <= tile_x < 64 and 0 <= tile_y < 64):
-                return False
-            if type_is_blocking(get_tile_type(tiles[tile_y * 64 + tile_x])):
-                return False
+    for sample_x, sample_y in ((x + 1.5, y + 2.0), (x + 2.0, y + 0.5)):
+        tile_x, tile_y = math.floor(sample_x), math.floor(sample_y)
+        if not (0 <= tile_x < 64 and 0 <= tile_y < 64):
+            return False
+        if type_is_blocking(get_tile_type(tiles[tile_y * 64 + tile_x])):
+            return False
     return True
 
 

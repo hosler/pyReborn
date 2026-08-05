@@ -118,9 +118,12 @@ def write_deep_report(out_dir: str | Path, report: dict[str, Any]) -> tuple[Path
 
 def report_capture(out_dir: str | Path) -> dict[str, Any]:
     out = Path(out_dir)
-    records = [json.loads(line) for line in (out / "steps.jsonl").read_text().splitlines()]
+    steps_path = out / "steps.jsonl"
+    records = ([json.loads(line) for line in steps_path.read_text().splitlines()]
+               if steps_path.exists() and steps_path.stat().st_size else [])
     samples_path = out / "warning_samples.json"
-    samples = json.loads(samples_path.read_text()) if samples_path.exists() else {}
+    samples = (json.loads(samples_path.read_text())
+               if samples_path.exists() and samples_path.stat().st_size else {})
     report = build_deep_report(records, samples)
     write_deep_report(out, report)
     return report

@@ -1144,14 +1144,17 @@
         "bytecodes": {
           "class": 1,
           "gani": 0,
-          "npc": 1,
+          "npc": 14,
           "weapon": 8
         },
         "connected_at_end": true,
         "events": {
-          "calls": 6435,
-          "distinct": 12,
+          "calls": 6966,
+          "distinct": 19,
           "kinds": [
+            "npc.oncreated",
+            "npc.onplayerenters",
+            "npc.ontimeout",
             "weapon.oncreated",
             "weapon.onplayerenters",
             "weapon.ontimeout",
@@ -1195,7 +1198,7 @@
           ],
           "list_rows": 0,
           "max_depth": 1,
-          "named": 16,
+          "named": 20,
           "overflowing": [],
           "root_classes": {
             "GuiWindowCtrl": 1
@@ -1220,7 +1223,7 @@
           "window_overlaps": []
         },
         "host_calls": {
-          "distinct": 38,
+          "distinct": 41,
           "missing": [],
           "names": [
             "addcontrol",
@@ -1228,12 +1231,14 @@
             "addtiledef",
             "addtiledef2",
             "adventure_setframetick",
+            "blockagain",
             "changeimgpart",
             "changeimgvis",
             "changeimgzoom",
             "clearrows",
             "disabledefmovement",
             "disableselectweapons",
+            "drawunderplayer",
             "echo",
             "findimg",
             "findnearestplayers",
@@ -1254,6 +1259,7 @@
             "seteffect",
             "setframetick",
             "setselectedrow",
+            "setshape",
             "setspritesimage",
             "settimer",
             "showimg",
@@ -1262,9 +1268,9 @@
             "tiletype",
             "triggerserver"
           ],
-          "total": 624650
+          "total": 626824
         },
-        "level": "zlttp-d6.nw",
+        "level": "zlttp-h5.nw",
         "logs": {
           "errors": 0,
           "kinds": [],
@@ -1280,7 +1286,7 @@
             "door"
           ],
           "gani_count": 0,
-          "npc_count": 1,
+          "npc_count": 14,
           "weapon": [
             "*system",
             "-player/functions",
@@ -1295,7 +1301,7 @@
         "wall_seconds": 25.0,
         "world": {
           "gs1_scripts": 0,
-          "npcs": 1,
+          "npcs": 17,
           "weapons": 8
         }
       },
@@ -1347,7 +1353,7 @@
           "mobspawn"
         ]
       },
-      "recorded_at": "2026-07-31T01:49:52.162091+00:00",
+      "recorded_at": "2026-08-05T16:59:58.301868+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"
