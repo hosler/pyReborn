@@ -620,6 +620,9 @@ class TestOfficialWeapons:
 
     def test_playerlist_builds_and_tracks_roster(self):
         rt2, client = self._rt2()
+        # Exercise the weapon's fallback constructor independently of the
+        # client-owned F3 window that is normally present before it loads.
+        rt2.gui.destroy(rt2.host.get_object("PlayerList_Window"))
         rt2.load_bytecode("weapon", "-Playerlist",
                           (_CORPUS / "_Playerlist.gs2bc").read_bytes())
         gui = rt2.gui

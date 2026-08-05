@@ -158,7 +158,7 @@ def test_level_object_probes_index_their_lists():
     rt.client.signs = {"shop.nw": {(4.0, 9.0): "hi", (30.0, 2.0): "bye"}}
     rt.client.items = {"shop.nw": {(11.0, 3.0): "bomb"}}
     rt.client.items_in_level = lambda level: rt.client.items.get(level, {})
-    rt.client.bombs = {(1.0, 1.0): {}}
+    rt.client.bombs = {"shop.nw": {(1.0, 1.0): {}}}
     rt.client.active_explosions = [{"x": 20.0, "y": 20.0}]
     level = rt.level_object
     assert call(rt, "testsign", [30.5, 2.5], obj=level) == 1.0

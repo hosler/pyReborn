@@ -488,6 +488,7 @@ class GuiControlProfile(GuiControl):
 
     CTRL_CLASS = "GuiControlProfile"
     is_profile = True
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"preloadfont"})
 
     def __init__(self, ctor_arg: Any = None, parent_name: str = ""):
         super().__init__(ctor_arg)
@@ -496,6 +497,11 @@ class GuiControlProfile(GuiControl):
 
     def has(self, key: str) -> bool:
         return True
+
+    def _m_preloadfont(self, *args) -> float:
+        # Font loading is lazy in the pygame renderer. Claiming this method
+        # preserves the reference's eager-cache hint without changing state.
+        return 0.0
 
     def copy_from(self, source: Any) -> None:
         """The ONE GUI class where `copyfrom` really copies:
@@ -524,4 +530,3 @@ class GuiControlProfile(GuiControl):
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         return
-

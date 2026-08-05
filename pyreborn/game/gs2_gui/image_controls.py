@@ -82,7 +82,7 @@ class GuiBitmapCtrl(GuiControl):
     CTRL_CLASS = "GuiBitmapCtrl"
     _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
         {"bitmap", "image", "bitmaprectangle", "fullbitmap", "tile", "wrap"})
-    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"setbitmap"})
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"setbitmap", "setvalue"})
 
     def __init__(self, ctor_arg: Any = None):
         super().__init__(ctor_arg)
@@ -90,6 +90,8 @@ class GuiBitmapCtrl(GuiControl):
         self.tile = False
         self._scaled_cache: Optional[Tuple[str, Tuple[int, int]]] = None
         self._scaled_surf: Optional[pygame.Surface] = None
+        self.value_x = 0
+        self.value_y = 0
 
     def get(self, key: str) -> Any:
         k = key.lower()
@@ -113,6 +115,11 @@ class GuiBitmapCtrl(GuiControl):
         """setBitmap(name): identical to writing `bitmap`
         (GuiBitmapCtrlProperties.cpp:52-55)."""
         self.bitmap = to_str(args[0]) if args else ""
+        return 0.0
+
+    def _m_setvalue(self, *args) -> float:
+        self.value_x = int(to_num(args[0])) if args else 0
+        self.value_y = int(to_num(args[1])) if len(args) > 1 else 0
         return 0.0
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
@@ -151,6 +158,35 @@ class GuiShowImgCtrl(GuiBitmapCtrl):
     CTRL_CLASS and reuses GuiBitmapCtrl's get/set/_draw_self as-is."""
 
     CTRL_CLASS = "GuiShowImgCtrl"
+    _TORQUE_PROPS = GuiBitmapCtrl._TORQUE_PROPS | frozenset(
+        {"ani", "dir", "layer", "offsetx", "offsety"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.ani = ""
+        self.direction = 0
+        self.layer = 0
+        self.offset_x = 0
+        self.offset_y = 0
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        values = {"ani": self.ani, "dir": float(self.direction),
+                  "layer": float(self.layer), "offsetx": float(self.offset_x),
+                  "offsety": float(self.offset_y)}
+        return values[k] if k in values else super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "ani":
+            self.ani = to_str(value)
+            return
+        attrs = {"dir": "direction", "layer": "layer",
+                 "offsetx": "offset_x", "offsety": "offset_y"}
+        if k in attrs:
+            setattr(self, attrs[k], int(to_num(value)))
+            return
+        super().set(k, value)
 
 
 class GuiBitmapButtonCtrl(GuiButtonCtrl):
@@ -237,4 +273,3 @@ class GuiBitmapButtonCtrl(GuiButtonCtrl):
                         (r.centerx - width // 2,
                          r.centery - font.get_height() // 2),
                         prof.text_shadow)
-

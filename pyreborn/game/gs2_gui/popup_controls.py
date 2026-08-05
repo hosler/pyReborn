@@ -224,6 +224,21 @@ class GuiPopUpMenuCtrl(GuiPopUpEditCtrl):
     # popup overlay already sizes itself.
     _TORQUE_PROPS = GuiPopUpEditCtrl._TORQUE_PROPS | frozenset(
         {"maxpopupheight", "scrollprofile"})
+    _METHOD_NAMES = GuiPopUpEditCtrl._METHOD_NAMES | frozenset(
+        {"forceonaction", "forceclose", "getselected"})
+
+    def _m_forceonaction(self, *args) -> float:
+        self.fire_action()
+        return 0.0
+
+    def _m_forceclose(self, *args) -> float:
+        self.popup_open = False
+        return 0.0
+
+    def _m_getselected(self, *args) -> Any:
+        if 0 <= self.selected_row < len(self.rows):
+            return self.rows[self.selected_row][0]
+        return -1.0
 
 
 class GuiFrameSetCtrl(GuiControl):

@@ -68,6 +68,7 @@ class GS2GuiManager:
         # the click counter (same button within DOUBLE_CLICK_MS increments)
         self._script_hover: Optional[GuiControl] = None
         self._mouse_lock: Optional[GuiControl] = None
+        self._mouse_locks: Dict[int, GuiControl] = {}
         self._lock_button = 0
         self._click_count = 0
         self._click_ticks = 0
@@ -96,6 +97,7 @@ class GS2GuiManager:
         # default, so cursorOn() -- the only one of the three any corpus
         # actually calls -- is a confirmation rather than a change.
         self.cursor_on = True
+        self._animation_ticks: Optional[int] = None
 
     def set_cursor_on(self, on: bool) -> None:
         """cursorOn()/cursorOff(): show or hide the mouse pointer over the
@@ -112,6 +114,20 @@ class GS2GuiManager:
         """True while a text-edit control holds keyboard focus, so gameplay
         held-key movement must not run alongside typing."""
         return self._focus is not None
+
+    def has_active_animations(self) -> bool:
+        """Return whether any registered control still owns an animation."""
+        pending = list(self.roots) + list(self._named.values())
+        seen = set()
+        while pending:
+            control = pending.pop()
+            if id(control) in seen:
+                continue
+            seen.add(id(control))
+            if control.animations:
+                return True
+            pending.extend(control.children)
+        return False
 
     # -- construction --------------------------------------------------------
 
@@ -304,6 +320,8 @@ class GS2GuiManager:
         if (self._mouse_lock is not None
                 and self._is_or_descends(self._mouse_lock, ctrl)):
             self._mouse_lock = None
+        self._mouse_locks = {device: owner for device, owner in self._mouse_locks.items()
+                             if not self._is_or_descends(owner, ctrl)}
         if (self._press_target is not None
                 and self._is_or_descends(self._press_target, ctrl)):
             self._press_target = None
@@ -363,6 +381,9 @@ class GS2GuiManager:
             _log_once(("show", to_str(target)),
                       "GS2 GUI: showgui() target not found: %r", target)
             return
+        if (getattr(ctrl, "_native_canvas_control", False)
+                and ctrl.parent is None and ctrl not in self.roots):
+            self.addcontrol(ctrl)
         ctrl.set_visible(True)
         self.bring_to_front(ctrl)
 
@@ -435,6 +456,41 @@ class GS2GuiManager:
             old.fire_event("onlosefirstresponder")
         if ctrl is not None:
             ctrl.fire_event("onbecomefirstresponder")
+
+    def mouse_lock(self, device: int, ctrl: GuiControl) -> None:
+        self._mouse_locks[device] = ctrl
+        if device == 0:
+            self._mouse_lock = ctrl
+
+    def mouse_locked(self, device: int, ctrl: GuiControl) -> bool:
+        return self._mouse_locks.get(device) is ctrl
+
+    def mouse_unlock(self, device: int, ctrl: GuiControl) -> None:
+        if self._mouse_locks.get(device) is ctrl:
+            del self._mouse_locks[device]
+            if device == 0 and self._mouse_lock is ctrl:
+                self._mouse_lock = None
+
+    def mouse_unlock_all(self, ctrl: GuiControl) -> None:
+        for device in [key for key, owner in self._mouse_locks.items() if owner is ctrl]:
+            self.mouse_unlock(device, ctrl)
+
+    def start_control_drag(self, ctrl: GuiControl) -> None:
+        """Arm reference-style script dragging when button zero is down."""
+        try:
+            down = pygame.mouse.get_pressed()[0]
+        except Exception:
+            down = False
+        if not down or ctrl.parent is None or self.last_mouse is None:
+            return
+        ox, oy = ctrl.parent.effective_offset()
+        child_dx, child_dy = ctrl.parent.child_state_offset()
+        ox += ctrl.parent.x + child_dx
+        oy += ctrl.parent.y + child_dy
+        self._drag = (ctrl, self.last_mouse[0] - ox - ctrl.x,
+                      self.last_mouse[1] - oy - ctrl.y)
+        self.mouse_lock(0, ctrl)
+        ctrl.fire_event("onstartdrag")
 
     # -- catchevent plumbing ---------------------------------------------
 
@@ -527,7 +583,7 @@ class GS2GuiManager:
                     entries.remove(entry)
                 continue
             try:
-                vm.call(handler, name, *args)
+                self.rt2.call_public_event(vm, handler, name, *args)
             except Exception:
                 logger.exception("GS2 GUI: %s catcher %s for %s raised",
                                  event, handler, name)
@@ -536,7 +592,7 @@ class GS2GuiManager:
         for vm in self._all_vms():
             try:
                 if vm.has_function(fname):
-                    vm.call(fname, *args)
+                    self.rt2.call_public_event(vm, fname, *args)
                     handled = True
             except Exception:
                 logger.exception("GS2 GUI: %s raised", fname)
@@ -628,9 +684,39 @@ class GS2GuiManager:
 
     # -- render ---------------------------------------------------------
 
+    def tick(self, seconds: Optional[float] = None) -> None:
+        now = _ticks()
+        if seconds is None:
+            seconds = 0.016 if self._animation_ticks is None else max(
+                0.0, (now - self._animation_ticks) / 1000.0)
+        self._animation_ticks = now
+        controls = []
+        seen = set()
+        pending = list(self.roots) + list(self._named.values())
+        while pending:
+            ctrl = pending.pop()
+            if id(ctrl) in seen:
+                continue
+            seen.add(id(ctrl))
+            controls.append(ctrl)
+            pending.extend(ctrl.children)
+        for ctrl in controls:
+            if not ctrl.animations:
+                continue
+            last_transition = ""
+            remaining = []
+            for animation in ctrl.animations:
+                last_transition = animation.transition
+                if animation.advance(seconds):
+                    remaining.append(animation)
+            ctrl.animations[:] = remaining
+            if not remaining:
+                ctrl.fire_event("onanimationfinished", last_transition)
+
     def render(self, surf: pygame.Surface, fonts=None, sprite_mgr=None) -> None:
         self._reap_construction_leak()
         self._close_invalid_popup()
+        self.tick()
         self.on_canvas_resize(*surf.get_size())
         for root in self.roots:
             self._draw_node(root, surf, fonts, sprite_mgr, None)
@@ -642,6 +728,20 @@ class GS2GuiManager:
     def _draw_node(self, node: GuiControl, surf, fonts, sprite_mgr, clip) -> None:
         if not node.visible:
             return
+        alpha = max(0.0, min(1.0, node.alpha))
+        if alpha < 1.0:
+            if alpha <= 0.0:
+                return
+            layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            self._draw_node_content(node, layer, fonts, sprite_mgr, clip)
+            layer.set_alpha(round(alpha * 255))
+            surf.set_clip(clip)
+            surf.blit(layer, (0, 0))
+            return
+        self._draw_node_content(node, surf, fonts, sprite_mgr, clip)
+
+    def _draw_node_content(self, node: GuiControl, surf, fonts, sprite_mgr,
+                           clip) -> None:
         surf.set_clip(clip)
         node.draw(surf, fonts, sprite_mgr)
         child_clip = clip
@@ -659,6 +759,12 @@ class GS2GuiManager:
             if hit is not None:
                 return hit
         return None
+
+    def hit_test_subtree(self, node: GuiControl, pos) -> Optional[GuiControl]:
+        """Recursive topmost hit lookup rooted at an attached control."""
+        if not node._awake or not node.visible or not node.effectively_visible():
+            return None
+        return self._hit_test(node, pos)
 
     def _hit_test(self, node: GuiControl, pos) -> Optional[GuiControl]:
         if not node.visible or not node.rect().collidepoint(pos):
@@ -807,6 +913,31 @@ class GS2GuiManager:
             return False
         return False
 
+    # Synthetic-input helpers use canvas coordinates and deliberately feed
+    # the same event dispatcher as physical input.
+    def click_point(self, canvas_pos, button: int = 1) -> bool:
+        pos = (int(canvas_pos[0]), int(canvas_pos[1]))
+        self.handle_event(pygame.event.Event(
+            pygame.MOUSEMOTION, pos=pos, rel=(0, 0), buttons=(0, 0, 0)))
+        down = self.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, pos=pos, button=button))
+        up = self.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, pos=pos, button=button))
+        return bool(down or up)
+
+    def press_key(self, key, unicode: str = "", modifiers: int = 0) -> bool:
+        down = self.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, unicode=unicode, mod=modifiers,
+            scancode=0))
+        self.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=key, unicode=unicode, mod=modifiers,
+            scancode=0))
+        return down
+
+    def press_tab(self, reverse: bool = False) -> bool:
+        return self.press_key(pygame.K_TAB, "",
+                              pygame.KMOD_SHIFT if reverse else 0)
+
     # -- script input events ----------------------------------------------
 
     def _mouse_args(self, pos) -> tuple:
@@ -855,7 +986,7 @@ class GS2GuiManager:
                 # control runs destroy() -> _release_pointers_under, which
                 # clears the lock -- arming after the fire would re-pin the
                 # dead control until button release
-                self._mouse_lock = target      # buttons lock down -> up
+                self.mouse_lock(0, target)     # buttons lock down -> up
                 self._lock_button = event.button
                 target.fire_event(
                     "onmousedown" if event.button == 1 else "onrightmousedown",
@@ -868,7 +999,7 @@ class GS2GuiManager:
                     "onmouseup" if event.button == 1 else "onrightmouseup",
                     *self._mouse_args(pos))
             if self._mouse_lock is not None and event.button == self._lock_button:
-                self._mouse_lock = None
+                self.mouse_unlock(0, self._mouse_lock)
             return
         if event.type == pygame.MOUSEMOTION:
             buttons = getattr(event, "buttons", (0, 0, 0))
@@ -1064,6 +1195,34 @@ class GS2GuiManager:
         return True
 
     def _on_keydown(self, event) -> bool:
+        if event.key == pygame.K_TAB:
+            candidates = []
+
+            def visit(node, shown=True):
+                shown = shown and bool(node.visible) and bool(node._awake)
+                if not shown:
+                    return
+                profile = node.own_profile or node.profile_obj
+                tab = to_bool(profile.get("tab")) if profile is not None else False
+                if node.can_key_focus or tab:
+                    candidates.append(node)
+                for child in node.children:
+                    visit(child, shown)
+
+            for root in self.roots:
+                visit(root)
+            if not candidates:
+                return False
+            current = self._first_responder
+            try:
+                index = candidates.index(current)
+            except ValueError:
+                index = 0 if getattr(event, "mod", 0) & pygame.KMOD_SHIFT else -1
+            direction = -1 if getattr(event, "mod", 0) & pygame.KMOD_SHIFT else 1
+            target = candidates[(index + direction) % len(candidates)]
+            self.set_first_responder(target)
+            self._set_focus(target if isinstance(target, GuiTextEditCtrl) else None)
+            return True
         if event.key == pygame.K_ESCAPE:
             if self._open_popup is not None:
                 self._close_popup()

@@ -290,7 +290,8 @@ class EffectsRenderMixin(FrameContextMixin):
                 if int(elapsed * flash_rate) % 2 == 0:
                     self._render_world_object(
                         frame, bomb['y'],
-                        lambda: self._render_bomb_ticking(
+                        lambda screen_x=screen_x, screen_y=screen_y,
+                        elapsed=elapsed: self._render_bomb_ticking(
                             screen_x, screen_y, elapsed))
                 active_bombs.append(bomb)
 
@@ -308,7 +309,9 @@ class EffectsRenderMixin(FrameContextMixin):
 
                 self._render_world_object(
                     frame, bomb['y'],
-                    lambda: self._render_explosion_burst(
+                    lambda screen_x=screen_x, screen_y=screen_y,
+                    explosion_elapsed=explosion_elapsed, radius=radius,
+                    alpha=alpha: self._render_explosion_burst(
                         screen_x, screen_y, explosion_elapsed, radius, alpha))
                 active_bombs.append(bomb)
 
@@ -496,7 +499,8 @@ class EffectsRenderMixin(FrameContextMixin):
 
                 self._render_world_object(
                     frame, proj['y'],
-                    lambda: self._render_projectile_marker(
+                    lambda proj=proj, screen_x=screen_x, screen_y=screen_y,
+                    current_time=current_time: self._render_projectile_marker(
                         proj.get('gani', 'arrow'), screen_x, screen_y,
                         proj['direction'],
                         current_time - proj.get('time', current_time)))
@@ -530,6 +534,7 @@ class EffectsRenderMixin(FrameContextMixin):
     BREAK_COLORS = {
         'bush': ((60, 145, 60), (28, 96, 28)),
         'pot':  ((198, 150, 104), (140, 96, 60)),
+        'vase': ((198, 150, 104), (140, 96, 60)),
         'rock': ((150, 150, 150), (96, 96, 96)),
         'sign': ((174, 132, 72), (103, 70, 36)),
     }
@@ -552,6 +557,26 @@ class EffectsRenderMixin(FrameContextMixin):
             # end of the arc.
             lead_x = obj['x'] + 1.0 + obj['dx']
             lead_y = obj['y'] + 1.0 + obj['dy']
+            pelted_npc = None
+            for npc_id, npc in (getattr(self.client, 'npcs', {}) or {}).items():
+                nx = float(npc.get('world_x', npc.get('x', 0)) or 0)
+                ny = float(npc.get('world_y', npc.get('y', 0)) or 0)
+                if (npc.get('visible', True) and
+                        nx <= lead_x < nx + 2.0 and ny <= lead_y < ny + 2.0):
+                    pelted_npc = (npc_id, npc)
+                    break
+            if step > 0 and pelted_npc is not None:
+                npc_id, npc = pelted_npc
+                kind = obj.get('type', '')
+                npc['pelt_kind'] = {'pot': 'vase', 'rock': 'stone'}.get(kind, kind)
+                gs1 = getattr(self, 'gs1', None)
+                if gs1 is not None:
+                    gs1.trigger_npc_event(npc_id, 'waspelt')
+                gs2 = getattr(self, 'gs2', None)
+                if gs2 is not None:
+                    gs2.trigger_npc_event(npc_id, 'onWasPelt')
+                self._spawn_break_effect(obj)
+                continue
             off_level = (not self.client.in_gmap_segment and
                          not in_level_bounds(lead_x, lead_y))
             if obj['dist'] >= obj['range'] or off_level or \
@@ -561,7 +586,7 @@ class EffectsRenderMixin(FrameContextMixin):
 
             sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
 
-            def draw_thrown():
+            def draw_thrown(obj=obj, sx=sx, sy=sy):
                 for i, (dx, dy) in enumerate(
                         [(0, 0), (1, 0), (0, 1), (1, 1)]):
                     tile_surf = self.tileset_mgr.get_tile_or_color(
@@ -616,7 +641,8 @@ class EffectsRenderMixin(FrameContextMixin):
             sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
             bright, dark = obj['colors']
 
-            def draw_other_thrown():
+            def draw_other_thrown(obj=obj, sx=sx, sy=sy, bright=bright,
+                                   dark=dark):
                 for i, (dx, dy) in enumerate(
                         [(0, 0), (1, 0), (0, 1), (1, 1)]):
                     chunk = pygame.Surface(
@@ -1116,7 +1142,9 @@ class EffectsRenderMixin(FrameContextMixin):
 
                 self._render_world_object(
                     frame, exp['y'],
-                    lambda: self._render_explosion_burst(
+                    lambda screen_x=screen_x, screen_y=screen_y,
+                    elapsed=elapsed, radius=radius,
+                    alpha=alpha: self._render_explosion_burst(
                         screen_x, screen_y, elapsed, radius, alpha))
 
                 active.append(exp)

@@ -185,6 +185,8 @@ class Protocol:
         # Optional outgoing-packet recorder for the coverage harness:
         # packet_id -> list of payloads sent (after the id byte, before newline).
         self.sent_payloads: Optional[Dict[int, List[bytes]]] = None
+        self.outbound_policy = None
+        self.last_outbound_policy_result = None
 
         # Serializes the outbound critical section (codec encrypt + sendall).
         # The GEN_3/4/5 codecs carry a STATEFUL cipher iterator whose byte order
@@ -328,6 +330,14 @@ class Protocol:
             return False
 
         try:
+            from .outbound import current_outbound_origin
+            if self.outbound_policy is not None:
+                result = self.outbound_policy(
+                    int(packet_id), bytes(data), current_outbound_origin(),
+                    {"append_newline": bool(append_newline)})
+                self.last_outbound_policy_result = result
+                if not bool(getattr(result, "allowed", result)):
+                    return False
             # Build packet: packet_id + 32, then data, then newline
             packet = bytes([packet_id + 32]) + data + (b'\n' if append_newline else b'')
 
@@ -557,6 +567,8 @@ class WebSocketProtocol:
         self.raw_data_expected = 0
         self.raw_data_buffer = b""
         self.pending_packets: List[Tuple[int, bytes]] = []
+        self.outbound_policy = None
+        self.last_outbound_policy_result = None
 
         # Callbacks
         self.on_connect: Optional[Callable] = None
@@ -814,6 +826,14 @@ class WebSocketProtocol:
             return False
 
         try:
+            from .outbound import current_outbound_origin
+            if self.outbound_policy is not None:
+                result = self.outbound_policy(
+                    int(packet_id), bytes(data), current_outbound_origin(),
+                    {"append_newline": bool(append_newline)})
+                self.last_outbound_policy_result = result
+                if not bool(getattr(result, "allowed", result)):
+                    return False
             packet = bytes([packet_id + 32]) + data + (b'\n' if append_newline else b'')
             encrypted = self.codec.send_packet(packet)
             self._send_bytes(encrypted)

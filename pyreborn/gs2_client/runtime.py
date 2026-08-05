@@ -6,6 +6,7 @@ from typing import Any
 from typing import Dict
 from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import GS2VM
+from reborn_protocol.gs2 import VMCoroutineWait
 from typing import List
 from typing import Optional
 from pathlib import Path
@@ -19,6 +20,48 @@ from .host import GS2ClientHost
 from .objects import _BoardTilesColumn, _GaniThisObject, _LevelObject, _NpcThisObject, layer_image_get
 from .objects_player import _FlagScopeObject, _NameObject, _PlayerAttrObject, _PlayerColorsObject, _PlayerObject, _ThisObject, _guild_from_nick
 from .registry import GS2GuiManager, GuiControl, PENDING_EVENT_CAP, SAVE_LINES_CACHE_MAX_BYTES, SAVE_LINES_MAX_CHARS_PER_LINE, SAVE_LINES_MAX_LINES, SCHEDULED_EVENT_CAP, TIMER_BACKLOG_CAP, TIMER_RESOLUTION, _GS1_TEXT_ARGS, _GlobalsStore, _REMOTE_PLAYER_EMPTY_STRINGS, _REMOTE_PLAYER_STICKY_NUMBERS, logger
+
+CLASS_JOIN_WAIT_SECONDS = 5.0
+CLASS_JOIN_WAIT_PUMPS = 300
+
+
+class _ClassJoinWait(VMCoroutineWait):
+    def __init__(self, runtime, vm, classname):
+        self.runtime = runtime
+        self.vm = vm
+        self.classname = classname
+        self.deadline = time.monotonic() + CLASS_JOIN_WAIT_SECONDS
+        self.pumps = 0
+        self.timed_out = False
+
+    def ready(self):
+        # The packet handler stores bytecode before its deferred runtime-load
+        # callback can run.  Promote that cache hit now: attachment happens
+        # synchronously, while coroutine resumption remains protected by the
+        # runtime's non-reentrant wake loop.
+        self.runtime._attach_cached_class(self.classname)
+        if any(getattr(joined, "_gs2_key", None) == self.classname
+               for joined in self.vm.joined):
+            return True
+        if (self.pumps >= CLASS_JOIN_WAIT_PUMPS
+                or time.monotonic() >= self.deadline):
+            self.timed_out = True
+            return True
+        return False
+
+    def pump(self):
+        self.pumps += 1
+
+    def result(self):
+        if self.timed_out:
+            warning_key = (id(self.vm), self.classname)
+            if warning_key not in self.runtime._join_timeout_warned:
+                self.runtime._join_timeout_warned.add(warning_key)
+                logger.warning("GS2 %s: class %r did not arrive; join timed out",
+                               self.vm.name, self.classname)
+            self.runtime._expire_join(self.vm, self.classname)
+            return 0.0
+        return 0.0
 
 class ClientGS2:
     """Runs GS2 bytecode client-side. Mirrors ClientGS1's surface: load_*,
@@ -36,6 +79,8 @@ class ClientGS2:
         #: selectedsword's backing store: pyReborn has one sword, so the
         #: reference's separate weapon-array index has nowhere else to live.
         self._selected_sword = -1
+        # Global projectile gravity (TInitStatics.cpp:1281, 2414-2416).
+        self.gravity = 2.0
         self.player_object = _PlayerObject(self)
         self.level_object = _LevelObject(self)
         self._flag_scopes: Dict[str, GS2Object] = {}
@@ -61,6 +106,38 @@ class ClientGS2:
             options_dialog = self.gui.register_native_control(
                 "GuiWindowCtrl", "OptionsDlg2D")
             options_dialog.set_visible(False)
+            # The Login rescripted log weapon customizes this client-owned
+            # window with a `with` block rather than constructing it.  Keep
+            # the native object on the canvas so showtop() can both reveal it
+            # and raise it through the ordinary GUI-control method surface.
+            log_window = self.gui.register_native_control(
+                "GuiWindowCtrl", "F2LogWindow_Window")
+            log_window.width = 500.0
+            log_window.height = 200.0
+            log_window.set_visible(False)
+            log_window._native_canvas_control = True
+            # The client predeclares the F3 player-list window before Login's
+            # scripts install their full control tree.  The log weapon can
+            # address it first, so preserve that native identity and attach
+            # it to the canvas only when showtop() reveals it.
+            player_list_window = self.gui.register_native_control(
+                "GuiWindowCtrl", "PlayerList_Window")
+            player_list_window.width = 188.0
+            player_list_window.height = 503.0
+            player_list_window.set_visible(False)
+            player_list_window._native_canvas_control = True
+            download_window = self.gui.register_native_control(
+                "GuiWindowCtrl", "DownloadProgress_Window")
+            download_window.width = 400.0
+            download_window.height = 170.0
+            download_window.set_visible(False)
+            download_window._native_canvas_control = True
+            installer_window = self.gui.register_native_control(
+                "GuiWindowCtrl", "IRC_Test_UpdateWindow")
+            installer_window.width = 590.0
+            installer_window.height = 370.0
+            installer_window.set_visible(False)
+            installer_window._native_canvas_control = True
         self.game_shell = None
         self._control_bindings: Dict[tuple, int] = {
             (0, 0): 38, (1, 0): 37, (2, 0): 40, (3, 0): 39,
@@ -75,6 +152,7 @@ class ClientGS2:
         # schedule_event/_process_scheduled_events
         self._scheduled: List[dict] = []
         self._pending_joins: Dict[str, List[GS2VM]] = {}
+        self._join_timeout_warned: set = set()
         self._prev_bytecode_cb = None
         self._prev_server_text_cb = None
         # Bytecode that arrived inside the client's packet loop, waiting to
@@ -87,8 +165,15 @@ class ClientGS2:
         self._policy_stub_logged: set = set()
         self._sleeping = False                    # a script sleep() is pumping update()
         self._coros: List[dict] = []
+        self._processing_coroutines = False
+        self._coroutine_wake_pending = False
         self._active_coro_keys: set = set()
         self._pending_events: Dict[tuple, List[tuple]] = {}
+        # New event entries wait here while this object's class downloads
+        # are outstanding.  This is separate from _pending_events, which
+        # serializes entries behind an event coroutine that is already
+        # running (and may itself be parked in join()).
+        self._join_gated_events: Dict[tuple, List[tuple]] = {}
         self._timer_accumulator = 0.0
         # Script definitions are shared; entries in vms["gani"] are the
         # independent hidden objects attached to individual wearers.
@@ -99,9 +184,30 @@ class ClientGS2:
         self._gani_wearer_identity: Dict[tuple, str] = {}
         self._requested_ganis: set = set()
         self._executing_vm: Optional[GS2VM] = None
+        # Set only while an NPC's wasshot callback executes. The reference
+        # getters inspect activeEvent + the executing NPC's projectile-origin
+        # bit, so attribution must never leak beyond that callback.
+        self._shot_attribution: Optional[str] = None
         # script-driven movement wire sync (see _sync_script_position)
         self._pos_sync_last: Optional[tuple] = None
         self._pos_sync_next: float = 0.0
+
+    def has_pending_explorer_work(self) -> bool:
+        """Whether deferred script work can still change an explorer snapshot.
+
+        Scheduled timers are deliberately excluded: they are ordinary idle-time
+        activity and may repeat forever.  This query covers work already in
+        flight or held behind class loading/event serialization.
+        """
+        return bool(
+            self._pending_bytecode
+            or self._pending_joins
+            or self._join_gated_events
+            or self._pending_events
+            or self._coros
+            or self._active_coro_keys
+            or self._coroutine_wake_pending
+        )
 
     def save_lines(self, filename: str, lines: list) -> bool:
         """Persist script lines beneath a server-scoped client cache directory."""
@@ -257,6 +363,8 @@ class ClientGS2:
         ("mp", "mp", 0.0), ("swordpower", "sword_power", 0.0),
         ("shieldpower", "shield_power", 0.0),
         ("glovepower", "glove_power", 0.0),
+        ("rating", "rating", 0.0),
+        ("ratingd", "rating_deviation", 0.0),
     )
 
     def script_player_object(self, player_id, record) -> GS2Object:
@@ -706,7 +814,8 @@ class ClientGS2:
                 return list(items_in_level(level))
             return list(getattr(client, "items", {}) or {})
         if probe == "testbomb":
-            return list(getattr(client, "bombs", {}) or {})
+            level = getattr(client, "_current_level_name", "") or ""
+            return list((getattr(client, "bombs", {}).get(level, {}) or {}))
         return [(to_num(e.get("x", 0)), to_num(e.get("y", 0)))
                 for e in (getattr(client, "active_explosions", None) or [])]
 
@@ -867,6 +976,13 @@ class ClientGS2:
             waiting = self._pending_joins.pop(norm_key, [])
             for joiner in waiting:
                 self._attach_class(joiner, norm_key, vm)
+            for joiner in waiting:
+                self._flush_join_gated_events(joiner)
+            # A class response is itself a coroutine wake-up source. Resume
+            # here so a following join is requested before the next packet or
+            # offline bytecode feed arrives.
+            if waiting:
+                self.process_coroutines(0.0)
 
         if kind in ("weapon", "npc"):
             # Toplevel runs on every load so its join() calls attach classes.
@@ -941,34 +1057,73 @@ class ClientGS2:
 
     # -- class joins ---------------------------------------------------------
 
-    def join_class(self, vm: GS2VM, classname: str) -> bool:
+    def is_class_loaded(self, classname: str) -> bool:
+        cname = classname.lower()
+        if cname in self.vms["class"]:
+            return True
+        stores = getattr(self.client, "gs2_bytecode", {}) if self.client else {}
+        classes = stores.get("class", {}) if isinstance(stores, dict) else {}
+        return cname in {to_str(key).lower() for key in classes}
+
+    def load_class(self, classname: str) -> bool:
+        """Request/store class bytecode without joining it to a caller."""
+        if not classname or self.is_class_loaded(classname):
+            return bool(classname)
+        if self.client is None:
+            return False
+        try:
+            return bool(self.client.request_class_bytecode(classname))
+        except Exception:
+            return False
+
+    def join_class(self, vm: GS2VM, classname: str):
         """join("classname"): merge the class's functions into the joining
         VM. If the class bytecode is not here yet, request it (PLI_UPDATECLASS)
         and finish the join when it arrives."""
         cname = classname.lower()
+        vm = self.owner_vm(vm)
         for j in vm.joined:
             if getattr(j, "_gs2_key", None) == cname:
                 return True
 
         cvm = self.vms["class"].get(cname)
         if cvm is None:
-            blob = None
-            if self.client is not None:
-                blob = self.client.gs2_bytecode.get("class", {}).get(classname) or \
-                       self.client.gs2_bytecode.get("class", {}).get(cname)
-            if blob:
-                cvm = self.load_bytecode("class", cname, blob)
+            cvm = self._attach_cached_class(cname)
         if cvm is not None:
             self._attach_class(vm, cname, cvm)
             return True
 
-        self._pending_joins.setdefault(cname, []).append(vm)
+        waiting = self._pending_joins.setdefault(cname, [])
+        if vm not in waiting:
+            waiting.append(vm)
         if self.client is not None:
             try:
                 self.client.request_class_bytecode(classname)
             except Exception:
                 pass
+        if vm.call_is_suspendable:
+            return _ClassJoinWait(self, vm, cname)
         return False
+
+    def _attach_cached_class(self, classname: str) -> Optional[GS2VM]:
+        """Load one class already present in the client's bytecode store.
+
+        Packet receipt and VM loading are deliberately separate.  A join is
+        the exception where the executing frame needs an available class
+        immediately, so cache promotion and pending-join attachment are
+        synchronous; only resuming parked generators may be deferred.
+        """
+        cname = to_str(classname).lower()
+        cvm = self.vms["class"].get(cname)
+        if cvm is not None or self.client is None:
+            return cvm
+        stores = getattr(self.client, "gs2_bytecode", {}) or {}
+        classes = stores.get("class", {}) if isinstance(stores, dict) else {}
+        blob = next((value for key, value in classes.items()
+                     if to_str(key).lower() == cname and value), None)
+        if blob is None:
+            return None
+        return self.load_bytecode("class", cname, blob)
 
     def _attach_class(self, joiner: GS2VM, cname: str, class_vm: GS2VM):
         """Instantiate the class against the joiner: a fresh VM over the
@@ -987,6 +1142,38 @@ class ClientGS2:
         inst._gs2_owner = self._timeout_key(joiner)
         joiner.joined.append(inst)
 
+    def _has_pending_joins(self, vm: GS2VM) -> bool:
+        """Whether the script object owning *vm* still awaits any class."""
+        if not isinstance(vm, GS2VM):
+            return False
+        key = self._timeout_key(self.owner_vm(vm))
+        return any(any(self._timeout_key(self.owner_vm(joiner)) == key
+                       for joiner in waiting)
+                   for waiting in self._pending_joins.values())
+
+    def _expire_join(self, vm: GS2VM, classname: str) -> None:
+        """Resolve one failed download so queued entries may proceed."""
+        owner = self.owner_vm(vm)
+        waiting = self._pending_joins.get(classname)
+        if waiting:
+            self._pending_joins[classname] = [
+                joiner for joiner in waiting if joiner is not owner]
+            if not self._pending_joins[classname]:
+                del self._pending_joins[classname]
+        self._flush_join_gated_events(owner)
+
+    def _flush_join_gated_events(self, vm: GS2VM) -> None:
+        """Admit queued events, in arrival order, after the final join."""
+        owner = self.owner_vm(vm)
+        if self._has_pending_joins(owner):
+            return
+        key = self._timeout_key(owner)
+        queued = self._join_gated_events.pop(key, [])
+        for event, args in queued:
+            current = self.vms.get(key[0], {}).get(key[1])
+            if current is not None and current.has_function(event):
+                self._run(current, event, *args)
+
     def _timeout_key(self, vm: GS2VM) -> tuple:
         """The (kind, key) identity a VM's settimer()/onTimeout state files
         under. A joined-class instance resolves to its joiner's own key
@@ -999,6 +1186,7 @@ class ClientGS2:
     # -- events --------------------------------------------------------------
 
     def _run(self, vm: GS2VM, event: str, *args) -> None:
+        from ..outbound import script_origin
         if getattr(vm, "_gs2_kind", "") == "gani":
             vm.this.mirror_wearer()
             vm._gs2_player = self._gani_player_object(vm._gs2_key)
@@ -1006,6 +1194,14 @@ class ClientGS2:
                 worn = self._gani_worn.get(vm._gs2_key)
                 args = tuple(worn[1]) if worn is not None else ()
         key = self._timeout_key(vm)
+        if self._has_pending_joins(vm):
+            pending = self._join_gated_events.setdefault(key, [])
+            if len(pending) >= PENDING_EVENT_CAP:
+                dropped = pending.pop(0)
+                logger.debug("GS2 %s join-gated queue full; dropped %s",
+                             vm.name, dropped[0])
+            pending.append((event, args))
+            return
         if key in self._active_coro_keys:
             pending = self._pending_events.setdefault(key, [])
             if len(pending) >= PENDING_EVENT_CAP:
@@ -1014,8 +1210,29 @@ class ClientGS2:
                              vm.name, dropped[0])
             pending.append((event, args))
             return
-        gen = vm.iter_call(event, *args)
-        self._drive(gen, vm, key, event)
+        with script_origin(getattr(vm, "_gs2_kind", "gs2"),
+                           getattr(vm, "_gs2_key", vm.name), event):
+            gen = vm.iter_call(event, *args)
+            self._drive(gen, vm, key, event)
+
+    def call_public_event(self, vm: GS2VM, event: str, *args) -> Any:
+        """Enter a public cross-VM call through the event admission gate.
+
+        Calls within the target VM's current event remain ordinary function
+        calls; only a new entry from another script object is gated.
+        """
+        # Test doubles and host-owned callable objects have no runtime VM
+        # identity and cannot own class joins.
+        if not isinstance(vm, GS2VM):
+            return vm.call(event, *args)
+        source = self._executing_vm
+        if (source is not None
+                and self._timeout_key(source) == self._timeout_key(vm)):
+            return vm.call(event, *args)
+        if self._has_pending_joins(vm):
+            self._run(vm, event, *args)
+            return 0.0
+        return vm.call(event, *args)
 
     def _event_finished(self, key: tuple) -> None:
         self._active_coro_keys.discard(key)
@@ -1036,6 +1253,18 @@ class ClientGS2:
         self._coros = [c for c in self._coros if c["key"] != key]
         self._active_coro_keys.discard(key)
         self._pending_events.pop(key, None)
+
+    def reset_session(self) -> None:
+        """Discard execution frames and class waits owned by the session."""
+        self._coros.clear()
+        self._active_coro_keys.clear()
+        self._pending_events.clear()
+        self._join_gated_events.clear()
+        self._pending_joins.clear()
+        self._pending_bytecode.clear()
+        self._join_timeout_warned.clear()
+        self._processing_coroutines = False
+        self._coroutine_wake_pending = False
 
     def _drive(self, gen, vm: GS2VM, key: tuple, event: str) -> None:
         try:
@@ -1058,17 +1287,41 @@ class ClientGS2:
             return
         self._active_coro_keys.add(key)
         self._coros.append({"gen": gen, "vm": vm, "key": key,
-                            "event": event, "remaining": float(delay)})
+                            "event": event, "wait": delay,
+                            "remaining": (float(delay)
+                                          if not isinstance(delay, VMCoroutineWait)
+                                          else 0.0)})
 
     def process_coroutines(self, dt: float) -> None:
         """Resume scripts whose cooperative sleep has elapsed."""
+        if self._processing_coroutines:
+            self._coroutine_wake_pending = True
+            return
         if not self._coros:
             return
+        self._processing_coroutines = True
+        try:
+            self._process_coroutines(dt)
+            while self._coroutine_wake_pending:
+                self._coroutine_wake_pending = False
+                self._process_coroutines(0.0)
+        finally:
+            self._processing_coroutines = False
+
+    def _process_coroutines(self, dt: float) -> None:
+        """Run one non-reentrant coroutine pass."""
         still = []
         finished = []
         for coro in self._coros:
-            coro["remaining"] -= dt
-            if coro["remaining"] > 0:
+            wait = coro.get("wait")
+            if isinstance(wait, VMCoroutineWait):
+                wait.pump()
+                if not wait.ready():
+                    still.append(coro)
+                    continue
+            else:
+                coro["remaining"] -= dt
+            if not isinstance(wait, VMCoroutineWait) and coro["remaining"] > 0:
                 still.append(coro)
                 continue
             try:
@@ -1079,7 +1332,11 @@ class ClientGS2:
                 previous, self._executing_vm = (
                     self._executing_vm, coro["vm"])
                 try:
-                    coro["remaining"] = float(next(coro["gen"]))
+                    delay = next(coro["gen"])
+                    coro["wait"] = delay
+                    coro["remaining"] = (float(delay)
+                                         if not isinstance(delay, VMCoroutineWait)
+                                         else 0.0)
                 finally:
                     self._executing_vm = previous
                 still.append(coro)
@@ -1121,14 +1378,17 @@ class ClientGS2:
         n = 0
         for kind in ("weapon", "npc"):
             for vm in list(self.vms[kind].values()):
-                if vm.has_function(event):
+                # A not-yet-attached class may be the code that defines the
+                # event, so pending joins take precedence over lookup.
+                if self._has_pending_joins(vm) or vm.has_function(event):
                     self._run(vm, event, *args)
                     n += 1
         return n
 
     def trigger_weapon_event(self, weapon: str, event: str, *args) -> bool:
         vm = self.vms["weapon"].get(weapon.lower())
-        if vm is not None and vm.has_function(event):
+        if vm is not None and (self._has_pending_joins(vm)
+                               or vm.has_function(event)):
             self._run(vm, event, *args)
             return True
         return False
@@ -1146,10 +1406,20 @@ class ClientGS2:
                 vm = vms.get(int(npc_id))
             except (TypeError, ValueError):
                 pass
-        if vm is not None and vm.has_function(event):
+        if vm is not None and (self._has_pending_joins(vm)
+                               or vm.has_function(event)):
             self._run(vm, event, *args)
             return True
         return False
+
+    def trigger_npc_wasshot(self, npc_id, by_player: bool, *args) -> bool:
+        """Run one NPC ``wasshot`` event with reference-scoped attribution."""
+        previous = self._shot_attribution
+        self._shot_attribution = "player" if by_player else "baddy"
+        try:
+            return self.trigger_npc_event(npc_id, "wasshot", *args)
+        finally:
+            self._shot_attribution = previous
 
     def npc_has_event(self, npc_id, event: str) -> bool:
         """Return True if this NPC's VM defines the event.

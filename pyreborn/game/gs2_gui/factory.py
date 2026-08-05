@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from .base import GuiControl
 from .basic_controls import (
-    GuiButtonCtrl, GuiTextCtrl, GuiWindowCtrl,
+    GuiBrowserCtrl, GuiButtonCtrl, GuiTextCtrl, GuiWindowCtrl, GuiWorldCtrl,
 )
 from .collection_controls import (
     GuiDrawingPanel, GuiStartMenuCtrl, GuiTabCtrl, GuiTaskbar,
@@ -31,6 +31,7 @@ from .collection_controls import GuiTreeNode, _TreeNodeIcon  # noqa: F401  - kep
 _CONTROL_CLASSES: Dict[str, type] = {
     cls.CTRL_CLASS.lower(): cls for cls in (
         GuiControl, GuiWindowCtrl, GuiButtonCtrl, GuiTextCtrl, GuiMLTextCtrl,
+        GuiBrowserCtrl, GuiWorldCtrl,
         GuiScrollCtrl, GuiTextEditCtrl, GuiCheckBoxCtrl, GuiRadioCtrl,
         GuiBitmapCtrl, GuiShowImgCtrl, GuiPopUpEditCtrl, GuiControlProfile,
         GuiTextListCtrl, GuiTabCtrl, GuiTreeViewCtrl, GuiTaskbar,

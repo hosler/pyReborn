@@ -55,13 +55,10 @@ LIFT_REPLACE: Tuple[Tuple[int, int, int, int], ...] = (
 # TInitStatics.cpp:1137. The sprite index carried over the player's head.
 LIFT_SPRITES: Tuple[int, ...] = (0x105, 0x10b, 0x109, 0x107, 0x0ef)
 
-# Names are OURS and cosmetic: the reference identifies a row by its index
-# alone, and the carried object is drawn from its own tile ids either way.
-# Only row 0 is confirmed - it is the bush pattern GServer-v2 also lists as a
-# bush-item drop (PlayerClientPackets.cpp:112, tile 0x002). The rest are
-# labelled by convention and never decide a rule; if one turns out to be a
-# barrel rather than a pot, only this string changes.
-LIFT_NAMES: Tuple[str, ...] = ("bush", "sign", "pot", "stone", "stone")
+# TInitStatics.cpp:1160 (`liftnames`). Besides describing carried objects to
+# the renderer, these exact names back an NPC's peltwith* properties after a
+# thrown object connects.
+LIFT_NAMES: Tuple[str, ...] = ("bush", "sign", "vase", "stone", "blackstone")
 
 # TInitStatics.cpp:1506 (`bushobj`). The patterns a SWORD cuts, which is a
 # different set from the ones a hand lifts - the plain bush is in both, the

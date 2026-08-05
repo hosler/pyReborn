@@ -61,6 +61,8 @@ _OTHER_PROP_HANDLERS = {
     32: _set('ap'),
     34: _set('account'),
     35: _set('body_image'),
+    36: _set('rating'),
+    42: _set('attach_npc'),
     # The server's level-leave notification IS this prop with value 0 (pygserver
     # build_player_left; GServer-v2 sends the same shape). Without capturing it,
     # departed players linger forever in the level roster as ghosts.
@@ -526,5 +528,4 @@ def build_movement(x: float, y: float, direction: int = 2,
         packet.extend(level_bytes)
 
     return bytes(packet)
-
 

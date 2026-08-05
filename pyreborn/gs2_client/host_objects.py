@@ -10,8 +10,26 @@ from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .objects_player import _CanvasObject, _engine_object
 from .registry import GS2GuiManager, _gs2_object
+from ..liftobjects import LIFT_SPRITES
 
 class HostObjectsMixin:
+
+    @_gs2_object("carriesnpc", "carriesbush", "carriessign", "carriesvase",
+                 "carriesstone", "carriesblackstone")
+    def _obj_carry_kind(self, name):
+        player = getattr(self.rt2.client, "player", None)
+        if player is None:
+            return False
+        if name == "carriesnpc":
+            return bool(getattr(player, "carry_npc", 0))
+        index = {"carriesbush": 0, "carriessign": 1, "carriesvase": 2,
+                 "carriesstone": 3, "carriesblackstone": 4}[name]
+        return getattr(player, "carry_sprite", 0) == LIFT_SPRITES[index]
+
+    @_gs2_object("weaponsenabled")
+    def _obj_weapons_enabled(self, name):
+        gs1 = self.rt2.gs1
+        return bool(getattr(gs1, "weapons_enabled", True))
 
     @_gs2_object("player", "playero")
     def _obj_player(self, name):
@@ -300,6 +318,78 @@ class HostObjectsMixin:
         if name == "leftmousebuttonglobal":
             return left
         return float(left) + 2.0 * middle + 4.0 * right
+
+    @_gs2_object("mousex", "mousey", "mousescreenx", "mousescreeny")
+    def _obj_mouse_position(self, name):
+        game = getattr(self.rt2, "game_shell", None)
+        if game is None:
+            return 0.0
+        try:
+            sx, sy = game.viewport.mouse_pos()
+        except Exception:
+            sx = sy = 0
+        if name == "mousescreenx":
+            return float(sx)
+        if name == "mousescreeny":
+            return float(sy)
+        try:
+            wx, wy = game.camera.screen_to_world(sx, sy)
+        except Exception:
+            wx = wy = 0.0
+        return float(wx if name == "mousex" else wy)
+
+    @_gs2_object("leftmousebutton")
+    def _obj_left_mouse(self, name):
+        try:
+            import pygame
+            return bool(pygame.mouse.get_pressed()[0])
+        except Exception:
+            return False
+
+    @_gs2_object("focusx", "focusy", "isfocused")
+    def _obj_focus(self, name):
+        game = getattr(self.rt2, "game_shell", None)
+        camera = getattr(game, "camera", None)
+        if camera is None:
+            player = getattr(self.rt2.client, "player", None)
+            if name == "isfocused":
+                return False
+            return float(getattr(player, "x" if name == "focusx" else "y", 0.0) or 0.0)
+        if name == "isfocused":
+            return True
+        return float(camera.center[0 if name == "focusx" else 1])
+
+    @_gs2_object("isapplicationactive", "isopengl", "screenpixelscale",
+                 "scriptedcontrols", "gravity", "canspin")
+    def _obj_window_state(self, name):
+        if name == "isopengl":
+            # This client uses pygame's software/2D surface renderer.
+            return False
+        if name == "gravity":
+            return float(self.rt2.gravity)
+        if name == "scriptedcontrols":
+            return True
+        if name == "screenpixelscale":
+            viewport = getattr(getattr(self.rt2, "game_shell", None), "viewport", None)
+            return float(getattr(viewport, "_scale_x", 1.0) or 1.0)
+        if name == "isapplicationactive":
+            try:
+                import pygame
+                return bool(pygame.display.get_surface() is not None and pygame.display.get_active())
+            except Exception:
+                return False
+        player = getattr(self.rt2.client, "player", None)
+        if name == "canspin":
+            return bool(getattr(player, "carry_sprite", None))
+        return False
+
+    @_gs2_object("shotbyplayer", "shotbybaddy", "wasshooted")
+    def _obj_shot_event(self, name):
+        attribution = getattr(self.rt2, "_shot_attribution", None)
+        active = bool(attribution and getattr(self.rt2, "_executing_vm", None) is not None)
+        if name == "wasshooted":
+            return active
+        return active and attribution == ("player" if name == "shotbyplayer" else "baddy")
 
     @_gs2_object("players")
     def _obj_players(self, name):

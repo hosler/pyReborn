@@ -285,6 +285,11 @@ class GuiTextListCtrl(GuiControl):
     can_key_focus = True         # array ctrls take focus on click
                                  # (GuiArrayCtrl.cpp:477-479)
 
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({
+        "allowmultipleselections", "enumerate", "iconheight", "iconwidth",
+        "resizecell", "sortcolumn", "selected", "selectedid", "selectedrow",
+    })
+
     def pointer_down(self, manager, pos) -> bool:
         manager._set_focus(None)
         row = self.row_at(pos)
@@ -328,6 +333,11 @@ class GuiTextListCtrl(GuiControl):
         #: selected ROW NUMBERS, in selection order; [0] is getSelectedCell()
         self.selected_rows: List[int] = []
         self.allow_multiple_selections = False
+        self.enumerate_rows = False
+        self.resize_cell = False
+        self.sort_column = 0
+        self.icon_w = 0
+        self.icon_h = 0
 
     @property
     def selected_index(self) -> int:
@@ -654,8 +664,15 @@ class GuiTextListCtrl(GuiControl):
                     diff = to_num(member(left, "id", 0.0)) \
                         - to_num(member(right, "id", 0.0))
             else:
-                lt = to_str(member(left, "text", "")).casefold()
-                rt = to_str(member(right, "text", "")).casefold()
+                def column_text(row):
+                    text = to_str(member(row, "text", ""))
+                    if self.sort_column < 1:
+                        return text
+                    parts = text.split("\t")
+                    return parts[self.sort_column] \
+                        if self.sort_column < len(parts) else ""
+                lt = column_text(left).casefold()
+                rt = column_text(right).casefold()
                 diff = -1.0 if lt < rt else (1.0 if lt > rt else 0.0)
             return diff * row_dir
 
@@ -682,6 +699,14 @@ class GuiTextListCtrl(GuiControl):
         k = key.lower()
         if k == "iconwidth":
             return float(self.icon_w)
+        if k == "iconheight":
+            return float(self.icon_h)
+        if k == "enumerate":
+            return 1.0 if self.enumerate_rows else 0.0
+        if k == "resizecell":
+            return 1.0 if self.resize_cell else 0.0
+        if k == "sortcolumn":
+            return float(self.sort_column)
         # Properties the reference computes rather than stores
         # (GuiTextListCtrlProperties.cpp:407-411): `selectedrow` and
         # `selectedid` are the property spellings of the two getters above,
@@ -707,7 +732,16 @@ class GuiTextListCtrl(GuiControl):
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
-        if k == "iconwidth":
+        if k in ("iconwidth", "iconheight"):
+            return
+        if k == "enumerate":
+            self.enumerate_rows = to_bool(value)
+            return
+        if k == "resizecell":
+            self.resize_cell = to_bool(value)
+            return
+        if k == "sortcolumn":
+            self.sort_column = int(to_num(value))
             return
         if k == "allowmultipleselections":
             self.allow_multiple_selections = bool(to_num(value))
@@ -748,7 +782,7 @@ class GuiTextListCtrl(GuiControl):
          "setrowactivebyid", "makevisible", "makevisiblebyid"})
 
     def has(self, key: str) -> bool:
-        return key.lower() == "iconwidth" or super().has(key)
+        return key.lower() in ("iconwidth", "iconheight") or super().has(key)
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         # keep our height in sync with content so ancestor GuiScrollCtrl

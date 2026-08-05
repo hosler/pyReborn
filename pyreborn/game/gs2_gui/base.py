@@ -66,6 +66,14 @@ class GuiListRow(GS2Object):
 
     __slots__ = ("icon_image",)
 
+    _DEFAULTS = {
+        "active": 1.0, "flickering": 0.0, "flickertime": 1.0,
+        "image": 0.0, "selectedimage": 1.0, "sortgroup": 0.0,
+        "sortvalue": 0.0, "x": 0.0, "y": 0.0, "width": 0.0,
+        "height": 0.0, "hint": "", "profile": None,
+        "useownprofile": 0.0,
+    }
+
     def __init__(self, text: str, row_id: Any):
         super().__init__(name="row")
         self.icon_image = ""
@@ -74,6 +82,16 @@ class GuiListRow(GS2Object):
 
     def get(self, key: str) -> Any:
         k = key.lower()
+        if k == "extent":
+            return f"{int(to_num(self.get('width')))},{int(to_num(self.get('height')))}"
+        if k == "position":
+            return f"{int(to_num(self.get('x')))},{int(to_num(self.get('y')))}"
+        if k == "gettext":
+            return lambda *args: to_str(self.get("text"))
+        if k == "settext":
+            return lambda value="", *args: self.set("text", to_str(value)) or 0.0
+        if k in self._DEFAULTS and k not in self._members:
+            return self._DEFAULTS[k]
         v = super().get(k)
         if v is None and k not in self._members:
             if k == "icon":
@@ -86,6 +104,20 @@ class GuiListRow(GS2Object):
         # claim everything: `icon` (and friends) must resolve through the
         # with-scope lookup inside `with (row) {...}` blocks
         return True
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k in ("extent", "position", "width", "height", "x", "y"):
+            return
+        if k in ("active", "flickering", "useownprofile"):
+            value = 1.0 if to_bool(value) else 0.0
+        elif k in ("image", "selectedimage", "sortgroup", "sortvalue", "id"):
+            value = float(int(to_num(value)))
+        elif k == "flickertime":
+            value = float(to_num(value))
+        elif k in ("text", "hint"):
+            value = to_str(value)
+        super().set(k, value)
 
 
 class GuiControl(GS2Object):
@@ -117,7 +149,9 @@ class GuiControl(GS2Object):
 
     _NUM_ATTRS = ("x", "y", "width", "height")
     _STR_ATTRS = {"text": "text", "name": "ctrl_name"}
-    _EVENT_MEMBERS = {"onaction", "onselect", "ontextchanged"}
+    _EVENT_MEMBERS = {
+        "onaction", "onselect", "ontextchanged", "onanimationfinished",
+    }
     # Registered Torque property surface. The official runtime's with-scope
     # assignment is EXISTENCE-GATED (verified against the reversed
     # interpreter): a construction-block field like `canmove = true;` only
@@ -146,6 +180,13 @@ class GuiControl(GS2Object):
         # GuiControlProperties.cpp:660 clipchildren, :662 cliptobounds,
         # :696 useownprofile)
         "useownprofile", "clipchildren", "cliptobounds",
+        "alpha", "areaclickpriority", "awake", "bitmapcache", "blue",
+        "bounds", "clipmove", "color", "cursor", "editing", "mode",
+        "fastchildrender", "firstresponder", "flickering",
+        "flickerbasetime", "flickertime", "green", "hinttime",
+        "lockmousedown", "minsize", "red", "resizewidth",
+        "resizeheight", "rotation", "rotationcenter", "scrolllinex",
+        "scrollliney", "showhint", "alwaysontop",
     })
     _METHOD_NAMES = frozenset({
         "showtop", "show", "hide", "makefirstresponder",
@@ -168,6 +209,10 @@ class GuiControl(GS2Object):
         # auto-login branch correctly does not fire. Unanswered it returned
         # 0.0, i.e. "not empty", which would have taken that branch.
         "isempty",
+        "createanimation", "stopanimations", "stopinoutanimations",
+        "findcontrol", "getparent", "ismouselocked", "mouselock",
+        "mouseunlock", "mouseunlockall", "repaint", "showalwaystop",
+        "sortcontrols", "startdrag", "tabfirst",
     })
 
     def __init__(self, ctor_arg: Any = None):
@@ -175,10 +220,33 @@ class GuiControl(GS2Object):
         self.ctrl_name: str = ctor_arg if isinstance(ctor_arg, str) else ""
         self.x = 0.0
         self.y = 0.0
-        self.width = 100.0
-        self.height = 24.0
+        self.width = 64.0
+        self.height = 64.0
         self.text = ""
         self.visible = True
+        self.alpha = 1.0
+        self.rotation = 0.0
+        self.red = self.green = self.blue = 1.0
+        self.area_click_priority = 0
+        self.bitmap_cache = False
+        self.clip_move = True
+        self.cursor = "default"
+        self.editing = False
+        self.effect_mode = 1
+        self.fast_child_render = False
+        self.flickering = False
+        self.flicker_base_time = 0.0
+        self.flicker_time = 1.0
+        self.hint_time = 0.5
+        self.lock_mouse_down = False
+        self.min_size = (8.0, 8.0)
+        self.resize_width = True
+        self.resize_height = True
+        self.rotation_center = (0.0, 0.0)
+        self.scroll_line_x = 30
+        self.scroll_line_y = 10
+        self.show_hint = True
+        self.always_on_top = False
         self.profile_name = _DEFAULT_PROFILE_NAME
         #: `profile = IRC_ScrollProfile;` assigns the registered profile
         #: OBJECT (Torque semantics); kept alongside the name so late field
@@ -227,6 +295,7 @@ class GuiControl(GS2Object):
         # (icon.drawimage/drawimagestretched in construction blocks --
         # taskbar buttons); rendered by GuiButtonCtrl
         self.icon_image = ""
+        self.animations = []
 
     # -- GS2Object property bridge ------------------------------------------
 
@@ -236,6 +305,48 @@ class GuiControl(GS2Object):
             return float(getattr(self, k))
         if k == "visible":
             return 1.0 if self.visible else 0.0
+        if k in ("alpha", "rotation"):
+            return float(getattr(self, k))
+        scalar = {
+            "areaclickpriority": self.area_click_priority,
+            "bitmapcache": self.bitmap_cache, "clipmove": self.clip_move,
+            "editing": self.editing, "mode": self.effect_mode,
+            "fastchildrender": self.fast_child_render,
+            "flickering": self.flickering,
+            "flickerbasetime": self.flicker_base_time,
+            "flickertime": self.flicker_time, "hinttime": self.hint_time,
+            "lockmousedown": self.lock_mouse_down,
+            "resizewidth": self.resize_width,
+            "resizeheight": self.resize_height,
+            "scrolllinex": self.scroll_line_x,
+            "scrollliney": self.scroll_line_y, "showhint": self.show_hint,
+            "alwaysontop": self.always_on_top,
+        }
+        if k in scalar:
+            value = scalar[k]
+            return (1.0 if value else 0.0) if isinstance(value, bool) else float(value)
+        if k == "awake":
+            return 1.0 if self._awake else 0.0
+        if k in ("red", "green", "blue"):
+            return float(getattr(self, k))
+        if k == "bounds":
+            return ",".join(str(int(v)) for v in (self.x, self.y, self.width, self.height))
+        if k == "color":
+            rgba = [round(max(0.0, min(1.0, v)) * 255)
+                    for v in (self.red, self.green, self.blue, self.alpha)]
+            return ",".join(str(v) for v in (rgba if rgba[3] != 255 else rgba[:3]))
+        if k == "cursor":
+            return self.cursor
+        if k in ("minsize", "rotationcenter"):
+            pair = self.min_size if k == "minsize" else self.rotation_center
+            return f"{int(pair[0])},{int(pair[1])}"
+        if k == "firstresponder":
+            return self._first_responder_child()
+        if k == "isinanimation":
+            return 1.0 if self.animations else 0.0
+        if k == "isininoutanimation":
+            return 1.0 if any(animation.is_in_out
+                              for animation in self.animations) else 0.0
         if k == "profile":
             # The reference getter returns the OWN profile first, else the
             # referenced profile OBJECT (GuiControlProperties.cpp:411-418) --
@@ -307,15 +418,26 @@ class GuiControl(GS2Object):
     # -- script-callable methods -----------------------------------------
 
     def _m_showtop(self, *args) -> float:
-        """showTop(): make visible and raise to the top of the sibling
-        z-order (-Serverlist_Chat openChat: GlobalChat_Window.showtop())."""
+        """showTop(): show, raise, then focus the first tabable descendant."""
         if self._manager is not None:
             self._manager.show(self)
+            self._m_tabfirst()
         else:
             self.visible = True
         return 0.0
 
     _m_show = _m_showtop
+
+    def _m_createanimation(self, *args):
+        return self.create_animation()
+
+    def _m_stopanimations(self, *args) -> float:
+        self.stop_animations()
+        return 0.0
+
+    def _m_stopinoutanimations(self, *args) -> float:
+        self.stop_in_out_animations()
+        return 0.0
 
     def _m_isempty(self, *args) -> bool:
         """isEmpty(): True when this control holds no text. See the
@@ -343,6 +465,61 @@ class GuiControl(GS2Object):
         read 0 and the editor swallowed every keystroke."""
         return 1.0 if (self._manager is not None
                        and self._manager._first_responder is self) else 0.0
+
+    def _m_findcontrol(self, *args):
+        """findControl(string): the binding parses the string as x,y."""
+        point = self._num_pair(args[0] if args else "")
+        if point is None or self._manager is None:
+            return None
+        return self._manager.hit_test_subtree(self, point)
+
+    def _m_getparent(self, *args):
+        return self.get("parent")
+
+    def _m_ismouselocked(self, *args) -> float:
+        device = int(to_num(args[0])) if args else 0
+        return 1.0 if (self._manager is not None
+                       and self._manager.mouse_locked(device, self)) else 0.0
+
+    def _m_mouselock(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.mouse_lock(int(to_num(args[0])) if args else 0, self)
+        return 0.0
+
+    def _m_mouseunlock(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.mouse_unlock(int(to_num(args[0])) if args else 0, self)
+        return 0.0
+
+    def _m_mouseunlockall(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.mouse_unlock_all(self)
+        return 0.0
+
+    def _m_repaint(self, *args) -> float:
+        return 0.0
+
+    def _m_showalwaystop(self, *args) -> float:
+        # Despite its name, the reference writes the accept-drop-files flag,
+        # then follows showTop's visible/raise/tab-first path.
+        self._members["acceptdropfiles"] = 1.0
+        self._m_showtop()
+        return 0.0
+
+    def _m_sortcontrols(self, *args) -> float:
+        self.children.sort(key=lambda child: (child.y, child.x))
+        return 0.0
+
+    def _m_startdrag(self, *args) -> float:
+        if self._manager is not None:
+            self._manager.start_control_drag(self)
+        return 0.0
+
+    def _m_tabfirst(self, *args):
+        control = self._find_first_tabable()
+        if control is not None and self._manager is not None:
+            self._manager.focus(control)
+        return control
 
     def _m_bringtofront(self, *args) -> float:
         """bringToFront(): raise to the top of the sibling z-order WITHOUT
@@ -580,6 +757,76 @@ class GuiControl(GS2Object):
         if k == "visible":
             self.set_visible(to_bool(value))
             return
+        if k in ("alpha", "rotation"):
+            setattr(self, k, to_num(value))
+            if k == "rotation" and self.rotation != 0.0:
+                self._members["cliptobounds"] = 0.0
+            return
+        if k == "awake":
+            return
+        if k == "areaclickpriority":
+            self.area_click_priority = max(0, min(2, int(to_num(value))))
+            return
+        bool_attrs = {
+            "bitmapcache": "bitmap_cache", "clipmove": "clip_move",
+            "editing": "editing", "fastchildrender": "fast_child_render",
+            "flickering": "flickering", "lockmousedown": "lock_mouse_down",
+            "resizewidth": "resize_width", "resizeheight": "resize_height",
+            "showhint": "show_hint", "alwaysontop": "always_on_top",
+        }
+        if k in bool_attrs:
+            setattr(self, bool_attrs[k], to_bool(value))
+            return
+        num_attrs = {
+            "mode": "effect_mode", "flickerbasetime": "flicker_base_time",
+            "flickertime": "flicker_time", "hinttime": "hint_time",
+        }
+        if k in num_attrs:
+            setattr(self, num_attrs[k], to_num(value))
+            return
+        if k in ("scrolllinex", "scrollliney"):
+            setattr(self, "scroll_line_x" if k.endswith("x") else "scroll_line_y",
+                    max(0, int(to_num(value))))
+            return
+        if k in ("red", "green", "blue"):
+            setattr(self, k, to_num(value))
+            return
+        if k == "color":
+            parts = self._color_parts(value)
+            if parts is not None:
+                self.red, self.green, self.blue, self.alpha = parts
+            return
+        if k == "bounds":
+            parts = self._num_quad(value)
+            if parts is not None:
+                self.resize_control(*parts)
+            return
+        if k == "cursor":
+            cursor = to_str(value)
+            if cursor == "arrow":
+                cursor = "pointer"
+            allowed = {"default", "text", "pointer", "crosshair",
+                       "col-resize", "row-resize", "progress", "wait",
+                       "help", "drag"}
+            self.cursor = cursor if cursor in allowed else "default"
+            return
+        if k in ("minsize", "rotationcenter"):
+            pair = self._num_pair(value)
+            if pair is not None:
+                setattr(self, "min_size" if k == "minsize" else "rotation_center", pair)
+            return
+        if k == "firstresponder":
+            if self._manager is not None and isinstance(value, GuiControl):
+                self._manager.focus(value)
+            return
+        if k == "isinanimation":
+            if not to_bool(value):
+                self.stop_animations()
+            return
+        if k == "isininoutanimation":
+            if not to_bool(value):
+                self.stop_in_out_animations()
+            return
         if k == "profile":
             # accept a profile OBJECT (`profile = IRC_ScrollProfile;` -- the
             # bare reference resolves to the registered GuiControlProfile) or
@@ -635,10 +882,69 @@ class GuiControl(GS2Object):
 
     def has(self, key: str) -> bool:
         k = key.lower()
-        return (k in self._NUM_ATTRS or k in ("visible", "icon", "parent")
+        return (k in self._NUM_ATTRS or k in ("visible", "icon", "parent",
+                "alpha", "rotation", "isinanimation", "isininoutanimation")
                 or k == "profile"
                 or k in self._STR_ATTRS or k in self._EVENT_MEMBERS
                 or k in self._TORQUE_PROPS or super().has(k))
+
+    @staticmethod
+    def _num_quad(value):
+        values = value if isinstance(value, (list, tuple)) else to_str(value).replace(",", " ").split()
+        if len(values) < 4:
+            return None
+        return tuple(to_num(item) for item in values[:4])
+
+    @staticmethod
+    def _color_parts(value):
+        values = value if isinstance(value, (list, tuple)) else to_str(value).replace(",", " ").split()
+        if len(values) < 3:
+            return None
+        rgba = [max(0, min(255, int(to_num(item)))) for item in values[:4]]
+        if len(rgba) == 3:
+            rgba.append(255)
+        return tuple(item / 255.0 for item in rgba)
+
+    def _first_responder_child(self):
+        responder = self._manager._first_responder if self._manager is not None else None
+        while responder is not None and responder.parent is not self:
+            responder = responder.parent
+        return responder
+
+    def _find_first_tabable(self):
+        # Manager roots are children of the implicit canvas in the native
+        # tree, so they must still be searched for tabable descendants.
+        if not self._awake or not self.visible:
+            return None
+        for child in self.children:
+            found = child._find_first_tabable()
+            if found is not None:
+                return found
+        profile = self.own_profile or self.profile_obj
+        tab = to_bool(profile.get("tab")) if profile is not None else False
+        return self if tab or self.can_key_focus else None
+
+    def animation_bounds(self):
+        return self.x, self.y, self.width, self.height
+
+    def apply_animation_bounds(self, bounds) -> None:
+        self.resize_control(*bounds)
+
+    def create_animation(self):
+        if len(self.animations) > 999:
+            return None
+        from .animation import TGUIAnimation
+        animation = TGUIAnimation(self)
+        self.animations.append(animation)
+        self.set_visible(True)
+        return animation
+
+    def stop_animations(self) -> None:
+        self.animations.clear()
+
+    def stop_in_out_animations(self) -> None:
+        self.animations[:] = [animation for animation in self.animations
+                              if not animation.is_in_out]
 
     def _set_use_own_profile(self, on: bool) -> None:
         """GuiControl::setUseOwnProfile (FourPlay quattroplay/src/gui/
@@ -1014,7 +1320,11 @@ class GuiControl(GS2Object):
                     entries.remove(entry)
                 continue
             try:
-                vm.call(handler_name, self, *args)
+                rt2 = getattr(self._manager, "rt2", None)
+                if rt2 is not None:
+                    rt2.call_public_event(vm, handler_name, self, *args)
+                else:
+                    vm.call(handler_name, self, *args)
             except Exception:
                 logger.exception("GS2 GUI: %s catcher %s for %s raised",
                                  event, handler_name,
@@ -1025,7 +1335,11 @@ class GuiControl(GS2Object):
             for vm in self._dispatch_vms():
                 try:
                     if vm.has_function(fname):
-                        vm.call(fname, *args)
+                        rt2 = getattr(self._manager, "rt2", None)
+                        if rt2 is not None:
+                            rt2.call_public_event(vm, fname, *args)
+                        else:
+                            vm.call(fname, *args)
                         handled = True
                 except Exception:
                     logger.exception("GS2 GUI: %s handler for %s raised",

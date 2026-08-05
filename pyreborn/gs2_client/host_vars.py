@@ -19,6 +19,17 @@ class HostVarsMixin:
             del obj._members[key]
         return 0.0
 
+    @_gs2_builtin(_GS2_VARS_METHODS, "copyfrom")
+    def _vars_copyfrom(self, vm, name, args, obj):
+        """Copy a script object through its reference-defined copy gate.
+
+        Splatman's three uses have GuiTextProfile receivers.  Their
+        ``copy_from`` override opts in and copies profile state; ordinary GUI
+        controls override the same hook with the reference's silent no-op.
+        """
+        obj.copy_from(args[0] if args else None)
+        return 0.0
+
     @_gs2_builtin(_GS2_VARS_METHODS, "getvarnames", "getdynamicvarnames")
     def _vars_getvarnames(self, vm, name, args, obj):
         return [key for key in obj._members

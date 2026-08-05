@@ -1,6 +1,205 @@
 {
   "schema_version": 1,
   "servers": {
+    "Games": {
+      "address": {
+        "host": "13.51.234.109",
+        "port": 14902
+      },
+      "ignore": [],
+      "observed": {
+        "address": {
+          "host": "13.51.234.109",
+          "port": 14902
+        },
+        "assets": {
+          "names": [],
+          "refused": 0
+        },
+        "bytecodes": {
+          "class": 2,
+          "gani": 0,
+          "npc": 0,
+          "weapon": 10
+        },
+        "connected_at_end": true,
+        "events": {
+          "calls": 12,
+          "distinct": 11,
+          "kinds": [
+            "weapon.oncreated",
+            "weapon.onlogmessage"
+          ],
+          "weapon_events": [
+            "weapon:-games/aztek.oncreated",
+            "weapon:-games/blackjack.oncreated",
+            "weapon:-games/guessnumber.oncreated",
+            "weapon:-games/memorymatch.oncreated",
+            "weapon:-games/splatman.oncreated",
+            "weapon:-games/tictactoe.oncreated",
+            "weapon:-gui/games.oncreated",
+            "weapon:-gui/loadingscreen.oncreated",
+            "weapon:-gui/loadingscreen.onlogmessage",
+            "weapon:-gui/mainmenu.oncreated",
+            "weapon:-utils.oncreated"
+          ]
+        },
+        "frames": 1500,
+        "gui": {
+          "classes": {
+            "GuiBitmapButtonCtrl": 3,
+            "GuiBitmapCtrl": 2,
+            "GuiControl": 4,
+            "GuiStretchCtrl": 1,
+            "GuiTextCtrl": 1
+          },
+          "controls": 11,
+          "degenerate": [],
+          "filled_controls": [
+            "skills_mainmenu_gameselectiontext"
+          ],
+          "list_rows": 0,
+          "max_depth": 3,
+          "named": 15,
+          "overflowing": [
+            "skills_progress_bar"
+          ],
+          "root_classes": {
+            "GuiStretchCtrl": 1
+          },
+          "root_names": [
+            "controlcanvas"
+          ],
+          "roots": 1,
+          "text_controls": 1,
+          "tree_names": [
+            "controlcanvas",
+            "skills_loading",
+            "skills_loading_image",
+            "skills_mainmenu",
+            "skills_mainmenu_gameselection",
+            "skills_mainmenu_gameselectiontext",
+            "skills_mainmenu_image",
+            "skills_mainmenu_leftgameselection",
+            "skills_mainmenu_rightgameselection",
+            "skills_progress",
+            "skills_progress_bar"
+          ],
+          "tree_nodes": 0,
+          "window_overlaps": []
+        },
+        "host_calls": {
+          "distinct": 19,
+          "missing": [
+            "createanimation"
+          ],
+          "names": [
+            "addcontrol",
+            "animatecontrol",
+            "catchevent",
+            "disablemap",
+            "disableweapons",
+            "echo",
+            "enablefeatures",
+            "fileupdate",
+            "getimgheight",
+            "getimgwidth",
+            "gettextwidth",
+            "hidecontrols",
+            "isobject",
+            "join",
+            "playlooped",
+            "savelines",
+            "setframetick",
+            "showstats",
+            "startmenu"
+          ],
+          "total": 64
+        },
+        "level": "onlinestartlocal.nw",
+        "logs": {
+          "errors": 0,
+          "kinds": [
+            "reborn_protocol.gs2.vm|WARNING|GS2 %s: unknown method %s()"
+          ],
+          "samples": [
+            "GS2 weapon:-Utils: unknown method createanimation()"
+          ],
+          "warnings": 1
+        },
+        "replayed_bytecode": 0,
+        "seconds": 25.0,
+        "ui_opened": {},
+        "version": "6.037",
+        "vms": {
+          "class": [
+            "gui_helpers",
+            "gui_scale"
+          ],
+          "gani_count": 0,
+          "npc_count": 0,
+          "weapon": [
+            "-games/aztek",
+            "-games/blackjack",
+            "-games/guessnumber",
+            "-games/memorymatch",
+            "-games/splatman",
+            "-games/tictactoe",
+            "-gui/games",
+            "-gui/loadingscreen",
+            "-gui/mainmenu",
+            "-utils"
+          ]
+        },
+        "wall_seconds": 25.0,
+        "world": {
+          "gs1_scripts": 0,
+          "npcs": 0,
+          "weapons": 10
+        }
+      },
+      "open_ui": [],
+      "passive": true,
+      "pins": {
+        "allowed_window_overlaps": [],
+        "forbidden_weapons": [],
+        "required_controls": [],
+        "required_event_kinds": [
+          "weapon.oncreated",
+          "weapon.onlogmessage"
+        ],
+        "required_filled_controls": [],
+        "required_weapon_events": [
+          "weapon:-games/aztek.oncreated",
+          "weapon:-games/blackjack.oncreated",
+          "weapon:-games/guessnumber.oncreated",
+          "weapon:-games/memorymatch.oncreated",
+          "weapon:-games/splatman.oncreated",
+          "weapon:-games/tictactoe.oncreated",
+          "weapon:-gui/games.oncreated",
+          "weapon:-gui/loadingscreen.oncreated",
+          "weapon:-gui/loadingscreen.onlogmessage",
+          "weapon:-gui/mainmenu.oncreated",
+          "weapon:-utils.oncreated"
+        ],
+        "required_weapons": [
+          "-games/aztek",
+          "-games/blackjack",
+          "-games/guessnumber",
+          "-games/memorymatch",
+          "-games/splatman",
+          "-games/tictactoe",
+          "-gui/games",
+          "-gui/loadingscreen",
+          "-gui/mainmenu",
+          "-utils"
+        ]
+      },
+      "recorded_at": "2026-08-03T23:00:45.991980+00:00",
+      "seconds": 25.0,
+      "tolerance": {},
+      "version": "6.037"
+    },
     "Login": {
       "address": {
         "host": "loginserver.graal.in",
@@ -697,14 +896,14 @@
           "refused": 0
         },
         "bytecodes": {
-          "class": 2,
+          "class": 3,
           "gani": 0,
           "npc": 0,
           "weapon": 5
         },
         "connected_at_end": true,
         "events": {
-          "calls": 438,
+          "calls": 442,
           "distinct": 8,
           "kinds": [
             "weapon.oncreated",
@@ -725,31 +924,115 @@
         },
         "frames": 1500,
         "gui": {
-          "classes": {},
-          "controls": 0,
+          "classes": {
+            "GuiBitmapCtrl": 7,
+            "GuiButtonCtrl": 7,
+            "GuiControl": 19,
+            "GuiMLTextCtrl": 14,
+            "GuiScrollCtrl": 1,
+            "GuiStretchCtrl": 1
+          },
+          "controls": 49,
           "degenerate": [],
-          "filled_controls": [],
+          "filled_controls": [
+            "serverlist_interface_noserverstext",
+            "serverlist_interface_optionsbutton",
+            "serverlist_interface_serverentry_playercount_text_0",
+            "serverlist_interface_serverentry_playercount_text_1",
+            "serverlist_interface_serverentry_playercount_text_2",
+            "serverlist_interface_serverentry_playercount_text_3",
+            "serverlist_interface_serverentry_playercount_text_4",
+            "serverlist_interface_serverentry_playercount_text_5",
+            "serverlist_interface_serverentry_servername_text_0",
+            "serverlist_interface_serverentry_servername_text_1",
+            "serverlist_interface_serverentry_servername_text_2",
+            "serverlist_interface_serverentry_servername_text_3",
+            "serverlist_interface_serverentry_servername_text_4",
+            "serverlist_interface_serverentry_servername_text_5",
+            "serverlist_interface_serverentry_startbutton_0",
+            "serverlist_interface_serverentry_startbutton_1",
+            "serverlist_interface_serverentry_startbutton_2",
+            "serverlist_interface_serverentry_startbutton_3",
+            "serverlist_interface_serverentry_startbutton_4",
+            "serverlist_interface_serverentry_startbutton_5",
+            "serverlist_interface_usernamelabel"
+          ],
           "list_rows": 0,
-          "max_depth": 0,
-          "named": 4,
+          "max_depth": 5,
+          "named": 54,
           "overflowing": [],
-          "root_classes": {},
-          "root_names": [],
-          "roots": 0,
-          "text_controls": 0,
-          "tree_names": [],
+          "root_classes": {
+            "GuiStretchCtrl": 1
+          },
+          "root_names": [
+            "serverlist_container"
+          ],
+          "roots": 1,
+          "text_controls": 21,
+          "tree_names": [
+            "serverlist_container",
+            "serverlist_interface",
+            "serverlist_interface_background",
+            "serverlist_interface_noserverstext",
+            "serverlist_interface_optionsbutton",
+            "serverlist_interface_scroll",
+            "serverlist_interface_serverentry_0",
+            "serverlist_interface_serverentry_1",
+            "serverlist_interface_serverentry_2",
+            "serverlist_interface_serverentry_3",
+            "serverlist_interface_serverentry_4",
+            "serverlist_interface_serverentry_5",
+            "serverlist_interface_serverentry_image_0",
+            "serverlist_interface_serverentry_image_1",
+            "serverlist_interface_serverentry_image_2",
+            "serverlist_interface_serverentry_image_3",
+            "serverlist_interface_serverentry_image_4",
+            "serverlist_interface_serverentry_image_5",
+            "serverlist_interface_serverentry_playercount_text_0",
+            "serverlist_interface_serverentry_playercount_text_1",
+            "serverlist_interface_serverentry_playercount_text_2",
+            "serverlist_interface_serverentry_playercount_text_3",
+            "serverlist_interface_serverentry_playercount_text_4",
+            "serverlist_interface_serverentry_playercount_text_5",
+            "serverlist_interface_serverentry_playercount_textwrapper_0",
+            "serverlist_interface_serverentry_playercount_textwrapper_1",
+            "serverlist_interface_serverentry_playercount_textwrapper_2",
+            "serverlist_interface_serverentry_playercount_textwrapper_3",
+            "serverlist_interface_serverentry_playercount_textwrapper_4",
+            "serverlist_interface_serverentry_playercount_textwrapper_5",
+            "serverlist_interface_serverentry_servername_text_0",
+            "serverlist_interface_serverentry_servername_text_1",
+            "serverlist_interface_serverentry_servername_text_2",
+            "serverlist_interface_serverentry_servername_text_3",
+            "serverlist_interface_serverentry_servername_text_4",
+            "serverlist_interface_serverentry_servername_text_5",
+            "serverlist_interface_serverentry_servername_textwrapper_0",
+            "serverlist_interface_serverentry_servername_textwrapper_1",
+            "serverlist_interface_serverentry_servername_textwrapper_2",
+            "serverlist_interface_serverentry_servername_textwrapper_3",
+            "serverlist_interface_serverentry_servername_textwrapper_4",
+            "serverlist_interface_serverentry_servername_textwrapper_5",
+            "serverlist_interface_serverentry_startbutton_0",
+            "serverlist_interface_serverentry_startbutton_1",
+            "serverlist_interface_serverentry_startbutton_2",
+            "serverlist_interface_serverentry_startbutton_3",
+            "serverlist_interface_serverentry_startbutton_4",
+            "serverlist_interface_serverentry_startbutton_5",
+            "serverlist_interface_usernamelabel"
+          ],
           "tree_nodes": 0,
           "window_overlaps": []
         },
         "host_calls": {
-          "distinct": 19,
+          "distinct": 20,
           "missing": [],
           "names": [
             "addarray",
-            "addcontainer",
             "addcontrol",
             "adventure_setframetick",
+            "catchevent",
             "echo",
+            "fileexists",
             "fileupdate",
             "getgamesubversion",
             "getplatform",
@@ -765,14 +1048,18 @@
             "sortbyvalue",
             "triggerserver"
           ],
-          "total": 1340
+          "total": 1415
         },
         "level": "black.nw",
         "logs": {
           "errors": 0,
-          "kinds": [],
-          "samples": [],
-          "warnings": 0
+          "kinds": [
+            "pyreborn.game.gs2_gui.profiles|WARNING|GS2 GUI: script aborted mid-construction; dropping %d unfinished control(s)"
+          ],
+          "samples": [
+            "GS2 GUI: script aborted mid-construction; dropping 2 unfinished control(s)"
+          ],
+          "warnings": 1
         },
         "replayed_bytecode": 0,
         "seconds": 25.0,
@@ -781,7 +1068,8 @@
         "vms": {
           "class": [
             "gui_scaler",
-            "gui_scaler2"
+            "gui_scaler2",
+            "gui_scroll"
           ],
           "gani_count": 0,
           "npc_count": 0,
@@ -829,7 +1117,7 @@
           "cadavretest"
         ]
       },
-      "recorded_at": "2026-07-31T01:49:25.058108+00:00",
+      "recorded_at": "2026-08-03T23:01:15.343355+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"

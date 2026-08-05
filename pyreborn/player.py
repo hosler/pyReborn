@@ -61,6 +61,10 @@ class Player:
     animation: str = "idle"  # Current gani animation name
     sprite: int = 0  # Sprite frame within animation
     status: int = 0  # Status flags (paused, hidden, etc.)
+    rating: int = 0
+    rating_deviation: int = 0
+    attached_npc_type: int = 0
+    attached_npc_id: int = 0
     chat: str = ""  # Current chat bubble text (CURCHAT)
     # Gani attributes: index (1..30) -> string, from PLPROP_GATTRIB1.. (#P1..
     # in script). A gani's ATTRn sprite layer draws gattribs[n] as an image
@@ -110,6 +114,10 @@ class Player:
             self.sprite = props['sprite']
         if 'status' in props:
             self.status = props['status']
+        if 'rating' in props:
+            self.rating, self.rating_deviation = props['rating']
+        if 'attach_npc' in props:
+            self.attached_npc_type, self.attached_npc_id = props['attach_npc']
         if 'arrows' in props:
             self.arrows = props['arrows']
         if 'bombs' in props:

@@ -238,6 +238,8 @@ _SELF_PROP_HANDLERS = {
     32: _set('ap'),
     34: lambda props, value: props.setdefault('account', value),
     35: _set('body_image'),
+    36: _set('rating'),
+    42: _set('attach_npc'),
     78: _set('x'),
     79: _set('y'),
     **_gattrib_handlers(),

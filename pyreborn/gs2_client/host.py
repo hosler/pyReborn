@@ -227,6 +227,17 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
 
     def call_builtin(self, vm: GS2VM, name: str, args: List[Any],
                      obj: Optional[GS2Object] = None) -> Any:
+        from ..outbound import script_origin
+        if vm is not None:
+            with script_origin(getattr(vm, "_gs2_kind", "gs2"),
+                               getattr(vm, "_gs2_key",
+                                       getattr(vm, "name", type(vm).__name__)),
+                               name):
+                return self._call_builtin_attributed(vm, name, args, obj)
+        return self._call_builtin_attributed(vm, name, args, obj)
+
+    def _call_builtin_attributed(self, vm: GS2VM, name: str, args: List[Any],
+                                 obj: Optional[GS2Object] = None) -> Any:
         # Answered for BOTH forms (bare call and obj method): the object
         # method spelling is the only one the live corpus uses, but the
         # obj-method stages below end in NOT_HANDLED, so these must come first.
@@ -266,7 +277,7 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
             if wvm is None:
                 wvm = rt2.fetch_weapon(obj)
             if wvm is not None and wvm.has_function(name):
-                return wvm.call(name, *args)
+                return rt2.call_public_event(wvm, name, *args)
         # Other list methods (add/addarray/size/clear/index/sortbyvalue)
         # deliberately fall through as NOT_HANDLED: the shared VM implements
         # them natively and gives the host first refusal (obj= may be a plain

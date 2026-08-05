@@ -174,6 +174,24 @@ Examples:
                        help="Run only multi-bot tests")
     parser.add_argument("--explore", type=float, default=None,
                        help="Run explorer AI for N seconds (e.g., --explore 60)")
+    parser.add_argument("--gs2-explore", type=float, default=None,
+                       metavar="SECONDS",
+                       help="BFS-explore the live GS2 UI for N seconds")
+    parser.add_argument("--gs2-deep", type=float, default=None, metavar="SECONDS",
+                       help="Explore each GS2 UI branch and write deep reports")
+    parser.add_argument("--gs2-crawl", action="store_true",
+                       help="Passively GS2-explore each public-list game server")
+    parser.add_argument("--crawl-seconds", type=float, default=75.0, metavar="N")
+    parser.add_argument("--crawl-out", default=None, metavar="DIR")
+    parser.add_argument("--crawl-servers", default=None, metavar="A,B")
+    parser.add_argument("--crawl-limit", type=int, default=None, metavar="K")
+    parser.add_argument("--behaviour-server-style", action="store_true",
+                       help="For --gs2-explore, target a login/behaviour server "
+                            "that does not deliver a playable level")
+    parser.add_argument("--allow-sends", action="store_true",
+                       help="For --gs2-explore, permit script-originated sends")
+    parser.add_argument("--out-dir", default=None,
+                       help="For --gs2-explore, capture output directory")
     parser.add_argument("--coverage", action="store_true",
                        help="Run the packet-coverage harness (needs GS_PKTLOG server)")
     parser.add_argument("--coverage-rc", action="store_true",
@@ -241,6 +259,70 @@ Examples:
                             "of catalogued servers that have a baseline")
 
     args = parser.parse_args()
+
+    if args.gs2_crawl:
+        import os
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        from game_tester.gs2_server_crawl import run_crawl
+        run_crawl(seconds=args.crawl_seconds, out_dir=args.crawl_out,
+                  servers=args.crawl_servers, limit=args.crawl_limit)
+        sys.exit(0)
+
+    if args.gs2_explore is not None or args.gs2_deep is not None:
+        import logging
+        import os
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        from game_tester.behaviour_fingerprint import _LogCapture
+        from game_tester.gs2_ui_explorer.capture import CaptureWriter
+        from game_tester.gs2_ui_explorer.explorer import ExplorerBot, ExplorerBudget
+        from game_tester.gs2_ui_explorer.pump import GamePump
+        from game_tester.gs2_ui_explorer.send_policy import PassiveSendPolicy
+        from game_tester.login import login_session
+        from pyreborn.pygame_game import GameClient
+
+        # Same credential fallback as the behaviour harness: explicit flags,
+        # else the saved login, else the local QA test account.
+        account, password = args.account, args.password
+        if not account:
+            from pyreborn.prefs import Prefs
+            prefs = Prefs.load()
+            account = prefs.username or "testbot1"
+            password = password or prefs.password or "testpass"
+        elif not password:
+            password = "testpass"
+        writer = CaptureWriter(args.out_dir, manifest={
+            "host": args.host, "port": args.port,
+            "mode": "full" if args.allow_sends else "passive",
+            "duration": args.gs2_deep if args.gs2_deep is not None else args.gs2_explore,
+            "limits": vars(ExplorerBudget()),
+        })
+        policy = PassiveSendPolicy(writer.blocked_path, args.allow_sends)
+        with login_session(args.host, args.port, account, password,
+                           settle=not args.behaviour_server_style) as outcome:
+            if not outcome.ok:
+                print(f"GS2 explorer login failed: {outcome.rejection or 'connection failed'}")
+                sys.exit(1)
+            outcome.client._protocol.outbound_policy = policy
+            game = GameClient(outcome.client)
+            game._load_npc_scripts()
+            game._trigger_playerenters()
+            log_capture = _LogCapture()
+            logging.getLogger().addHandler(log_capture)
+            game._explorer_log_capture = log_capture
+            try:
+                seconds = args.gs2_deep if args.gs2_deep is not None else args.gs2_explore
+                result = ExplorerBot(game, pump=GamePump(game), writer=writer,
+                                     policy=policy).explore(seconds)
+            finally:
+                logging.getLogger().removeHandler(log_capture)
+        if args.gs2_deep is not None:
+            from game_tester.gs2_ui_explorer.deep_drive import report_capture
+            report_capture(result.out_dir)
+        print(f"GS2 UI explorer: {result.states} states, {result.actions} actions, "
+              f"{result.blocked_sends} blocked sends; capture {result.out_dir}")
+        sys.exit(0)
 
     # Behaviour fingerprints run standalone (own client lifecycle, own
     # baseline file).

@@ -3,11 +3,74 @@
 from __future__ import annotations
 
 from reborn_protocol.gs2 import GS2Object
+from reborn_protocol.gs2 import VMCoroutineWait
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .registry import _FALL_THROUGH, _GS2_OBJ_METHODS, _GS2_STR_METHODS, _gs2_builtin, _gs2_sort_key
+from .objects import _LevelObject
 
 class HostObjmethodsMixin:
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "getmappartfile", "findareanpcs",
+                  "putbomb", "putbomb2")
+    def _obj_level_methods(self, vm, name, args, obj):
+        if not isinstance(obj, _LevelObject):
+            return _FALL_THROUGH
+        if name == "getmappartfile":
+            return obj.map_part_file(args[0], args[1]) if len(args) >= 2 else ""
+        if name == "findareanpcs":
+            if len(args) < 4:
+                return []
+            x, y, w, h = map(to_num, args[:4])
+            found = []
+            for npc_id, npc in (getattr(self.rt2.client, "npcs", {}) or {}).items():
+                nx = to_num(npc.get("world_x", npc.get("x", 0)))
+                ny = to_num(npc.get("world_y", npc.get("y", 0)))
+                if x <= nx < x + w and y <= ny < y + h:
+                    owner = self.rt2.vms.get("npc", {}).get(npc_id)
+                    if owner is not None:
+                        found.append(owner.this)
+            return found
+        if len(args) < 3:
+            return 0.0
+        # putbomb2's fourth string selects bomb art in the reference. The
+        # existing client placement path has no custom-art field; power/x/y
+        # otherwise share putbomb's machinery.
+        self.rt2._gs1_command("putbomb", list(args[:3]), vm)
+        return 0.0
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "showemoticonbykey", "showemoticon",
+                  "hideemoticon", "scrollsign", "hidesign", "getnohit")
+    def _obj_player_display(self, vm, name, args, obj):
+        if obj is not self.rt2.player_object:
+            return _FALL_THROUGH
+        player = getattr(self.rt2.client, "player", None)
+        game = getattr(self.rt2, "game_shell", None)
+        if name == "getnohit":
+            if int(getattr(self.rt2.client, "ghost_mode", 0) or 0) != 0:
+                return 21.0
+            if (not bool(to_num(obj.get("disableapsaint"))) and
+                    to_num(getattr(player, "ap", 0)) > 99):
+                return 22.0
+            return 0.0
+        if name in ("showemoticon", "showemoticonbykey"):
+            if player is not None:
+                player.emoticon = (int(to_num(args[0])) if name.endswith("bykey")
+                                   else to_str(args[0])) if args else ""
+            return 0.0
+        if name == "hideemoticon":
+            if player is not None:
+                player.emoticon = ""
+            return 0.0
+        if name == "hidesign":
+            if game is not None and hasattr(game, "_dismiss_dialogue"):
+                game._dismiss_dialogue()
+            return 0.0
+        if game is not None and getattr(game, "dialogue_text", None) is not None:
+            pager = getattr(game, "dialogue_pager", None)
+            if pager is not None:
+                pager.scroll(int(to_num(args[0])) if args else 0)
+        return 0.0
 
     # -- _GS2_OBJ_METHODS: object methods with no type gate -----------------
     #
@@ -98,7 +161,8 @@ class HostObjmethodsMixin:
     @_gs2_builtin(_GS2_OBJ_METHODS, "join")
     def _obj_join(self, vm, name, args, obj):
         if args:
-            self.rt2.join_class(vm, to_str(args[0]))
+            result = self.rt2.join_class(vm, to_str(args[0]))
+            return result if isinstance(result, VMCoroutineWait) else 0.0
         return 0.0
 
     @_gs2_builtin(_GS2_OBJ_METHODS, "leave", "isinclass", "getcallstack")

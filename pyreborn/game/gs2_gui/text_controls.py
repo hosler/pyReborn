@@ -26,7 +26,13 @@ class GuiMLTextCtrl(GuiControl):
     #: (quattroplay/src/gui/GuiMLTextCtrlProperties.cpp:334, body :233-236).
     #: The live callers are the RC log windows, which append lines and then
     #: reflow before scrolling to the bottom.
-    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({"reflow"})
+    _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset({
+        "reflow", "deselecttext", "findtext", "findtextat",
+        "getcursorline", "getline", "getlinecount", "getselectedposition",
+        "getselectedlength", "getcolumnandlineofposition", "replacetext",
+        "scrolltotag", "scrolltotop", "scrolltoline", "scrolltoposition",
+        "selecttext", "setcursorcolumnandline", "trimhorizontally",
+    })
     #: the rest of the own table (GuiMLTextCtrlProperties.cpp:305-319; `text`
     #: comes from the base) -- all of these are written bare in construction
     #: blocks, which the VM's existence gate drops unless the name is claimed
@@ -49,6 +55,122 @@ class GuiMLTextCtrl(GuiControl):
         #: (GuiMLTextCtrl.cpp:939-957 press, :1157-1181 release-on-same-link)
         self._link_rects: List[Tuple[pygame.Rect, str]] = []
         self._pressed_link: Optional[str] = None
+        self.selection: Optional[Tuple[int, int]] = None
+        self.cursor_position = 0
+        self.scroll_position = 0
+
+    def _lines(self) -> List[str]:
+        return self.text.split("\n")
+
+    def _line_col(self, position: int) -> Tuple[int, int]:
+        pos = max(0, min(int(position), len(self.text)))
+        before = self.text[:pos]
+        return len(before.rsplit("\n", 1)[-1]), before.count("\n")
+
+    def _m_deselecttext(self, *args) -> float:
+        self.selection = None
+        return 0.0
+
+    def _m_findtext(self, *args) -> float:
+        needle = to_str(args[0]) if args else ""
+        flags = int(to_num(args[1])) if len(args) > 1 else 0
+        return self._find_at(needle, 0, flags)
+
+    def _m_findtextat(self, *args) -> float:
+        needle = to_str(args[0]) if args else ""
+        start = int(to_num(args[1])) if len(args) > 1 else 0
+        flags = int(to_num(args[2])) if len(args) > 2 else 0
+        return self._find_at(needle, start, flags)
+
+    def _find_at(self, needle: str, start: int, flags: int) -> float:
+        if not needle or start < 0 or start > len(self.text):
+            return -1.0
+        haystack, wanted = self.text, needle
+        if not flags & 2:
+            haystack, wanted = haystack.casefold(), wanted.casefold()
+        pos = haystack.find(wanted, start)
+        if pos < 0 and flags & 1:
+            pos = haystack.find(wanted, 0, start)
+        return float(pos)
+
+    def _m_getcursorline(self, *args) -> float:
+        return float(self._line_col(self.cursor_position)[1])
+
+    def _m_getline(self, *args) -> str:
+        line = int(to_num(args[0])) if args else 0
+        lines = self._lines()
+        return lines[line] if 0 <= line < len(lines) else ""
+
+    def _m_getlinecount(self, *args) -> float:
+        return float(len(self._lines()))
+
+    def _m_getselectedposition(self, *args) -> float:
+        return float(self.selection[0]) if self.selection else -1.0
+
+    def _m_getselectedlength(self, *args) -> float:
+        return float(self.selection[1] - self.selection[0]) if self.selection else -1.0
+
+    def _m_getcolumnandlineofposition(self, *args) -> str:
+        column, line = self._line_col(int(to_num(args[0])) if args else 0)
+        return f"{column},{line}"
+
+    def _m_replacetext(self, *args) -> float:
+        if len(args) < 2:
+            return -1.0
+        old, new = to_str(args[0]), to_str(args[1])
+        flags = int(to_num(args[2])) if len(args) > 2 else 0
+        count = 0
+        position = 0
+        while count < 1000:
+            pos = int(self._find_at(old, position, flags & 2))
+            if pos < 0:
+                break
+            self.text = self.text[:pos] + new + self.text[pos + len(old):]
+            position = pos + len(new)
+            count += 1
+        self._ml_cache_key = None
+        return float(count)
+
+    def _m_selecttext(self, *args) -> bool:
+        start = int(to_num(args[0])) if args else 0
+        length = int(to_num(args[1])) if len(args) > 1 else 0
+        if start < 0 or start >= len(self.text) or length <= 0:
+            return False
+        self.selection = (start, min(start + length, len(self.text)))
+        return True
+
+    def _m_setcursorcolumnandline(self, *args) -> float:
+        column = max(0, int(to_num(args[0]))) if args else 0
+        line = max(0, int(to_num(args[1]))) if len(args) > 1 else 0
+        lines = self._lines()
+        line = min(line, len(lines) - 1)
+        self.cursor_position = sum(len(v) + 1 for v in lines[:line]) + min(column, len(lines[line]))
+        return 0.0
+
+    def _m_scrolltoposition(self, *args) -> float:
+        self.scroll_position = max(0, min(int(to_num(args[0])) if args else 0, len(self.text)))
+        return 0.0
+
+    def _m_scrolltoline(self, *args) -> float:
+        line = max(0, int(to_num(args[0]))) if args else 0
+        self.scroll_position = sum(len(v) + 1 for v in self._lines()[:line])
+        return 0.0
+
+    def _m_scrolltotop(self, *args) -> float:
+        self.scroll_position = 0
+        return 0.0
+
+    def _m_scrolltotag(self, *args) -> float:
+        tag = to_str(args[0]) if args else ""
+        pos = self.text.find(tag)
+        if pos >= 0:
+            self.scroll_position = pos
+        return 0.0
+
+    def _m_trimhorizontally(self, *args) -> float:
+        # This adjusts laid-out atom positions and control bounds only; the
+        # source text is deliberately unchanged in the reference.
+        return 0.0
 
     def _link_at(self, pos) -> Optional[str]:
         for rect, href in self._link_rects:
@@ -209,7 +331,7 @@ class GuiScrollCtrl(GuiControl):
         self.scroll_y = 0.0
 
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"scrolldelta", "scrollto", "scrolltotop"})
+        {"scrolldelta", "scrollrectvisible", "scrollto", "scrolltotop"})
 
     def get(self, key: str) -> Any:
         if key.lower() == "scrollpos":
@@ -279,6 +401,22 @@ class GuiScrollCtrl(GuiControl):
         gui_scroll class drives its touch-drag scrolling through it)."""
         dx, dy = self._coord_arg(args)
         self.scroll_to(self.scroll_x + dx, self.scroll_y + dy)
+        return 0.0
+
+    def _m_scrollrectvisible(self, *args) -> float:
+        if len(args) < 4:
+            return 0.0
+        x, y, width, height = (to_num(v) for v in args[:4])
+        nx, ny = self.scroll_x, self.scroll_y
+        if x < nx:
+            nx = x
+        elif x + width > nx + self.width:
+            nx = x + width - self.width
+        if y < ny:
+            ny = y
+        elif y + height > ny + self.height:
+            ny = y + height - self.height
+        self.scroll_to(nx, ny)
         return 0.0
 
     def _m_scrolltotop(self, *args) -> float:
@@ -354,7 +492,7 @@ class GuiTextEditCtrl(GuiTextCtrl):
         manager._set_focus(self)
         return True
     _METHOD_NAMES = GuiControl._METHOD_NAMES | frozenset(
-        {"setselection", "getselection"})
+        {"setselection", "getselection", "undo"})
     _TORQUE_PROPS = GuiTextCtrl._TORQUE_PROPS | frozenset({
         "password", "inputtype", "showcursor", "deniedsound",
     })
@@ -368,6 +506,7 @@ class GuiTextEditCtrl(GuiTextCtrl):
         #: (`ChatBar.setSelection(0, ChatBar.text.length())`) precisely so
         #: the next keystroke REPLACES it -- see take_selection().
         self.selection: Tuple[int, int] = (0, 0)
+        self._undo_text = self.text
 
     @property
     def max_len(self) -> int:
@@ -399,10 +538,16 @@ class GuiTextEditCtrl(GuiTextCtrl):
             # anchors; the inherited settext() method does not
             # (GuiTextEditCtrlProperties.cpp:31-36 vs
             # GuiTextCtrlProperties.cpp:30-33)
+            self._undo_text = self.text
             super().set(k, value)
             self.selection = (0, 0)
             return
         super().set(k, value)
+
+    def _m_undo(self, *args) -> float:
+        self.text, self._undo_text = self._undo_text, self.text
+        self.selection = (0, 0)
+        return 0.0
 
     def is_password(self) -> bool:
         return to_str(self._members.get("inputtype", "default")) == "password"
@@ -590,4 +735,3 @@ class GuiProgressCtrl(GuiControl):
             _fill_rect(surf, prof.title_bg,
                        pygame.Rect(r.x, r.y, filled, r.height))
         pygame.draw.rect(surf, prof.border[:3], r, 1)
-

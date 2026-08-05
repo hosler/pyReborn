@@ -140,6 +140,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self._authenticated = False
         self._login_appearance_applied = False
         self._reset_file_transfer_state()
+        if self.gs2_host is not None:
+            self.gs2_host.reset_session()
         if self.input_frozen:
             self.input_frozen = False
             if self.on_fullstop:
@@ -157,6 +159,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
     def disconnect(self):
         """Disconnect from the server."""
+        if self.gs2_host is not None:
+            self.gs2_host.reset_session()
         self._protocol.disconnect()
         self._authenticated = False
 
@@ -424,6 +428,13 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             return self.horses  # type: ignore[return-value]
         return self.horses.get(level_name, {})
 
+    def bombs_in_level(
+            self, level_name: str) -> Dict[Tuple[float, float], dict]:
+        """Return bombs for one level, or an empty mapping."""
+        if self.bombs and all(isinstance(key, tuple) for key in self.bombs):
+            return self.bombs  # type: ignore[return-value]
+        return self.bombs.get(level_name, {})
+
     def find_baddy(self, baddy_id: int) -> Optional[Tuple[str, dict]]:
         """Return the owning level and baddy for an existing id, if any."""
         if self.baddies and all(isinstance(key, int) for key in self.baddies):
@@ -514,6 +525,8 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'levels': ('level_state', 'levels'),
     '_current_level_name': ('level_state', 'current_level_name'),
     '_pending_level_name': ('level_state', 'pending_level_name'),
+    '_pending_board_level_name': ('level_state', 'pending_board_level_name'),
+    '_adjacent_level_requests': ('level_state', 'adjacent_level_requests'),
     'active_level': ('level_state', 'active_level'),
     'level_modtimes': ('level_state', 'level_modtimes'),
     'links': ('level_state', 'links'),
@@ -523,6 +536,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'signs': ('level_state', 'signs'),
     'sign_lists': ('level_state', 'sign_lists'),
     'board_layers': ('level_state', 'board_layers'),
+    '_board_layers_level_name': ('level_state', 'board_layers_level_name'),
     'board_heights': ('level_state', 'board_heights'),
     'is_leader': ('level_state', 'is_leader'),
 

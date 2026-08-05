@@ -338,7 +338,8 @@ class MainCommandsMixin:
             # keep the wire-echo registry consistent for headless callers
             reg = getattr(rt.client, "bombs", None)
             if isinstance(reg, dict):
-                reg.pop((bx, by), None)
+                level = getattr(rt.client, "_current_level_name", "")
+                reg.get(level, {}).pop((bx, by), None)
         if rt.on_removebomb:
             rt.on_removebomb(bomb, name == "explodebomb")
 
@@ -513,7 +514,7 @@ class MainCommandsMixin:
             return _FALL_THROUGH
         self.rt.on_play(to_str(args[0]))
 
-    @_gs1_command(_GS1_MAIN_COMMANDS, "stopmidi", "stopsong")
+    @_gs1_command(_GS1_MAIN_COMMANDS, "stopmusic", "stopmidi", "stopsong")
     def _cmd_stopmusic(self, name, args, ctx, imgs):
         if not self.rt.on_stopmusic:
             return _FALL_THROUGH

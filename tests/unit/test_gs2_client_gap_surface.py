@@ -9,6 +9,7 @@ from pyreborn.client import Client
 from pyreborn.game.gs2_gui import GuiControl
 from pyreborn.packets import PacketID
 from pyreborn.gs2_client import ClientGS2, GS2ClientHost
+from pyreborn.gs1_client import ClientGS1
 import pyreborn.gs2_client as gs2_client_module
 
 
@@ -125,6 +126,29 @@ def test_coordinates_map_music_camera_and_nearest_players():
     call(rt, "setzoom", [1.75])
     call(rt, "enabledefaultcamera")
     assert camera.zoom == 1.75 and rt.game_shell._camera_enabled is True
+
+
+def test_stopmusic_routes_to_streaming_music_callback():
+    rt = ClientGS2(gs1=ClientGS1())
+    stopped = []
+    rt.gs1.on_stopmusic = lambda: stopped.append(True)
+    assert call(rt, "stopmusic") == 0.0
+    assert stopped == [True]
+
+
+def test_copyfrom_vm_method_copies_profile_state_only_where_opted_in():
+    rt = ClientGS2()
+    source = rt.gui.create_control("GuiTextProfile", "CopySource")
+    target = rt.gui.create_control("GuiTextProfile", "CopyTarget")
+    source.set("fontcolor", [1, 2, 3])
+    assert call(rt, "copyfrom", [source], target) == 0.0
+    assert target.get("fontcolor") == [1, 2, 3]
+    target.get("fontcolor")[0] = 9
+    assert source.get("fontcolor") == [1, 2, 3]
+
+    control = rt.gui.create_control("GuiButtonCtrl", "NoCopy")
+    assert call(rt, "copyfrom", [source], control) == 0.0
+    assert "fontcolor" not in control._members
 
 
 def test_headless_coordinate_fallback_and_text_channels():

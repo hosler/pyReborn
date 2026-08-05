@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from reborn_protocol.gs2 import GS2Object
+from reborn_protocol.gs2 import VMCoroutineWait
 import math
+import random
 import time
+import re
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .helpers import _csv_flatten
@@ -12,6 +15,219 @@ from .objects_player import PLATFORM_NAME, _engine_object
 from .registry import GS2GuiManager, TIMER_RESOLUTION, _GS1_PURE, _GS2_BARE, _GS2_BARE_GUI, _TIMER_CANCEL, _WORD_BORDER, _gs2_builtin, logger
 
 class HostBareMixin:
+
+    _KEY_TEXT = tuple((',,,,,,,,Backspace,Tab,,,,Enter,,,Shift,Ctrl,Menu,Pause,Capslock,,,,,,,Escape,,,,,Space,'
+        'PageUp,PageDown,End,Home,Left,Up,Right,Down,,Print,,,Insert,Delete,Help,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,'
+        '"Left Windows","Right Windows",Apps,,,Numpad0,Numpad1,Numpad2,Numpad3,Numpad4,Numpad5,Numpad6,Numpad7,Numpad8,Numpad9,'
+        'Numpadmult,Numpadadd,Numpadsep,Numpadminus,Numpadddecimal,"Num Divide",F1,F2,F3,F4,F5,F6,F7,F8,F9,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,,,,,,,,,Numlock,Scrolllock,,,,,,,,,,,,,,,"Left Shift","Right Shift","Left Ctrl","Right Ctrl",Lalt,Ralt,,,,,,,,,,,,,,,,,,,,,Semicolon,Equals,Comma,Minus,Period,Slash,Tilde,,,,,,,,,,,,,,,,,,,,,,,,,,,Lbracket,Backslash,Rbracket,Apostrophe,,,,Lessthan,,,,,,,,,,,,,,,,,,,,,,,,,,,,,').replace('"', '').split(','))
+
+    @_gs2_builtin(_GS2_BARE, "getkeycode", "keyname", "keyname2")
+    def _bi_key_names(self, vm, name, args, obj):
+        if name == "getkeycode":
+            wanted = to_str(args[0]) if args else ""
+            if not wanted:
+                return 0.0
+            wanted = wanted[0].upper() + wanted[1:]
+            if len(wanted) == 1 and wanted.isascii() and wanted.isalnum():
+                return float(ord(wanted.upper()))
+            for code, text in enumerate(self._KEY_TEXT[:256]):
+                if text == wanted:
+                    return float(code)
+            return 0.0
+        code = int(to_num(args[0])) & 255 if args else 0
+        if name == "keyname":
+            binding = self.rt2._control_bindings.get((code, 0))
+            if binding is None:
+                return ""
+            code = binding & 255
+        if 48 <= code <= 57 or 65 <= code <= 90:
+            return chr(code)
+        return self._KEY_TEXT[code] if code < len(self._KEY_TEXT) else ""
+
+    @_gs2_builtin(_GS2_BARE, "findplayerbycommunityname", "findplayer2")
+    def _bi_find_player_community(self, vm, name, args, obj):
+        wanted = to_str(args[0]) if args else ""
+        if not wanted:
+            return 0.0
+        for item in [self.rt2.player_object] + self.rt2.all_player_objects():
+            if to_str(item.get("account")) == wanted or to_str(item.get("communityname")) == wanted:
+                return item
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "findnpcbyid")
+    def _bi_find_npc_by_id(self, vm, name, args, obj):
+        npc_id = int(to_num(args[0])) if args else 0
+        if npc_id not in (getattr(self.rt2.client, "npcs", {}) or {}):
+            return 0.0
+        npc_vm = self.rt2.vms["npc"].get(npc_id) or self.rt2.vms["npc"].get(str(npc_id))
+        return npc_vm.this if npc_vm is not None else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "findlevel")
+    def _bi_find_level(self, vm, name, args, obj):
+        wanted = to_str(args[0]).lower() if args else ""
+        current = to_str(getattr(self.rt2.client, "_current_level_name", "")).lower()
+        return self.rt2.level_object if wanted == current else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "findani")
+    def _bi_find_ani(self, vm, name, args, obj):
+        wanted = to_str(args[0]).lower().removesuffix(".gani") if args else ""
+        ani_vm = self.rt2._gani_classes.get(wanted)
+        return ani_vm.this if ani_vm is not None else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "clearemptyglobalvars")
+    def _bi_clear_empty_globals(self, vm, name, args, obj):
+        for key in list(self.rt2.globals_store):
+            value = self.rt2.globals_store[key]
+            if value == "" or value == 0.0 or value == []:
+                del self.rt2.globals_store[key]
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "graalcontrolhasfocus")
+    def _bi_game_control_focus(self, vm, name, args, obj):
+        gui = self.rt2.gui
+        focus = getattr(gui, "_focus", None) if gui is not None else None
+        if focus is None:
+            return 0.0
+        include_chat = bool(to_num(args[0])) if args else False
+        return 1.0 if (getattr(focus, "active", False) or (include_chat and str(getattr(focus, "name", "")).lower() in ("chatbar", "chatbar3d"))) else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "format2")
+    def _bi_format2(self, vm, name, args, obj):
+        fmt = to_str(args[0]) if args else ""
+        params = args[1] if len(args) > 1 and isinstance(args[1], list) else []
+        sequential = 0
+        pattern = re.compile(r"%([+\-#]*)(\d*)(?:\$(?=\.|l|[diuxXfsc%]))?(?:\.(\d*))?l?([diuxXfsc%])")
+        def replace(match):
+            nonlocal sequential
+            flags, digits, precision_text, spec = match.groups()
+            indexed = "$" in match.group(0).split(spec)[0]
+            if spec == "%":
+                return "%"
+            if indexed:
+                index = max(0, int(digits or 0) - 1)
+                width = 0
+            else:
+                index = sequential
+                sequential += 1
+                width = min(120, int(digits or 0))
+            value = params[index] if index < len(params) else 0.0
+            precision = min(120, int(precision_text or 0)) if precision_text is not None else None
+            if spec == "s":
+                rendered = to_str(value)
+                if precision is not None:
+                    rendered = rendered[:precision]
+            elif spec == "c":
+                rendered = chr(int(to_num(value) + .5) & 255)
+            elif spec == "f":
+                rendered = f"{to_num(value):.{6 if precision is None else precision}f}"
+            else:
+                number = math.floor(to_num(value) + .5)
+                if spec == "u":
+                    number &= 0xffffffff
+                if spec in "xX":
+                    rendered = format(number & 0xffffffff, spec)
+                    if "#" in flags:
+                        rendered = ("0X" if spec == "X" else "0x") + rendered
+                else:
+                    rendered = str(number)
+            if "+" in flags and spec in "dif" and not rendered.startswith("-"):
+                rendered = "+" + rendered
+            return rendered.ljust(width) if "-" in flags else rendered.rjust(width)
+        return pattern.sub(replace, fmt)
+
+    def _image_surface(self, filename):
+        game = getattr(self.rt2, "game_shell", None)
+        manager = getattr(game, "sprite_mgr", None)
+        if manager is None:
+            return None
+        try:
+            return manager.load_sheet(to_str(filename))
+        except Exception:
+            return None
+
+    @_gs2_builtin(_GS2_BARE, "getimgpixel", "isimgpixeltransparent",
+                  "isimgrectangletransparent")
+    def _bi_image_pixel(self, vm, name, args, obj):
+        surface = self._image_surface(args[0] if args else "")
+        if surface is None:
+            return [] if name == "getimgpixel" else 1.0
+        x = int(to_num(args[1])) if len(args) > 1 else 0
+        y = int(to_num(args[2])) if len(args) > 2 else 0
+        def transparent(px, py):
+            if not (0 <= px < surface.get_width() and 0 <= py < surface.get_height()):
+                return True
+            color = surface.get_at((px, py))
+            key = surface.get_colorkey()
+            return color.a == 0 or (key is not None and tuple(color)[:3] == tuple(key)[:3])
+        if name == "getimgpixel":
+            if not (0 <= x < surface.get_width() and 0 <= y < surface.get_height()):
+                color = (0, 0, 0, 0)
+            else:
+                color = surface.get_at((x, y))
+            return [float(color[0]) / 255, float(color[1]) / 255, float(color[2]) / 255]
+        if name == "isimgpixeltransparent":
+            return 1.0 if transparent(x, y) else 0.0
+        width = max(0, int(to_num(args[3]))) if len(args) > 3 else 0
+        height = max(0, int(to_num(args[4]))) if len(args) > 4 else 0
+        return 1.0 if all(transparent(px, py) for py in range(y, y + height) for px in range(x, x + width)) else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "freefileresources")
+    def _bi_free_file_resources(self, vm, name, args, obj):
+        game = getattr(self.rt2, "game_shell", None)
+        manager = getattr(game, "sprite_mgr", None)
+        if manager is not None:
+            from ..sprites import normalize_asset_name
+            key = normalize_asset_name(to_str(args[0]) if args else "")
+            manager.sheet_cache.pop(key, None)
+            manager.animation_cache.pop(key, None)
+            manager._missing_sheets.discard(key)
+            manager._invalidate_sheet_derivatives(key)
+        sounds = getattr(game, "sound_mgr", None)
+        cache = getattr(sounds, "cache", None)
+        if isinstance(cache, dict):
+            cache.pop(to_str(args[0]), None)
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "makescreenshot2", "makescreenshotgame",
+                  "makescreenshotfull")
+    def _bi_make_screenshot(self, vm, name, args, obj):
+        game = getattr(self.rt2, "game_shell", None)
+        viewport = getattr(game, "viewport", None)
+        try:
+            import pygame
+            from pathlib import Path
+            from ..prefs import config_dir
+            if pygame.display.get_surface() is None or viewport is None:
+                return 0.0
+            requested = Path(to_str(args[0]) if args else "screenshot.png").name
+            stem = Path(requested).stem or "screenshot"
+            suffix = Path(requested).suffix.lower()
+            if suffix not in (".png", ".bmp", ".jpg", ".jpeg"):
+                suffix = ".png"
+            outdir = config_dir() / "screenshots"
+            outdir.mkdir(parents=True, exist_ok=True)
+            target = outdir / (stem + suffix)
+            source = (pygame.display.get_surface() if name == "makescreenshotfull"
+                      else viewport.canvas)
+            if name == "makescreenshot2":
+                width = max(1, int(to_num(args[5]))) if len(args) > 5 else source.get_width()
+                height = max(1, int(to_num(args[6]))) if len(args) > 6 else source.get_height()
+                cx, cy = game.camera.world_to_screen(
+                    to_num(args[2]) if len(args) > 2 else game.camera.center[0],
+                    to_num(args[3]) if len(args) > 3 else game.camera.center[1])
+                rect = pygame.Rect(int(cx - width / 2), int(cy - height / 2), width, height)
+                rect.clamp_ip(source.get_rect())
+                source = source.subsurface(rect).copy()
+            else:
+                offset = 1 if name == "makescreenshotfull" else 2
+                width = int(to_num(args[offset])) if len(args) > offset else 0
+                height = int(to_num(args[offset + 1])) if len(args) > offset + 1 else 0
+                if width > 0 and height > 0 and source.get_size() != (width, height):
+                    source = pygame.transform.smoothscale(source, (width, height))
+            pygame.image.save(source, str(target))
+        except Exception:
+            return 0.0
+        return 0.0
 
     # -- _GS2_BARE_GUI: bare GUI-construction builtins ----------------------
     # addcontrol()'s single argument is always "the object this new-statement
@@ -31,6 +247,99 @@ class HostBareMixin:
         return 0.0
 
     # -- _GS2_BARE: everything else ------------------------------------------
+
+    @_gs2_builtin(_GS2_BARE, "arccos", "arcsin")
+    def _bi_inverse_trig(self, vm, name, args, obj):
+        value = to_num(args[0]) if args else 0.0
+        if value < -1.0 or value > 1.0:
+            return 0.0
+        return math.acos(value) if name == "arccos" else math.asin(value)
+
+    @_gs2_builtin(_GS2_BARE, "aindexof")
+    def _bi_aindexof(self, vm, name, args, obj):
+        needle = to_num(args[0]) if args else 0.0
+        values = args[1] if len(args) > 1 else None
+        if not isinstance(values, list):
+            return 0.0
+        for index, value in enumerate(values):
+            if to_num(value) == needle:
+                return float(index)
+        return -1.0
+
+    @_gs2_builtin(_GS2_BARE, "getascii")
+    def _bi_getascii(self, vm, name, args, obj):
+        value = to_str(args[0]) if args else ""
+        return float(value.encode("latin-1", "replace")[0]) if value else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "escapestring", "escapestringkeepnewline")
+    def _bi_escape_string(self, vm, name, args, obj):
+        value = to_str(args[0]) if args else ""
+        keep_newline = name == "escapestringkeepnewline"
+        out = []
+        for char in value:
+            code = ord(char)
+            if char == "'":
+                out.append("\\'")
+            elif char in ('\\', '"'):
+                out.append("\\" + char)
+            elif code > 0x1d or (keep_newline and char == "\n"):
+                out.append(char)
+        return "".join(out)
+
+    @_gs2_builtin(_GS2_BARE, "randomstring")
+    def _bi_randomstring(self, vm, name, args, obj):
+        value = to_str(args[0]) if args else ""
+        if value.endswith(","):
+            return value[:-1]
+        choices = value.split(",")
+        return random.choice(choices) if choices else ""
+
+    @_gs2_builtin(_GS2_BARE, "strcmp")
+    def _bi_strcmp(self, vm, name, args, obj):
+        left = (to_str(args[0]) if args else "").lower()
+        right = (to_str(args[1]) if len(args) > 1 else "").lower()
+        return float((left > right) - (left < right))
+
+    @_gs2_builtin(_GS2_BARE, "trace")
+    def _bi_trace(self, vm, name, args, obj):
+        logger.info("GS2 trace: %s", to_str(args[0]) if args else "")
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "getnearestplayer")
+    def _bi_getnearestplayer(self, vm, name, args, obj):
+        player = getattr(self.rt2.client, "player", None)
+        x = to_num(args[0]) if args else to_num(getattr(player, "x", 0))
+        y = to_num(args[1]) if len(args) > 1 else to_num(getattr(player, "y", 0))
+        indices = self.rt2.nearest_player_indices(x, y)
+        return indices[0] if indices else -2.0
+
+    @_gs2_builtin(_GS2_BARE, "isadminguild")
+    def _bi_is_admin_guild(self, vm, name, args, obj):
+        from .helpers import _is_admin_guild
+        staff = getattr(self.rt2.client, "staff_guilds", None)
+        return 1.0 if _is_admin_guild(to_str(args[0]) if args else "", staff) else 0.0
+
+    @_gs2_builtin(_GS2_BARE, "isclassloaded", "loadclass")
+    def _bi_class_load(self, vm, name, args, obj):
+        classname = to_str(args[0]) if args else ""
+        if name == "isclassloaded":
+            return 1.0 if self.rt2.is_class_loaded(classname) else 0.0
+        self.rt2.load_class(classname)
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "keydownglobal", "keydown2global")
+    def _bi_keydown_global(self, vm, name, args, obj):
+        command = "keydown2" if name == "keydown2global" else "keydown"
+        gs1 = self.rt2.gs1
+        if gs1 is None:
+            return 0.0
+        return gs1._host.get_builtin(command, args, self.rt2._gs1_ctx(vm))
+
+    @_gs2_builtin(_GS2_BARE, "uploadfile")
+    def _bi_uploadfile(self, vm, name, args, obj):
+        # Passive-safety policy: script-requested uploads never leave the client.
+        logger.info("GS2 uploadfile(): network upload is not implemented")
+        return 0.0
 
     @_gs2_builtin(_GS2_BARE, "requesturl", "requesturlasgamefile")
     def _bi_requesturl(self, vm, name, args, obj):
@@ -274,7 +583,8 @@ class HostBareMixin:
     @_gs2_builtin(_GS2_BARE, "join")
     def _bi_join(self, vm, name, args, obj):
         if args:
-            self.rt2.join_class(vm, to_str(args[0]))
+            result = self.rt2.join_class(vm, to_str(args[0]))
+            return result if isinstance(result, VMCoroutineWait) else 0.0
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "echo")

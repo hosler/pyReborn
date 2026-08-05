@@ -308,13 +308,14 @@ class _PlayerColorsObject(GS2Object):
 class _PlayerObject(GS2Object):
     """`player.` bridged onto the live pyReborn client/player."""
 
-    __slots__ = ("_rt2", "_attr", "_colors")
+    __slots__ = ("_rt2", "_attr", "_colors", "_selected_list_players")
 
     def __init__(self, rt2: "ClientGS2"):
         super().__init__(name="player")
         self._rt2 = rt2
         self._attr = None
         self._colors = None
+        self._selected_list_players = []
 
     def _player(self):
         cl = self._rt2.client
@@ -331,6 +332,11 @@ class _PlayerObject(GS2Object):
             if self._colors is None:
                 self._colors = _PlayerColorsObject(self._rt2)
             return self._colors
+        if key == "selectedlistplayers":
+            return self._selected_list_players
+        if key in ("disableapnoheal", "disableapsaint", "disablenpchits"):
+            stored = super().get(key)
+            return 0.0 if stored is None else to_num(stored)
         # WORLD-frame tile position (local + segment*64 on a gmap), matching
         # GServer-v2's scriptParameters "x"/"y" binding (Character::
         # getTilePosition = mapX*64 + local, shared by GS1's playerx/playery
@@ -374,6 +380,48 @@ class _PlayerObject(GS2Object):
             # `guild` (empty when the nick has no parentheses).
             return _guild_from_nick(getattr(p, "nickname", "") if p else "")
         if p is not None:
+            if key == "isjumping":
+                return 1.0 if to_str(getattr(p, "animation", "")).lower().startswith("jump") else 0.0
+            if key in ("isinvincible", "isinvincible2"):
+                stored = super().get(key)
+                return 0.0 if stored is None else to_num(stored)
+            if key == "isobserver":
+                return 1.0 if int(getattr(cl, "ghost_mode", 0) or 0) == 2 else 0.0
+            if key == "map":
+                # This is the reference's map-window state, not "is in a
+                # gmap". pyReborn has no map window; its at-rest value is off.
+                return 0.0
+            if key == "paused":
+                return 1.0 if int(getattr(p, "status", 0)) & 1 else 0.0
+            if key == "reading":
+                game = getattr(self._rt2, "game_shell", None)
+                return 1.0 if getattr(game, "dialogue_text", None) is not None else 0.0
+            if key == "attached":
+                return 0.0
+            if key == "attachedtoobject":
+                npc_id = int(getattr(p, "attached_npc_id", 0) or 0)
+                npc_vm = self._rt2.vms.get("npc", {}).get(npc_id)
+                return getattr(npc_vm, "this_object", 0.0) if npc_vm else 0.0
+            if key == "headset":
+                text = to_str(getattr(p, "head_image", ""))
+                stem = text.rsplit("/", 1)[-1].lower()
+                if stem.startswith("head") and stem.endswith((".png", ".gif")):
+                    digits = stem[4:stem.rfind(".")]
+                    return float(int(digits)) if digits.isdigit() else 0.0
+                return 0.0
+            if key == "isblocking":
+                # The reference getter negates an internal field initialized
+                # false, so the default script value is true.
+                stored = super().get(key)
+                return 1.0 if stored is None else to_num(stored)
+            if key == "isignoring":
+                return 0.0
+            if key == "playersindex":
+                return 0.0
+            if key == "rating":
+                return float(getattr(p, "rating", 0))
+            if key == "ratingd":
+                return float(getattr(p, "rating_deviation", 0))
             if key in ("ani", "gani"):
                 # The animation is a HANDLE, not a string: Zelda's CheckHurt
                 # reads `i.ani.name` off every player findnearestplayers()
@@ -509,6 +557,24 @@ class _PlayerObject(GS2Object):
     def set(self, key: str, value: Any) -> None:
         key = key.lower()
         p = self._player()
+        if key == "selectedlistplayers":
+            self._selected_list_players[:] = value if isinstance(value, list) else []
+            return
+        if key in ("disableapnoheal", "disableapsaint", "disablenpchits"):
+            super().set(key, 1.0 if bool(to_num(value)) else 0.0)
+            return
+        if key in ("isinvincible", "isinvincible2", "isblocking"):
+            super().set(key, 1.0 if bool(to_num(value)) else 0.0)
+            return
+        if key == "paused" and p is not None:
+            p.status = ((p.status | 1) if bool(to_num(value))
+                        else (p.status & ~1))
+            return
+        if key == "headset" and p is not None:
+            number = int(to_num(value))
+            if 0 <= number <= 99:
+                p.head_image = f"head{number}.png"
+            return
         if key in _PLAYER_READONLY:
             return
         if key == "freezetime":
@@ -581,7 +647,10 @@ class _ThisObject(GS2Object):
         super().set(key, value)
 
     def get(self, key: str) -> Any:
-        if key.lower() == "timeout":
+        lowered = key.lower()
+        if lowered == "isweapon":
+            return 1.0 if self._vm_key[0] == "weapon" else 0.0
+        if lowered == "timeout":
             return self._rt2._timeouts.get(self._vm_key, 0.0)
         v = super().get(key)
         if v is None:
@@ -599,7 +668,8 @@ class _ThisObject(GS2Object):
             if vm is not None:
                 fn = vm.script_function(key)
                 if fn is not None:
-                    return fn
+                    return lambda *args: self._rt2.call_public_event(
+                        vm, key, *args)
             if key.lower() == "name":
                 # TGraalVar's `name` (quattroplay/src/TGraalVarProperties.cpp:
                 # 627) is on EVERY object and is string-typed, so leaving it

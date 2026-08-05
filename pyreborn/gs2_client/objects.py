@@ -11,6 +11,7 @@ from ..particles import emitter_for_record
 from reborn_protocol.gs2 import to_bool
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
+from reborn_protocol.coords import segment_at
 from .helpers import _GANI_TRANSFORM_DEFAULTS
 from .objects_player import _ThisObject, _guild_from_nick
 
@@ -99,11 +100,13 @@ class _NpcThisObject(_ThisObject):
     _ThisObject. Bare names route here too via _lookup/_assign_name because
     has() claims the attribute names."""
 
-    __slots__ = ("_colors",)
+    __slots__ = ("_colors", "_save")
 
     def __init__(self, rt2: "ClientGS2", vm_key: tuple, name: str = "this"):
         super().__init__(rt2, vm_key, name=name)
         self._colors = None
+        # TServerNPC constructs `save` as a ten-element TNumberArrayVar.
+        self._save = [0.0] * 10
 
     def _npc(self) -> Optional[dict]:
         cl = self._rt2.client
@@ -141,7 +144,11 @@ class _NpcThisObject(_ThisObject):
 
     def has(self, key: str) -> bool:
         k = key.lower()
-        if k in _NPC_THIS_ATTR or k in ("colors", "color"):
+        if k in _NPC_THIS_ATTR or k in (
+                "colors", "color", "actionplayer", "isblocking",
+                "isblockingprojectiles", "npcsindex", "peltwithnpc",
+                "peltwithbush", "peltwithsign", "peltwithvase",
+                "peltwithstone", "peltwithblackstone", "save", "isweapon"):
             return True
         return super().has(key)
 
@@ -151,6 +158,37 @@ class _NpcThisObject(_ThisObject):
             if self._colors is None:
                 self._colors = _NpcColorsObject(self)
             return self._colors
+        if k == "isweapon":
+            return 0.0
+        if k == "save":
+            return self._save
+        npc = self._npc()
+        if k == "actionplayer":
+            # No action-player attribution on an untouched streamed NPC.
+            # A locally dispatched action records the client id when present.
+            action_id = (npc or {}).get("action_player_id", -1)
+            if not isinstance(action_id, (int, float)) or action_id < 0:
+                return -2.0
+            player = getattr(self._rt2.client, "player", None)
+            if action_id == getattr(player, "id", None):
+                return 0.0
+            players = list((getattr(self._rt2.client, "players", {}) or {}).keys())
+            return float(players.index(action_id) + 1) if action_id in players else -1.0
+        if k == "npcsindex":
+            npc_id = self._npc_id()
+            keys = list((getattr(self._rt2.client, "npcs", {}) or {}).keys())
+            return float(keys.index(npc_id)) if npc_id in keys else -1.0
+        if k == "isblocking":
+            return 0.0 if (npc or {}).get("dontblock", False) else 1.0
+        if k == "isblockingprojectiles":
+            return 1.0 if (npc or {}).get("blocks_projectiles", True) else 0.0
+        pelt_names = {
+            "peltwithnpc": "npc", "peltwithbush": "bush",
+            "peltwithsign": "sign", "peltwithvase": "vase",
+            "peltwithstone": "stone", "peltwithblackstone": "blackstone",
+        }
+        if k in pelt_names:
+            return 1.0 if (npc or {}).get("pelt_kind", "") == pelt_names[k] else 0.0
         attr = _NPC_THIS_ATTR.get(k)
         if attr is not None:
             npc = self._npc()
@@ -178,6 +216,16 @@ class _NpcThisObject(_ThisObject):
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
+        if k == "isblocking":
+            npc = self._npc()
+            if npc is not None:
+                npc["dontblock"] = not to_bool(value)
+            return
+        if k == "isblockingprojectiles":
+            npc = self._npc()
+            if npc is not None:
+                npc["blocks_projectiles"] = to_bool(value)
+            return
         if k in ("colors", "color") and isinstance(value, (list, tuple)):
             npc = self._npc()
             if npc is not None:
@@ -418,6 +466,16 @@ class _LevelObject(GS2Object):
             return self._span("gmap_width")
         if k == "height":
             return self._span("gmap_height")
+        if k == "preloadleveldefaulttile":
+            value = super().get(k)
+            return 0.0 if value is None else to_num(value)
+        if k in ("isnopkzone", "nopkzone"):
+            value = super().get("isnopkzone")
+            return 0.0 if value is None else (1.0 if to_bool(value) else 0.0)
+        if k == "issparringzone":
+            # The level constructor clears this flag and no handled packet
+            # supplies it to this client.
+            return 0.0
         if k == "tilelayercount":
             # TServerLevel's m_tileLayers array size. PLO_BOARDLAYER ids are
             # sparse here, so report the highest occupied one; a level with
@@ -444,12 +502,25 @@ class _LevelObject(GS2Object):
         return value
 
     def set(self, key: str, value: Any) -> None:
-        if key.lower() == "name":
+        k = key.lower()
+        if k == "name":
             # propfun_graalvar_name_w (src/TGraalVarProperties.cpp:154-161)
             # assigns only while the object is still unnamed AND unlinked; a
             # live level is neither, so the write is a no-op there too.
             return
+        if k in ("isnopkzone", "nopkzone"):
+            super().set("isnopkzone", 1.0 if to_bool(value) else 0.0)
+            return
+        if k == "issparringzone":
+            return
         super().set(key, value)
+
+    def map_part_file(self, x: Any, y: Any) -> str:
+        client = self._rt2.client
+        if client is None:
+            return ""
+        cell = segment_at(to_num(x), to_num(y))
+        return to_str((getattr(client, "gmap_grid", {}) or {}).get(cell, ""))
 
 
 class _BoardTilesColumn(list):

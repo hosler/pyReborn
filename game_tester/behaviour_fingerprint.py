@@ -312,6 +312,52 @@ def _walk_gui(gui: Any) -> Dict[str, Any]:
     }
 
 
+def snapshot_gui(gui: Any) -> Dict[str, Any]:
+    """Public structural GUI snapshot shared with exploration tools."""
+    return _walk_gui(gui)
+
+
+def snapshot_vms(gs2: Any) -> Dict[str, Any]:
+    return {
+        "weapon": sorted(str(k).lower() for k in gs2.vms.get("weapon", {})),
+        "class": sorted(str(k).lower() for k in gs2.vms.get("class", {})),
+        "npc_count": len(gs2.vms.get("npc", {})),
+        "gani_count": len(gs2.vms.get("gani", {})),
+    }
+
+
+def snapshot_bytecodes(client: Any) -> Dict[str, int]:
+    return {kind: len(blobs) for kind, blobs
+            in (getattr(client, "gs2_bytecode", {}) or {}).items()}
+
+
+def snapshot_host_counters() -> Dict[str, Dict[str, int]]:
+    from reborn_protocol.gs2.vm import GS2VM
+    return {"called": dict(GS2VM.builtins_called),
+            "missing": dict(GS2VM.builtins_missing)}
+
+
+def snapshot_logs(log_capture: Any) -> Dict[str, Any]:
+    if log_capture is None:
+        return {"warnings": 0, "errors": 0, "kinds": {}, "samples": {},
+                "refused": {}}
+    return {"warnings": log_capture.warnings, "errors": log_capture.errors,
+            "kinds": dict(log_capture.kinds),
+            "samples": dict(log_capture.samples),
+            "refused": dict(log_capture.refused)}
+
+
+def delta_counters(before: Any, after: Any) -> Any:
+    """Positive mapping deltas, or newly-added members for sequence snapshots."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        return {key: value - before.get(key, 0) for key, value in after.items()
+                if isinstance(value, (int, float))
+                and value - before.get(key, 0) > 0}
+    if isinstance(before, (list, tuple, set)) and isinstance(after, (list, tuple, set)):
+        return sorted(set(after) - set(before))
+    return after if after != before else []
+
+
 def _visible_windows(roots: Iterable[Any]) -> List[Tuple[str, Any]]:
     """Every VISIBLE GuiWindowCtrl, with the visibility of its ancestors
     taken into account (an invisible parent hides the whole subtree)."""
@@ -487,14 +533,12 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
     from pyreborn.pygame_game import GameClient
-    from reborn_protocol.gs2.vm import GS2VM
 
     capture = _LogCapture()
     root_logger = logging.getLogger()
     root_logger.addHandler(capture)
 
-    calls_before = dict(GS2VM.builtins_called)
-    missing_before = dict(GS2VM.builtins_missing)
+    host_before = snapshot_host_counters()
 
     game = GameClient(client)
     recorder = _Recorder()
@@ -549,13 +593,11 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
 
         wall = time.monotonic() - start
         gs2 = game.gs2
-        calls_after = dict(GS2VM.builtins_called)
-        missing_after = dict(GS2VM.builtins_missing)
-        host_calls = {name: count - calls_before.get(name, 0)
-                      for name, count in calls_after.items()
-                      if count - calls_before.get(name, 0) > 0}
-        missing = sorted(name for name, count in missing_after.items()
-                         if count - missing_before.get(name, 0) > 0)
+        host_after = snapshot_host_counters()
+        host_calls = delta_counters(host_before["called"], host_after["called"])
+        missing = sorted(delta_counters(host_before["missing"],
+                                        host_after["missing"]))
+        logs = snapshot_logs(capture)
 
         fingerprint: Dict[str, Any] = {
             "seconds": round(seconds, 2),
@@ -566,14 +608,8 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
             "connected_at_end": bool(client.connected),
             "level": (getattr(client, "_current_level_name", "") or
                       getattr(getattr(client, "player", None), "level", "") or ""),
-            "bytecodes": {kind: len(blobs) for kind, blobs
-                          in (getattr(client, "gs2_bytecode", {}) or {}).items()},
-            "vms": {
-                "weapon": sorted(str(k).lower() for k in gs2.vms.get("weapon", {})),
-                "class": sorted(str(k).lower() for k in gs2.vms.get("class", {})),
-                "npc_count": len(gs2.vms.get("npc", {})),
-                "gani_count": len(gs2.vms.get("gani", {})),
-            },
+            "bytecodes": snapshot_bytecodes(client),
+            "vms": snapshot_vms(gs2),
             # GS1 content is the other half of "did the scripts run?": on
             # classic/GS1 worlds (and our own gs2emu fixtures) there is no
             # GS2 GUI at all, and a level whose NPC scripts stopped loading
@@ -583,7 +619,7 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
                 "gs1_scripts": len(getattr(game.gs1, "scripts", {}) or {}),
                 "weapons": len(getattr(client, "weapons", {}) or {}),
             },
-            "gui": _walk_gui(gs2.gui) if gs2.gui is not None else {
+            "gui": snapshot_gui(gs2.gui) if gs2.gui is not None else {
                 "roots": 0, "controls": 0, "named": 0, "max_depth": 0,
                 "root_names": [], "root_classes": {}, "classes": {},
                 "tree_names": [],
@@ -596,14 +632,14 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
                 "missing": missing,
             },
             "logs": {
-                "warnings": capture.warnings,
-                "errors": capture.errors,
-                "kinds": sorted(capture.kinds),
-                "samples": [capture.samples[k] for k in sorted(capture.kinds)],
+                "warnings": logs["warnings"],
+                "errors": logs["errors"],
+                "kinds": sorted(logs["kinds"]),
+                "samples": [logs["samples"][k] for k in sorted(logs["kinds"])],
             },
             "assets": {
-                "refused": sum(capture.refused.values()),
-                "names": sorted(capture.refused),
+                "refused": sum(logs["refused"].values()),
+                "names": sorted(logs["refused"]),
             },
         }
         return fingerprint

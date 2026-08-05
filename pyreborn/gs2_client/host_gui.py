@@ -44,7 +44,7 @@ class HostGuiMixin:
         ctrl = self.rt2.gui._resolve(obj)
         if ctrl is None:
             return _FALL_THROUGH
-        self.rt2.gui.show(ctrl)
+        ctrl._m_showtop()
         return 0.0
 
     @_gs2_builtin(_GS2_GUI_METHODS, "hide")
@@ -81,12 +81,35 @@ class HostGuiMixin:
 
     @_gs2_builtin(_GS2_GUI_METHODS, "animatecontrol")
     def _gui_animatecontrol(self, vm, name, args, obj):
-        # Immediate final-state application: deterministic headless
-        # fallback until the renderer gains a frame tween scheduler.
+        # This legacy helper has no matching client binding; retain its
+        # established immediate bounds result, using the same bounds path as
+        # transform animations.
         ctrl = self.rt2.gui._resolve(obj)
         if ctrl is not None:
-            for key, value in zip(("x", "y", "width", "height"), args[-4:]):
-                ctrl.set(key, value)
+            bounds = tuple(to_num(value) for value in args[-4:])
+            if len(bounds) == 4:
+                ctrl.apply_animation_bounds(bounds)
+        return 0.0
+
+    @_gs2_builtin(_GS2_GUI_METHODS, "createanimation")
+    def _gui_createanimation(self, vm, name, args, obj):
+        ctrl = self.rt2.gui._resolve(obj)
+        return ctrl.create_animation() if ctrl is not None else _FALL_THROUGH
+
+    @_gs2_builtin(_GS2_GUI_METHODS, "stopanimations")
+    def _gui_stopanimations(self, vm, name, args, obj):
+        ctrl = self.rt2.gui._resolve(obj)
+        if ctrl is None:
+            return _FALL_THROUGH
+        ctrl.stop_animations()
+        return 0.0
+
+    @_gs2_builtin(_GS2_GUI_METHODS, "stopinoutanimations")
+    def _gui_stopinoutanimations(self, vm, name, args, obj):
+        ctrl = self.rt2.gui._resolve(obj)
+        if ctrl is None:
+            return _FALL_THROUGH
+        ctrl.stop_in_out_animations()
         return 0.0
 
     # -- _GS2_POPUP_METHODS: GuiPopUpEditCtrl row surface -------------------

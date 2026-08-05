@@ -369,6 +369,71 @@ class GuiButtonBaseCtrl(GuiControl):
         return self.fire_action()
 
 
+class GuiWorldCtrl(GuiControl):
+    """Script-facing world viewport flag. Rendering is owned by the game
+    scene, so this control stores only the reference's writable flag."""
+
+    CTRL_CLASS = "GuiGraalCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset({"isrendering"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.is_rendering = False
+
+    def get(self, key: str) -> Any:
+        if key.lower() == "isrendering":
+            return 1.0 if self.is_rendering else 0.0
+        return super().get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        if key.lower() == "isrendering":
+            self.is_rendering = to_bool(value)
+            return
+        super().set(key, value)
+
+
+class GuiBrowserCtrl(GuiControl):
+    """Browser binding state without an embedded web view. Text and URL are
+    mutually exclusive exactly as in the reference; rendering is a no-op."""
+
+    CTRL_CLASS = "GuiBrowserCtrl"
+    _TORQUE_PROPS = GuiControl._TORQUE_PROPS | frozenset(
+        {"allowzoom", "text", "url"})
+
+    def __init__(self, ctor_arg: Any = None):
+        super().__init__(ctor_arg)
+        self.allow_zoom = False
+        self.url = ""
+
+    def get(self, key: str) -> Any:
+        k = key.lower()
+        if k == "allowzoom":
+            return 1.0 if self.allow_zoom else 0.0
+        if k == "url":
+            return self.url
+        return super().get(k)
+
+    def set(self, key: str, value: Any) -> None:
+        k = key.lower()
+        if k == "allowzoom":
+            self.allow_zoom = to_bool(value)
+            return
+        if k == "text":
+            super().set(k, value)
+            if self.text:
+                self.url = ""
+            return
+        if k == "url":
+            self.url = to_str(value)
+            if self.url:
+                self.text = ""
+            return
+        super().set(k, value)
+
+    def _draw_self(self, surf, fonts, sprite_mgr) -> None:
+        return
+
+
 class GuiButtonCtrl(GuiButtonBaseCtrl):
     """Rect + text (aligned per profile) + optional icon; onAction fires on
     click (GS2GuiManager). Skin sheets (guiblue_button.png) carry four

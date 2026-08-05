@@ -56,7 +56,8 @@ try:
 except ImportError:  # pragma: no cover
     _GS1_COMMANDS = frozenset()
 _GS1_COMMANDS = frozenset(_GS1_COMMANDS) | {
-    "play", "play2", "playlooped", "setmusic", "stopmidi", "stopsong",
+    "play", "play2", "playlooped", "setmusic", "stopmusic", "stopmidi",
+    "stopsong",
 }
 
 #: Level tile probes: v6 binds these itself (onwater/onwater2 at FourPlay
@@ -296,6 +297,7 @@ _GS2_GLOBAL_SETTERS = {
     "isgraalplugin": lambda rt2, key, value: True,
     "isgraal3d": lambda rt2, key, value: True,
     "lighteffectsenabled": _set_lighting_enabled,
+    "gravity": lambda rt2, key, value: setattr(rt2, "gravity", to_num(value)) is None,
 }
 
 
