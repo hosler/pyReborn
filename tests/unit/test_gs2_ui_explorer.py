@@ -21,7 +21,9 @@ from game_tester.gs2_ui_explorer.strategy import (
     enumerate_selector_values, lightweight_selector_change, rank_actions,
     sanitize_branch_name, selector_seed, synthesize_backtrack_actions,
 )
-from game_tester.gs2_ui_explorer.deep_drive import build_deep_report, write_deep_report
+from game_tester.gs2_ui_explorer.deep_drive import (
+    build_deep_report, report_capture, write_deep_report,
+)
 from pyreborn.game.gs2_gui import GS2GuiManager
 from pyreborn.outbound import script_origin
 from pyreborn.packets import PacketID
@@ -370,6 +372,15 @@ def test_deep_report_records_failed_backtrack_verification():
     branch = report["branches"][0]
     assert branch["backtrack_success"] is False
     assert branch["backtrack_failures"] == 1
+
+
+def test_report_capture_without_steps_writes_empty_report(tmp_path):
+    writer = CaptureWriter(tmp_path / "capture", {"target": "fixture"})
+    report = report_capture(writer.out_dir)
+
+    assert report == {"schema_version": 1, "selector_options": [], "branches": []}
+    assert json.loads((writer.out_dir / "deep_report.json").read_text()) == report
+    assert (writer.out_dir / "deep_report.md").exists()
 
 
 def test_compiled_gs2_local_transition_with_send_gate(tmp_path):
