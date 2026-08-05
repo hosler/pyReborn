@@ -252,15 +252,20 @@ class DevOverlay:
         kind, key = self.loaded
         text = self.editor.buffer.text
         if kind == "npc":
-            link.set_npc_script(int(key), text)
+            sent = link.set_npc_script(int(key), text)
         elif kind == "weapon":
             snap = self._snapshot()
             image = (snap.last_weapon.get('image', '') if snap else '')
             # add_weapon on an existing name is the update path: the server
             # replaces the script and keeps the weapon in players' inventories.
-            link.add_weapon(str(key), image, text)
+            sent = link.add_weapon(str(key), image, text)
         elif kind == "class":
-            link.add_class(str(key), text)
+            sent = link.add_class(str(key), text)
+        else:
+            sent = False
+        if not sent:
+            self.message = "not sent — NC link not ready"
+            return
         self.editor.buffer.load(text)      # clears the dirty flag
         self.message = f"saved {kind} {key}"
 
@@ -392,8 +397,15 @@ class DevOverlay:
         link = self.nc_link
         if link is None:
             return
+        if not link.available:
+            self.message = "NC link is not connected"
+            return
         name = f"dev_{self.game.client.player.account}"
         action = lambda: self._create_weapon(name)
+        if not link.snapshot.weapon_list_loaded:
+            self.confirm = (f"Weapon list not loaded; overwrite {name} if it exists?",
+                            action)
+            return
         if name in link.snapshot.weapons:
             self.confirm = (f"Overwrite weapon {name}?", action)
             return
@@ -403,7 +415,9 @@ class DevOverlay:
         link = self.nc_link
         if link is None:
             return
-        link.add_weapon(name, "", "// new weapon\n")
+        if not link.add_weapon(name, "", "// new weapon\n"):
+            self.message = "not sent — NC link not ready"
+            return
         link.get_weapon_list()
         self.loaded = ("weapon", name)
         self.editor.buffer.load("// new weapon\n")
@@ -413,8 +427,15 @@ class DevOverlay:
         link = self.nc_link
         if link is None:
             return
+        if not link.available:
+            self.message = "NC link is not connected"
+            return
         name = f"dev_{self.game.client.player.account}"
         action = lambda: self._create_class(name)
+        if not link.snapshot.class_list_loaded:
+            self.confirm = (f"Class list not loaded; overwrite {name} if it exists?",
+                            action)
+            return
         if name in link.snapshot.classes:
             self.confirm = (f"Overwrite class {name}?", action)
             return
@@ -424,7 +445,9 @@ class DevOverlay:
         link = self.nc_link
         if link is None:
             return
-        link.add_class(name, "// new class\n")
+        if not link.add_class(name, "// new class\n"):
+            self.message = "not sent — NC link not ready"
+            return
         self.loaded = ("class", name)
         self.editor.buffer.load("// new class\n")
         self.message = f"created class {name}"
@@ -436,7 +459,9 @@ class DevOverlay:
             return
         npc_id = ids[min(self.selected[self.tab], len(ids) - 1)]
         client = self.game.client
-        link.warp_npc(npc_id, client.x, client.y, self._level_name())
+        if not link.warp_npc(npc_id, client.x, client.y, self._level_name()):
+            self.message = "not sent — NC link not ready"
+            return
         self.message = f"warped NPC {npc_id} to you"
 
     # -- drawing ----------------------------------------------------------

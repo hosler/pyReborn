@@ -225,6 +225,37 @@ class TestEntityPass:
             del game._get_effect_sprite
         assert order == expected
 
+    def test_deferred_bombs_draw_at_their_own_positions(self, game):
+        _populate(game)
+        game.client.players.clear()
+        game.client.npcs.clear()
+        game.client.baddies.clear()
+        game.client.horses.clear()
+        game.client.chests.clear()
+        game.client.items.clear()
+        now = time.time()
+        positions = [(30.0, 31.0), (34.0, 35.0)]
+        game.active_bombs = [
+            {
+                'x': x, 'y': y, 'time': now,
+                'fuse_time': 10.0, 'power': 1, 'exploded': False,
+            }
+            for x, y in positions
+        ]
+        draws = []
+        game._render_bomb_ticking = (
+            lambda screen_x, screen_y, elapsed:
+            draws.append((screen_x, screen_y)))
+        try:
+            frame = game._begin_frame()
+            game._render_bombs(frame)
+            assert draws == []
+            game._render_entities(frame)
+        finally:
+            del game._render_bomb_ticking
+        assert draws == [game.camera.world_to_screen(x, y)
+                         for x, y in positions]
+
     def test_frame_state_does_not_leak_back_onto_the_client(self, game):
         """The cross-pass lists live on FrameContext only. The old
         attribute mechanism (and its _in_gui_pass flag) must stay gone."""

@@ -27,7 +27,7 @@ import pygame
 import pygame.locals as pgl
 
 from pyreborn.game.dev_ui import TABS, DevOverlay
-from pyreborn.nc_link import READY, NCLink, NCSnapshot
+from pyreborn.nc_link import CONNECTING, READY, NCLink, NCSnapshot
 
 
 class _Key:
@@ -204,6 +204,7 @@ def test_console_mangles_multiline_code_for_the_wire():
 
 def test_existing_fixed_weapon_name_requires_overwrite_confirmation():
     panel, link = _panel(NCSnapshot(state=READY,
+                                    weapon_list_loaded=True,
                                     weapons=("dev_builder",)))
     panel._new_weapon()
     link.add_weapon.assert_not_called()
@@ -215,6 +216,7 @@ def test_existing_fixed_weapon_name_requires_overwrite_confirmation():
 
 def test_existing_fixed_class_name_requires_overwrite_confirmation():
     panel, link = _panel(NCSnapshot(state=READY,
+                                    class_list_loaded=True,
                                     classes=("dev_builder",)))
     panel._new_class()
     link.add_class.assert_not_called()
@@ -223,10 +225,77 @@ def test_existing_fixed_class_name_requires_overwrite_confirmation():
     link.add_class.assert_called_once_with("dev_builder", "// new class\n")
 
 
-def test_new_fixed_names_are_created_without_confirmation():
+def test_unfetched_weapon_list_never_silently_creates_fixed_name():
     panel, link = _panel()
     panel._new_weapon()
-    link.add_weapon.assert_called_once()
+    link.add_weapon.assert_not_called()
+    assert panel.confirm is not None
+
+
+def test_new_weapon_while_connecting_stops_at_the_link_guard():
+    panel, link = _panel(NCSnapshot(
+        state=CONNECTING, weapon_list_loaded=True, weapons=("dev_builder",)))
+
+    panel._new_weapon()
+
+    link.add_weapon.assert_not_called()
+    assert panel.confirm is None
+    assert panel.message == "NC link is not connected"
+
+
+def test_failed_weapon_creation_is_not_reported_as_success():
+    panel, link = _panel()
+    link.add_weapon.return_value = False
+
+    panel._create_weapon("dev_builder")
+
+    assert panel.message == "not sent — NC link not ready"
+    assert panel.loaded is None
+
+
+def test_failed_class_creation_is_not_reported_as_success():
+    panel, link = _panel()
+    link.add_class.return_value = False
+
+    panel._create_class("dev_builder")
+
+    assert panel.message == "not sent — NC link not ready"
+    assert panel.loaded is None
+
+
+def test_failed_save_keeps_the_buffer_dirty_and_reports_failure():
+    panel, link = _panel()
+    panel.loaded = ("class", "dev_builder")
+    panel.editor.buffer.insert("changed")
+    link.add_class.return_value = False
+
+    panel.save_script()
+
+    assert panel.message == "not sent — NC link not ready"
+    assert panel.editor.buffer.dirty is True
+
+
+def test_unfetched_class_list_never_silently_creates_fixed_name():
+    panel, link = _panel()
+    panel._new_class()
+    link.add_class.assert_not_called()
+    assert panel.confirm is not None
+
+
+def test_fetched_weapon_list_without_fixed_name_creates_without_confirmation():
+    panel, link = _panel(NCSnapshot(state=READY, weapon_list_loaded=True,
+                                    weapons=("bow",)))
+    panel._new_weapon()
+    link.add_weapon.assert_called_once_with("dev_builder", "",
+                                            "// new weapon\n")
+    assert panel.confirm is None
+
+
+def test_fetched_class_list_without_fixed_name_creates_without_confirmation():
+    panel, link = _panel(NCSnapshot(state=READY, class_list_loaded=True,
+                                    classes=("gui",)))
+    panel._new_class()
+    link.add_class.assert_called_once_with("dev_builder", "// new class\n")
     assert panel.confirm is None
 
 

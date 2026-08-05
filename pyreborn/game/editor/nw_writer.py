@@ -7,7 +7,7 @@ when it was explicitly supplied.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Optional
 
 
 LEVEL_SIZE = 64
@@ -42,7 +42,7 @@ def _block_text(value: Any, terminator: str, field: str) -> str:
     return text
 
 
-def _encode_board(board: Sequence[int]) -> list[str]:
+def _encode_board(board: Sequence[int], layer: int = 0) -> list[str]:
     if len(board) != TILE_COUNT:
         raise ValueError(f"board must contain exactly {TILE_COUNT} tiles")
     rows = []
@@ -54,8 +54,18 @@ def _encode_board(board: Sequence[int]) -> list[str]:
                 raise ValueError(f"tile ({x}, {y}) id {tile_id} is not representable")
             encoded.extend((BOARD_ALPHABET[tile_id // 64],
                             BOARD_ALPHABET[tile_id % 64]))
-        rows.append(f"BOARD 0 {y} 64 0 {''.join(encoded)}")
+        rows.append(f"BOARD 0 {y} 64 {layer} {''.join(encoded)}")
     return rows
+
+
+def _decode_layer_board(board: Sequence[int] | bytes) -> list[int]:
+    if isinstance(board, bytes):
+        if len(board) != TILE_COUNT * 2:
+            raise ValueError(
+                f"board layer must contain exactly {TILE_COUNT * 2} bytes")
+        return [int.from_bytes(board[index:index + 2], "little") & 0xfff
+                for index in range(0, len(board), 2)]
+    return list(board)
 
 
 def _chest_fields(chest: Any) -> tuple[Any, Any, Any, Any]:
@@ -85,6 +95,7 @@ def serialize_level(
     npcs: Mapping[Any, Mapping[str, Any]],
     npc_scripts: Mapping[Any, str],
     baddies: Iterable[Mapping[str, Any]] = (),
+    board_layers: Optional[Mapping[int, Sequence[int] | bytes]] = None,
 ) -> str:
     """Return one level's live state in GLEVNW01 format.
 
@@ -103,6 +114,11 @@ def serialize_level(
         raise MissingNpcScriptError(f"missing script for NPC {names}")
 
     lines = ["GLEVNW01", *_encode_board(board)]
+    for layer, layer_board in sorted((board_layers or {}).items()):
+        layer_index = int(layer)
+        if layer_index <= 0:
+            continue
+        lines.extend(_encode_board(_decode_layer_board(layer_board), layer_index))
 
     for link in links:
         required = ("dest_level", "x", "y", "width", "height",

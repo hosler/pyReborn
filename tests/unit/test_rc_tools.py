@@ -31,11 +31,11 @@ import pygame
 import pygame.locals as pgl
 import pytest
 
-from pyreborn import rc_link
+from pyreborn import nc_link, rc_link
 from pyreborn.game.rc_ui import TABS, RCOverlay
 from pyreborn.packets import PacketID
 from pyreborn.rc_client import RCClient
-from pyreborn.rc_link import READY, RCLink, RCSnapshot
+from pyreborn.rc_link import DENIED, READY, RCLink, RCSnapshot
 
 
 class _Key:
@@ -300,6 +300,14 @@ def test_start_without_a_password_is_denied_not_attempted():
     assert link.started is False
 
 
+def test_start_does_not_retry_a_denied_session():
+    link = RCLink("localhost", 14900, "hosler", "pw")
+    link._set_state(DENIED, "no RC access")
+    with patch("pyreborn.rc_link.threading.Thread") as thread:
+        link.start()
+    thread.assert_not_called()
+
+
 def test_download_names_cannot_escape_the_download_directory(tmp_path):
     link = RCLink("localhost", 14900, "hosler", "pw", download_dir=tmp_path)
     link._on_file("../../escaped.txt", b"data")
@@ -379,6 +387,30 @@ def test_stop_during_access_proof_closes_without_a_denial():
             patch.object(link, "_await_rc_proof", side_effect=stop_proof):
         link._run(stop_event)
     assert link.state == "closed"
+
+
+def test_rc_disconnect_during_access_proof_is_retryable():
+    link = RCLink("localhost", 14900, "hosler", "pw")
+    client = Mock()
+    client.connect.return_value = True
+    client.login.return_value = True
+    with patch("pyreborn.rc_link._LinkedRCClient", return_value=client), \
+            patch.object(link, "_await_rc_proof", return_value=None):
+        link._run(rc_link.threading.Event())
+    assert link.state == "closed"
+    assert link.snapshot.status == "RC connection dropped"
+
+
+def test_nc_disconnect_during_access_proof_is_retryable():
+    link = nc_link.NCLink("localhost", 14900, "hosler", "pw")
+    client = Mock()
+    client.connect.return_value = True
+    client.login.return_value = True
+    with patch("pyreborn.nc_link._LinkedNCClient", return_value=client), \
+            patch.object(link, "_await_nc_proof", return_value=None):
+        link._run(nc_link.threading.Event())
+    assert link.state == "closed"
+    assert link.snapshot.status == "NC connection dropped"
 
 
 # -- the panel must not leave the player walking ------------------------------

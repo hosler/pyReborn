@@ -1,4 +1,5 @@
 from .common import *
+from reborn_protocol.coords import world_to_local
 
 def parse_hurt_player(data: bytes) -> dict:
     """
@@ -980,6 +981,8 @@ def build_bomb_add(x: float, y: float, power: int = 1, timer_ms: int = 3050) -> 
     Format (msgPLI_BOMBADD): {GCHAR x*2}{GCHAR y*2}{GCHAR player_power}{GCHAR timer_increments}
     timer_ms mirrors what parse_bomb_add reports back (increments*50 + 50).
     """
+    # Safe for local inputs because values already in [0, 64) are unchanged.
+    x, y = world_to_local(x, y)
     builder = PacketBuilder()
     builder.write_gchar(int(x * 2))
     builder.write_gchar(int(y * 2))
@@ -1001,6 +1004,8 @@ def parse_bomb_del(data: bytes) -> dict:
 
 def build_bomb_del(x: float, y: float) -> bytes:
     """Build PLI_BOMBDEL (5) payload: {GCHAR x*2}{GCHAR y*2}."""
+    # Safe for local inputs because values already in [0, 64) are unchanged.
+    x, y = world_to_local(x, y)
     builder = PacketBuilder()
     builder.write_gchar(int(x * 2))
     builder.write_gchar(int(y * 2))
@@ -1383,5 +1388,3 @@ def build_profile_set(account: str, name: str = '', age: str = '',
                   hangout, quote):
         builder.write_gstring(field)
     return builder.build()
-
-

@@ -61,7 +61,8 @@ UNHANDLED_PACKET_ID = int(PacketID.PLO_NPCACTION)
 FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
     # level / board
     "tiles", "_tiles_level_name", "levels", "_current_level_name",
-    "_pending_level_name", "active_level", "links", "chests", "chest_items",
+    "_pending_level_name", "_pending_board_level_name",
+    "_adjacent_level_requests", "active_level", "links", "chests", "chest_items",
     "signs", "board_layers", "is_leader",
     # gmap
     "gmap_grid", "gmap_width", "gmap_height", "gmap_name", "bigmap_info",

@@ -16,6 +16,7 @@ from .packets import PacketID
 logger = logging.getLogger(__name__)
 
 NC_PROOF_TIMEOUT = 6.0
+NC_REQUEST_TIMEOUT = 6.0
 MAX_NOTICES = 60
 
 # The weapon and level lists, level dumps, and weapon replies are NC query
@@ -54,8 +55,10 @@ class NCSnapshot:
     npc_flags: Tuple[Tuple[int, Tuple[str, ...]], ...] = ()
     local_npcs: Tuple[Tuple[str, str], ...] = ()
     weapons: Tuple[str, ...] = ()
+    weapon_list_loaded: bool = False
     last_weapon: Dict[str, Any] = field(default_factory=dict)
     classes: Tuple[str, ...] = ()
+    class_list_loaded: bool = False
     last_class: Dict[str, Any] = field(default_factory=dict)
     levels: Tuple[str, ...] = ()
     notices: Tuple[str, ...] = ()
@@ -91,15 +94,77 @@ class _LinkedNCClient(NCClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.saw_nc_packet = False
+        self.weapon_list_loaded = False
+        self.class_list_loaded = False
+        self.npc_attributes: Dict[int, Tuple[str, ...]] = {}
         self.npc_scripts: Dict[int, str] = {}
         self.npc_flags: Dict[int, Tuple[str, ...]] = {}
+        self.local_npcs: Dict[str, str] = {}
+        self._npc_attribute_requests: deque[int] = deque()
+        self._local_npc_requests: deque[str] = deque()
+        self._npc_attribute_outstanding: Optional[Tuple[float, int]] = None
+        self._local_npc_outstanding: Optional[Tuple[float, str]] = None
+
+    def get_npc(self, npc_id: int) -> bool:
+        self._npc_attribute_requests.append(npc_id)
+        self.pump_correlated_requests()
+        return True
+
+    def get_local_npcs(self, level: str) -> bool:
+        self._local_npc_requests.append(level)
+        self.pump_correlated_requests()
+        return True
+
+    def pump_correlated_requests(self) -> None:
+        """Expire dead sends, then allow one wire request of each kind."""
+        now = time.monotonic()
+        if (self._npc_attribute_outstanding is not None
+                and now - self._npc_attribute_outstanding[0]
+                >= NC_REQUEST_TIMEOUT):
+            self._npc_attribute_outstanding = None
+        if (self._local_npc_outstanding is not None
+                and now - self._local_npc_outstanding[0]
+                >= NC_REQUEST_TIMEOUT):
+            self._local_npc_outstanding = None
+
+        if (self._npc_attribute_outstanding is None
+                and self._npc_attribute_requests):
+            npc_id = self._npc_attribute_requests.popleft()
+            if super().get_npc(npc_id):
+                self._npc_attribute_outstanding = (now, npc_id)
+            else:
+                self._npc_attribute_requests.appendleft(npc_id)
+        if (self._local_npc_outstanding is None
+                and self._local_npc_requests):
+            level = self._local_npc_requests.popleft()
+            if super().get_local_npcs(level):
+                self._local_npc_outstanding = (now, level)
+            else:
+                self._local_npc_requests.appendleft(level)
 
     def _handle_packet(self, packet_id: int, data: bytes):
         if packet_id in _EVIDENCE_IDS:
             self.saw_nc_packet = True
         super()._handle_packet(packet_id, data)
 
-        if packet_id == PacketID.PLO_NC_NPCSCRIPT:
+        if packet_id == PacketID.PLO_NC_WEAPONLISTGET:
+            self.weapon_list_loaded = True
+            # Class names are startup announcements rather than a separately
+            # queryable list. The requested weapon-list reply is the ordered
+            # startup barrier after those announcements, including none.
+            self.class_list_loaded = True
+
+        if (packet_id == PacketID.PLO_NC_NPCATTRIBUTES
+                and self._npc_attribute_outstanding is not None):
+            _requested_at, npc_id = self._npc_attribute_outstanding
+            self._npc_attribute_outstanding = None
+            self.npc_attributes[npc_id] = tuple(self._last_npc_attributes)
+        elif (packet_id == PacketID.PLO_NC_LEVELDUMP
+              and self._local_npc_outstanding is not None):
+            _requested_at, level = self._local_npc_outstanding
+            self._local_npc_outstanding = None
+            self.local_npcs[level] = self._last_level_dump
+        elif packet_id == PacketID.PLO_NC_NPCSCRIPT:
             record = self._last_npc_script or {}
             if record.get("id") is not None:
                 self.npc_scripts[int(record["id"])] = str(
@@ -109,6 +174,11 @@ class _LinkedNCClient(NCClient):
             if record.get("id") is not None:
                 self.npc_flags[int(record["id"])] = tuple(
                     record.get("flags", ()))
+
+        # A reply after we timed out its exact request can still race the next
+        # send; without a correlation id on the wire that ambiguity is
+        # unavoidable. Serializing requests makes this the only such window.
+        self.pump_correlated_requests()
 
 
 class NCLink:
@@ -130,8 +200,6 @@ class NCLink:
         self._npc_scripts: Dict[int, str] = {}
         self._npc_flags: Dict[int, Tuple[str, ...]] = {}
         self._local_npcs: Dict[str, str] = {}
-        self._pending_local_level = ""
-        self._pending_npc_id: Optional[int] = None
         self._snapshot = NCSnapshot(account=account)
 
     @property
@@ -161,6 +229,10 @@ class NCLink:
             self._set_state(DENIED, "no password available for an NC login")
             return
         self._clear_commands()
+        with self._lock:
+            self._snapshot = replace(
+                self._snapshot, weapons=(), weapon_list_loaded=False,
+                classes=(), class_list_loaded=False)
         stop_event = threading.Event()
         self._stop = stop_event
         self._set_state(CONNECTING, f"connecting to {self.host}:{self.port}...")
@@ -193,8 +265,12 @@ class NCLink:
                 reason = nc.disconnect_reason or "server refused the NC login"
                 self._set_state(DENIED, reason)
                 return
-            if not self._await_nc_proof(nc, stop_event):
+            proof = self._await_nc_proof(nc, stop_event)
+            if proof is not True:
                 if stop_event.is_set():
+                    return
+                if proof is None:
+                    self._set_state(CLOSED, "NC connection dropped")
                     return
                 self._set_state(DENIED, "this account has no NC access on this server")
                 return
@@ -214,7 +290,7 @@ class NCLink:
                 self._set_state(CLOSED, "NC session closed")
 
     def _await_nc_proof(self, nc: _LinkedNCClient,
-                        stop_event: Optional[threading.Event] = None) -> bool:
+                        stop_event: Optional[threading.Event] = None) -> Optional[bool]:
         """Wait for an NC-only packet; authentication alone proves nothing."""
         nc.get_weapon_list()
         nc.get_level_list()
@@ -225,7 +301,7 @@ class NCLink:
             if nc.saw_nc_packet:
                 return True
             if not nc.connected:
-                return False
+                return None
         return False
 
     def _pump_until_stopped(self, nc: _LinkedNCClient,
@@ -236,6 +312,7 @@ class NCLink:
                 self._set_state(CLOSED, "NC connection dropped")
                 return
             self._drain_commands(nc)
+            nc.pump_correlated_requests()
             nc.update(timeout=0.05)
             self._rebuild_snapshot(nc)
 
@@ -272,15 +349,10 @@ class NCLink:
         # packet arrives (see _LinkedNCClient): polling the "last reply"
         # fields here dropped every reply but one whenever a batch of them
         # landed inside the same update().
+        self._npc_attributes.update(getattr(nc, "npc_attributes", {}))
         self._npc_scripts.update(getattr(nc, "npc_scripts", {}))
         self._npc_flags.update(getattr(nc, "npc_flags", {}))
-        if self._pending_npc_id is not None and nc._last_npc_attributes:
-            self._npc_attributes[self._pending_npc_id] = tuple(
-                nc._last_npc_attributes)
-            self._pending_npc_id = None
-        if self._pending_local_level and nc._last_level_dump:
-            self._local_npcs[self._pending_local_level] = nc._last_level_dump
-            self._pending_local_level = ""
+        self._local_npcs.update(getattr(nc, "local_npcs", {}))
         npcs = tuple((npc_id, dict(values))
                      for npc_id, values in sorted(nc.npcs.items()))
         with self._lock:
@@ -291,8 +363,11 @@ class NCLink:
                 npc_scripts=tuple(sorted(self._npc_scripts.items())),
                 npc_flags=tuple(sorted(self._npc_flags.items())),
                 local_npcs=tuple(sorted(self._local_npcs.items())),
-                weapons=tuple(nc._weapon_list), last_weapon=dict(nc._last_weapon),
-                classes=tuple(nc.classes), last_class=dict(nc._last_class),
+                weapons=tuple(nc._weapon_list),
+                weapon_list_loaded=getattr(nc, "weapon_list_loaded", False),
+                last_weapon=dict(nc._last_weapon), classes=tuple(nc.classes),
+                class_list_loaded=getattr(nc, "class_list_loaded", False),
+                last_class=dict(nc._last_class),
                 levels=tuple(nc._level_list), notices=tuple(self._notices))
 
     def _submit(self, fn: Callable[[NCClient], None]) -> bool:
@@ -305,11 +380,7 @@ class NCLink:
         return self._submit(lambda nc: nc.ping_npcs())
 
     def get_npc(self, npc_id: int) -> bool:
-        def _get(nc: NCClient) -> None:
-            self._pending_npc_id = npc_id
-            nc._last_npc_attributes = []
-            nc.get_npc(npc_id)
-        return self._submit(_get)
+        return self._submit(lambda nc: nc.get_npc(npc_id))
 
     def delete_npc(self, npc_id: int) -> bool:
         return self._submit(lambda nc: nc.delete_npc(npc_id))
@@ -338,11 +409,7 @@ class NCLink:
             name, npc_id, npc_type, scripter, level, x, y))
 
     def get_local_npcs(self, level: str) -> bool:
-        def _get(nc: NCClient) -> None:
-            self._pending_local_level = level
-            nc._last_level_dump = ""
-            nc.get_local_npcs(level)
-        return self._submit(_get)
+        return self._submit(lambda nc: nc.get_local_npcs(level))
 
     def edit_class(self, class_name: str) -> bool:
         return self._submit(lambda nc: nc.edit_class(class_name))

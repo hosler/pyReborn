@@ -444,6 +444,26 @@ def test_export_of_a_level_without_npcs_needs_no_nc_session(tmp_path,
     assert text.startswith("GLEVNW01")
 
 
+def test_export_does_not_attach_layers_owned_by_another_level(tmp_path,
+                                                               monkeypatch):
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    editor, _ = _editor(_Board(fill=7))
+    client = _with_links(editor)
+    client.npcs = {}
+    client.board_layers = {1: bytes(4096 * 2)}
+    client._board_layers_level_name = "another-level.nw"
+    rc = Mock()
+    rc.available = True
+    rc.snapshot = SimpleNamespace(folder="world")
+    editor.game.rc_ui = SimpleNamespace(link=rc)
+
+    editor.export_level()
+
+    text = open(rc.files_upload.call_args[0][0], encoding="latin-1").read()
+    assert not any(line.startswith("BOARD 0 0 64 1 ")
+                   for line in text.splitlines())
+
+
 def test_export_carries_the_levels_baddies_and_the_chest_sign_index(tmp_path,
                                                                     monkeypatch):
     """Both were silently dropped, and a live export proved it.
@@ -568,6 +588,20 @@ def test_painting_a_neighbouring_segment_is_refused_not_mirrored():
     editor.mouse_up(64 + 5, 64 + 5, 1)
     assert client.modify_board.call_args[0][:2] == (5, 5)
     assert board.read(5, 5) == 42
+
+
+def test_painting_a_gmap_hole_is_refused_as_outside_the_map():
+    board = _Board(fill=7)
+    editor, client = _gmap_editor(board)
+    editor.game._level_tiles_at = lambda x, y: (None, None)
+    editor.state.tile = 42
+
+    editor.mouse_down(5, 5, 1)
+    editor.mouse_up(5, 5, 1)
+
+    client.modify_board.assert_not_called()
+    assert board.read(5, 5) == 7
+    assert "outside the map" in editor.state.status
 
 
 def test_a_stroke_stops_at_the_seam_instead_of_wrapping():

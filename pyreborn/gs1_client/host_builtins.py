@@ -115,7 +115,13 @@ class BuiltinsMixin:
             except Exception:
                 return []
         cl = self.rt.client
-        return list(getattr(cl, "bombs", {}).values()) if cl else []
+        if cl is None:
+            return []
+        level = getattr(cl, "_current_level_name", "")
+        bombs_in_level = getattr(cl, "bombs_in_level", None)
+        bombs = (bombs_in_level(level) if bombs_in_level is not None
+                 else getattr(cl, "bombs", {}).get(level, {}))
+        return list((bombs or {}).values())
 
     def _explo_list(self):
         """Active explosions in explos[] index order (client-level registry,

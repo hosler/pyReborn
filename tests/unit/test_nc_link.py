@@ -4,7 +4,8 @@ from unittest.mock import Mock, patch
 
 from pyreborn.nc_client import NCClient
 from pyreborn import nc_link
-from pyreborn.nc_link import DENIED, READY, NCLink
+from pyreborn.nc_link import CONNECTING, DENIED, READY, NCLink, NCSnapshot
+from pyreborn.packets import PacketID
 
 
 def test_commands_are_refused_and_not_queued_until_ready():
@@ -45,6 +46,139 @@ def test_ready_command_is_queued_for_worker():
     link._set_state(READY, "active")
     assert link.get_level_list() is True
     assert link._commands.qsize() == 1
+
+
+def test_reconnect_clears_loaded_lists_on_the_same_link():
+    link = NCLink("localhost", 14900, "staff", "pw")
+    link._snapshot = NCSnapshot(
+        state="closed", weapons=("old_weapon",), weapon_list_loaded=True,
+        classes=("old_class",), class_list_loaded=True)
+
+    with patch("pyreborn.nc_link.threading.Thread"):
+        link.start()
+
+    assert link.snapshot.state == CONNECTING
+    assert link.snapshot.weapons == ()
+    assert link.snapshot.weapon_list_loaded is False
+    assert link.snapshot.classes == ()
+    assert link.snapshot.class_list_loaded is False
+
+
+def test_npc_attribute_replies_follow_fifo_request_ids():
+    link = NCLink("localhost", 14900, "staff", "pw")
+    client = nc_link._LinkedNCClient()
+    link._set_state(READY, "active")
+    with patch.object(client, "_send", return_value=True) as send:
+        assert link.get_npc(10) is True
+        assert link.get_npc(20) is True
+        link._drain_commands(client)
+        assert send.call_count == 1
+        client._handle_packet(PacketID.PLO_NC_NPCATTRIBUTES, b"attrs-of-10")
+        assert send.call_count == 2
+        client._handle_packet(PacketID.PLO_NC_NPCATTRIBUTES, b"attrs-of-20")
+    link._rebuild_snapshot(client)
+
+    assert dict(link.snapshot.npc_attributes) == {
+        10: ("attrs-of-10",),
+        20: ("attrs-of-20",),
+    }
+
+
+def test_dead_npc_request_times_out_before_next_request_is_sent():
+    link = NCLink("localhost", 14900, "staff", "pw")
+    client = nc_link._LinkedNCClient()
+    link._set_state(READY, "active")
+    clock = [10.0]
+    with patch.object(nc_link.time, "monotonic", side_effect=lambda: clock[0]), \
+            patch.object(client, "_send", return_value=True) as send:
+        assert link.get_npc(999) is True
+        assert link.get_npc(20) is True
+        link._drain_commands(client)
+        assert send.call_count == 1
+        clock[0] += nc_link.NC_REQUEST_TIMEOUT + 0.1
+        client.pump_correlated_requests()
+        assert send.call_count == 2
+        client._handle_packet(PacketID.PLO_NC_NPCATTRIBUTES, b"attrs-of-20")
+
+    link._rebuild_snapshot(client)
+    assert dict(link.snapshot.npc_attributes) == {20: ("attrs-of-20",)}
+
+
+def test_slow_npc_reply_within_timeout_remains_attributed():
+    client = nc_link._LinkedNCClient()
+    clock = [10.0]
+    with patch.object(nc_link.time, "monotonic", side_effect=lambda: clock[0]), \
+            patch.object(client, "_send", return_value=True):
+        assert client.get_npc(42) is True
+        clock[0] += nc_link.NC_REQUEST_TIMEOUT - 0.1
+        client.pump_correlated_requests()
+        client._handle_packet(PacketID.PLO_NC_NPCATTRIBUTES, b"slow-42")
+
+    assert client.npc_attributes == {42: ("slow-42",)}
+
+
+def test_failed_npc_send_stays_queued_for_the_next_pump():
+    client = nc_link._LinkedNCClient()
+    with patch.object(client, "_send", side_effect=(False, True)) as send:
+        assert client.get_npc(42) is True
+        assert list(client._npc_attribute_requests) == [42]
+        assert client._npc_attribute_outstanding is None
+
+        client.pump_correlated_requests()
+
+    assert send.call_count == 2
+    assert not client._npc_attribute_requests
+    assert client._npc_attribute_outstanding is not None
+    assert client._npc_attribute_outstanding[1] == 42
+
+
+def test_failed_local_npc_send_stays_queued_for_the_next_pump():
+    client = nc_link._LinkedNCClient()
+    with patch.object(client, "_send", side_effect=(False, True)) as send:
+        assert client.get_local_npcs("level-a.nw") is True
+        assert list(client._local_npc_requests) == ["level-a.nw"]
+        assert client._local_npc_outstanding is None
+
+        client.pump_correlated_requests()
+
+    assert send.call_count == 2
+    assert not client._local_npc_requests
+    assert client._local_npc_outstanding is not None
+    assert client._local_npc_outstanding[1] == "level-a.nw"
+
+
+def test_local_npc_replies_follow_fifo_request_levels():
+    link = NCLink("localhost", 14900, "staff", "pw")
+    client = nc_link._LinkedNCClient()
+    link._set_state(READY, "active")
+    with patch.object(client, "_send", return_value=True) as send:
+        assert link.get_local_npcs("level-a.nw") is True
+        assert link.get_local_npcs("level-b.nw") is True
+        link._drain_commands(client)
+        assert send.call_count == 1
+        client._handle_packet(PacketID.PLO_NC_LEVELDUMP, b"dump-a")
+        assert send.call_count == 2
+        client._handle_packet(PacketID.PLO_NC_LEVELDUMP, b"dump-b")
+    link._rebuild_snapshot(client)
+
+    assert dict(link.snapshot.local_npcs) == {
+        "level-a.nw": "dump-a",
+        "level-b.nw": "dump-b",
+    }
+
+
+def test_new_client_after_disconnect_has_no_request_state():
+    old_client = nc_link._LinkedNCClient()
+    with patch.object(old_client, "_send", return_value=True):
+        old_client.get_npc(10)
+        old_client.get_npc(20)
+        old_client.get_local_npcs("old.nw")
+
+    replacement = nc_link._LinkedNCClient()
+    assert replacement._npc_attribute_outstanding is None
+    assert not replacement._npc_attribute_requests
+    assert replacement._local_npc_outstanding is None
+    assert not replacement._local_npc_requests
 
 
 def test_restart_discards_commands_from_the_dead_session():

@@ -258,7 +258,8 @@ class GmapMixin:
         adjacent = self.get_adjacent_levels(self._current_level_name)
         count = 0
         for level_name in adjacent:
-            if level_name not in self.levels:
+            if (level_name not in self.levels
+                    and level_name not in self._adjacent_level_requests):
                 self.request_level(level_name)
                 count += 1
 

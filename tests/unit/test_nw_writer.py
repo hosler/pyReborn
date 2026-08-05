@@ -8,7 +8,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pytest
 
 from pyreborn.game.editor.nw_writer import (
-    BOARD_ALPHABET, MissingNpcScriptError, serialize_level,
+    BOARD_ALPHABET, MissingNpcScriptError, _decode_layer_board, serialize_level,
 )
 
 
@@ -129,6 +129,29 @@ def test_sign_text_does_not_grow_a_blank_line_per_round_trip():
 def test_full_board_preserves_both_tile_id_extremes():
     board = [0, 4095] * 2048
     assert _parse_level(_serialize(board=board))["tiles"] == board
+
+
+def test_extra_board_layer_uses_the_reference_board_fields():
+    layer = [0] * 4096
+    layer[65] = 4095
+    text = _serialize(board_layers={1: layer})
+    board_lines = [line for line in text.splitlines()
+                   if line.startswith("BOARD ")]
+
+    assert len(board_lines) == 128
+    assert board_lines[0].startswith("BOARD 0 0 64 0 ")
+    assert board_lines[64].startswith("BOARD 0 0 64 1 ")
+    assert board_lines[65].split()[5][2:4] == "//"
+
+
+def test_layer_board_decodes_little_endian_bytes_and_masks_tile_ids():
+    values = [0, 1, 4095, 0x1fff] + [0] * 4092
+    payload = b"".join(value.to_bytes(2, "little") for value in values)
+
+    board = _decode_layer_board(payload)
+
+    assert board[:4] == [0, 1, 4095, 4095]
+    assert len(board) == 4096
 
 
 def test_missing_npc_script_is_named_and_refused():

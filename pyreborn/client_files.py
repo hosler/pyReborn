@@ -103,7 +103,10 @@ class FileTransferMixin:
             data.append(32)  # 0 + 32
         data.extend(level_name.encode('latin-1'))
 
-        return self._protocol.send_packet(PacketID.PLI_ADJACENTLEVEL, data)
+        sent = self._protocol.send_packet(PacketID.PLI_ADJACENTLEVEL, data)
+        if sent:
+            self._adjacent_level_requests.add(level_name)
+        return sent
 
     def request_file(self, filename: str) -> bool:
         """

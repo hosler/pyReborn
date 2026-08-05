@@ -182,7 +182,9 @@ class RCLink:
         return self._thread is not None
 
     def start(self) -> None:
-        """Begin connecting. Idempotent, and returns immediately."""
+        """Begin connecting, except after a definitive access denial."""
+        if self.state == DENIED:
+            return
         if self._thread is not None and self._thread.is_alive():
             return
         if not self._password:
@@ -227,8 +229,12 @@ class RCLink:
                 self._set_state(DENIED, reason)
                 return
 
-            if not self._await_rc_proof(rc, stop_event):
+            proof = self._await_rc_proof(rc, stop_event)
+            if proof is not True:
                 if stop_event.is_set():
+                    return
+                if proof is None:
+                    self._set_state(CLOSED, "RC connection dropped")
                     return
                 self._set_state(DENIED, "this account has no RC access on this server")
                 return
@@ -253,7 +259,7 @@ class RCLink:
                 self._set_state(CLOSED, "RC session closed")
 
     def _await_rc_proof(self, rc: _LinkedRCClient,
-                        stop_event: Optional[threading.Event] = None) -> bool:
+                        stop_event: Optional[threading.Event] = None) -> Optional[bool]:
         """Wait for a packet only an RC is sent (see _EVIDENCE_IDS).
 
         Servers that send the RC welcome chat prove it unprompted. For any
@@ -270,7 +276,7 @@ class RCLink:
             if rc.saw_rc_packet:
                 return True
             if not rc.connected:
-                return False
+                return None
         return False
 
     def _pump_until_stopped(self, rc: _LinkedRCClient,

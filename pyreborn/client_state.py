@@ -125,6 +125,8 @@ class LevelState:
         self.levels: Dict[str, List[int]] = BoundedLRU(MAX_CACHED_LEVELS)
         self.current_level_name = ""   # The player's actual level (set once at login)
         self.pending_level_name = ""   # Track which level data is being received
+        self.pending_board_level_name = ""  # Adjacent preload board owner
+        self.adjacent_level_requests: set[str] = set()
         self.active_level = ""         # PLO_SETACTIVELEVEL routing target
         self.level_modtimes: Dict[str, int] = {}  # PLO_LEVELMODTIME per level
 
@@ -154,6 +156,7 @@ class LevelState:
 
         # Board layers: maps layer_id -> tile data
         self.board_layers: Dict[int, bytes] = {}
+        self.board_layers_level_name = ""
 
         # Gmap level-height overrides from PLO_BOARDHEIGHTS: (map_x, map_y) ->
         # {'block_x', 'block_y', 'block_width', 'block_height', 'heights'}.
@@ -295,9 +298,9 @@ class EntityState:
         # Weapons: maps weapon_name -> weapon dict with name, image, script
         self.weapons: Dict[str, dict] = {}
 
-        # Entity families (tier 2): bombs/arrows keyed by position since the
-        # protocol identifies them by half-tile position, not an id.
-        self.bombs: Dict[Tuple[float, float], dict] = {}
+        # Bomb coordinates are level-local on the wire. Keep the owning level
+        # or identical positions in adjacent segments overwrite each other.
+        self.bombs: Dict[str, Dict[Tuple[float, float], dict]] = {}
         self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
         # Horse coordinates are level-local on the wire. Keep the owning level
         # or identical positions in adjacent gmap boards overwrite each other

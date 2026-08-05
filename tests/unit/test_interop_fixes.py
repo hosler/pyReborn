@@ -289,23 +289,26 @@ class TestGmapAdjacentPreloadLevelName:
 
         # Adjacent-preload push for a diagonal neighbour: PLO_LEVELNAME alone,
         # no PLO_PLAYERWARP2 (pygserver never sends one for a preload).
+        c._adjacent_level_requests.add("chicken8.nw")
         c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken8.nw")
 
         assert c._current_level_name == "chicken1.nw"
-        # Board-attribution target still moves so the incoming tiles land
-        # under the right level.
-        assert c._pending_level_name == "chicken8.nw"
+        assert c._pending_level_name == "chicken1.nw"
+        assert c._pending_board_level_name == "chicken8.nw"
 
     def test_adjacent_preload_of_every_neighbour_leaves_level_alone(self):
         # request_adjacent_levels() fires one PLI_ADJACENTLEVEL per neighbour;
         # simulate all 8 responses landing after the real spawn segment.
         c = self._client_with_grid()
         c._current_level_name = "chicken1.nw"
+        c._pending_level_name = "chicken1.nw"
         c.player.x, c.player.y = 94.0, 94.5
         for name in ["chicken4.nw", "chicken5.nw", "chicken6.nw", "chicken2.nw",
                      "chicken7.nw", "chicken3.nw", "chicken9.nw", "chicken8.nw"]:
+            c._adjacent_level_requests.add(name)
             c._handle_packet(PacketID.PLO_LEVELNAME, name.encode('latin-1'))
         assert c._current_level_name == "chicken1.nw"
+        assert c._pending_level_name == "chicken1.nw"
 
     def test_real_gmap_warp_still_updates_current_level(self):
         # A genuine server-initiated warp within the gmap (RC teleport,

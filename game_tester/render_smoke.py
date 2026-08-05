@@ -140,13 +140,14 @@ def _t1a_bomb(game, c1, c2):
     # this rendering pass, so this check drives client.bombs directly to
     # exercise the render path (already proven live for arrows/horses below).
     key = (float(int(c1.x)), float(int(c1.y)))
-    c1.bombs[key] = {'owner_id': 999, 'x': key[0], 'y': key[1], 'power': 1, 'timer_ms': 3050}
+    level_bombs = c1.bombs.setdefault(c1._current_level_name, {})
+    level_bombs[key] = {'owner_id': 999, 'x': key[0], 'y': key[1], 'power': 1, 'timer_ms': 3050}
     try:
-        bomb = game._add_remote_bomb(c1.bombs[key], now=123.0)
+        bomb = game._add_remote_bomb(level_bombs[key], now=123.0)
         assert bomb in game.active_bombs
         assert bomb['source'] == 'remote'
     finally:
-        c1.bombs.pop(key, None)
+        level_bombs.pop(key, None)
 
 
 @check("tier1a_server_arrow_renders")

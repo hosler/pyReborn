@@ -49,8 +49,15 @@ def _load_cached_gmap(client, filename: str, blob: bytes) -> None:
 def handle_level_name(client, data):
     # Level name - track which level we're receiving data for
     level_name = parse_level_name(data)
+    # Every LEVELNAME starts a new static-data context. An adjacent .nw
+    # announcement below immediately replaces this with its preload target.
+    client._pending_board_level_name = ""
     # .nw files are actual levels, .gmap is the world map name
     if level_name.endswith('.nw'):
+        is_adjacent_preload = level_name in client._adjacent_level_requests
+        if is_adjacent_preload:
+            client._adjacent_level_requests.discard(level_name)
+            client._pending_board_level_name = level_name
         # A real level transition (server push via PLO_PLAYERWARP/
         # PLO_PLAYERWARP2 for RC warps/respawn, or a client-initiated
         # warp_to_level()) always (re-)announces the destination via
@@ -62,7 +69,11 @@ def handle_level_name(client, data):
         # whether level_name is one of the loaded gmap's segments.
         is_gmap_segment = (client.gmap_width > 0 and
                             level_name in client.gmap_grid.values())
-        if is_gmap_segment:
+        if is_adjacent_preload:
+            # The explicit request marker is authoritative even outside a
+            # loaded gmap: an adjacent static-data answer never moves us.
+            pass
+        elif is_gmap_segment:
             # A GMAP segment's PLO_LEVELNAME is ambiguous on its own:
             # pygserver sends it both for a genuine warp/spawn (via
             # _send_level, always followed by PLO_PLAYERWARP2) AND for
@@ -146,7 +157,8 @@ def handle_level_name(client, data):
             client.tiles = client.levels[level_name]
             client._tiles_level_name = level_name
         # Track for tile storage
-        client._pending_level_name = level_name
+        if not is_adjacent_preload:
+            client._pending_level_name = level_name
     # Set player.level to GMAP name if available, else level name
     if level_name.endswith('.gmap') or not client.player.level:
         client.player.level = level_name
@@ -217,7 +229,9 @@ def handle_board_packet(client, data):
     # same packet_id once its byte count is satisfied, see protocol.py).
     tiles = parse_board_packet(data)
     # Store in levels dict using the pending level name
-    level_for_tiles = client._pending_level_name or client._current_level_name
+    level_for_tiles = (client._pending_board_level_name
+                       or client._pending_level_name
+                       or client._current_level_name)
     if level_for_tiles:
         client.levels[level_for_tiles] = tiles
         # A fresh board stream means this level's static data (signs
@@ -406,6 +420,18 @@ def handle_board_layer(client, data):
     # Board layer (packet 107)
     layer = parse_board_layer(data)
     if layer:
+        level_name = (client._pending_board_level_name
+                      or client._pending_level_name
+                      or client._current_level_name)
+        # board_layers is a single-level store. Adjacent layers remain
+        # available from their source board stream only for routing purposes;
+        # merging them here would corrupt the active level's composite.
+        if (client._pending_board_level_name
+                and level_name != client._current_level_name):
+            return
+        if level_name != client._board_layers_level_name:
+            client.board_layers.clear()
+            client._board_layers_level_name = level_name
         client.board_layers[layer['layer']] = layer['tiles']
         if client.on_board_layer:
             client.on_board_layer(layer['layer'], layer['x'], layer['y'], layer['tiles'])

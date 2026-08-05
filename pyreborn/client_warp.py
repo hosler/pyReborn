@@ -324,7 +324,8 @@ class WarpMixin:
 
     def _reset_level_state(self, cache_npcs: bool = True):
         """Clear per-level state on a full level change so ground items,
-        baddies and NPCs from the old level do not leak into the new one.
+        baddies, horses and NPCs from the old level do not leak into the new
+        one.
 
         Not called on seamless GMAP segment crossing (that goes through move(),
         not warp_to_level), so the stitched world keeps its entities.
@@ -344,6 +345,9 @@ class WarpMixin:
         self._reset_file_transfer_state(full_reset=False)
         self.items.clear()
         self.baddies.clear()
+        self.horses.clear()
+        self.board_layers.clear()
+        self._board_layers_level_name = ""
         # PLO_ISLEADER (GServer-v2 PlayerClient.cpp checkAndInformIfLevelLeader)
         # is only ever sent to (re-)CONFIRM leadership on a level - there's no
         # "you are NOT the leader" packet, so is_leader must default back to

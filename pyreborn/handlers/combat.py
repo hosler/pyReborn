@@ -145,7 +145,8 @@ def handle_baddy_hurt(client, data):
 def handle_bomb_add(client, data):
     # Bomb placed by another player (packet 11).
     info = parse_bomb_add(data)
-    client.bombs[(info['x'], info['y'])] = info
+    level_name = client._pending_level_name or client._current_level_name
+    client.bombs.setdefault(level_name, {})[(info['x'], info['y'])] = info
     if client.on_bomb_add:
         client.on_bomb_add(info)
 
@@ -154,7 +155,8 @@ def handle_bomb_add(client, data):
 def handle_bomb_del(client, data):
     # Bomb removed/exploded (packet 12).
     info = parse_bomb_del(data)
-    client.bombs.pop((info['x'], info['y']), None)
+    level_name = client._pending_level_name or client._current_level_name
+    client.bombs.setdefault(level_name, {}).pop((info['x'], info['y']), None)
     if client.on_bomb_del:
         client.on_bomb_del(info['x'], info['y'])
 

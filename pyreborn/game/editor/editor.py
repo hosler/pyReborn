@@ -106,15 +106,18 @@ class LevelEditor:
         if not self.game.client.in_gmap_segment:
             return True
         level, _ = self.game._level_tiles_at(world_x, world_y)
-        return not level or level == self.level_name
+        return level == self.level_name
 
     def _reject_other_segment(self, world_x: float, world_y: float) -> bool:
         """Refuse an edit outside the standing segment, and say why."""
         if self._in_own_segment(world_x, world_y):
             return False
         level, _ = self.game._level_tiles_at(world_x, world_y)
+        if level is None:
+            self.state.status = "that spot is outside the map"
+            return True
         self.state.status = (
-            f"{level or 'that segment'} is not the level you are standing in "
+            f"{level} is not the level you are standing in "
             f"- walk into it to edit it")
         return True
 
@@ -430,6 +433,9 @@ class LevelEditor:
                 self._level_npcs(level),
                 scripts,
                 self._baddy_records(level),
+                board_layers=(client.board_layers
+                              if getattr(client, '_board_layers_level_name', '')
+                              == level else {}),
             )
         except MissingNpcScriptError as error:
             self.state.status = f"export refused: {error}"

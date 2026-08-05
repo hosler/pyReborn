@@ -180,8 +180,8 @@ def handle_item_add(client, data):
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
         item_type = item_info.get('type', '')
-        # During gmap preloading the pending board owns these streamed local
-        # coordinates, not necessarily the segment containing the player.
+        # Pending names represent genuine entry streams; adjacent board
+        # preloads are routed separately and cannot poison this attribution.
         level_name = client._pending_level_name or client._current_level_name
         client.items.setdefault(level_name, {})[(x, y)] = item_type
         if client.on_item:
@@ -195,8 +195,8 @@ def handle_item_del(client, data):
     if item_info:
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
-        # Deletions use the same stream owner as additions or an item at the
-        # same local position in an adjacent board can disappear instead.
+        # Use the same transfer owner as additions so matching local positions
+        # in different levels remain independent.
         level_name = client._pending_level_name or client._current_level_name
         item_type = client.items.setdefault(level_name, {}).pop((x, y), '')
         if client.on_item:
@@ -245,8 +245,8 @@ def handle_baddy_props(client, data):
             _, baddy = found
             baddy.update(props)
         else:
-            # During gmap preloading the pending board owns these streamed
-            # local coordinates, not necessarily the player's segment.
+            # Preserve the per-level-store rule: search existing buckets first
+            # and use the genuine transfer/current level only for a new id.
             level_name = client._pending_level_name or client._current_level_name
             client.baddies.setdefault(level_name, {})[baddy_id] = props
         if client.on_baddy:
