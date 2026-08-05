@@ -390,6 +390,68 @@ def test_render_smoke_does_not_raise():
     gui.render(surf, fonts=None, sprite_mgr=None)  # fonts=None path must also survive
 
 
+def _translucent_tree(gui, x, y):
+    win = GuiWindowCtrl("w")
+    win.set("text", "Shop")
+    win.x, win.y, win.width, win.height = x, y, 80, 60
+    win.alpha = 0.5
+    btn = GuiButtonCtrl(None)
+    btn.set("text", "Buy")
+    btn.x, btn.y, btn.width, btn.height = x + 10, y + 20, 40, 16
+    btn.parent = win
+    win.children.append(btn)
+    gui.addcontrol(win)
+    return win
+
+
+def test_translucent_render_leaves_no_residue_when_the_window_moves():
+    """The translucent path composites through a POOLED scratch layer. Only
+    the subtree's footprint is cleared and blitted, so a window that moved
+    between frames must not ghost at its old position -- the frame must be
+    pixel-identical to a fresh manager that never saw the old position."""
+    gui = ClientGS2().gui
+    win = _translucent_tree(gui, 10, 10)
+    surf = pygame.Surface((320, 240))
+    surf.fill((0, 0, 0))
+    gui.render(surf, _FakeFonts())
+    win.x, win.y = 200, 150
+    for c in win.children:
+        c.x, c.y = win.x + 10, win.y + 20
+    surf.fill((0, 0, 0))
+    gui.render(surf, _FakeFonts())
+
+    fresh = ClientGS2().gui
+    _translucent_tree(fresh, 200, 150)
+    expected = pygame.Surface((320, 240))
+    expected.fill((0, 0, 0))
+    fresh.render(expected, _FakeFonts())
+    assert (pygame.image.tobytes(surf, "RGB")
+            == pygame.image.tobytes(expected, "RGB"))
+
+
+def test_nested_translucent_subtrees_render_without_sharing_a_layer():
+    """A translucent child inside a translucent window uses the next pool
+    depth, not its ancestor's in-use layer. Same fresh-manager pixel
+    equality as above, with the nesting in place."""
+    gui = ClientGS2().gui
+    win = _translucent_tree(gui, 10, 10)
+    win.children[0].alpha = 0.5
+    surf = pygame.Surface((320, 240))
+    surf.fill((0, 0, 0))
+    gui.render(surf, _FakeFonts())
+    surf.fill((0, 0, 0))
+    gui.render(surf, _FakeFonts())  # second frame reuses both pool slots
+
+    fresh = ClientGS2().gui
+    fresh_win = _translucent_tree(fresh, 10, 10)
+    fresh_win.children[0].alpha = 0.5
+    expected = pygame.Surface((320, 240))
+    expected.fill((0, 0, 0))
+    fresh.render(expected, _FakeFonts())
+    assert (pygame.image.tobytes(surf, "RGB")
+            == pygame.image.tobytes(expected, "RGB"))
+
+
 def test_headless_without_pygame_gui_is_none(monkeypatch):
     """gs2_client.py must degrade gracefully (gui=None, no crash) when the
     GS2GuiManager import fails -- the game_tester headless path."""
@@ -732,6 +794,21 @@ class TestPopUpEdit:
         self._choose(0)
         assert self.selected == [(10, "First")]
         assert self.actions == ["First"]
+
+    def test_fractional_popup_click_selects_row(self):
+        self._open()
+        self.gui.handle_event(_mousedown((15, 55.5)))
+        assert self.popup.get_selected_row() == 20
+        assert self.popup.text == "Second"
+        assert self.popup.popup_open is False
+
+    def test_click_below_last_popup_row_closes_without_selecting(self):
+        self._open()
+        assert self.gui.handle_event(_mousedown((15, 70.5))) is True
+        assert self.popup.popup_open is False
+        assert self.popup.get_selected_row() == -1.0
+        assert self.selected == []
+        assert self.actions == []
 
     def test_outside_click_closes_and_is_consumed(self):
         under = GuiButtonCtrl("under")

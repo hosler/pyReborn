@@ -166,7 +166,7 @@ class GuiPopUpEditCtrl(GuiControl):
         if not pr.collidepoint(pos) or not self.rows:
             return -1
         return min(len(self.rows) - 1,
-                   (pos[1] - pr.y) // max(1, int(self.height)))
+                   int((pos[1] - pr.y) // max(1, int(self.height))))
 
     def _draw_self(self, surf, fonts, sprite_mgr) -> None:
         prof = self.resolve_profile()

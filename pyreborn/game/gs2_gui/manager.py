@@ -56,6 +56,12 @@ class GS2GuiManager:
         self._hover: Optional[GuiControl] = None
         self._pressed: Optional[GuiControl] = None
         self._open_popup: Optional[GuiPopUpEditCtrl] = None
+        # Reusable canvas-sized scratch surfaces for translucent-subtree
+        # compositing, one per nesting depth (see _draw_node). Allocating
+        # a fresh full-canvas SRCALPHA surface per translucent control per
+        # frame pegged a core on servers with translucent windows.
+        self._alpha_layers: List[Optional[pygame.Surface]] = []
+        self._alpha_depth = 0
         # (ticks, node) of the last tree-view row click, for double-click
         # detection (onDblClick = connect on the Login server list)
         self._last_tree_click: Tuple[int, Optional[GuiTreeNode]] = (0, None)
@@ -732,13 +738,53 @@ class GS2GuiManager:
         if alpha < 1.0:
             if alpha <= 0.0:
                 return
-            layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-            self._draw_node_content(node, layer, fonts, sprite_mgr, clip)
-            layer.set_alpha(round(alpha * 255))
-            surf.set_clip(clip)
-            surf.blit(layer, (0, 0))
+            self._draw_node_translucent(node, surf, fonts, sprite_mgr,
+                                        clip, alpha)
             return
         self._draw_node_content(node, surf, fonts, sprite_mgr, clip)
+
+    def _draw_node_translucent(self, node: GuiControl, surf, fonts,
+                               sprite_mgr, clip, alpha: float) -> None:
+        """Composite a subtree through a scratch layer so its uniform alpha
+        applies once to the whole subtree (a child must not show through its
+        own parent). Only the subtree's footprint is cleared, drawn and
+        blitted -- the layer clip doubles as the guarantee that no stale
+        pixels from a previous frame ride along."""
+        footprint = self._subtree_footprint(node).clip(surf.get_rect())
+        if clip is not None:
+            footprint = footprint.clip(clip)
+        if footprint.width <= 0 or footprint.height <= 0:
+            return
+        layer = self._alpha_layer(surf.get_size())
+        layer.fill((0, 0, 0, 0), footprint)
+        self._alpha_depth += 1
+        try:
+            self._draw_node_content(node, layer, fonts, sprite_mgr, footprint)
+        finally:
+            self._alpha_depth -= 1
+        layer.set_alpha(round(alpha * 255))
+        surf.set_clip(clip)
+        surf.blit(layer, footprint.topleft, footprint)
+
+    def _alpha_layer(self, size) -> pygame.Surface:
+        """Depth-indexed scratch pool: a translucent child inside a
+        translucent subtree draws while its ancestor's layer is in use, so
+        each nesting depth gets its own surface."""
+        depth = self._alpha_depth
+        while len(self._alpha_layers) <= depth:
+            self._alpha_layers.append(None)
+        layer = self._alpha_layers[depth]
+        if layer is None or layer.get_size() != size:
+            layer = pygame.Surface(size, pygame.SRCALPHA)
+            self._alpha_layers[depth] = layer
+        return layer
+
+    def _subtree_footprint(self, node: GuiControl) -> pygame.Rect:
+        rect = node.rect()
+        for c in node.children:
+            if c.visible:
+                rect = rect.union(self._subtree_footprint(c))
+        return rect
 
     def _draw_node_content(self, node: GuiControl, surf, fonts, sprite_mgr,
                            clip) -> None:
