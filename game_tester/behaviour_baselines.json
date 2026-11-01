@@ -1144,17 +1144,15 @@
         "bytecodes": {
           "class": 1,
           "gani": 0,
-          "npc": 14,
+          "npc": 5,
           "weapon": 8
         },
         "connected_at_end": true,
         "events": {
-          "calls": 6966,
-          "distinct": 19,
+          "calls": 6436,
+          "distinct": 13,
           "kinds": [
-            "npc.oncreated",
-            "npc.onplayerenters",
-            "npc.ontimeout",
+            "npc.onlogmessage",
             "weapon.oncreated",
             "weapon.onplayerenters",
             "weapon.ontimeout",
@@ -1223,7 +1221,7 @@
           "window_overlaps": []
         },
         "host_calls": {
-          "distinct": 41,
+          "distinct": 38,
           "missing": [],
           "names": [
             "addcontrol",
@@ -1231,14 +1229,12 @@
             "addtiledef",
             "addtiledef2",
             "adventure_setframetick",
-            "blockagain",
             "changeimgpart",
             "changeimgvis",
             "changeimgzoom",
             "clearrows",
             "disabledefmovement",
             "disableselectweapons",
-            "drawunderplayer",
             "echo",
             "findimg",
             "findnearestplayers",
@@ -1259,7 +1255,6 @@
             "seteffect",
             "setframetick",
             "setselectedrow",
-            "setshape",
             "setspritesimage",
             "settimer",
             "showimg",
@@ -1268,9 +1263,9 @@
             "tiletype",
             "triggerserver"
           ],
-          "total": 626824
+          "total": 624653
         },
-        "level": "zlttp-h5.nw",
+        "level": "zlttp-g3.nw",
         "logs": {
           "errors": 0,
           "kinds": [],
@@ -1286,7 +1281,7 @@
             "door"
           ],
           "gani_count": 0,
-          "npc_count": 14,
+          "npc_count": 5,
           "weapon": [
             "*system",
             "-player/functions",
@@ -1301,7 +1296,7 @@
         "wall_seconds": 25.0,
         "world": {
           "gs1_scripts": 0,
-          "npcs": 17,
+          "npcs": 6,
           "weapons": 8
         }
       },
@@ -1353,7 +1348,7 @@
           "mobspawn"
         ]
       },
-      "recorded_at": "2026-08-05T16:59:58.301868+00:00",
+      "recorded_at": "2026-08-06T04:04:10.675313+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"

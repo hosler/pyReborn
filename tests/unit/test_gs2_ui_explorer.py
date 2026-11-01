@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from collections import Counter
@@ -381,6 +382,38 @@ def test_report_capture_without_steps_writes_empty_report(tmp_path):
     assert report == {"schema_version": 1, "selector_options": [], "branches": []}
     assert json.loads((writer.out_dir / "deep_report.json").read_text()) == report
     assert (writer.out_dir / "deep_report.md").exists()
+
+
+def test_deep_capture_persists_warning_samples(tmp_path):
+    writer = CaptureWriter(tmp_path / "deep-capture")
+    handler = writer.warning_handler()
+    record = logging.LogRecord(
+        "pyreborn.gs2_client.runtime", logging.WARNING, __file__, 1,
+        "GS2 weapon: missing builtin %s", ("copyfrom",), None)
+
+    handler.handle(record)
+    report_capture(writer.out_dir)
+
+    samples = json.loads(writer.warning_samples_path.read_text())
+    template = next(iter(samples))
+    assert samples[template][0]["message"] == "GS2 weapon: missing builtin copyfrom"
+
+
+def test_gui_profile_warning_sample_is_formatted(tmp_path):
+    writer = CaptureWriter(tmp_path / "gui-warning")
+    handler = writer.warning_handler()
+    record = logging.LogRecord(
+        "pyreborn.game.gs2_gui.profiles", logging.WARNING, __file__, 1,
+        "GS2 GUI: script aborted; dropping %d unfinished control(s)", (3,), None)
+
+    handler.handle(record)
+
+    samples = json.loads(writer.warning_samples_path.read_text())
+    template = next(iter(samples))
+    assert template.endswith(
+        "|GS2 GUI: script aborted; dropping %d unfinished control(s)")
+    assert samples[template][0]["message"] == (
+        "GS2 GUI: script aborted; dropping 3 unfinished control(s)")
 
 
 def test_compiled_gs2_local_transition_with_send_gate(tmp_path):

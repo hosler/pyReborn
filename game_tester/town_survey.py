@@ -1,0 +1,234 @@
+"""town_survey - visual survey of a world's levels for aesthetic review.
+
+Logs one real rendering client (Client + GameClient, SDL dummy driver - the
+feel_probe.py pattern) into a live server, warps it through a list of levels,
+and writes two images per level:
+
+- ``<level>_view.png``   - the actual rendered viewport (what a player sees:
+  tiles, NPC ganis, lights, showimgs), captured after the level's scripts
+  have had time to fire.
+- ``<level>_board.png``  - a full 64x64-tile composite of the level board
+  built from the real tileset, with NPC positions marked. This is the
+  layout/aesthetics view a viewport crop can't give.
+
+An ``index.json`` records per-level NPC counts and positions so a reviewer
+(human or LLM) can cross-reference the markers.
+
+Run:
+    SDL_VIDEODRIVER=dummy ../.venv/bin/python -m game_tester.town_survey \
+        --host 127.0.0.1 --port 14900 --account surveybot --password pw \
+        --out-dir /tmp/town_survey
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+import pygame
+
+from reborn_protocol.coords import segment_at
+from pyreborn import Client
+from pyreborn.pygame_game import GameClient
+from game_tester.login import login_client
+
+FPS = 60
+TILE_PX = 16
+
+DEFAULT_LEVELS = [
+    "chicken1.nw", "chicken2.nw", "chicken3.nw", "chicken4.nw",
+    "chicken5.nw", "chicken6.nw", "chicken7.nw", "chicken8.nw",
+    "chicken9.nw", "chicken_house1.nw", "chicken_cave_entrance.nw",
+    "chicken_cave_1.nw", "chicken_cave_2.nw", "chicken_pk.nw",
+    "chicken_ko_lobby.nw", "ball_lobby.nw",
+]
+
+
+class Survey:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.out = Path(args.out_dir)
+        self.out.mkdir(parents=True, exist_ok=True)
+        self.client: Optional[Client] = None
+        self.game: Optional[GameClient] = None
+        self.index: Dict[str, Any] = {"levels": {}, "notes": []}
+
+    # -- frame loop -------------------------------------------------------
+    def pump(self, frames: int = 1) -> None:
+        game = self.game
+        for _ in range(frames):
+            game._frame_dt = 1.0 / FPS
+            game._handle_events()
+            self.client.update(timeout=0)
+            game._load_new_npcs()
+            game._process_pending_warp()
+            game.gs1.process_coroutines(game._frame_dt)
+            game.gs1.process_timeouts(game._frame_dt)
+            game.gs2.process_coroutines(game._frame_dt)
+            game.gs2.process_timeouts(game._frame_dt)
+            game._check_scripted_link_warp()
+            game.gs1.advance_input_frame()
+            game._check_level_change()
+            game._update_visual_position(game._frame_dt)
+            game._update_animations(game._frame_dt)
+            game._render()
+            game.viewport.present()
+            game.clock.tick(FPS)
+
+    def settle(self) -> None:
+        self.game._load_npc_scripts()
+        self.game._trigger_playerenters()
+        self.game.npc_handler.update_npcs()
+        self.game._gs1_level = self.client._current_level_name
+        self.game._gs1_visual_level_epoch = self.client._plain_level_change_epoch
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            self.pump()
+            if (getattr(self.client, "_current_level_name", "") and
+                    len(getattr(self.client, "tiles", []) or []) >= 4096 and
+                    math.isfinite(float(self.client.x))):
+                return
+        raise RuntimeError("level board never arrived")
+
+    # -- captures ---------------------------------------------------------
+    def level_npcs(self, level_name: str) -> List[Dict[str, Any]]:
+        # On a gmap, NPC coords are world coords and the npc dict's level
+        # field is unreliable; attribute each NPC to the segment its
+        # position falls in, exactly as the client does for the player.
+        grid = getattr(self.client, "gmap_grid", {}) or {}
+        on_gmap = level_name in grid.values()
+        rows = []
+        for npc_id, npc in (getattr(self.client, "npcs", {}) or {}).items():
+            if not isinstance(npc, dict):
+                continue
+            try:
+                nx = float(npc.get("world_x", npc.get("x")))
+                ny = float(npc.get("world_y", npc.get("y")))
+            except (TypeError, ValueError):
+                continue
+            if on_gmap:
+                if grid.get(segment_at(nx, ny)) != level_name:
+                    continue
+            elif (npc.get("level") or "") not in ("", level_name):
+                continue
+            rows.append({
+                "id": npc_id,
+                "x": nx, "y": ny,
+                "local_x": nx % 64, "local_y": ny % 64,
+                "image": npc.get("image") or "",
+                "nickname": npc.get("nickname") or "",
+            })
+        return rows
+
+    def capture_board(self, level_name: str, stem: str) -> Optional[str]:
+        board = list(getattr(self.client, "tiles", []) or [])
+        if len(board) < 4096:
+            return None
+        surface = pygame.Surface((64 * TILE_PX, 64 * TILE_PX))
+        get_tile = self.game.tileset_mgr.get_tile_or_color
+        for y in range(64):
+            for x in range(64):
+                tile = get_tile(board[y * 64 + x])
+                if tile is not None:
+                    surface.blit(tile, (x * TILE_PX, y * TILE_PX))
+        # NPC markers: layout evidence, deliberately loud.
+        for npc in self.level_npcs(level_name):
+            nx = int(npc["local_x"]) * TILE_PX
+            ny = int(npc["local_y"]) * TILE_PX
+            pygame.draw.rect(surface, (255, 0, 0),
+                             pygame.Rect(nx, ny, TILE_PX * 2, TILE_PX * 2), 2)
+        path = self.out / f"{stem}_board.png"
+        pygame.image.save(surface, path)
+        return path.name
+
+    def capture_view(self, stem: str) -> str:
+        path = self.out / f"{stem}_view.png"
+        pygame.image.save(pygame.display.get_surface() or self.game.screen, path)
+        return path.name
+
+    def visit(self, level_name: str, x: float, y: float) -> None:
+        stem = level_name.replace(".nw", "")
+        entry: Dict[str, Any] = {"warp_target": [x, y]}
+        self.client.warp_to_level(level_name, x, y)
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            self.pump()
+            if self.client.get_current_level_from_position() == level_name:
+                break
+        else:
+            entry["error"] = "warp timeout"
+            self.index["levels"][level_name] = entry
+            return
+        # Snap the camera and give scripts/assets time to land.
+        self.game.visual_x, self.game.visual_y = self.client.x, self.client.y
+        self.pump(int(self.args.settle_frames))
+        entry["player"] = [self.client.x, self.client.y]
+        entry["npcs"] = self.level_npcs(level_name)
+        entry["view"] = self.capture_view(stem)
+        entry["board"] = self.capture_board(level_name, stem)
+        self.index["levels"][level_name] = entry
+
+    # -- driver -----------------------------------------------------------
+    def run(self) -> int:
+        try:
+            self.client = Client(self.args.host, self.args.port, version="6.037")
+            outcome = login_client(self.client, self.args.account,
+                                   self.args.password, timeout=10.0,
+                                   settle=False)
+            if not outcome.ok:
+                print(f"login failed: {outcome.rejection}")
+                return 1
+            self.game = GameClient(self.client, password=self.args.password)
+            self.game.visual_x, self.game.visual_y = self.client.x, self.client.y
+            self.settle()
+            self.pump(90)
+            for spec in self.args.levels:
+                name, _, pos = spec.partition("@")
+                if pos:
+                    px, py = (float(v) for v in pos.split(","))
+                else:
+                    px, py = 30.0, 30.0
+                self.visit(name, px, py)
+                done = self.index["levels"].get(name, {})
+                status = "ok" if "view" in done else done.get("error", "?")
+                print(f"  {name}: {status} ({len(done.get('npcs', []))} npcs)")
+        finally:
+            if self.client is not None:
+                try:
+                    self.client.disconnect()
+                except Exception:
+                    pass
+            (self.out / "index.json").write_text(
+                json.dumps(self.index, indent=2, default=str, sort_keys=True))
+            pygame.quit()
+        return 0
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Visual level survey")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=14900)
+    parser.add_argument("--account", default="surveybot")
+    parser.add_argument("--password", default="surveybot")
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--settle-frames", type=int, default=90,
+                        help="frames to pump before capturing each level")
+    parser.add_argument("--levels", nargs="*", default=DEFAULT_LEVELS,
+                        help="level names, optionally name.nw@x,y")
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    return Survey(parse_args(argv)).run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

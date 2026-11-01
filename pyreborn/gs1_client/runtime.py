@@ -683,11 +683,24 @@ class ClientGS1:
         covers its setimgpart rect if set, else its image's full size
         (image_size_source. Unknown -> the 2x2 engine default). Tiles are
         pixels / 16. Visibility/blocking gates are the CALLER's business —
-        touch uses this same rect without them."""
+        touch uses this same rect without them.
+
+        Prefers 'world_x'/'world_y' (local + gmap grid offset, set on
+        PLO_NPCPROPS - client_gmap.py) over the raw level-local 'x'/'y', the
+        same fallback client_combat.py and render_collect.py already use for
+        NPC positions. Without it, this rect stayed level-local while the
+        touch/wall probes that consult it (npc_handler.check_touch,
+        npc_blocks_at) pass the player's WORLD position on a gmap - the two
+        never intersected, so a gmap-embedded image/character NPC (Chicken
+        Town's Mayor, eggs, party lever, PK totem, ...) was untouchable and
+        unblocking on any gmap segment, even though the identical content
+        worked on a plain (non-gmap) level. world_x/world_y falls back to
+        the raw x/y off a gmap, so plain-level behavior is unchanged."""
         if not isinstance(npc, dict):
             return None
         if npc.get("is_character") or npc.get("image") == "#c#":
-            nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+            nx = to_num(npc.get("world_x", npc.get("x", 0)))
+            ny = to_num(npc.get("world_y", npc.get("y", 0)))
             return (nx + 0.5, ny + 1.0, 2.0, 2.0)
         image = npc.get("image") or ""
         if not image or image == "-":
@@ -708,7 +721,8 @@ class ClientGS1:
                                             _DEFAULT_IMAGE_PX)
         if w_px <= 0 or h_px <= 0:
             return None
-        nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+        nx = to_num(npc.get("world_x", npc.get("x", 0)))
+        ny = to_num(npc.get("world_y", npc.get("y", 0)))
         return (nx, ny, w_px / 16.0, h_px / 16.0)
 
     def npc_footprint_hit(self, npc, x, y) -> bool:

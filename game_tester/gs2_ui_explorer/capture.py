@@ -85,7 +85,9 @@ class CaptureWriter:
 
         class Handler(logging.Handler):
             def emit(self, record: logging.LogRecord) -> None:
-                if not record.name.startswith(("pyreborn.gs2_client", "reborn_protocol.gs2")):
+                if not record.name.startswith(("pyreborn.gs2_client",
+                                               "pyreborn.game.gs2_gui",
+                                               "reborn_protocol.gs2")):
                     return
                 template = f"{record.name}|{record.levelname}|{str(record.msg)[:160]}"
                 try:

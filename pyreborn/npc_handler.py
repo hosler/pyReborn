@@ -195,14 +195,24 @@ class NPCHandler:
                 continue
             geom = shapes.get(npc_id)
             w, h, flags = geom if geom else (0, 0, ())
+            # Prefer 'world_x'/'world_y' (local + gmap grid offset) over the
+            # raw level-local 'x'/'y' - the same fallback client_combat.py
+            # and render_collect.py use for NPC positions. process_movement
+            # is called with the PLAYER's world position on a gmap, so a
+            # shape built from the local-only x/y never intersected it: a
+            # gmap-embedded NPC was untouchable and unblocking even though
+            # the identical content worked on a plain level. Falls back to
+            # x/y off a gmap, so plain-level behavior is unchanged.
+            npc_x = npc_data.get('world_x', npc_data.get('x', 0))
+            npc_y = npc_data.get('world_y', npc_data.get('y', 0))
             if w > 0 and h > 0:
                 self.npc_shapes[npc_id] = NPCShape(
-                    x=npc_data.get('x', 0), y=npc_data.get('y', 0),
+                    x=npc_x, y=npc_y,
                     width=int(w), height=int(h), solid_flags=list(flags))
             elif _is_character_npc(npc_data):
                 self.npc_shapes[npc_id] = NPCShape(
-                    x=float(npc_data.get('x', 0) or 0) + CHARACTER_TOUCH_DX,
-                    y=float(npc_data.get('y', 0) or 0) + CHARACTER_TOUCH_DY,
+                    x=float(npc_x or 0) + CHARACTER_TOUCH_DX,
+                    y=float(npc_y or 0) + CHARACTER_TOUCH_DY,
                     width=CHARACTER_TOUCH_TILES, height=CHARACTER_TOUCH_TILES)
             elif npc_data.get('image'):
                 # getattr guard: unit stubs stand in for gs1 with a bare
