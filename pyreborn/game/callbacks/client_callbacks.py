@@ -1,14 +1,68 @@
 """Wire client chat, entity, item, board, file, weapon, and combat callbacks."""
 
+import logging
+import os
+import re
 import time
 
+from reborn_protocol.gs2.compiler import Gs2Compiler
+from reborn_protocol.gs2.detect import looks_like_gs2
+
 from ...asset_paths import normalize_asset_name
+from ...packets import PacketID, parse_npcweapondel
 from ..constants import CHAT_HISTORY_CAP
 
 # Downloaded audio handled as one-shot samples (mixer.Sound). The streaming
 # side of the split is SoundManager.MUSIC_EXTS; .ogg deliberately appears only
 # there, so a downloaded track keeps going to mixer.music.
 SAMPLE_EXTS = ('wav', 'aiff', 'aif', 'flac')
+
+logger = logging.getLogger(__name__)
+
+
+def route_gs2_source(game, kind, key, script):
+    """Consume GS2 text through the existing bytecode arrival callback.
+
+    True means bytecode is available, so GS1 must skip this source. Failed
+    attempts retain their False result so repeated scans still fall back.
+    NPC identity permits reloading on respawn.
+    """
+    identity = (kind, key)
+    owner = game.client.npcs.get(key) if kind == 'npc' else None
+    previous = getattr(game, '_gs2_source_attempts', {}).get(identity)
+    if previous is not None and previous[0] == script and previous[1] is owner:
+        return previous[2]
+    if not looks_like_gs2(script):
+        return False
+    source = re.split(r'(?m)^\s*//#CLIENTSIDE[^\n]*(?:\n|$)',
+                      script.replace('\xa7', '\n'), maxsplit=1)[-1]
+    if not hasattr(game, '_gs2_source_attempts'):
+        game._gs2_source_attempts = {}
+        game._gs2_source_warned = set()
+    game._gs2_source_attempts[identity] = (script, owner, False)
+    if os.environ.get('PYREBORN_GS2_SOURCE') == '0':
+        error = 'source compilation disabled by PYREBORN_GS2_SOURCE=0'
+    else:
+        compiler = getattr(game, '_gs2_source_compiler', None)
+        if compiler is None:
+            compiler = game._gs2_source_compiler = Gs2Compiler()
+        blob = compiler.compile(source, str(key))
+        if blob is not None:
+            game._gs2_source_attempts[identity] = (script, owner, True)
+            # Match handlers/scripts.py: retain the blob for runtime startup
+            # replay, then let ClientGS2._on_bytecode queue it for load_bytecode.
+            game.client.gs2_bytecode[kind][key] = blob
+            callback = game.client.on_gs2_bytecode
+            if callback is not None:
+                callback(kind, key, blob)
+            return True
+        error = getattr(compiler, 'last_error', '') or 'compilation failed'
+    if identity not in game._gs2_source_warned:
+        game._gs2_source_warned.add(identity)
+        logger.warning('GS2-looking %s %s: %s; running it in the GS1 engine', kind, key,
+                       error.splitlines()[0])
+    return False
+
 
 def append_start_message(chat_messages: list, text: str) -> int:
     """Append at most five non-empty initial-message lines to chat.
@@ -218,11 +272,12 @@ def wire_client_callbacks(game):
             # mixer.music (sounds.py:285).
             game.sound_mgr.load_bytes(filename, data)
 
-    # A weapon arrived (gr.addweapon, e.g. -arenaSYS/-arenaGUI on arena
-    # entry): load it into the GS1 engine and fire its playerenters so it
-    # activates immediately, like a real client adding a weapon.
+    # Source weapons use the matching engine, including classic GS2 servers
+    # that send text instead of a bytecode announcement.
     def on_weapon_add(name, weapon):
         script = weapon.get('script', '')
+        if script and route_gs2_source(game, 'weapon', name, script):
+            return
         if script and getattr(game, 'gs1', None) is not None:
             is_new = game.gs1.load_weapon(name, script)
             try:
@@ -231,6 +286,18 @@ def wire_client_callbacks(game):
                 game.gs1.trigger_event('playerenters', name=f'weapon_{name}')
             except Exception:
                 pass
+
+    # Packet hooks run after the inventory handlers. Chain any embedding hook
+    # while forgetting the old VM attempt when a weapon leaves inventory.
+    previous_weapon_del = game.client.on_packet.get(PacketID.PLO_NPCWEAPONDEL)
+
+    def on_weapon_del(data):
+        name = parse_npcweapondel(data)
+        getattr(game, '_gs2_source_attempts', {}).pop(('weapon', name), None)
+        if previous_weapon_del is not None:
+            previous_weapon_del(data)
+
+    game.client.on_packet[PacketID.PLO_NPCWEAPONDEL] = on_weapon_del
 
     def on_bomb_add(info):
         game._add_remote_bomb(info)

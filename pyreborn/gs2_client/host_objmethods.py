@@ -185,6 +185,9 @@ class HostObjmethodsMixin:
 
     @_gs2_builtin(_GS2_OBJ_METHODS, "destroy")
     def _obj_destroy(self, vm, name, args, obj):
+        self.rt2.cancel_object_waiters(obj)
+        for owner in getattr(obj, "script_vms", ()) or ():
+            self.rt2._cancel_vm_coroutines(owner)
         if self.rt2.gui is None:
             return _FALL_THROUGH
         self.rt2.gui.destroy(obj)
@@ -197,7 +200,7 @@ class HostObjmethodsMixin:
         rt2 = self.rt2
         if name == "scheduleevent" and len(args) >= 2:
             rt2.schedule_event(vm, to_num(args[0]), to_str(args[1]),
-                               list(args[2:]))
+                               list(args[2:]), target=obj)
         elif name == "cancelevents":
             rt2.cancel_events(vm, to_str(args[0]) if args else "")
         return 0.0

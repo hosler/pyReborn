@@ -1300,6 +1300,8 @@ class GuiControl(GS2Object):
         onAction(text) for a text field, onSelect(entryid, entrytext,
         entryindex), onDblClick(selectedid, selectedtext, selectedrow)."""
         event = event.lower()
+        rt2 = getattr(self._manager, "rt2", None)
+        waits = rt2.event_waiters(self, event) if rt2 is not None else []
         handled = False
         handler = self.get(event)
         if callable(handler):
@@ -1345,6 +1347,8 @@ class GuiControl(GS2Object):
                     logger.exception("GS2 GUI: %s handler for %s raised",
                                      event, self.ctrl_name)
                     handled = True
+        if rt2 is not None:
+            rt2.wake_event_waiters(waits)
         return handled
 
     def fire_action(self, *args) -> bool:

@@ -562,6 +562,10 @@ class HostBareMixin:
 
     @_gs2_builtin(_GS2_BARE, "destroy")
     def _bi_destroy(self, vm, name, args, obj):
+        target = args[0] if args else (vm.this if vm is not None else None)
+        self.rt2.cancel_object_waiters(target)
+        for owner in getattr(target, "script_vms", ()) or ():
+            self.rt2._cancel_vm_coroutines(owner)
         if self.rt2.gui is not None and args:
             self.rt2.gui.destroy(args[0])
         return 0.0

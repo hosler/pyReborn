@@ -36,7 +36,7 @@ Do NOT call `/quit`. It stops the whole shared daemon for every agent, not just 
 
 curl pattern: `curl -s 'http://127.0.0.1:14990/act?name=YOU&cmd=walkto&x=40&y=40'`
 Keep every URL safe. Use `+` or `%20` for a space in `msg`. Parse the JSON with
-`python3.13 -c` if that helps.
+`../.venv/bin/python -c` if that helps.
 
 ## CRITICAL caveat (or you WILL report false bugs)
 

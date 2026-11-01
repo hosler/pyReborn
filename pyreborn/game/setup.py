@@ -1,4 +1,4 @@
-"""SetupMixin — Asset paths, client callbacks, GS1 callbacks, NPC script bootstrap.
+"""SetupMixin — Asset paths, client callbacks, and source script bootstrap.
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
@@ -9,7 +9,9 @@ from typing import List, Optional
 
 from .. import asset_paths
 from .callbacks import wire_client_callbacks, wire_gs1_callbacks
-from .callbacks.client_callbacks import SAMPLE_EXTS, append_start_message
+from .callbacks.client_callbacks import (
+    SAMPLE_EXTS, append_start_message, route_gs2_source,
+)
 from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
 
 
@@ -107,7 +109,7 @@ class SetupMixin:
                 cache.pop(npc_id, None)
 
     def _load_npc_scripts(self):
-        """Load NPC scripts into the GS1 interpreter and fire each one's
+        """Route NPC source to its engine and fire each GS1 script's
         `created` event — the real client runs onCreated when a level NPC
         spawns (each level visit). GTA's system NPCs rely on it: their
         `if (created) hide;` is what keeps the weapon-icon NPCs (*Clock and
@@ -115,6 +117,8 @@ class SetupMixin:
         for npc_id, npc in self.client.npcs.items():
             script = npc.get('script', '')
             if script:
+                if route_gs2_source(self, 'npc', npc_id, script):
+                    continue
                 x, y = npc.get('x', 0), npc.get('y', 0)
                 self.gs1.load_script(f"npc_{npc_id}", script, npc_id=npc_id, x=x, y=y)
                 try:
@@ -124,12 +128,14 @@ class SetupMixin:
         self._load_weapon_scripts()
 
     def _load_weapon_scripts(self):
-        """Load the player's weapon scripts (-validation, -arenaSYS, ...) into the
-        GS1 engine. They run client-side like NPCs and drive Bomber Arena's whole
-        room/game flow (actionprojectile2, setlevel2, ...)."""
+        """Route the player's weapon source (-validation, -arenaSYS, ...) to
+        its engine. These scripts drive room/game flow through commands such
+        as actionprojectile2 and setlevel2."""
         for name, weapon in self.client.weapons.items():
             script = weapon.get('script', '')
             if script:
+                if route_gs2_source(self, 'weapon', name, script):
+                    continue
                 if self.gs1.load_weapon(name, script):
                     try:
                         self.gs1.trigger_event('created', name=f'weapon_{name}')
@@ -176,6 +182,8 @@ class SetupMixin:
             key = "npc_%s" % npc_id
             script = npc.get('script', '')
             if script and key not in self.gs1.scripts:
+                if route_gs2_source(self, 'npc', npc_id, script):
+                    continue
                 self.gs1.load_script(key, script, npc_id=npc_id,
                                      x=npc.get('x', 0), y=npc.get('y', 0))
                 new.append(npc_id)

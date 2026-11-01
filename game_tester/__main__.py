@@ -309,14 +309,18 @@ Examples:
             game._load_npc_scripts()
             game._trigger_playerenters()
             log_capture = _LogCapture()
-            logging.getLogger().addHandler(log_capture)
+            warning_samples = writer.warning_handler()
+            root_logger = logging.getLogger()
+            root_logger.addHandler(log_capture)
+            root_logger.addHandler(warning_samples)
             game._explorer_log_capture = log_capture
             try:
                 seconds = args.gs2_deep if args.gs2_deep is not None else args.gs2_explore
                 result = ExplorerBot(game, pump=GamePump(game), writer=writer,
                                      policy=policy).explore(seconds)
             finally:
-                logging.getLogger().removeHandler(log_capture)
+                root_logger.removeHandler(warning_samples)
+                root_logger.removeHandler(log_capture)
         if args.gs2_deep is not None:
             from game_tester.gs2_ui_explorer.deep_drive import report_capture
             report_capture(result.out_dir)

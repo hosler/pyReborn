@@ -25,11 +25,17 @@ from dataclasses import dataclass, field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyreborn import Client
+from pyreborn.game.constants import (
+    PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
+    PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
+)
+from reborn_protocol.coords import in_level_bounds, local_to_world, segment_at
 from pyreborn.tiletypes import (
     TileType, get_tile_type, is_blocking, is_swimming_water,
 )
 
 from .login import login_client
+from .pathing import plan_path
 
 
 @dataclass
@@ -440,9 +446,9 @@ class GameBot:
         return moved
 
     def walk_to(self, target_x: float, target_y: float, timeout: float = 10.0,
-                follow_links: bool = True) -> bool:
+                follow_links: bool = True, *, pathing: bool = True) -> bool:
         """
-        Walk to a target position using simple pathfinding.
+        Walk to a target position using A*, with greedy walking as fallback.
 
         target_x/target_y are in the same frame as self.x/self.y: WORLD
         coordinates on a GMAP (local + grid*64, matching client.x/client.y
@@ -459,9 +465,15 @@ class GameBot:
         longer reachable in the new level, so this returns False rather than
         continuing to burn the timeout comparing against a stale target.
 
+        pathing: set False to use the original greedy loop. Planning failure
+        or four stalled ticks after each of three replans also falls back to
+        that loop, sharing the original timeout and movement reporting.
+
         Returns True if reached target, False if stuck/timeout/warped away.
         """
         start = time.time()
+        walk_start = time.monotonic()
+        walk_deadline = walk_start + timeout
         tolerance = 0.5
         start_level = self.level
         # Did we ever actually move during this call? Distinguishes a
@@ -470,8 +482,17 @@ class GameBot:
         # ordinary timeout where progress was made but the target just
         # wasn't reached in time - see the two _add_issue calls below.
         moved_ever = False
+        path = None
+        waypoint = 0
+        stalled_ticks = 0
+        replans = 0
+        if (pathing and timeout > 0
+                and (abs(target_x - self.client.x) >= tolerance
+                     or abs(target_y - self.client.y) >= tolerance)):
+            path = self._plan_walk_path(
+                target_x, target_y, walk_start + min(timeout * 0.4, 2.0))
 
-        while time.time() - start < timeout:
+        while time.monotonic() < walk_deadline:
             dx = target_x - self.client.x
             dy = target_y - self.client.y
 
@@ -479,6 +500,45 @@ class GameBot:
             if abs(dx) < tolerance and abs(dy) < tolerance:
                 self._log_action("walk_to", {"x": target_x, "y": target_y}, True, start)
                 return True
+
+            if path is not None:
+                while waypoint < len(path):
+                    wx, wy = path[waypoint]
+                    if abs(wx - self.client.x) > 0.125 or abs(wy - self.client.y) > 0.125:
+                        break
+                    waypoint += 1
+                if waypoint == len(path):
+                    path = None
+                    continue
+                wx, wy = path[waypoint]
+                old_x, old_y = self.client.x, self.client.y
+                move_dx = 0 if abs(wx - old_x) <= 0.125 else (1 if wx > old_x else -1)
+                move_dy = 0 if abs(wy - old_y) <= 0.125 else (1 if wy > old_y else -1)
+                self.move(move_dx, move_dy, follow_links=follow_links)
+                if (abs(self.client.x - old_x) < 0.01
+                        and abs(self.client.y - old_y) < 0.01):
+                    # Blocked move() returns before pumping incoming packets.
+                    self.update(0.05)
+                if follow_links and self.level != start_level:
+                    self._log_action("walk_to", {"x": target_x, "y": target_y,
+                                                 "warped_to": self.level}, False, start)
+                    return False
+                moved = (abs(self.client.x - old_x) > 0.01
+                         or abs(self.client.y - old_y) > 0.01)
+                moved_ever |= moved
+                before = math.hypot(wx - old_x, wy - old_y)
+                after = math.hypot(wx - self.client.x, wy - self.client.y)
+                stalled_ticks = stalled_ticks + 1 if after >= before - 0.01 else 0
+                if stalled_ticks >= 4:
+                    now = time.monotonic()
+                    replan_deadline = min(
+                        walk_deadline, now + min(max(0.0, walk_deadline - now) * 0.1, 0.5))
+                    path = (self._plan_walk_path(target_x, target_y, replan_deadline)
+                            if replans < 3 and now < walk_deadline else None)
+                    replans += 1
+                    waypoint = 0
+                    stalled_ticks = 0
+                continue
 
             # Determine direction
             move_dx = 0 if abs(dx) < tolerance else (1 if dx > 0 else -1)
@@ -534,6 +594,65 @@ class GameBot:
                            f"({self.client.x:.1f}, {self.client.y:.1f}) toward "
                            f"target=({target_x}, {target_y})")
         self._log_action("walk_to", {"x": target_x, "y": target_y}, False, start)
+        return False
+
+    def _plan_walk_path(self, target_x: float, target_y: float,
+                        deadline: float | None = None):
+        """Snapshot nearby players as soft costs in the bot's world frame."""
+        others = []
+        c = self.client
+        grid = c.gmap_grid if c.in_gmap_segment else {}
+        cells = {name: cell for cell, name in grid.items()}
+        for pid, player in list(c.players.items()):
+            if pid == c.player.id or player.get('x') is None or player.get('y') is None:
+                continue
+            level = player.get('level')
+            if level and level != self.level and level not in cells:
+                continue
+            px, py = player['x'], player['y']
+            if grid:
+                cell = cells.get(level, segment_at(c.x, c.y))
+                px, py = local_to_world(px, py, *cell)
+            wx, wy = player.get('world_x'), player.get('world_y')
+            others.append((px if wx is None else wx, py if wy is None else wy))
+
+        def cost(x, y):
+            # Two classic 2x2 feet boxes overlap within two tiles per axis.
+            width = PLAYER_COLLISION_RIGHT - PLAYER_COLLISION_LEFT
+            height = PLAYER_COLLISION_BOTTOM - PLAYER_COLLISION_TOP
+            return sum(4.0 for px, py in others
+                       if abs(x - px) < width and abs(y - py) < height)
+
+        return plan_path((c.x, c.y), (target_x, target_y),
+                         self._path_position_blocked, cost=cost, deadline=deadline)
+
+    def _path_position_blocked(self, x: float, y: float) -> bool:
+        """Conservative feet-box clearance plus the actual movement probes.
+
+        Each half-tile edge takes two quarter-tile move() calls. The last
+        call probes 0.75 tile beyond the waypoint. Reserve that clearance in
+        every direction so the position-only planner can turn at any node.
+        """
+        if self._is_position_blocked(x, y):
+            return True
+        c = self.client
+        left, right = x + PLAYER_COLLISION_LEFT, x + PLAYER_COLLISION_RIGHT
+        top, bottom = y + PLAYER_COLLISION_TOP, y + PLAYER_COLLISION_BOTTOM
+        for tx in range(math.floor(left), math.ceil(right)):
+            for ty in range(math.floor(top), math.ceil(bottom)):
+                px, py = max(left, tx), max(top, ty)
+                if c.in_gmap_segment:
+                    level = c.gmap_grid.get(segment_at(px, py))
+                    if not level or not c.levels.get(level):
+                        return True
+                elif not in_level_bounds(px, py):
+                    return True
+                if is_blocking(self._get_tile_at(px, py)):
+                    return True
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            if self._is_position_blocked(x + dx * 0.75, y + dy * 0.75, dx, dy):
+                return True
         return False
 
     def _check_stuck(self):
@@ -641,7 +760,7 @@ class GameBot:
         return tiles[tile_idx]
 
     def _is_position_blocked(self, x: float, y: float, dx: int = 0, dy: int = 0) -> bool:
-        """Check if a position is blocked by tiles.
+        """Check if a position is blocked by tiles or NPC footprints.
 
         (x, y) here is already the full-tile-ahead destination (see move()'s
         parity note), so this probes the LEADING EDGE of the sprite's
@@ -672,6 +791,16 @@ class GameBot:
             tile_id = self._get_tile_at(check_x, check_y)
             if is_blocking(tile_id):
                 return True
+            if self.client.npcs:
+                # Reuse the pygame client's NPC wall predicate without pygame.
+                from pyreborn.gs1_client import ClientGS1
+                host = self.client.gs1_host
+                if host is None:
+                    host = getattr(self, '_npc_collision', None)
+                    if host is None or host.client is not self.client:
+                        host = self._npc_collision = ClientGS1(self.client)
+                if host.npc_blocks_at(check_x, check_y):
+                    return True
 
         return False
 

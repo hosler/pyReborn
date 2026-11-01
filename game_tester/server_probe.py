@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import re
 import socket
 import time
 import traceback
+from copy import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -42,6 +45,36 @@ def parse_server_name(display_name: str) -> tuple[str, str]:
     if len(display_name) >= 2 and display_name[1] == " " and display_name[0] in CATEGORY_NAMES:
         return display_name[2:], CATEGORY_NAMES[display_name[0]]
     return display_name, "classic"
+
+
+def parse_listserver(value: str) -> tuple[str, int]:
+    """Parse HOST[:PORT], using the list client's default port when omitted."""
+    host, separator, port_text = value.strip().partition(":")
+    if not host or any(char.isspace() for char in host):
+        raise ValueError("listserver must be HOST[:PORT]")
+    try:
+        port = int(port_text) if separator else ListServerClient.DEFAULT_PORT
+    except ValueError:
+        raise ValueError("listserver port must be an integer") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("listserver port must be between 1 and 65535")
+    return host, port
+
+
+def _resolve_probe_prefs(listserver: str | None = None,
+                         account: str | None = None,
+                         password: str | None = None) -> Prefs:
+    """Resolve temporary overrides without changing saved preferences."""
+    prefs = copy(Prefs.load())
+    if listserver is not None:
+        prefs.listserver_host, prefs.listserver_port = parse_listserver(listserver)
+    if account is not None:
+        prefs.username = account
+    if password is None:
+        password = os.environ.get("PYREBORN_PROBE_PASSWORD")
+    if password is not None:
+        prefs.password = password
+    return prefs
 
 
 def is_owned_server(host: str, name: str = "") -> bool:
@@ -490,8 +523,14 @@ def probe_servers(server: str | None = None, timeout: float = 20.0,
                   catalog_path: Path | str = DEFAULT_CATALOG,
                   wander: int | None = None, deep: bool = False,
                   max_levels: int = 15, deep_timeout: float = 120.0,
-                  versions: Iterable[str] | None = None) -> dict[str, Any]:
-    prefs = Prefs.load()
+                  versions: Iterable[str] | None = None,
+                  listserver: str | None = None, account: str | None = None,
+                  password: str | None = None) -> dict[str, Any]:
+    """Probe a public list with temporary endpoint and credential overrides."""
+    prefs = _resolve_probe_prefs(listserver, account, password)
+    source = {"host": prefs.listserver_host, "port": prefs.listserver_port}
+    defaults = Prefs()
+    default_source = {"host": defaults.listserver_host, "port": defaults.listserver_port}
     entries = fetch_entries(prefs, timeout)
     if server:
         entries = [entry for entry in entries if parse_server_name(entry.display_name)[0].casefold() == server.casefold()]
@@ -509,22 +548,39 @@ def probe_servers(server: str | None = None, timeout: float = 20.0,
             entry, prefs.username, prefs.password, timeout, wander=wander,
             deep=deep, max_levels=max_levels, deep_timeout=deep_timeout,
             versions=versions)
-        catalog["servers"][name] = merge_probe_record(
-            catalog["servers"].get(name), fresh,
+        fresh["listserver"] = dict(source)
+        fresh["name"] = name
+        # Legacy records belong to the default community; keep their history
+        # under the familiar key when that community is probed again.
+        key = name
+        if (key in catalog["servers"]
+                and catalog["servers"][key].get("listserver", default_source) != source):
+            key = f"{name} [{source['host']}:{source['port']}]"
+        catalog["servers"][key] = merge_probe_record(
+            catalog["servers"].get(key), fresh,
             ran_versions=bool(versions), ran_deep=deep)
         save_catalog(catalog, catalog_path)
     return catalog
 
 
+def _catalog_server_name(key: str, record: dict[str, Any]) -> str:
+    source = record.get("listserver")
+    suffix = f" [{source['host']}:{source['port']}]" if source else ""
+    return record.get("name") or (key.removesuffix(suffix) if suffix else key)
+
+
 def iter_catalog_records(catalog: dict[str, Any], selected: str | None = None) -> Iterable[tuple[str, dict[str, Any]]]:
     for name, record in catalog["servers"].items():
-        if selected is None or name.casefold() == selected.casefold():
+        display_name = _catalog_server_name(name, record)
+        if selected is None or selected.casefold() in (name.casefold(), display_name.casefold()):
             yield name, record
 
 
 def run_catalog_tests(selected: str | None = None,
                       catalog_path: Path | str = DEFAULT_CATALOG,
-                      fingerprint: bool = True) -> bool:
+                      fingerprint: bool = True, *,
+                      listserver: str | None = None, account: str | None = None,
+                      password: str | None = None) -> bool:
     """Run only a catalog record's permitted scenario subset.
 
     Servers that also have a behavioural baseline (game_tester/
@@ -541,10 +597,16 @@ def run_catalog_tests(selected: str | None = None,
     baselines = load_baselines() if fingerprint else {"servers": {}}
 
     catalog = load_catalog(catalog_path)
+    prefs = _resolve_probe_prefs(listserver, account, password)
     records = list(iter_catalog_records(catalog, selected))
+    if listserver is not None:
+        source = {"host": prefs.listserver_host, "port": prefs.listserver_port}
+        defaults = Prefs()
+        default_source = {"host": defaults.listserver_host, "port": defaults.listserver_port}
+        records = [(name, record) for name, record in records
+                   if record.get("listserver", default_source) == source]
     if selected and not records:
         raise ValueError(f"server not found in catalog: {selected}")
-    prefs = Prefs.load()
     scenario_map = {
         "connection_stability": TestScenarios.test_connection,
         "level_data": TestScenarios.test_level_data,
@@ -596,15 +658,69 @@ def run_catalog_tests(selected: str | None = None,
                 result = scenario_map[test_name](bot)
                 print(f"  {'PASS' if result.passed else 'FAIL'} {result.name}: {result.details}")
                 all_ok = all_ok and result.passed
-            entry = baselines.get("servers", {}).get(name)
+            plain_name = _catalog_server_name(name, record)
+            entry = baselines.get("servers", {}).get(plain_name)
+            if fingerprint and entry is None:
+                logging.getLogger(__name__).warning(
+                    "No behavioural baseline for catalog server %s", plain_name)
             if entry is not None and bot.client.connected:
                 observed = capture_from_client(
                     bot.client, float(entry.get("seconds", 25.0)),
                     replay_bytecode=True)
-                all_ok = check_fingerprint(name, observed, baselines) and all_ok
+                all_ok = check_fingerprint(plain_name, observed, baselines) and all_ok
         except BaseException:
             print(traceback.format_exc())
             all_ok = False
         finally:
             bot.disconnect()
     return all_ok
+
+
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--server", help="Probe or test only this server name")
+    parser.add_argument("--catalog-tests", action="store_true",
+                        help="Run catalog tests instead of probing the public list")
+    parser.add_argument("--listserver", metavar="HOST[:PORT]",
+                        help="Override the saved listserver (default port: 14922)")
+    parser.add_argument("--account", help="Override the saved account")
+    parser.add_argument("--password", help="Override PYREBORN_PROBE_PASSWORD and the saved password")
+    parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--wander", type=int)
+    parser.add_argument("--deep", action="store_true")
+    parser.add_argument("--max-levels", type=int, default=15)
+    parser.add_argument("--deep-timeout", type=float, default=120.0)
+    parser.add_argument("--versions", help="Comma-separated client version matrix")
+    args = parser.parse_args(argv)
+    try:
+        # Validate before fetching any entries. Never include credentials or
+        # exception text from a remote server in CLI output.
+        if args.listserver is not None:
+            parse_listserver(args.listserver)
+        versions = parse_versions(args.versions)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        if args.catalog_tests:
+            ok = run_catalog_tests(
+                selected=args.server, catalog_path=args.catalog,
+                listserver=args.listserver, account=args.account, password=args.password)
+            if not ok:
+                parser.exit(1, "Catalog tests failed.\n")
+            print("Catalog tests complete.")
+            return
+        probe_servers(
+            server=args.server, timeout=args.timeout, catalog_path=args.catalog,
+            wander=args.wander, deep=args.deep, max_levels=args.max_levels,
+            deep_timeout=args.deep_timeout, versions=versions,
+            listserver=args.listserver, account=args.account, password=args.password)
+    except Exception:
+        parser.exit(1, "Server probe or catalog tests failed; check the listserver and credentials.\n")
+    print("Server probe complete.")
+
+
+if __name__ == "__main__":
+    main()

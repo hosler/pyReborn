@@ -4,6 +4,7 @@ import os
 import time
 
 from ...sprites import strip_tiledef_image
+from .client_callbacks import route_gs2_source
 
 def wire_gs1_callbacks(game):
     # action string -> last-sent time, to throttle repeated triggeractions.
@@ -101,7 +102,8 @@ def wire_gs1_callbacks(game):
             game.client.weapons[name] = {
                 'name': name, 'image': image or '', 'script': script,
             }
-            if script and getattr(game, 'gs1', None) is not None:
+            if (script and not route_gs2_source(game, 'weapon', name, script)
+                    and getattr(game, 'gs1', None) is not None):
                 is_new = game.gs1.load_weapon(name, script)
                 try:
                     if is_new:

@@ -3030,6 +3030,172 @@
         }
       }
     },
+    "Valikorlia Reborn Test": {
+      "active_ok": false,
+      "address": {
+        "host": "91.99.73.49",
+        "port": 9093
+      },
+      "capabilities": {
+        "auto_address_substituted": false,
+        "auto_retry": true,
+        "baddy_count": 0,
+        "board_received": true,
+        "disconnect_reason": "",
+        "encryption_gen": 5,
+        "files_auto_downloaded_ok": false,
+        "gen_source": "handshake",
+        "gmap_detected": false,
+        "has_npc_server": true,
+        "level_name": "onlinestartlocal.nw",
+        "login": "accepted",
+        "negotiated_version": "2.22",
+        "npc_count": 0,
+        "other_players_seen": 1,
+        "packet_counts": {
+          "0": 1,
+          "10": 2,
+          "100": 1,
+          "101": 1,
+          "14": 1,
+          "156": 1,
+          "168": 1,
+          "174": 1,
+          "179": 1,
+          "180": 1,
+          "190": 1,
+          "194": 1,
+          "25": 1,
+          "33": 1,
+          "34": 2,
+          "37": 1,
+          "39": 1,
+          "4": 3,
+          "41": 1,
+          "42": 4,
+          "43": 2,
+          "44": 1,
+          "47": 1,
+          "6": 2,
+          "8": 1,
+          "82": 1,
+          "9": 2
+        },
+        "player_position_sane": true,
+        "prop_parse_errors": 0,
+        "prop_parse_warnings": 0,
+        "prop_width_fallbacks": 0,
+        "reachable": true,
+        "renegotiated_to": "2.22",
+        "requested_version": "6.037",
+        "server_advertised_version": null,
+        "server_kind": "game",
+        "status": "ok",
+        "tiles_ok": true,
+        "unhandled_plo_ids": [],
+        "unknown_plo_ids": [],
+        "version_status": "renegotiated",
+        "weapon_count": 1
+      },
+      "category": "bronze",
+      "crawl": {
+        "counts": {
+          "baddies": 0,
+          "chests": 3,
+          "levels": 1,
+          "links": 0,
+          "npcs": 0,
+          "signs": 0
+        },
+        "errors": [],
+        "files_parsed": {
+          "failed": 0,
+          "ok": 1
+        },
+        "gmap": {
+          "grid_size": [
+            0,
+            0
+          ],
+          "name": "",
+          "segments_skipped": [],
+          "segments_visited": 0
+        },
+        "gs1_exec": {
+          "capped": 0,
+          "failed": 0,
+          "implemented_count": 0,
+          "known_unsupported": [],
+          "ran": 0,
+          "stubbed": [],
+          "true_gaps": []
+        },
+        "gs1_parse": {
+          "failed": 0,
+          "ok": 0
+        },
+        "gs2": {
+          "capped": 0,
+          "event_names": [],
+          "events_failed": 0,
+          "events_found": 0,
+          "events_ran": 0,
+          "failed": 0,
+          "fetch_missing": [],
+          "fetched": 0,
+          "functions_failed": 0,
+          "functions_ran": 0,
+          "implemented_count": 0,
+          "known_unsupported": [],
+          "ran": 0,
+          "scripts": [],
+          "stubbed": [],
+          "true_gaps": [],
+          "unknown_opcodes": [],
+          "vm_errors": 0
+        },
+        "levels_visited": [
+          {
+            "baddy_count": 0,
+            "board_parsed": true,
+            "chest_count": 3,
+            "frames_rendered": 7,
+            "link_count": 0,
+            "name": "onlinestartlocal.nw",
+            "npc_count": 0,
+            "npc_props_parsed": true,
+            "sign_count": 0,
+            "signs_decoded": true,
+            "soak_exceptions": [],
+            "tiles_valid": true
+          }
+        ],
+        "render": {
+          "failed": 0,
+          "ok": 1
+        },
+        "soak": {
+          "errors": 0,
+          "frames": 7
+        }
+      },
+      "errors": [],
+      "last_probed": "2026-11-01T18:28:26.292340+00:00",
+      "last_updated": {
+        "base": "2026-11-01T18:28:26.292340+00:00",
+        "crawl": "2026-11-01T18:28:26.292340+00:00"
+      },
+      "listserver": {
+        "host": "91.99.73.49",
+        "port": 9111
+      },
+      "name": "Valikorlia Reborn Test",
+      "testable_tests": [
+        "connection_stability",
+        "level_data",
+        "npc_visibility"
+      ]
+    },
     "Yz Debug": {
       "active_ok": false,
       "address": {

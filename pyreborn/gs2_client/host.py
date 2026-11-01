@@ -311,6 +311,9 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
                 result = handler(self, vm, name, args, obj)
                 if result is not _FALL_THROUGH:
                     return result
+        if (name == "trigger" and args and isinstance(obj, GS2Object)
+                and not (GuiControl is not None and isinstance(obj, GuiControl))):
+            return rt2.trigger_object_event(vm, obj, str(args[0]), *args[1:])
         if rt2.gui is not None:
             handler = _GS2_GUI_METHODS.get(name)
             if handler is not None:

@@ -5,4 +5,4 @@
 # game_tester/playtest_run.py for options.
 set -euo pipefail
 cd "$(dirname "$0")"
-exec python3.13 -m game_tester.playtest_run "$@"
+exec "${PYTHON:-../.venv/bin/python}" -m game_tester.playtest_run "$@"

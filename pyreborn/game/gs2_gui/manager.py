@@ -294,6 +294,11 @@ class GS2GuiManager:
             del self._named[ctrl.ctrl_name.lower()]
         self._release_pointers_under(ctrl)
         ctrl.sleep_subtree(ancestors_visible)
+        pending = [ctrl]
+        while pending:
+            target = pending.pop()
+            self.rt2.cancel_object_waiters(target)
+            pending.extend(target.children)
 
     def _release_pointers_under(self, ctrl: GuiControl) -> None:
         """Drop keyboard focus / an active drag / hover / pressed state held

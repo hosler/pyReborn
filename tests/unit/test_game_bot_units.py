@@ -214,7 +214,7 @@ class TestWalkToStuckRecoveryDirection:
         # Target due WEST: move_dx=-1, move_dy=0 (no vertical need). Only
         # the move_dx stuck branch should fire, sidestepping along Y.
         bot, calls = self._stuck_bot(10.0, 10.0)
-        bot.walk_to(5.0, 10.0, timeout=0.05)
+        bot.walk_to(5.0, 10.0, timeout=0.05, pathing=False)
 
         assert calls[0] == (-1, 0)
         # After 11 consecutive stuck attempts (_stuck_count > 10), the
@@ -228,7 +228,7 @@ class TestWalkToStuckRecoveryDirection:
         # Target NORTHWEST: move_dx=-1, move_dy=-1 - both stuck branches
         # fire, each sidestepping toward the target's own sign.
         bot, calls = self._stuck_bot(10.0, 10.0)
-        bot.walk_to(5.0, 5.0, timeout=0.05)
+        bot.walk_to(5.0, 5.0, timeout=0.05, pathing=False)
 
         assert calls[0] == (-1, -1)
         unstick = calls[11:15]
@@ -236,7 +236,7 @@ class TestWalkToStuckRecoveryDirection:
 
     def test_sidesteps_toward_a_southeast_target(self):
         bot, calls = self._stuck_bot(5.0, 5.0)
-        bot.walk_to(10.0, 10.0, timeout=0.05)
+        bot.walk_to(10.0, 10.0, timeout=0.05, pathing=False)
 
         assert calls[0] == (1, 1)
         unstick = calls[11:15]

@@ -446,8 +446,12 @@ class HostObjectsMixin:
         obj.set("name", arg if isinstance(arg, str) else "")
         return obj
 
+    def waitfor(self, vm: GS2VM, obj, event: str, timeout: float):
+        return self.rt2.waitfor(vm, obj, event, timeout)
+
     def sleep(self, vm: GS2VM, seconds: float) -> None:
-        # The VM can't suspend, so sleep() blocks -- but it pumps the packet loop,
+        # Synchronous calls block here; coroutine calls yield in the VM.
+        # This fallback pumps the packet loop,
         # which is what sleeping scripts wait FOR (preloader poll loops). Capped at
         # 1s so a script can't freeze the app.
         rt2 = self.rt2

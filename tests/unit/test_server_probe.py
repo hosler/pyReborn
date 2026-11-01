@@ -1,20 +1,29 @@
 import json
+from dataclasses import asdict
+from types import SimpleNamespace
 
+import pytest
+
+from game_tester import server_probe
 from game_tester.server_probe import (
     _exercise_probe_movement,
     capabilities_to_tests,
     empty_catalog,
+    iter_catalog_records,
     load_catalog,
     merge_probe_record,
+    parse_listserver,
     parse_server_name,
     parse_versions,
     probe_entry,
+    probe_servers,
     probe_status,
     save_catalog,
 )
 from pyreborn.client import Client, HANDLED_PLO_IDS
 from pyreborn.packets import PacketID
 from pyreborn.listserver import ListServerClient, PacketReader, ServerEntry
+from pyreborn.prefs import Prefs
 
 
 def _wire_string(raw: bytes) -> bytes:
@@ -36,6 +45,310 @@ def test_auto_address_uses_configured_list_host():
     plain = client._parse_server_list(_entry_packet(b"Test", b"AUTO"))[0]
     assert dollar.ip == "list.example.test" and dollar.auto_address_substituted
     assert plain.ip == "list.example.test" and plain.auto_address_substituted
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("list.example.test", ("list.example.test", ListServerClient.DEFAULT_PORT)),
+    ("list.example.test:1234", ("list.example.test", 1234)),
+    ("192.0.2.10", ("192.0.2.10", ListServerClient.DEFAULT_PORT)),
+    ("192.0.2.10:1234", ("192.0.2.10", 1234)),
+])
+def test_probe_parse_listserver(value, expected):
+    assert parse_listserver(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", ":1234", "host:", "host:no", "host:0", "host:65536"])
+def test_probe_parse_listserver_rejects_invalid_endpoint(value):
+    with pytest.raises(ValueError):
+        parse_listserver(value)
+
+
+@pytest.fixture
+def probe_calls(monkeypatch):
+    prefs = Prefs(username="saved-account", password="saved-password",
+                  listserver_host="saved.example.test", listserver_port=9999)
+    calls = SimpleNamespace(prefs=prefs, endpoints=[], logins=[], probes=[], disconnects=[])
+    monkeypatch.setattr(Prefs, "load", lambda: prefs)
+    monkeypatch.delenv("PYREBORN_PROBE_PASSWORD", raising=False)
+
+    def forbid_save(self):
+        pytest.fail("the probe must not save preferences")
+
+    monkeypatch.setattr(Prefs, "save", forbid_save)
+
+    class FakeListServer:
+        DEFAULT_PORT = ListServerClient.DEFAULT_PORT
+
+        def __init__(self, host, port):
+            calls.endpoints.append((host, port))
+
+        def login(self, account, password, timeout):
+            calls.logins.append((account, password, timeout))
+            entry = ServerEntry("Example", "", "", "", "", "", 0,
+                                "game.example.test", 14900)
+            return SimpleNamespace(success=True, servers=[entry])
+
+        def disconnect(self):
+            calls.disconnects.append(True)
+
+    def fake_probe(entry, account, password, timeout, **kwargs):
+        calls.probes.append((account, password, timeout))
+        return {"address": {"host": entry.ip, "port": entry.port},
+                "last_probed": "2026-11-01T00:00:00+00:00"}
+
+    monkeypatch.setattr(server_probe, "ListServerClient", FakeListServer)
+    monkeypatch.setattr(server_probe, "probe_entry", fake_probe)
+    return calls
+
+
+@pytest.mark.parametrize("endpoint, expected", [
+    (None, ("saved.example.test", 9999)),
+    ("custom.example.test", ("custom.example.test", ListServerClient.DEFAULT_PORT)),
+    ("custom.example.test:1234", ("custom.example.test", 1234)),
+])
+def test_probe_servers_uses_copied_prefs_for_fetch_entries(
+        tmp_path, monkeypatch, probe_calls, endpoint, expected):
+    before = asdict(probe_calls.prefs)
+    fetch_entries = server_probe.fetch_entries
+    fetched_prefs = []
+
+    def capture_fetch(prefs, timeout):
+        fetched_prefs.append(prefs)
+        return fetch_entries(prefs, timeout)
+
+    monkeypatch.setattr(server_probe, "fetch_entries", capture_fetch)
+    path = tmp_path / "catalog.json"
+    catalog = probe_servers(listserver=endpoint, account="override-account",
+                            password="override-password", timeout=0.5, catalog_path=path)
+    assert fetched_prefs[0] is not probe_calls.prefs
+    assert asdict(probe_calls.prefs) == before
+    assert probe_calls.endpoints == [expected]
+    assert probe_calls.logins == probe_calls.probes == [("override-account", "override-password", 0.5)]
+    assert probe_calls.disconnects == [True]
+    assert catalog["servers"]["Example"]["listserver"] == {"host": expected[0], "port": expected[1]}
+    assert load_catalog(path) == catalog
+    assert "override-password" not in path.read_text()
+
+
+@pytest.mark.parametrize("explicit, env, expected", [
+    (None, None, "saved-password"),
+    (None, "env-password", "env-password"),
+    ("explicit-password", "env-password", "explicit-password"),
+    ("", "env-password", ""),
+])
+def test_probe_password_precedence(tmp_path, monkeypatch, probe_calls, explicit, env, expected):
+    if env is not None:
+        monkeypatch.setenv("PYREBORN_PROBE_PASSWORD", env)
+    probe_servers(password=explicit, catalog_path=tmp_path / "catalog.json")
+    assert probe_calls.logins == probe_calls.probes == [("saved-account", expected, 20.0)]
+    assert probe_calls.prefs.password == "saved-password"
+
+
+def test_probe_catalog_separates_communities_and_preserves_unknown_legacy_source(tmp_path, probe_calls):
+    path = tmp_path / "catalog.json"
+    catalog = empty_catalog()
+    catalog["servers"]["Example"] = {"versions": {"2.22": {"marker": "legacy"}}}
+    save_catalog(catalog, path)
+    for endpoint in ("first.example.test:1234", "second.example.test", "first.example.test:1234"):
+        catalog = probe_servers(listserver=endpoint, catalog_path=path)
+    assert len(catalog["servers"]) == 3
+    assert catalog["servers"]["Example"]["versions"]["2.22"]["marker"] == "legacy"
+    assert "listserver" not in catalog["servers"]["Example"]
+    for endpoint in ("first.example.test:1234", "second.example.test:14922"):
+        record = catalog["servers"][f"Example [{endpoint}]"]
+        host, port = parse_listserver(endpoint)
+        assert record["listserver"] == {"host": host, "port": port}
+        assert "versions" not in record
+    assert len(list(iter_catalog_records(catalog, "Example"))) == 3
+    assert len(list(iter_catalog_records(catalog, "Example [first.example.test:1234]"))) == 1
+
+
+@pytest.mark.parametrize('use_default', [True, False])
+def test_probe_legacy_record_uses_default_listserver_provenance(
+        tmp_path, probe_calls, use_default):
+    path = tmp_path / 'catalog.json'
+    catalog = empty_catalog()
+    history = {'2.22': {'marker': 'legacy'}}
+    catalog['servers']['Example'] = {'versions': history}
+    save_catalog(catalog, path)
+    defaults = Prefs()
+    endpoint = (f'{defaults.listserver_host}:{defaults.listserver_port}'
+                if use_default else 'other.example.test:1234')
+
+    catalog = probe_servers(listserver=endpoint, catalog_path=path)
+
+    host, port = parse_listserver(endpoint)
+    key = 'Example' if use_default else f'Example [{endpoint}]'
+    assert catalog['servers'][key]['listserver'] == {'host': host, 'port': port}
+    assert catalog['servers'][key]['name'] == 'Example'
+    assert catalog['servers']['Example']['versions'] == history
+    assert len(catalog['servers']) == (1 if use_default else 2)
+    if not use_default:
+        assert 'listserver' not in catalog['servers']['Example']
+
+
+@pytest.fixture
+def catalog_run(tmp_path, monkeypatch, probe_calls):
+    path = tmp_path / 'catalog.json'
+    record = {
+        'name': 'Example',
+        'listserver': {'host': 'custom.example.test', 'port': 1234},
+        'address': {'host': 'game.example.test', 'port': 14900},
+        'capabilities': {'login': 'accepted'},
+        'testable_tests': ['connection_stability'],
+    }
+    catalog = empty_catalog()
+    catalog['servers']['Example [custom.example.test:1234]'] = record
+    save_catalog(catalog, path)
+    calls = SimpleNamespace(bots=[], scenarios=[], captures=[], checks=[], disconnects=[])
+    baselines = {'servers': {'Example': {'seconds': 0.25}}}
+
+    class FakeBot:
+        def __init__(self, account, host, port, password):
+            calls.bots.append((account, host, port, password))
+            self.client = SimpleNamespace(connected=True)
+
+        def connect(self, timeout):
+            return True
+
+        def disconnect(self):
+            calls.disconnects.append(self.client)
+
+    def scenario(bot):
+        calls.scenarios.append(bot.client)
+        return SimpleNamespace(passed=True, name='connection_stability', details='ok')
+
+    def capture(client, seconds, **kwargs):
+        calls.captures.append((client, seconds, kwargs))
+        return {'observed': True}
+
+    def check(name, observed, baseline):
+        calls.checks.append((name, observed, baseline))
+        return True
+
+    monkeypatch.setattr('game_tester.game_bot.GameBot', FakeBot)
+    monkeypatch.setattr('game_tester.test_scenarios.TestScenarios.test_connection', scenario)
+    monkeypatch.setattr('game_tester.behaviour_fingerprint.load_baselines', lambda: baselines)
+    monkeypatch.setattr('game_tester.behaviour_fingerprint.capture_from_client', capture)
+    monkeypatch.setattr('game_tester.behaviour_fingerprint.check_fingerprint', check)
+    return SimpleNamespace(path=path, catalog=catalog, record=record, calls=calls,
+                           baselines=baselines)
+
+
+@pytest.mark.parametrize('stored_name', [True, False])
+def test_catalog_fingerprint_uses_plain_name_for_suffixed_record(catalog_run, stored_name):
+    if not stored_name:
+        del catalog_run.record['name']
+        save_catalog(catalog_run.catalog, catalog_run.path)
+    assert server_probe.run_catalog_tests('Example', catalog_path=catalog_run.path)
+    calls = catalog_run.calls
+    assert calls.checks == [('Example', {'observed': True}, catalog_run.baselines)]
+    assert calls.captures == [(calls.scenarios[0], 0.25, {'replay_bytecode': True})]
+    assert calls.disconnects == calls.scenarios
+
+
+def test_catalog_suffixed_record_fails_when_fingerprint_fails(catalog_run, monkeypatch):
+    monkeypatch.setattr('game_tester.behaviour_fingerprint.check_fingerprint',
+                        lambda name, observed, baselines: False)
+    assert not server_probe.run_catalog_tests(catalog_path=catalog_run.path)
+    assert catalog_run.calls.captures
+
+
+@pytest.mark.parametrize('fingerprint', [True, False])
+def test_catalog_warns_when_fingerprint_baseline_missing(catalog_run, caplog, fingerprint):
+    catalog_run.baselines['servers'].clear()
+    assert server_probe.run_catalog_tests(catalog_path=catalog_run.path,
+                                          fingerprint=fingerprint)
+    warnings = [record for record in caplog.records if record.levelname == 'WARNING']
+    assert len(warnings) == int(fingerprint)
+    if fingerprint:
+        assert 'baseline' in warnings[0].message
+        assert 'Example' in warnings[0].message
+    assert not catalog_run.calls.captures
+
+
+@pytest.mark.parametrize('explicit, env, expected', [
+    (None, None, 'saved-password'),
+    (None, 'env-password', 'env-password'),
+    ('explicit-password', 'env-password', 'explicit-password'),
+    ('', 'env-password', ''),
+])
+def test_catalog_tests_resolve_temporary_overrides(
+        catalog_run, probe_calls, monkeypatch, explicit, env, expected):
+    before = asdict(probe_calls.prefs)
+    if env is not None:
+        monkeypatch.setenv('PYREBORN_PROBE_PASSWORD', env)
+    assert server_probe.run_catalog_tests(
+        catalog_path=catalog_run.path, listserver='custom.example.test:1234',
+        account='override-account', password=explicit)
+    assert catalog_run.calls.bots == [
+        ('override-account', 'game.example.test', 14900, expected)]
+    assert asdict(probe_calls.prefs) == before
+
+
+def test_catalog_listserver_override_filters_other_communities(catalog_run):
+    other = dict(catalog_run.record, listserver={'host': 'other.example.test', 'port': 1234})
+    catalog_run.catalog['servers']['Example [other.example.test:1234]'] = other
+    save_catalog(catalog_run.catalog, catalog_run.path)
+    assert server_probe.run_catalog_tests(
+        'Example', catalog_path=catalog_run.path, listserver='custom.example.test:1234')
+    assert len(catalog_run.calls.bots) == 1
+
+
+def test_catalog_cli_threads_overrides(catalog_run, probe_calls, capsys):
+    before = asdict(probe_calls.prefs)
+    server_probe.main([
+        '--catalog-tests', '--server', 'Example', '--catalog', str(catalog_run.path),
+        '--listserver', 'custom.example.test:1234',
+        '--account', 'cli-account', '--password', 'cli-password'])
+    assert catalog_run.calls.bots == [
+        ('cli-account', 'game.example.test', 14900, 'cli-password')]
+    assert asdict(probe_calls.prefs) == before
+    assert catalog_run.calls.checks
+    output = capsys.readouterr()
+    assert 'cli-password' not in output.out + output.err + catalog_run.path.read_text()
+
+
+def test_catalog_cli_returns_failure_when_fingerprint_fails(catalog_run, monkeypatch):
+    monkeypatch.setattr('game_tester.behaviour_fingerprint.check_fingerprint',
+                        lambda name, observed, baselines: False)
+    with pytest.raises(SystemExit) as error:
+        server_probe.main(['--catalog-tests', '--catalog', str(catalog_run.path)])
+    assert error.value.code == 1
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_probe_catalog_accepts_legacy_records_without_listserver(tmp_path, version):
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"schema_version": version, "servers": {"Example": {}}}))
+    catalog = load_catalog(path)
+    assert catalog["schema_version"] == 3
+    assert "listserver" not in catalog["servers"]["Example"]
+    save_catalog(catalog, path)
+    assert load_catalog(path) == catalog
+
+
+def test_probe_cli_threads_overrides(tmp_path, monkeypatch, probe_calls, capsys):
+    path = tmp_path / "catalog.json"
+    server_probe.main(["--listserver", "custom.example.test:1234",
+                       "--account", "cli-account", "--password", "cli-password",
+                       "--server", "Example", "--catalog", str(path)])
+    assert probe_calls.endpoints == [("custom.example.test", 1234)]
+    assert probe_calls.logins == probe_calls.probes == [("cli-account", "cli-password", 20.0)]
+    captured = capsys.readouterr()
+    assert "cli-password" not in captured.out + captured.err + path.read_text()
+
+
+def test_probe_cli_error_does_not_print_password(monkeypatch, capsys):
+    def fail(**kwargs):
+        raise RuntimeError("remote error contains cli-password")
+
+    monkeypatch.setattr(server_probe, "probe_servers", fail)
+    with pytest.raises(SystemExit) as error:
+        server_probe.main(["--password", "cli-password"])
+    assert error.value.code == 1
+    captured = capsys.readouterr()
+    assert "cli-password" not in captured.out + captured.err
 
 
 def test_prefix_parsing():

@@ -25,6 +25,39 @@ CLASS_JOIN_WAIT_SECONDS = 5.0
 CLASS_JOIN_WAIT_PUMPS = 300
 
 
+def _event_name(event):
+    name = to_str(event).lower()
+    return name[2:] if name.startswith("on") else name
+
+
+class _EventWait(VMCoroutineWait):
+    def __init__(self, runtime, vm, target, event, timeout):
+        self.runtime = runtime
+        self.owner = runtime._timeout_key(vm)
+        self.target = target
+        self.key = (id(target), _event_name(event))
+        self.deadline = runtime._wait_time + timeout
+        self.value = None
+
+    def ready(self):
+        if self.value is None and self.runtime._wait_time >= self.deadline:
+            self.resolve(0.0)
+        return self.value is not None
+
+    def resolve(self, value):
+        if self.value is not None:
+            return
+        self.value = value
+        entries = self.runtime._event_waiters.get(self.key, [])
+        if self in entries:
+            entries.remove(self)
+        if not entries:
+            self.runtime._event_waiters.pop(self.key, None)
+
+    def result(self):
+        return self.value
+
+
 class _ClassJoinWait(VMCoroutineWait):
     def __init__(self, runtime, vm, classname):
         self.runtime = runtime
@@ -167,8 +200,12 @@ class ClientGS2:
         self._policy_stub_logged: set = set()
         self._sleeping = False                    # a script sleep() is pumping update()
         self._coros: List[dict] = []
+        self._event_waiters: Dict[tuple, list] = {}
+        self._waitfor_sync_warned: set = set()
+        self._wait_time = 0.0
         self._processing_coroutines = False
         self._coroutine_wake_pending = False
+        self._coroutine_pending_dt = 0.0
         self._active_coro_keys: set = set()
         self._pending_events: Dict[tuple, List[tuple]] = {}
         # New event entries wait here while this object's class downloads
@@ -917,7 +954,8 @@ class ClientGS2:
         textlines = tokens[3:]
         vm = self.vms["weapon"].get(weapon.lower())
         if vm is not None:
-            if vm.has_function("onReceiveText"):
+            if (vm.has_function("onReceiveText")
+                    or self.event_waiters(getattr(vm, "this", None), "onReceiveText")):
                 self._run(vm, "onReceiveText", texttype, textoption, textlines)
             return
         self.trigger_event("onReceiveText", texttype, textoption, textlines)
@@ -1187,8 +1225,88 @@ class ClientGS2:
 
     # -- events --------------------------------------------------------------
 
+    def waitfor(self, vm, obj, event, timeout):
+        # Official OP_WAITFOR rejects empty events and nonpositive delays
+        # (quattroplay/src/TScriptMachine.cpp:2536-2565).
+        if not event or timeout <= 0:
+            return 0.0
+        if not vm.call_is_suspendable:
+            key = (vm.name, _event_name(event))
+            if key not in self._waitfor_sync_warned:
+                self._waitfor_sync_warned.add(key)
+                logger.warning("GS2 %s: waitfor(%s) in a non-suspendable context returned 0",
+                               vm.name, event)
+            return 0.0
+        if isinstance(obj, str):
+            obj = self.host.get_object(obj) if obj else vm.this
+        if obj is None:
+            return 0.0
+        wait = _EventWait(self, vm, obj, event, timeout)
+        self._event_waiters.setdefault(wait.key, []).append(wait)
+        return wait
+
+    def event_waiters(self, obj, event):
+        """Snapshot before handlers so a newly armed wait misses this event."""
+        return list(self._event_waiters.get((id(obj), _event_name(event)), ()))
+
+    def wake_event_waiters(self, waits):
+        # Resume on the next coroutine pump, after ordinary event delivery.
+        for wait in waits:
+            if not wait.ready():
+                wait.resolve(1.0)
+
+    def dispatch_object_event(self, obj, event, *args, fallback_vm=None):
+        if isinstance(obj, str):
+            obj = self.host.get_object(obj)
+        if GuiControl is not None and isinstance(obj, GuiControl):
+            return float(obj.fire_event("on" + _event_name(event), *args))
+        owners = getattr(obj, "script_vms", ()) or ()
+        if owners:
+            self._run(self.owner_vm(owners[0]), event, *args)
+        else:
+            waits = self.event_waiters(obj, event)
+            if fallback_vm is not None:
+                self._run(fallback_vm, event, *args)
+            self.wake_event_waiters(waits)
+        return 0.0
+
+    def trigger_object_event(self, caller, obj, event, *args):
+        """Keep script trigger calls synchronous and prefer the last owner."""
+        waits = self.event_waiters(obj, event)
+        try:
+            for other in reversed(getattr(obj, "script_vms", ()) or ()):
+                if other is not caller and other.has_function(event):
+                    return other.call(event, *args)
+            return 0.0
+        finally:
+            self.wake_event_waiters(waits)
+
+    def cancel_object_waiters(self, obj):
+        waits = [wait for entries in self._event_waiters.values()
+                 for wait in entries if wait.target is obj]
+        for wait in waits:
+            wait.resolve(0.0)
+        keys = {c["key"] for c in self._coros if c.get("wait") in waits}
+        for coro in self._coros:
+            if coro.get("wait") in waits:
+                coro["cancelled"] = True
+        if not self._processing_coroutines:
+            self._coros = [c for c in self._coros if not c.get("cancelled")]
+        for key in keys:
+            if not any(c["key"] == key and not c.get("cancelled")
+                       for c in self._coros):
+                self._active_coro_keys.discard(key)
+                self._pending_events.pop(key, None)
+
     def _run(self, vm: GS2VM, event: str, *args) -> None:
+        waits = self.event_waiters(getattr(vm, "this", None), event)
+        if self._run_handler(vm, event, *args):
+            self.wake_event_waiters(waits)
+
+    def _run_handler(self, vm: GS2VM, event: str, *args) -> bool:
         from ..outbound import script_origin
+        if not vm.has_function(event) and vm.has_function("on" + _event_name(event)):
+            event = "on" + _event_name(event)
         if getattr(vm, "_gs2_kind", "") == "gani":
             vm.this.mirror_wearer()
             vm._gs2_player = self._gani_player_object(vm._gs2_key)
@@ -1203,19 +1321,24 @@ class ClientGS2:
                 logger.debug("GS2 %s join-gated queue full; dropped %s",
                              vm.name, dropped[0])
             pending.append((event, args))
-            return
-        if key in self._active_coro_keys:
+            return False
+        if (key in self._active_coro_keys
+                and (self._has_runnable_coroutine(key)
+                     or not any(c["key"] == key and not c.get("cancelled")
+                                for c in self._coros))
+                and not self.event_waiters(getattr(vm, "this", None), event)):
             pending = self._pending_events.setdefault(key, [])
             if len(pending) >= PENDING_EVENT_CAP:
                 dropped = pending.pop(0)
                 logger.debug("GS2 %s pending-event queue full; dropped %s",
                              vm.name, dropped[0])
             pending.append((event, args))
-            return
+            return False
         with script_origin(getattr(vm, "_gs2_kind", "gs2"),
                            getattr(vm, "_gs2_key", vm.name), event):
             gen = vm.iter_call(event, *args)
             self._drive(gen, vm, key, event)
+        return True
 
     def call_public_event(self, vm: GS2VM, event: str, *args) -> Any:
         """Enter a public cross-VM call through the event admission gate.
@@ -1236,8 +1359,17 @@ class ClientGS2:
             return 0.0
         return vm.call(event, *args)
 
+    def _has_runnable_coroutine(self, key: tuple) -> bool:
+        return any(c["key"] == key and not c.get("cancelled")
+                   and not (isinstance(c.get("wait"), _EventWait)
+                            and c["wait"].value is None)
+                   for c in self._coros)
+
     def _event_finished(self, key: tuple) -> None:
-        self._active_coro_keys.discard(key)
+        if self._has_runnable_coroutine(key):
+            return
+        if not any(c["key"] == key and not c.get("cancelled") for c in self._coros):
+            self._active_coro_keys.discard(key)
         pending = self._pending_events.get(key)
         if not pending:
             self._pending_events.pop(key, None)
@@ -1252,13 +1384,24 @@ class ClientGS2:
 
     def _cancel_vm_coroutines(self, vm: GS2VM) -> None:
         key = self._timeout_key(vm)
-        self._coros = [c for c in self._coros if c["key"] != key]
+        self.cancel_object_waiters(getattr(vm, "this", None))
+        waits = [wait for entries in self._event_waiters.values()
+                 for wait in entries if wait.owner == key]
+        for wait in waits:
+            wait.resolve(0.0)
+        for coro in self._coros:
+            if coro["key"] == key:
+                coro["cancelled"] = True
+        if not self._processing_coroutines:
+            self._coros = [c for c in self._coros if not c.get("cancelled")]
         self._active_coro_keys.discard(key)
         self._pending_events.pop(key, None)
 
     def reset_session(self) -> None:
         """Discard execution frames and class waits owned by the session."""
         self._coros.clear()
+        self._event_waiters.clear()
+        self._wait_time = 0.0
         self._active_coro_keys.clear()
         self._pending_events.clear()
         self._join_gated_events.clear()
@@ -1267,6 +1410,7 @@ class ClientGS2:
         self._join_timeout_warned.clear()
         self._processing_coroutines = False
         self._coroutine_wake_pending = False
+        self._coroutine_pending_dt = 0.0
 
     def _drive(self, gen, vm: GS2VM, key: tuple, event: str) -> None:
         try:
@@ -1293,12 +1437,16 @@ class ClientGS2:
                             "remaining": (float(delay)
                                           if not isinstance(delay, VMCoroutineWait)
                                           else 0.0)})
+        if isinstance(delay, _EventWait):
+            self._event_finished(key)
 
     def process_coroutines(self, dt: float) -> None:
         """Resume scripts whose cooperative sleep has elapsed."""
         if self._processing_coroutines:
             self._coroutine_wake_pending = True
+            self._coroutine_pending_dt += max(0.0, dt)
             return
+        self._wait_time += max(0.0, dt)
         if not self._coros:
             return
         self._processing_coroutines = True
@@ -1306,7 +1454,10 @@ class ClientGS2:
             self._process_coroutines(dt)
             while self._coroutine_wake_pending:
                 self._coroutine_wake_pending = False
-                self._process_coroutines(0.0)
+                pending_dt = self._coroutine_pending_dt
+                self._coroutine_pending_dt = 0.0
+                self._wait_time += pending_dt
+                self._process_coroutines(pending_dt)
         finally:
             self._processing_coroutines = False
 
@@ -1315,6 +1466,8 @@ class ClientGS2:
         still = []
         finished = []
         for coro in self._coros:
+            if coro.get("cancelled"):
+                continue
             wait = coro.get("wait")
             if isinstance(wait, VMCoroutineWait):
                 wait.pump()
@@ -1339,6 +1492,8 @@ class ClientGS2:
                     coro["remaining"] = (float(delay)
                                          if not isinstance(delay, VMCoroutineWait)
                                          else 0.0)
+                    if isinstance(delay, _EventWait):
+                        finished.append(coro["key"])
                 finally:
                     self._executing_vm = previous
                 still.append(coro)
@@ -1351,7 +1506,7 @@ class ClientGS2:
                 self.fire_log_message(
                     f"{coro['vm'].name}.{coro['event']} aborted: {e}",
                     1.0, 0.0, 0.0, "scripterrors")
-        self._coros = still
+        self._coros = [c for c in still if not c.get("cancelled")]
         for key in finished:
             self._event_finished(key)
 
@@ -1382,7 +1537,8 @@ class ClientGS2:
             for vm in list(self.vms[kind].values()):
                 # A not-yet-attached class may be the code that defines the
                 # event, so pending joins take precedence over lookup.
-                if self._has_pending_joins(vm) or vm.has_function(event):
+                if (self._has_pending_joins(vm) or vm.has_function(event)
+                        or self.event_waiters(getattr(vm, "this", None), event)):
                     self._run(vm, event, *args)
                     n += 1
         return n
@@ -1390,7 +1546,8 @@ class ClientGS2:
     def trigger_weapon_event(self, weapon: str, event: str, *args) -> bool:
         vm = self.vms["weapon"].get(weapon.lower())
         if vm is not None and (self._has_pending_joins(vm)
-                               or vm.has_function(event)):
+                               or vm.has_function(event)
+                               or self.event_waiters(getattr(vm, "this", None), event)):
             self._run(vm, event, *args)
             return True
         return False
@@ -1409,7 +1566,8 @@ class ClientGS2:
             except (TypeError, ValueError):
                 pass
         if vm is not None and (self._has_pending_joins(vm)
-                               or vm.has_function(event)):
+                               or vm.has_function(event)
+                               or self.event_waiters(getattr(vm, "this", None), event)):
             self._run(vm, event, *args)
             return True
         return False
@@ -1574,7 +1732,8 @@ class ClientGS2:
                     vm._gs2_entered_level = level
                     if vm.has_function("onCreated"):
                         self._run(vm, "onCreated")
-                if vm.has_function("onPlayerEnters"):
+                if (vm.has_function("onPlayerEnters")
+                        or self.event_waiters(getattr(vm, "this", None), "onPlayerEnters")):
                     self._run(vm, "onPlayerEnters")
 
     def begin_level_visit(self):
@@ -1596,7 +1755,8 @@ class ClientGS2:
         self.pump_level_events()
         for kind in ("weapon", "npc", "gani"):
             for key, vm in list(self.vms[kind].items()):
-                if (vm.has_function("onUpdate")
+                if ((vm.has_function("onUpdate")
+                     or self.event_waiters(getattr(vm, "this", None), "onUpdate"))
                         and not self._npc_timer_suppressed(kind, key, vm)):
                     self._run(vm, "onUpdate")
         self._timer_accumulator = min(
@@ -1608,7 +1768,7 @@ class ClientGS2:
         self._sync_script_position()
 
     def schedule_event(self, vm: GS2VM, delay: float, event: str,
-                       params: List[Any]) -> None:
+                       params: List[Any], target=None) -> None:
         """scheduleevent(delay, name, params...): arm a one-shot call of the
         script's own `name` function. Distinct from settimer/onTimeout --
         a script may have many in flight at once, each with its own
@@ -1625,7 +1785,8 @@ class ClientGS2:
             # bound; drop the newest rather than starve the armed ones
             return
         self._scheduled.append({"key": key, "left": max(0.0, to_num(delay)),
-                                "event": event, "params": list(params)})
+                                "event": event, "params": list(params),
+                                "target": target})
 
     def cancel_events(self, vm: GS2VM, event: str = "") -> None:
         """cancelevents([name]): drop this script's pending scheduled events
@@ -1654,7 +1815,11 @@ class ClientGS2:
             kind, key = item["key"]
             vm = self.vms.get(kind, {}).get(key)
             if vm is not None and not self._npc_timer_suppressed(kind, key, vm):
-                self._run(vm, item["event"], *item["params"])
+                if item.get("target") is not None:
+                    self.dispatch_object_event(item["target"], item["event"],
+                                               *item["params"], fallback_vm=vm)
+                else:
+                    self._run(vm, item["event"], *item["params"])
 
     def _process_timeout_step(self, dt: float):
         """Advance script timers by one fixed update quantum."""
@@ -1681,7 +1846,8 @@ class ClientGS2:
             # (PLO_NPCDEL).
             if self._npc_timer_suppressed(kind, key, vm):
                 continue
-            if vm.has_function("onTimeout"):
+            if (vm.has_function("onTimeout")
+                    or self.event_waiters(getattr(vm, "this", None), "onTimeout")):
                 self._run(vm, "onTimeout")
 
     # -- scripted animation lifecycle ---------------------------------------
@@ -1771,7 +1937,8 @@ class ClientGS2:
             self._gani_created.add(created_key)
             if vm.has_function("onCreated"):
                 self._run(vm, "onCreated")
-        if vm.has_function("onPlayerEnters"):
+        if (vm.has_function("onPlayerEnters")
+                or self.event_waiters(getattr(vm, "this", None), "onPlayerEnters")):
             self._run(vm, "onPlayerEnters", *params)
 
     def _free_gani_vm(self, vm: GS2VM) -> None:

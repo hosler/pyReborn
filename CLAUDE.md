@@ -251,9 +251,9 @@ The whole suite passes against the reference server, but four environment facts
 have to hold first. Each one fails as a plausible-looking client bug:
 
 ```bash
-/usr/bin/python3.13 -m game_tester.fake_listserver      # 127.0.0.1:14922
+../.venv/bin/python -m game_tester.fake_listserver      # 127.0.0.1:14922
 docker restart opengraal2-reborn-server-1               # it links on startup
-GSERVER_ACCOUNTS_DIR=<world>/accounts /usr/bin/python3.13 -m game_tester
+GSERVER_ACCOUNTS_DIR=<world>/accounts ../.venv/bin/python -m game_tester
 ```
 
 - The container writes its account files as **root**, so the QA fixture cannot
@@ -1051,17 +1051,27 @@ uptodate one. `test_uptodate_gmap_still_builds_the_world_grid` pins it.
 
 ## Running the tests
 
-Use **`/usr/bin/python3.13`**. The system `python3` is 3.14 and has no
-`hypothesis`. Under it, `reborn-protocol`'s property suite silently fails to
-*collect* and you get a false green.
+Use the repo-root venv **`../.venv/bin/python`** (Python 3.14, created
+2026-11-01 after Gentoo dropped python3.13; it has pygame-ce, Pillow, hypothesis,
+pytest and editable installs of reborn-protocol, pyReborn and pygserver). The system
+`python3` has no `pygame` or `hypothesis`. Under it, `reborn-protocol`'s
+property suite silently fails to *collect* and you get a false green. Rebuild
+the venv with:
+
+```bash
+cd .. && /usr/bin/python3.14 -m venv .venv && . .venv/bin/activate
+pip install pytest hypothesis pygame-ce Pillow   # plain pygame has no 3.14 wheel and builds without the font module
+for r in reborn-protocol pyReborn pygserver; do (cd $r && pip install -e ".[dev]"); done
+```
 
 Do **not** pass `-q`. The `addopts` in `pyproject.toml` already includes it. A
 second `-q` gives `-qq`, which suppresses the pass/fail summary line entirely.
 
 ```bash
-/usr/bin/python3.13 -m pytest                          # unit + integration
-/usr/bin/python3.13 -m game_tester                     # live bot QA (16/16)
-SDL_VIDEODRIVER=dummy /usr/bin/python3.13 -m game_tester.render_smoke
+PY=../.venv/bin/python
+$PY -m pytest                          # unit + integration
+$PY -m game_tester                     # live bot QA (16/16)
+SDL_VIDEODRIVER=dummy $PY -m game_tester.render_smoke
 ```
 
 **`pytest` does not cover the render loop.** On 2026-07-25 the pygame client
