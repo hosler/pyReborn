@@ -10,6 +10,7 @@ from typing import Optional
 from reborn_protocol import BDMODE, BDPROP
 from reborn_protocol.coords import local_coord, world_to_local
 
+from .game.constants import BOMB_FUSE_TIME
 from .packets import (
     PacketBuilder, PacketID, build_animation, build_arrow_add,
     build_arrow_count, build_attack_player, build_baddy_add,
@@ -514,11 +515,11 @@ class ActionsMixin:
         return self._protocol.send_packet(PacketID.PLI_HORSEADD, data)
 
     def put_bomb(self, x: Optional[float] = None, y: Optional[float] = None,
-                power: int = 1, timer_ms: int = 3050,
+                power: int = 1, timer_ms: int = int(BOMB_FUSE_TIME * 1000),
                 consume_ammo: bool = True) -> bool:
         """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time. The server
-        expects 50ms increments already counted down by ~200ms client-side, so
-        this converts it the same way (see build_bomb_add).
+        expects fuse = (counter + 1) * 50ms, so the 3s default sends counter 59
+        (see build_bomb_add).
 
         Ammo is client-authoritative on GServer-v2 (PLI_BOMBADD only spawns
         the projectile. The server never touches the count), so this refuses

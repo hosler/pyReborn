@@ -64,15 +64,24 @@ class CombatMixin:
                 PacketID.PLI_HITOBJECTS, build_hit_objects(power, probe_x, probe_y))
         return sent
 
-    # The blade rectangle starts at the attacker's body center. A target is
-    # hittable when its canonical 2x2 collision box overlaps that rectangle.
-    # These dimensions retain the former center-test envelope: adding the
-    # target box's one-tile half-size gives 2.5 forward and 1.5 lateral tiles.
-    _SWORD_REACH = 1.5
-    _SWORD_HALF_WIDTH = 0.5
+    _SWORD_REACH = 4.0  # FourPlay TInitStatics.cpp:1251
+    _SWORD_HALF_WIDTH = 2.0  # FourPlay TInitStatics.cpp:1277
 
     def _target_in_sword_arc(self, target_x: float, target_y: float,
                              fx: int, fy: int) -> bool:
+        """Compare both player centres as in FourPlay TPlayer.cpp:5450-5457."""
+        my_cx, my_cy = self.player.x + 1.5, self.player.y + 2.0
+        target_cx, target_cy = target_x + 1.5, target_y + 2.0
+        dx, dy = target_cx - my_cx, target_cy - my_cy
+        forward = dx * fx + dy * fy
+        lateral = dx * fy - dy * fx
+        # FourPlay TPlayer.cpp:5465
+        return (0 <= forward <= self._SWORD_REACH
+                and abs(lateral) <= self._SWORD_HALF_WIDTH)
+
+    # The NPC/baddy hit test has no oracle; keep the previous test as-was.
+    def _npc_in_sword_arc(self, target_x: float, target_y: float,
+                          fx: int, fy: int) -> bool:
         """Return True if a target collision box overlaps the facing sword arc."""
         my_cx = self.player.x + PLAYER_BODY_CENTER_X
         my_cy = self.player.y + PLAYER_BODY_CENTER_Y
@@ -84,9 +93,9 @@ class CombatMixin:
         )
         forwards = [(x - my_cx) * fx + (y - my_cy) * fy for x, y in corners]
         laterals = [(x - my_cx) * fy - (y - my_cy) * fx for x, y in corners]
-        return (max(forwards) > 0 and min(forwards) <= self._SWORD_REACH
-                and max(laterals) >= -self._SWORD_HALF_WIDTH
-                and min(laterals) <= self._SWORD_HALF_WIDTH)
+        return (max(forwards) > 0 and min(forwards) <= 1.5
+                and max(laterals) >= -0.5
+                and min(laterals) <= 0.5)
 
     def _sword_hit_players(self, direction: int):
         """Send PLI_HURTPLAYER for every other player inside the sword arc."""
@@ -129,7 +138,7 @@ class CombatMixin:
 
     def _sword_hit_npcs(self, direction: int):
         """Fire on_sword_hit_npc for every visible, blocking level NPC inside
-        the sword arc (same math as _sword_hit_players). Hidden NPCs (`hide`/
+        the sword arc. Hidden NPCs (`hide`/
         `destroy` -> visible=False) and non-blocking ones (`dontblock`) are
         skipped: per npcserver-gs1.md, `visible` tracks whether an NPC has
         been made invisible, and a dontblock NPC has no collision to hit.
@@ -148,7 +157,7 @@ class CombatMixin:
             ny = npc.get('world_y', npc.get('y'))
             if nx is None or ny is None:
                 continue
-            if self._target_in_sword_arc(nx, ny, fx, fy):
+            if self._npc_in_sword_arc(nx, ny, fx, fy):
                 self.on_sword_hit_npc(npc_id)
 
     def _sword_hit_baddies(self, direction: int):
@@ -175,7 +184,7 @@ class CombatMixin:
             if bx is None or by is None:
                 continue
             wx, wy = bx + seg_off_x, by + seg_off_y
-            if self._target_in_sword_arc(wx, wy, fx, fy):
+            if self._npc_in_sword_arc(wx, wy, fx, fy):
                 if self.is_leader:
                     # As this level's leader we're the one who resolves baddy
                     # damage (see _leader_apply_baddy_damage) - apply it and
@@ -251,8 +260,8 @@ class CombatMixin:
     # authoritative simulation - see the double-damage guard below).
     # =========================================================================
 
-    _ARROW_SPEED = 8.0    # tiles/sec (pygserver combat.py Arrow.speed)
-    _ARROW_LIFETIME = 2.0  # seconds (pygserver combat.py Arrow.expired)
+    _ARROW_SPEED = 20.0  # FourPlay TClient.cpp:3653: DOUBLE_004023d8 = 1 tile/50ms tick
+    _ARROW_MAX_DISTANCE = 128.0  # GServer Level.cpp:2629
     _ARROW_DAMAGE = 0.5    # hearts = 1 half-heart (pygserver CombatManager.arrow_damage)
     _ARROW_HIT_RADIUS = 1.0  # tiles, AABB half-extent (pygserver _update_arrow)
     _ARROW_STEP = 0.05     # seconds/substep - matches pygserver's 50ms tick;
@@ -312,6 +321,7 @@ class CombatMixin:
             'x': info['x'], 'y': info['y'],
             'dx': dir_vec[0], 'dy': dir_vec[1],
             'spawn_time': now, 'last_tick': now,
+            'distance': 0.0,
         })
 
     def _advance_arrow_sim(self, sim: dict, now: float, my_x: float, my_y: float) -> bool:
@@ -319,7 +329,8 @@ class CombatMixin:
         `now`, sub-stepping at _ARROW_STEP so a low update() call rate cannot
         let the arrow tunnel through the player's hitbox between checks.
         Returns True (and leaves `sim` at the point of impact) on hit."""
-        dt_total = now - sim['last_tick']
+        dt_total = min(now - sim['last_tick'],
+                       (self._ARROW_MAX_DISTANCE - sim['distance']) / self._ARROW_SPEED)
         if dt_total <= 0:
             return False
         steps = max(1, int(dt_total / self._ARROW_STEP) + 1)
@@ -328,6 +339,7 @@ class CombatMixin:
         for _ in range(steps):
             sim['x'] += sim['dx'] * self._ARROW_SPEED * step_dt
             sim['y'] += sim['dy'] * self._ARROW_SPEED * step_dt
+            sim['distance'] += self._ARROW_SPEED * step_dt
             if (abs(sim['x'] - my_x) < self._ARROW_HIT_RADIUS
                     and abs(sim['y'] - my_y) < self._ARROW_HIT_RADIUS):
                 hit = True
@@ -369,15 +381,14 @@ class CombatMixin:
             my_x, my_y = world_to_local(self.player.x, self.player.y)
             alive = []
             for sim in self._arrow_sims:
-                if now - sim['spawn_time'] >= self._ARROW_LIFETIME:
-                    continue  # expired - either a miss/dodge, or simply too old
                 if self._advance_arrow_sim(sim, now, my_x, my_y):
                     self._pending_arrow_hits.append({
                         'owner_id': sim['owner_id'], 'dx': sim['dx'], 'dy': sim['dy'],
                         'resolve_at': now + self._ARROW_HIT_GRACE,
                     })
                     continue  # consumed on hit - handed off to the pending queue
-                alive.append(sim)
+                if sim['distance'] < self._ARROW_MAX_DISTANCE - 1e-9:
+                    alive.append(sim)
             self._arrow_sims = alive
 
         if self._pending_arrow_hits:

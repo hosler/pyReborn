@@ -13,6 +13,7 @@ from reborn_protocol.gs2 import to_str
 from .helpers import FREEZE_MAX_TICKS, FREEZE_TICKS_PER_SECOND, ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN, _GANI_TRANSFORM_DEFAULTS
 from .registry import TIMER_RESOLUTION, _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READONLY, _TIMER_CANCEL
 from ..gs1_client.objects import ENGINE_PLAYER_PROPS
+from ..game.constants import WALK_SPEED
 
 class _EngineObject(GS2Object):
     """Stand-in for the v6 C# client's engine-object surface (the Unity-side
@@ -543,15 +544,12 @@ class _PlayerObject(GS2Object):
             stored = super().get(key)
             return ZOOM_FACTOR_MIN if stored is None else to_num(stored)
         if key in ("defaultwalkspeed", "diagonalwalkspeed"):
-            # d RW (TPlayerProperties.cpp:81, :90), raw-address bodies -- the
-            # reference's UNIT was not recovered, so a script's write is
-            # remembered but deliberately not fed back into movement; the
-            # read reports our own walk speed in tiles/second.
+            # Raw fields: tiles per 50ms tick and diagonal multiplier
+            # (FourPlay TPlayer.cpp:807-808, m_dataPtrs[0x18]/[0x19]).
             stored = super().get(key)
             if stored is not None:
                 return to_num(stored)
-            game = getattr(self._rt2, "game_shell", None)
-            return float(getattr(game, "walk_speed", 0.0) or 0.0)
+            return WALK_SPEED / 20.0 if key == "defaultwalkspeed" else 1.0
         value = super().get(key)
         if value is None:
             if key in _PLAYER_EMPTY_STRINGS:

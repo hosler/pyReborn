@@ -13,6 +13,14 @@ TILE_SIZE = 16
 SCREEN_WIDTH = 640
 SCREEN_HEIGHT = 480
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
+WALK_SPEED = 10.0  # FourPlay TPlayer.cpp:807
+SHIELD_SPEED_MULTIPLIER = 1.2  # FourPlay TInitStatics.cpp:1243
+BOMB_FUSE_TIME = 3.0  # GServer Level.cpp:1986
+EXPLOSION_DURATION = 0.6  # 12 animate() calls × 50ms (TExplosion.cpp:101).
+THROW_DISTANCE = 9.0  # 9 ticks × 1.0 tile/tick (TPlayer.cpp:7831).
+THROW_DURATION = 0.45  # 9 ticks × 50ms (TServerCarry.cpp:118).
+DEAD_STATUS_DELAY = 1.4  # FourPlay TPlayer.cpp:2709
+REVIVAL_INPUT_DELAY = 1.5  # FourPlay TPlayer.cpp:7319
 
 # Classic-engine movement feel (collision.py's corner-assist, actions.py's
 # push/grab/pull hold state — see their docstrings).

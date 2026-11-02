@@ -6,6 +6,7 @@ import time
 from typing import Dict, List, Tuple
 
 import pygame
+from reborn_protocol import PLPROP, PLSTATUS
 from pygame.locals import (
     QUIT, KEYDOWN, MOUSEBUTTONDOWN,
     K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
@@ -14,12 +15,48 @@ from pygame.locals import (
 )
 
 from .constants import (
-    MOVE_STEP, pygame_key_to_vk,
+    MOVE_STEP, pygame_key_to_vk, SHIELD_SPEED_MULTIPLIER,
+    DEAD_STATUS_DELAY, REVIVAL_INPUT_DELAY,
 )
 
 
 class InputMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _update_death_state(self, current_time):
+        player = self.client.player
+        if player.hearts > 0:
+            self._death_started = None
+            if getattr(player, 'status', 0) & PLSTATUS.DEAD:
+                player.status &= ~PLSTATUS.DEAD
+                self.client._send_appearance_prop(PLPROP.STATUS, player.status)
+            return
+        if getattr(self, '_death_started', None) is None:
+            self._death_started = current_time
+        if (current_time - self._death_started >= DEAD_STATUS_DELAY
+                and not player.status & PLSTATUS.DEAD):
+            player.status |= PLSTATUS.DEAD
+            self.client._send_appearance_prop(PLPROP.STATUS, player.status)
+
+    def _revive_on_input(self, current_time, keys):
+        self._update_death_state(current_time)
+        player = self.client.player
+        if player.hearts > 0:
+            return False
+        if current_time - self._death_started < REVIVAL_INPUT_DELAY:
+            return False
+        # FourPlay TPlayer.cpp:2164
+        if not any(keys[k] for k in (K_UP, K_LEFT, K_DOWN, K_RIGHT,
+                                     K_a, K_s, K_d, K_SPACE)):
+            return False
+        player.status &= ~PLSTATUS.DEAD
+        player.hearts = player.max_hearts
+        self.client._send_appearance_prop(PLPROP.STATUS, player.status)
+        self.client._send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
+        self._death_started = None
+        self.player_anim.set_animation("idle", player.direction)
+        self.current_anim_name = "idle"
+        return True
 
     # pygame_key_to_vk rebuilds a small dict internally on every call; caching
     # its result per pygame keycode avoids redoing that ~512 times a frame in
@@ -582,14 +619,16 @@ class InputMixin:
             self._fire_gs1_keypress_queue()
             return
 
-        # Dead players can't move or act until the server respawns them (it
-        # restores hearts after a short delay); the death gani plays meanwhile.
+        keys = pygame.key.get_pressed()
+        # Revival consumes the first gameplay input after the death animation.
+        if self._revive_on_input(current_time, keys):
+            self._clear_gs1_input()
+            return
         if self.client.player.hearts <= 0:
             self.is_moving = False
             self._clear_gs1_input()
             return
 
-        keys = pygame.key.get_pressed()
         self._feed_gs1_input(keys)
 
         # Fire any GS1 `keypressed` events queued by _handle_events, now that
@@ -724,7 +763,11 @@ class InputMixin:
             # Frame-rate independent movement: accumulate distance at walk_speed
             # and apply it in MOVE_STEP-sized steps so speed is identical
             # regardless of frame rate.
-            self._move_accum += self.walk_speed * self._frame_dt
+            speed = self.walk_speed
+            # FourPlay TPlayer.cpp:7447
+            if not self.is_swimming and getattr(self.client.player, 'shield_power', 0) > 2:
+                speed *= SHIELD_SPEED_MULTIPLIER
+            self._move_accum += speed * self._frame_dt
             steps = 0
             while self._move_accum >= MOVE_STEP and steps < 8:
                 self._move(dx, dy)

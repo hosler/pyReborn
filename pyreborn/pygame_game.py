@@ -22,7 +22,8 @@ from .gs2_client import ClientGS2
 from .prefs import Prefs
 from .tiletypes import TileType
 from .game.constants import (
-    TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
+    TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, WALK_SPEED,
+    BOMB_FUSE_TIME, EXPLOSION_DURATION,
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
@@ -232,7 +233,7 @@ class GameClient(
         self.chat_messages: List[str] = []
 
         # Timing
-        self.walk_speed = 8.0   # Movement speed in tiles/second (frame-rate independent)
+        self.walk_speed = WALK_SPEED
         self._move_accum = 0.0  # Accumulates sub-step movement across frames
         self._frame_dt = 0.0    # Most recent frame delta, set by run()
         self.last_action_time = 0.0
@@ -302,7 +303,7 @@ class GameClient(
         # Player sprite top-left in render frame, set each frame by _sync_camera.
         self._player_render_pos = (0.0, 0.0)
         # How fast the camera/local-player visual chases the real position. Kept
-        # well above walk_speed (8) so it locks on each frame (no floaty lag).
+        # well above walk_speed so it locks on each frame (no floaty lag).
         self.follow_speed = 24.0
         self.lerp_speed = 18.0  # still used to ease *other* players' positions
 
@@ -313,8 +314,8 @@ class GameClient(
 
         # Unified local/remote bomb registry.
         self.active_bombs: List[dict] = []
-        self.bomb_fuse_time = 2.0  # Seconds before bomb explodes
-        self.explosion_duration = 0.5  # How long explosion visual lasts
+        self.bomb_fuse_time = BOMB_FUSE_TIME
+        self.explosion_duration = EXPLOSION_DURATION
 
         # Active projectiles - each: {'x': float, 'y': float, 'dx': float, 'dy': float, 'time': float, 'gani': str}
         self.active_projectiles: List[dict] = []
@@ -520,6 +521,7 @@ class GameClient(
             # door, or server-initiated), once its NPCs have streamed in.
             self._check_level_change()
 
+            self._update_death_state(time.time())
             # Check for respawn (death -> alive transition)
             if hasattr(self, '_was_dead') and self._was_dead and self.client.player.hearts > 0:
                 # We respawned! Reset animation to idle

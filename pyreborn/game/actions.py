@@ -16,7 +16,7 @@ from ..gani import direction_from_delta
 from ..liftobjects import match_lift_object
 from ..tiletypes import TileType
 from .constants import (
-    MOVE_STEP, PUSH_HOLD_TIME,
+    MOVE_STEP, PUSH_HOLD_TIME, THROW_DISTANCE, THROW_DURATION,
 )
 
 
@@ -639,9 +639,9 @@ class ActionsMixin:
             'y': self.client.y + 1.0,
             'z': z0, 'z0': z0,           # height above ground, eases to 0
             'dx': ddx, 'dy': ddy,
-            'speed': 20.0,               # tiles/second
+            'speed': THROW_DISTANCE / THROW_DURATION,
             'dist': 0.0,
-            'range': 10.5,               # tiles of flight before landing
+            'range': THROW_DISTANCE,
         })
     def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
         """Return the local key of the chest being faced."""
@@ -714,7 +714,7 @@ class ActionsMixin:
                 # Spawn visual projectile
                 import math
                 direction = self.client.player.direction
-                speed = 8.0  # Tiles per second
+                speed = self.client._ARROW_SPEED  # FourPlay TClient.cpp:3646
                 # Direction to velocity
                 dx_map = {0: 0, 1: -speed, 2: 0, 3: speed}
                 dy_map = {0: -speed, 1: 0, 2: speed, 3: 0}
@@ -726,7 +726,7 @@ class ActionsMixin:
                     'time': time.time(),
                     'direction': direction,
                     'gani': 'arrow',
-                    'max_distance': 10.0,  # Max distance in tiles
+                    'max_distance': self.client._ARROW_MAX_DISTANCE,  # GServer Level.cpp:2629
                     'start_x': self.client.player.x,
                     'start_y': self.client.player.y,
                 })

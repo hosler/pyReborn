@@ -15,7 +15,7 @@ from ..gani import AnimationState
 from ..liftobjects import BUSH_REPLACE, match_bush
 from ..prefs import Prefs
 from ..tiletypes import TileType
-from .constants import TILE_SIZE
+from .constants import TILE_SIZE, EXPLOSION_DURATION
 from .frame_context import FrameContext, FrameContextMixin
 
 
@@ -1123,7 +1123,7 @@ class EffectsRenderMixin(FrameContextMixin):
                                   frame: Optional[FrameContext] = None):
         """Render explosions received from server (PLO_EXPLOSION packets)."""
         current_time = time.time()
-        explosion_duration = 0.5  # seconds
+        explosion_duration = EXPLOSION_DURATION
 
 
         # Clean up expired explosions and render active ones
