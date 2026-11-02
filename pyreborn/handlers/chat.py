@@ -18,8 +18,14 @@ def handle_toall(client, data):
     # PLO_TOALL is a server-wide broadcast message only. Player movement
     # arrives via PLO_OTHERPLPROPS (8), never here.
     player_id, message = parse_chat(data)
-    if message and client.on_chat:
-        client.on_chat(player_id, message)
+    if message:
+        # A toall also shows as the speaker's bubble, so QA/daemon views
+        # that read players[pid]['chat'] see it like a CURCHAT relay.
+        entry = client.players.get(player_id)
+        if isinstance(entry, dict):
+            entry['chat'] = message
+        if client.on_chat:
+            client.on_chat(player_id, message)
 
 
 @handles(PacketID.PLO_SHOWIMG)
