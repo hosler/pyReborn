@@ -404,8 +404,8 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=GAME_PORT, help="Game server port")
     add_world_arguments(parser)
     args = parser.parse_args(argv)
-    if (args.start or args.gmap) and not args.world:
-        parser.error("--start/--gmap require --world")
+    if (args.start or args.gmap or args.weapons or args.npcs) and not args.world:
+        parser.error("--start/--gmap/--weapons/--npcs require --world")
     with ExitStack() as stack:
         GAME_HOST, GAME_PORT, PORT = args.host, args.port, args.daemon_port
         if args.world:

@@ -67,14 +67,48 @@ class LocalWorld:
 
     host = "127.0.0.1"
 
-    def __init__(self, world_dir, *, gmaps=None, start_level=None,
+    def __init__(self, world_dir=None, *, gmaps=None, start_level=None,
                  start_xy=None, accounts=("testbot1", "testbot2"), port=None,
-                 extra_options=None):
+                 extra_options=None, weapons_dir=None, npcs_dir=None,
+                 server_dir_source=None, startup_timeout=None):
+        if server_dir_source is None and world_dir is not None:
+            candidate = Path(world_dir)
+            if (candidate / "world").is_dir() and (candidate / "config").is_dir():
+                server_dir_source, world_dir = candidate, None
+        self.server_dir_source = (Path(server_dir_source).resolve()
+                                  if server_dir_source is not None else None)
+        defaults = {}
+        if self.server_dir_source is not None:
+            if not self.server_dir_source.is_dir():
+                raise NotADirectoryError(self.server_dir_source)
+            if world_dir is None:
+                world_dir = self.server_dir_source / "world"
+            if weapons_dir is None:
+                weapons_dir = self.server_dir_source / "weapons"
+            if npcs_dir is None and (self.server_dir_source / "npcs").is_dir():
+                npcs_dir = self.server_dir_source / "npcs"
+            options_path = self.server_dir_source / "config" / "serveroptions.txt"
+            if options_path.is_file():
+                for line in options_path.read_text(encoding="latin-1").splitlines():
+                    key, separator, value = line.strip().partition("=")
+                    if separator and not key.startswith(("#", "//")):
+                        defaults[key.strip().lower()] = value.strip()
+        if world_dir is None:
+            raise ValueError("specify world_dir or server_dir_source")
         self.world_dir = Path(world_dir).resolve()
         if not self.world_dir.is_dir():
             raise NotADirectoryError(self.world_dir)
+        self.weapons_dir = Path(weapons_dir).resolve() if weapons_dir is not None else None
+        self.npcs_dir = Path(npcs_dir).resolve() if npcs_dir is not None else None
+        for directory in (self.weapons_dir, self.npcs_dir):
+            if directory is not None and not directory.is_dir():
+                raise NotADirectoryError(directory)
+        if gmaps is None:
+            gmaps = [name.strip() for name in defaults.get("gmaps", "").split(",")
+                     if name.strip()]
         self.gmaps = [gmaps] if isinstance(gmaps, str) else list(gmaps or ())
-        self.start_level = start_level
+        self.start_level = (start_level if start_level is not None else
+                            defaults.get("startlevel") or defaults.get("unstickmelevel"))
         if self.start_level is None:
             default = self.world_dir / "onlinestartlocal.nw"
             levels = sorted(self.world_dir.rglob("*.nw"))
@@ -97,6 +131,9 @@ class LocalWorld:
         self.log_path = self.server_dir / "server.log"
         self._process = None
         self._bots = weakref.WeakSet()
+        # Big worlds (81 levels of GS1 NPCs) need more than the default
+        # readiness window; a crashed process still fails fast.
+        self.startup_timeout = float(startup_timeout) if startup_timeout else STARTUP_TIMEOUT
         self._prepared = False
         self._previous_environment = None
         _WORLDS.add(self)
@@ -114,9 +151,19 @@ class LocalWorld:
     def prepare(self):
         """Generate config and fresh accounts once, without launching a server."""
         if not self._prepared:
-            for name in ("config", "accounts", "npcs", "weapons", "snapshots"):
+            for name in ("config", "accounts", "snapshots"):
                 (self.server_dir / name).mkdir()
             (self.server_dir / "world").symlink_to(self.world_dir, target_is_directory=True)
+            if self.npcs_dir is None:
+                (self.server_dir / "npcs").mkdir()
+            else:
+                (self.server_dir / "npcs").symlink_to(self.npcs_dir, target_is_directory=True)
+            if self.weapons_dir is None:
+                (self.server_dir / "weapons").mkdir()
+            else:
+                # GS2ScriptManager._bytecode_for writes .gs2bc beside each source.
+                # Dereference any source symlinks so caches remain isolated.
+                shutil.copytree(self.weapons_dir, self.server_dir / "weapons")
             for name in self.accounts:
                 self._seed_account(name)
             self._prepared = True
@@ -162,7 +209,8 @@ class LocalWorld:
         return bot
 
     def _command(self):
-        return [sys.executable, "-u", "-c", _BOOTSTRAP, str(self.server_dir)]
+        # NPC imports must not create __pycache__ through the source symlink.
+        return [sys.executable, "-B", "-u", "-c", _BOOTSTRAP, str(self.server_dir)]
 
     def start(self):
         if self.running:
@@ -200,7 +248,7 @@ class LocalWorld:
         return self
 
     def _wait_for_ready(self):
-        deadline = time.monotonic() + STARTUP_TIMEOUT
+        deadline = time.monotonic() + self.startup_timeout
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
                 tail = self.log_tail()
@@ -210,7 +258,7 @@ class LocalWorld:
             if READY_MARKER in self.log_tail():
                 return
             time.sleep(0.1)
-        raise TimeoutError(f"pygserver not ready within {STARTUP_TIMEOUT}s:\n{self.log_tail()}")
+        raise TimeoutError(f"pygserver not ready within {self.startup_timeout}s:\n{self.log_tail()}")
 
     def log_tail(self, chars=4000):
         try:
@@ -301,7 +349,11 @@ class LocalWorld:
 
 def add_world_arguments(parser, *, gmap_suite=False):
     """Shared CLI flags; the QA CLI retains its existing bare --gmap suite."""
-    parser.add_argument("--world", type=Path, metavar="DIR", help="Run a throwaway loopback pygserver world")
+    parser.add_argument("--world", type=Path, metavar="DIR", help="Run a throwaway loopback pygserver from a world or server directory")
+    parser.add_argument("--weapons", type=Path, metavar="DIR", help="Weapon sources for --world (copied for private bytecode caches)")
+    parser.add_argument("--npcs", type=Path, metavar="DIR", help="NPC sources for --world")
+    parser.add_argument("--startup-timeout", type=float, default=120.0, metavar="SECONDS",
+                        help="Readiness timeout for --world (default: 120 seconds)")
     parser.add_argument("--start", nargs=3, metavar=("LEVEL", "X", "Y"), help="Fresh account start level and tile position")
     parser.add_argument("--gmap", nargs="?" if gmap_suite else None,
                         const=True if gmap_suite else None, default=None,
@@ -311,6 +363,8 @@ def add_world_arguments(parser, *, gmap_suite=False):
 def world_from_arguments(args, *, accounts=("testbot1", "testbot2")):
     start = args.start
     return LocalWorld(args.world, gmaps=args.gmap if isinstance(args.gmap, str) else None,
+                      weapons_dir=args.weapons, npcs_dir=args.npcs,
+                      startup_timeout=args.startup_timeout,
                       start_level=start[0] if start else None,
                       start_xy=(float(start[1]), float(start[2])) if start else None,
                       accounts=accounts)

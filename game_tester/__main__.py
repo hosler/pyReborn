@@ -267,6 +267,8 @@ Examples:
     args = parser.parse_args()
     if args.start and not args.world:
         parser.error("--start requires --world")
+    if (args.weapons or args.npcs) and not args.world:
+        parser.error("--weapons/--npcs require --world")
     if isinstance(args.gmap, str) and not args.world:
         parser.error("--gmap NAME requires --world (bare --gmap runs the suite)")
     if args.world:
