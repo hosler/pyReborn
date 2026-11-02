@@ -22,6 +22,9 @@ import weakref
 
 READY_MARKER = "Server listening on"
 STARTUP_TIMEOUT = 20.0
+FORWARDED_OPTIONS = frozenset({
+    "name", "description", "language", "swordlimit", "shieldlimit",
+    "healswords", "heartlimit", "putnpcenabled"})
 SHUTDOWN_TIMEOUT = 10.0
 _WORLDS = weakref.WeakSet()
 
@@ -89,10 +92,12 @@ class LocalWorld:
                 npcs_dir = self.server_dir_source / "npcs"
             options_path = self.server_dir_source / "config" / "serveroptions.txt"
             if options_path.is_file():
-                for line in options_path.read_text(encoding="latin-1").splitlines():
+                for line in options_path.read_text(encoding="utf-8", errors="replace").splitlines():
                     key, separator, value = line.strip().partition("=")
                     if separator and not key.startswith(("#", "//")):
-                        defaults[key.strip().lower()] = value.strip()
+                        # Inline comments end the value (GServer-v2
+                        # server/src/utilities/Settings.cpp:50).
+                        defaults[key.strip().lower()] = value.partition("#")[0].strip()
         if world_dir is None:
             raise ValueError("specify world_dir or server_dir_source")
         self.world_dir = Path(world_dir).resolve()
@@ -127,6 +132,11 @@ class LocalWorld:
                     "startlevel", "startx", "starty"}
         if reserved.intersection(k.lower() for k in self.extra_options):
             raise ValueError("extra_options cannot override LocalWorld settings")
+        # Gameplay options from the hosted server's own config (triggerhacks,
+        # limits, name) carry over; its network/identity settings do not.
+        self.forwarded_options = {
+            key: value for key, value in defaults.items()
+            if key in FORWARDED_OPTIONS or key.startswith("triggerhack_")}
         self.server_dir = Path(tempfile.mkdtemp(prefix="local_world_"))
         self.log_path = self.server_dir / "server.log"
         self._process = None
@@ -167,7 +177,8 @@ class LocalWorld:
             for name in self.accounts:
                 self._seed_account(name)
             self._prepared = True
-        options = dict(self.extra_options)
+        options = dict(self.forwarded_options)
+        options.update(self.extra_options)
         options.update(serverport=self.port if self.port is not None else 0,
                        noverifylogin="true", staff=",".join(self.accounts),
                        gmaps=",".join(self.gmaps), startlevel=self.start_level,
