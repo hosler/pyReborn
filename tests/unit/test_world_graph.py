@@ -1,5 +1,8 @@
 """Level-file routing, including directed doors and ordinary GMAP seams."""
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 import pytest
 
 from game_tester.world_graph import WorldGraph
@@ -68,3 +71,30 @@ def test_bfs_handles_directed_cycles():
                                       dest_level=dest, dest_x=0, dest_y=0)])
     assert len(graph.route('a', 'c')) == 2
     assert graph.route('c', 'a') is None
+
+
+def test_observations_and_routes_are_safe_across_eight_threads():
+    graph = WorldGraph()
+    start = threading.Barrier(8)
+    links = [dict(x=index, y=1, width=1, height=1, dest_level=f'dest{index}.nw',
+                  dest_x=0, dest_y=0) for index in range(32)]
+
+    def exercise(offset):
+        start.wait(timeout=2)
+        for index in range(256):
+            link = links[(index + offset) % len(links)]
+            graph.add_observed('Start.nw', [link, link])
+            route = graph.route('START.NW', link['dest_level'])
+            assert len(route) == 1
+            assert route[0].dest_level == link['dest_level']
+            neighbours = graph.neighbours('start.nw')
+            assert len(neighbours) == len(set(neighbours))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(exercise, offset) for offset in range(8)]
+        for future in futures:
+            future.result(timeout=5)
+
+    neighbours = graph.neighbours('start.nw')
+    assert len(neighbours) == len(links)
+    assert {hop.dest_level for hop in neighbours} == {link['dest_level'] for link in links}

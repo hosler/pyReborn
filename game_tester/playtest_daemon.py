@@ -2,7 +2,7 @@
 them over a tiny local HTTP API so LLM agents can drive them at their own
 pace (bots stay online + pumped between agent tool calls).
 
-  GET  /spawn?name=X            connect a bot (idempotent)
+  GET  /spawn?name=X            connect a bot (409 if name is already in use)
   GET  /state?name=X            JSON game state for the bot, including
                                 npc_dialogue (see caveats below)
   GET  /map?name=X              ASCII map of the current level (B=blocking,
@@ -59,6 +59,7 @@ from collections import Counter
 from contextlib import ExitStack
 from dataclasses import asdict
 import json
+import logging
 import os
 import threading
 import time
@@ -70,6 +71,8 @@ from game_tester.world_graph import WorldGraph
 from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
 
 WORLD_GRAPH = None
+DISCONNECT_TIMEOUT = 5.0
+logger = logging.getLogger(__name__)
 
 # Argument parsing stays in main(): unit tests import do_act() directly.
 PORT = 14990
@@ -77,6 +80,10 @@ GAME_HOST = os.environ.get('PYREBORN_TEST_HOST', 'localhost')
 GAME_PORT = int(os.environ.get('PYREBORN_TEST_PORT', 14900))
 
 bots = {}
+# The registry lock protects these dictionaries and pending reservations,
+# never a wait for a bot lock or a connection attempt.
+bot_locks = {}
+pending = set()
 lock = threading.RLock()
 running = True
 
@@ -87,12 +94,20 @@ _bot_last_level = {}
 def pump_loop():
     while running:
         with lock:
-            for bot in bots.values():
-                try:
-                    # One short packet pump plus GameBot's position/death checks.
-                    bot.update(0.01)
-                except Exception:
-                    pass
+            snapshot = [(name, bot, bot_locks[name]) for name, bot in bots.items()]
+        for name, bot, bot_lock in snapshot:
+            if not bot_lock.acquire(blocking=False):
+                continue  # Actions pump their own bot while holding this lock.
+            try:
+                with lock:
+                    if bots.get(name) is not bot:
+                        continue
+                # One short packet pump plus GameBot's position/death checks.
+                bot.update(0.01)
+            except Exception:
+                pass
+            finally:
+                bot_lock.release()
         time.sleep(0.05)
 
 
@@ -113,10 +128,15 @@ def _pump_on_level_change(bot):
     the window without adding real latency to the common case (no level
     change -> no extra pump at all).
     """
-    prev = _bot_last_level.get(bot.name)
+    with lock:
+        if bots.get(bot.name) is not bot:
+            return
+        prev = _bot_last_level.get(bot.name)
     if prev != bot.level:
         bot.update(0.2)
-        _bot_last_level[bot.name] = bot.level
+        with lock:
+            if bots.get(bot.name) is bot:
+                _bot_last_level[bot.name] = bot.level
 
 
 def _current_links(bot, limit=10):
@@ -325,45 +345,82 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         name = q.get('name', [''])[0]
         try:
-            with lock:
-                if u.path == '/quit':
-                    # Full shutdown kills the daemon for EVERY bot, so when
-                    # several agents share one daemon a stray /quit takes them
-                    # all down (this is exactly what looked like "random daemon
-                    # crashes"). Require an explicit confirm token so a curious
-                    # play agent can't do it by accident.
-                    if q.get('confirm', [''])[0] != 'shutdown':
-                        self._send('refused: /quit needs ?confirm=shutdown '
-                                   '(use /leave to drop just your own bot)', 403)
-                        return
-                    disconnect_all_bots()
+            if u.path == '/quit':
+                # Full shutdown kills the daemon for EVERY bot, so when
+                # several agents share one daemon a stray /quit takes them
+                # all down (this is exactly what looked like "random daemon
+                # crashes"). Require an explicit confirm token so a curious
+                # play agent can't do it by accident.
+                if q.get('confirm', [''])[0] != 'shutdown':
+                    self._send('refused: /quit needs ?confirm=shutdown '
+                               '(use /leave to drop just your own bot)', 403)
+                    return
+                with lock:
                     running = False
-                    self._send('bye')
-                    threading.Thread(target=self.server.shutdown).start()
+                self._send('bye')
+                threading.Thread(target=self.server.shutdown).start()
+                disconnect_all_bots()
+                return
+            if u.path == '/leave':
+                left = _disconnect_bot(name)
+                self._send('left' if left else f'no bot {name!r}')
+                return
+            if u.path == '/spawn':
+                with lock:
+                    if not running:
+                        error = ('daemon is shutting down', 503)
+                    elif name in pending:
+                        error = ('spawn in progress', 409)
+                    elif name in bots:
+                        error = ('bot already exists', 409)
+                    else:
+                        pending.add(name)
+                        error = None
+                if error:
+                    self._send(*error)
                     return
-                if u.path == '/leave':
-                    b = bots.pop(name, None)
-                    if b:
-                        b.disconnect()
-                    self._send('left' if b else f'no bot {name!r}')
-                    return
-                if u.path == '/spawn':
-                    if name not in bots:
-                        b = GameBot(name, GAME_HOST, GAME_PORT)
-                        b.world_graph = WORLD_GRAPH
-                        if not b.connect():
-                            self._send(f'connect failed for {name}', 500)
-                            return
-                        bots[name] = b
-                        b.update(1.0)
-                        _bot_last_level[name] = b.level
-                    self._send(bot_state(bots[name]))
-                    return
+                b, published = None, False
+                try:
+                    b = GameBot(name, GAME_HOST, GAME_PORT)
+                    b.world_graph = WORLD_GRAPH
+                    if not b.connect():
+                        self._send(f'connect failed for {name}', 500)
+                        return
+                    b.update(1.0)
+                    with lock:
+                        if running:
+                            bots[name] = b
+                            bot_locks[name] = threading.RLock()
+                            _bot_last_level[name] = b.level
+                            pending.discard(name)
+                            published = True
+                    if not published:
+                        self._send('daemon is shutting down', 503)
+                        return
+                finally:
+                    if not published:
+                        try:
+                            if b is not None:
+                                b.disconnect()
+                        except Exception:
+                            logger.exception('Failed to disconnect unpublished bot %r', name)
+                        finally:
+                            with lock:
+                                pending.discard(name)
+            with lock:
                 bot = bots.get(name)
                 if not bot:
                     self._send(f'no bot {name!r}; /spawn first', 404)
                     return
-                if u.path == '/state':
+                bot_lock = bot_locks[name]
+            with bot_lock:
+                with lock:
+                    if bots.get(name) is not bot:
+                        self._send(f'no bot {name!r}; /spawn first', 404)
+                        return
+                if u.path == '/spawn':
+                    self._send(bot_state(bot))
+                elif u.path == '/state':
                     _pump_on_level_change(bot)
                     self._send(bot_state(bot))
                 elif u.path == '/map':
@@ -397,15 +454,41 @@ class Handler(BaseHTTPRequestHandler):
             self._send({'error': f'error: {e}'}, 500)
 
 
+def _disconnect_bot(name, expected=None):
+    """Wait briefly for this bot's action, then force a disconnect if needed."""
+    with lock:
+        bot = bots.get(name)
+        if bot is None or (expected is not None and bot is not expected):
+            return False
+        bot_lock = bot_locks[name]
+    # Do not hold the registry lock while waiting: actions use it for level
+    # tracking, and other bots still need lookups and background pumps.
+    acquired = bot_lock.acquire(timeout=DISCONNECT_TIMEOUT)
+    try:
+        with lock:
+            if bots.get(name) is not bot:
+                return False
+            bots.pop(name)
+            bot_locks.pop(name)
+            _bot_last_level.pop(name, None)
+        if not acquired:
+            logger.warning('Timed out waiting for bot %r; forcing disconnect', name)
+        bot.disconnect()
+    finally:
+        if acquired:
+            bot_lock.release()
+    return True
+
+
 def disconnect_all_bots():
     """Log every bot out. Called on shutdown however the daemon ends."""
     with lock:
-        for bot in bots.values():
-            try:
-                bot.disconnect()
-            except Exception:
-                pass
-        bots.clear()
+        snapshot = list(bots.items())
+    for name, bot in snapshot:
+        try:
+            _disconnect_bot(name, expected=bot)
+        except Exception:
+            pass
 
 
 def main(argv=None):

@@ -7,7 +7,8 @@ broken, wrong, or strange. You do not write tests. You are the tester.
 ## The API (use curl; the daemon is at http://127.0.0.1:14990)
 
 - `GET /spawn?name=YOU` — connect your bot. Call it once at the start. It is
-  idempotent and returns the state.
+  ready when the request returns its state. An existing name returns 409;
+  a concurrent spawn of the same name returns 409 `spawn in progress`.
 - `GET /state?name=YOU` — JSON: pos (x,y), direction, hearts/max_hearts, bombs, arrows,
   rupees, swimming,
   `players_visible {"Alice": {"id": 7, "nickname": "Alice", "x": 30, "y": 31, ...}}`,
@@ -40,7 +41,8 @@ broken, wrong, or strange. You do not write tests. You are the tester.
 - `GET /log?name=YOU` — recent chat_received, hurt_received, pm_received, npc_dialogue,
   and any issues the bot's own detector flagged (including death/respawn events).
 - `GET /leave?name=YOU` — disconnect your own bot when you finish. This is
-  optional. Do not disconnect anyone else.
+  optional. It waits up to five seconds for an action before forcing a
+  disconnect. Do not disconnect anyone else.
 
 Do NOT call `/quit`. It stops the whole shared daemon for every agent, not just you.
 
@@ -50,6 +52,8 @@ Keep every URL safe. Use `+` or `%20` for a space in `msg`. Parse the JSON with
 
 `move` performs one scaled quarter-tile step, so use `walkto` to cover a distance.
 `travel` can take tens of seconds; `route` is the cheap way to check reachability first.
+During travel, that bot's own `/state`, `/act`, and other requests wait for it to
+finish. Other bots keep running and answering requests.
 With `--world`, routes use the world's level files; otherwise only received links are known.
 Chat uses single-byte wire encoding: characters outside Latin-1/CP1252 arrive
 as `?`, which is expected behavior.

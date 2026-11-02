@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import threading
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,10 @@ class Hop:
 
 
 class WorldGraph:
+    """Thread-safe level graph; one instance is shared by all daemon bots."""
+
     def __init__(self):
+        self._lock = threading.Lock()
         self._edges: dict[str, list[Hop]] = {}
         self._names: dict[str, str] = {}
 
@@ -99,47 +103,51 @@ class WorldGraph:
 
     def add_observed(self, level, links) -> None:
         """Merge client.links[level] records, skipping malformed entries."""
-        source = self._name(level)
-        for link in links:
-            try:
-                dest = link['dest_level']
-                if not isinstance(dest, str) or not dest.strip():
+        with self._lock:
+            source = self._name(level)
+            for link in links:
+                try:
+                    dest = link['dest_level']
+                    if not isinstance(dest, str) or not dest.strip():
+                        continue
+                    rect = tuple(float(link[key]) for key in ('x', 'y', 'width', 'height'))
+                    if not all(math.isfinite(n) for n in rect) or min(rect[2:]) <= 0:
+                        continue
+                    coords = []
+                    for key in ('dest_x', 'dest_y'):
+                        value = str(link[key]).casefold()
+                        value = value if value in ('playerx', 'playery') else float(value)
+                        if isinstance(value, float) and not math.isfinite(value):
+                            raise ValueError('nonfinite destination')
+                        coords.append(value)
+                    self._add(Hop(source, *rect, self._name(dest), *coords))
+                except (KeyError, ValueError, TypeError):
                     continue
-                rect = tuple(float(link[key]) for key in ('x', 'y', 'width', 'height'))
-                if not all(math.isfinite(n) for n in rect) or min(rect[2:]) <= 0:
-                    continue
-                coords = []
-                for key in ('dest_x', 'dest_y'):
-                    value = str(link[key]).casefold()
-                    value = value if value in ('playerx', 'playery') else float(value)
-                    if isinstance(value, float) and not math.isfinite(value):
-                        raise ValueError('nonfinite destination')
-                    coords.append(value)
-                self._add(Hop(source, *rect, self._name(dest), *coords))
-            except (KeyError, ValueError, TypeError):
-                continue
 
     def neighbours(self, level) -> list[Hop]:
         """Return outgoing hops; level lookup is case-insensitive."""
-        return list(self._edges.get(str(level).casefold(), ()))
+        with self._lock:
+            return list(self._edges.get(str(level).casefold(), ()))
 
     def route(self, src, dst) -> list[Hop] | None:
         """BFS for the fewest level transitions; [] means already there."""
-        src, dst = str(src).casefold(), str(dst).casefold()
-        parents = {src: None}
-        queue = deque([src])
-        while queue:
-            current = queue.popleft()
-            if current == dst:
-                route = []
-                while parents[current] is not None:
-                    hop = parents[current]
-                    route.append(hop)
-                    current = hop.source_level.casefold()
-                return route[::-1]
-            for hop in self.neighbours(current):
-                dest = hop.dest_level.casefold()
-                if dest not in parents:
-                    parents[dest] = hop
-                    queue.append(dest)
-        return None
+        with self._lock:
+            src, dst = str(src).casefold(), str(dst).casefold()
+            parents = {src: None}
+            queue = deque([src])
+            while queue:
+                current = queue.popleft()
+                if current == dst:
+                    route = []
+                    while parents[current] is not None:
+                        hop = parents[current]
+                        route.append(hop)
+                        current = hop.source_level.casefold()
+                    return route[::-1]
+                # Read directly: neighbours() acquires the same non-reentrant lock.
+                for hop in self._edges.get(current, ()):
+                    dest = hop.dest_level.casefold()
+                    if dest not in parents:
+                        parents[dest] = hop
+                        queue.append(dest)
+            return None
