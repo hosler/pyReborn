@@ -40,7 +40,14 @@ def only_call(query):
 def test_registry_covers_every_documented_command():
     assert set(GameBot.ACTIONS) == {
         'move', 'walkto', 'say', 'sword', 'bomb', 'arrow', 'grab', 'attack',
-        'pm', 'warp', 'open_chest', 'pickup'}
+        'pm', 'warp', 'open_chest', 'pickup', 'travel'}
+
+
+def test_travel_coerces_optional_coordinates():
+    assert only_call({'cmd': 'travel', 'level': 'next.nw'}) == (
+        'travel_to', {'level_name': 'next.nw', 'x': None, 'y': None})
+    assert only_call({'cmd': 'travel', 'level': 'next.nw', 'x': '0', 'y': '2.5'}) == (
+        'travel_to', {'level_name': 'next.nw', 'x': 0.0, 'y': 2.5})
 
 
 def test_every_registered_action_names_a_real_bot_method():

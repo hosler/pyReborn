@@ -8,10 +8,12 @@ pace (bots stay online + pumped between agent tool calls).
   GET  /map?name=X              ASCII map of the current level (B=blocking,
                                 .=walkable, W=water, C=chest, S=sign, @=you,
                                 P=player, N=npc, D=baddy, L=link)
+  GET  /route?name=X&level=NAME shortest known hop list, or {"route": null}
   GET  /act?name=X&cmd=...      perform an action, returns resulting state
        cmds: move&dx&dy | walkto&x&y | say&msg | sword[&dir] | bomb[&power]
              arrow[&dir] | grab | attack&pid | pm&pid&msg
              warp&level&x&y[&force=1] | open_chest[&x&y] | pickup[&x&y]
+             travel&level[&x&y] (may take tens of seconds; check /route first)
        move attempts ONE quarter-tile step with finite float dx/dy clamped
        to [-1, 1] (e.g. dy=-0.25 requests a 0.0625-tile upward step).
        move/walkto accept follow_links=0 to disable auto-warping onto a
@@ -55,6 +57,7 @@ Agent-prompt caveats:
 import argparse
 from collections import Counter
 from contextlib import ExitStack
+from dataclasses import asdict
 import json
 import os
 import threading
@@ -63,7 +66,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from game_tester.game_bot import GameBot
+from game_tester.world_graph import WorldGraph
 from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
+
+WORLD_GRAPH = None
 
 # Argument parsing stays in main(): unit tests import do_act() directly.
 PORT = 14990
@@ -344,6 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                 if u.path == '/spawn':
                     if name not in bots:
                         b = GameBot(name, GAME_HOST, GAME_PORT)
+                        b.world_graph = WORLD_GRAPH
                         if not b.connect():
                             self._send(f'connect failed for {name}', 500)
                             return
@@ -364,6 +371,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(bot_map(bot))
                 elif u.path == '/log':
                     self._send(bot_log(bot))
+                elif u.path == '/route':
+                    level = q.get('level', [''])[0]
+                    if not level:
+                        raise ValueError('route requires a level')
+                    route = bot._navigation_graph().route(bot.level, level)
+                    self._send({'route': None if route is None else
+                                [asdict(hop) for hop in route]})
                 elif u.path == '/act':
                     result = do_act(bot, q)
                     bot.update(0.3)
@@ -395,7 +409,7 @@ def disconnect_all_bots():
 
 
 def main(argv=None):
-    global GAME_HOST, GAME_PORT, PORT, running
+    global GAME_HOST, GAME_PORT, PORT, running, WORLD_GRAPH
     from game_tester.local_world import add_world_arguments, world_from_arguments
     parser = argparse.ArgumentParser(description="LLM playtest bot daemon")
     parser.add_argument("daemon_port", nargs="?", type=int, default=14990,
@@ -408,12 +422,14 @@ def main(argv=None):
         parser.error("--start/--gmap/--weapons/--npcs require --world")
     with ExitStack() as stack:
         GAME_HOST, GAME_PORT, PORT = args.host, args.port, args.daemon_port
+        WORLD_GRAPH = None
         if args.world:
             try:
                 world = stack.enter_context(world_from_arguments(args))
             except ValueError as exc:
                 parser.error(str(exc))
             GAME_HOST, GAME_PORT = world.host, world.port
+            WORLD_GRAPH = WorldGraph.from_world_dir(world.world_dir)
         running = True
         srv = stack.enter_context(ThreadingHTTPServer(('127.0.0.1', PORT), Handler))
         worker = threading.Thread(target=pump_loop, daemon=True)

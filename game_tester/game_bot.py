@@ -36,6 +36,7 @@ from pyreborn.tiletypes import (
 
 from .login import login_client
 from .pathing import UNREACHABLE, plan_path
+from .world_graph import Hop, WorldGraph
 
 
 @dataclass
@@ -242,6 +243,7 @@ class GameBot:
         # overlapping link at the arrival point. See _maybe_follow_link().
         self._was_on_link = False
         self._link_arrival: Optional[Tuple[float, float]] = None
+        self.world_graph: WorldGraph | None = None
 
     def _setup_callbacks(self):
         """Setup client callbacks for tracking."""
@@ -662,6 +664,167 @@ class GameBot:
         self._log_action("walk_to", {"x": target_x, "y": target_y}, False, start)
         return False
 
+    def _navigation_graph(self, graph=None):
+        graph = graph if graph is not None else self.world_graph
+        if graph is None:
+            graph = WorldGraph()
+        for level, links in list(self.client.links.items()):
+            graph.add_observed(level, links)
+        if self.client.in_gmap_segment:
+            graph._add_seams(self.client.gmap_grid)
+        return graph
+
+    def travel_to(self, level_name: str, x: float | None = None,
+                  y: float | None = None, *, timeout: float = 60.0,
+                  graph: WorldGraph | None = None) -> bool:
+        """Walk through a shortest chain of links/seams, without cheat warps.
+
+        A supplied graph (or a daemon's configured world_graph) is merged with
+        observed links. Otherwise only observed links are known. Optional final
+        x/y use walk_to's WORLD coordinate frame on a GMAP. Both are required
+        together. Unexpected landings allow at most three route replans.
+        """
+        if not isinstance(level_name, str) or not level_name.strip():
+            raise ValueError('travel requires a level name')
+        if (x is None) != (y is None):
+            raise ValueError('travel requires both x and y')
+        if not math.isfinite(timeout) or (x is not None and
+                not all(math.isfinite(v) for v in (x, y))):
+            raise ValueError('travel coordinates and timeout must be finite')
+        start = time.time()
+        deadline = time.monotonic() + timeout
+        target = level_name.strip().casefold()
+        graph = self._navigation_graph(graph)
+
+        def finish(ok, reason=''):
+            if not ok:
+                self._add_issue('LOW', 'movement',
+                                f'travel unreachable: level={level_name!r}; {reason}')
+            self._log_action('travel_to', {'level': level_name, 'x': x, 'y': y}, ok, start)
+            return ok
+
+        replans = 0
+        while time.monotonic() < deadline:
+            graph = self._navigation_graph(graph)
+            route = graph.route(self.level, target)
+            if route is None:
+                return finish(False, 'no route')
+            if not route:
+                ok = x is None or self.walk_to(x, y, timeout=max(0, deadline - time.monotonic()))
+                return finish(ok and self.level.casefold() == target
+                              and time.monotonic() <= deadline, 'final walk failed or timeout')
+            unexpected = False
+            for hop in route:
+                if time.monotonic() >= deadline:
+                    return finish(False, 'timeout')
+                source = self.level.casefold()
+                self._travel_hop(hop, deadline)
+                # walk_to returns False on an ordinary door warp, so judge
+                # arrival by the resolved level, after pumping in-flight data.
+                warp_deadline = min(deadline, time.monotonic() + 3.0)
+                while (self.level.casefold() != hop.dest_level.casefold()
+                       and time.monotonic() < warp_deadline):
+                    self.update(min(0.05, warp_deadline - time.monotonic()))
+                if self.level.casefold() == hop.dest_level.casefold():
+                    self.update(min(0.1, max(0, deadline - time.monotonic())))
+                    continue
+                if self.level.casefold() == source:
+                    return finish(False, 'link did not reach destination or timeout')
+                unexpected = True
+                break
+            if unexpected:
+                replans += 1
+                if replans > 3:
+                    return finish(False, 'replan limit')
+        return finish(False, 'timeout')
+
+    def _travel_targets(self, hop: Hop):
+        """Standable trigger positions, or crossing points along a seam."""
+        c = self.client
+        cells = {name.casefold(): cell for cell, name in c.gmap_grid.items()}
+        cell = cells.get(hop.source_level.casefold()) if c.in_gmap_segment else None
+        ox, oy = local_to_world(0, 0, *cell) if cell is not None else (0, 0)
+        if hop.seam:
+            if cell is None or hop.dest_level.casefold() not in cells:
+                return []
+            points = [(hop.x + ox, t * .5 + oy, 0, 0) for t in range(128)] if hop.width < 1 else [
+                (t * .5 + ox, hop.y + oy, 0, 0) for t in range(128)]
+        else:
+            points = []
+            # The reference uses a floored, directional body probe, including
+            # the rectangle's far edge. Probe-ready standable positions also
+            # handle solid doors: face them and attempt the last blocked step.
+            for tx in range(max(0, math.ceil(hop.x)), min(63, math.floor(hop.x + hop.width)) + 1):
+                for ty in range(max(0, math.ceil(hop.y)), min(63, math.floor(hop.y + hop.height)) + 1):
+                    for px, py, dx, dy in ((1.5, 1, 0, -1), (0, 2, -1, 0),
+                                          (1.5, 3.5, 0, 1), (3, 2, 1, 0)):
+                        for fraction in (0, .5):
+                            if not (hop.x <= math.floor(tx + fraction + dx * .25) <= hop.x + hop.width
+                                    and hop.y <= math.floor(ty + fraction + dy * .25) <= hop.y + hop.height):
+                                continue
+                            points.append((tx + fraction - px + ox,
+                                           ty + fraction - py + oy, dx, dy))
+        points = [p for p in points if not self._path_position_blocked(*p[:2])]
+        points.sort(key=lambda p: (
+            not (hop.x + ox <= p[0] < hop.x + ox + hop.width and
+                 hop.y + oy <= p[1] < hop.y + oy + hop.height),
+            math.hypot(p[0] - c.x, p[1] - c.y)))
+        return points
+
+    def _travel_hop(self, hop, deadline):
+        c = self.client
+        source = self.level.casefold()
+        cells = {name.casefold(): cell for cell, name in c.gmap_grid.items()}
+        cell = cells.get(source) if c.in_gmap_segment else None
+        origin = local_to_world(0, 0, *cell) if cell is not None else (0, 0)
+        # Reuse walk_to's targeted-link exemption even when the standable
+        # approach lies just outside a solid door's rectangle.
+        self._travel_link_goal = (hop.x + origin[0], hop.y + origin[1])
+        try:
+            # Respect arrival suppression: physically leave the arrival point
+            # before trying a nearby return door, rather than clearing latches.
+            if (self._link_arrival is not None
+                    and abs(c.x - self._link_arrival[0]) < 1.5
+                    and abs(c.y - self._link_arrival[1]) < 1.5):
+                ax, ay = self._link_arrival
+                escape = [(ax + dx, ay + dy) for dx, dy in
+                          ((4, 0), (-4, 0), (0, 4), (0, -4),
+                           (2, 0), (-2, 0), (0, 2), (0, -2))]
+                for point in escape:
+                    if not self._path_position_blocked(*point):
+                        self.walk_to(*point, timeout=max(0, deadline - time.monotonic()),
+                                     follow_links=False, tolerance=0.1)
+                        if self.level.casefold() != source:
+                            return
+                        if (time.monotonic() < deadline
+                                and (abs(c.x - ax) >= 1.5 or abs(c.y - ay) >= 1.5)
+                                and self.check_link_collision() is None):
+                            # Let normal movement observe the off-link state;
+                            # the approach must get a fresh rising edge too.
+                            self.move(0, 0, follow_links=True)
+                            break
+            planning_deadline = min(deadline, time.monotonic() + 2)
+            for tx, ty, dx, dy in self._travel_targets(hop):
+                if time.monotonic() >= deadline or self.level.casefold() != source:
+                    return
+                # Reject disconnected approaches before spending the walking
+                # budget on them. walk_to performs its usual bounded planning.
+                if self._plan_walk_path(tx, ty, planning_deadline) is UNREACHABLE:
+                    continue
+                reached = self.walk_to(tx, ty, timeout=max(0, deadline - time.monotonic()),
+                                       follow_links=True, tolerance=0.1)
+                if self.level.casefold() != source:
+                    return
+                if reached and not hop.seam and time.monotonic() < deadline:
+                    c.player.direction = {(0, -1): 0, (-1, 0): 1,
+                                          (0, 1): 2, (1, 0): 3}[dx, dy]
+                    self.move(dx, dy, follow_links=True)
+                    # A warp may be asynchronous; let travel_to await it before
+                    # attempting any more movement in the source coordinate frame.
+                    return
+        finally:
+            del self._travel_link_goal
+
     def _plan_walk_path(self, target_x: float, target_y: float,
                         deadline: float | None = None):
         """Snapshot nearby players as soft costs in the bot's world frame."""
@@ -708,6 +871,7 @@ class GameBot:
         Test all facings since a path node can be approached from any side.
         """
         c = self.client
+        goal_x, goal_y = getattr(self, '_travel_link_goal', (goal_x, goal_y))
         grid = c.gmap_grid if c.in_gmap_segment else {}
         cells = {name: cell for cell, name in grid.items()}
         for level, links in c.links.items():
@@ -1379,6 +1543,10 @@ class GameBot:
                 ActionParam('y', _as_float(None), 'target_y'),
                 ActionParam('follow_links', _as_flag(True))),
                 fixed=(('timeout', 8.0),)),
+            BotAction('travel', 'travel_to', (
+                ActionParam('level', _as_str(None), 'level_name'),
+                ActionParam('x', _as_opt_coord),
+                ActionParam('y', _as_opt_coord))),
             BotAction('say', 'say_and_wait_echo', (
                 ActionParam('msg', _as_str(''), 'message'),)),
             BotAction('sword', 'sword_attack', (

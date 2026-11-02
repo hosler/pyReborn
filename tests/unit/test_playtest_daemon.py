@@ -30,9 +30,9 @@ def daemon_bot(monkeypatch):
     return bot, calls
 
 
-def request(query):
+def request(query, path='/act'):
     handler = daemon.Handler.__new__(daemon.Handler)
-    handler.path = '/act?name=daemon_test&' + query
+    handler.path = path + '?name=daemon_test&' + query
     handler.requestline = 'GET ' + handler.path + ' HTTP/1.1'
     handler.request_version = 'HTTP/1.1'
     handler.command = 'GET'
@@ -41,6 +41,37 @@ def request(query):
     headers, body = handler.wfile.getvalue().split(b'\r\n\r\n', 1)
     assert b'Content-Type: application/json' in headers
     return int(headers.split(b' ')[1]), json.loads(body)
+
+
+def test_daemon_travel_dispatches_and_returns_state(monkeypatch):
+    bot, _ = daemon_bot(monkeypatch)
+    calls = []
+    monkeypatch.setattr(bot, 'travel_to', lambda **kw: calls.append(kw) or True)
+    code, response = request('cmd=travel&level=next.nw&x=0&y=2.5')
+    assert code == 200 and response['result'] is True
+    assert response['state']['level'] == bot.level
+    assert calls == [dict(level_name='next.nw', x=0, y=2.5)]
+
+
+def test_daemon_route_merges_world_and_observed_without_moving(monkeypatch):
+    from game_tester.world_graph import WorldGraph
+    bot, moves = daemon_bot(monkeypatch)
+    graph = WorldGraph()
+    link = dict(x=1, y=2, width=3, height=4, dest_level='hall.nw',
+                dest_x='playerx', dest_y=10)
+    graph.add_observed('test.nw', [link])
+    bot.world_graph = graph
+    bot.client.links['hall.nw'] = [dict(link, dest_level='end.nw')]
+    code, response = request('level=END.NW', '/route')
+    assert code == 200
+    assert [hop['dest_level'] for hop in response['route']] == ['hall.nw', 'end.nw']
+    assert response['route'][0] == dict(source_level='test.nw', x=1, y=2,
+                                      width=3, height=4, dest_level='hall.nw',
+                                      dest_x='playerx', dest_y=10, seam=False)
+    assert request('level=unknown.nw', '/route') == (200, {'route': None})
+    assert request('level=test.nw', '/route') == (200, {'route': []})
+    assert request('', '/route')[0] == 400
+    assert moves == []
 
 
 def test_daemon_fractional_move_is_one_scaled_step(monkeypatch):

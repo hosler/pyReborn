@@ -19,10 +19,14 @@ broken, wrong, or strange. You do not write tests. You are the tester.
   consumers that need the previous lookup shape.
 - `GET /map?name=YOU` — ASCII of the level around you. Legend: `@`=you, `P`=other player,
   `B`=blocking/wall, `W`=water, `C`=chest, `S`=sign, `L`=link/warp, `N`=npc, `.`=walkable.
+- `GET /route?name=YOU&level=NAME.nw` — shortest known hop list in `route`, or
+  `{"route": null}` when no route is known. Seam hops use ordinary GMAP movement.
 - `GET /act?name=YOU&cmd=CMD&...` — do something. It returns the resulting state.
   Commands:
   - `move&dx=1&dy=0` (one scaled quarter-tile step; finite float dx/dy clamped to [-1, 1])
   - `walkto&x=35&y=35` (pathfind-ish walk to a tile)
+  - `travel&level=NAME.nw` (walk through doors and GMAP seams to another level;
+    optionally `&x=&y=` to finish at a position, using world coordinates on a GMAP)
   - `say&msg=hello`
   - `sword` (optionally `&dir=0..3`; 0=up 1=left 2=down 3=right)
   - `bomb` (optionally `&power=1`) / `arrow` (optionally `&dir=`)
@@ -45,6 +49,8 @@ Keep every URL safe. Use `+` or `%20` for a space in `msg`. Parse the JSON with
 `../.venv/bin/python -c` if that helps.
 
 `move` performs one scaled quarter-tile step, so use `walkto` to cover a distance.
+`travel` can take tens of seconds; `route` is the cheap way to check reachability first.
+With `--world`, routes use the world's level files; otherwise only received links are known.
 Chat uses single-byte wire encoding: characters outside Latin-1/CP1252 arrive
 as `?`, which is expected behavior.
 On the default world, the start position is also the respawn position, so die
