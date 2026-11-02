@@ -12,6 +12,8 @@ pace (bots stay online + pumped between agent tool calls).
        cmds: move&dx&dy | walkto&x&y | say&msg | sword[&dir] | bomb[&power]
              arrow[&dir] | grab | attack&pid | pm&pid&msg
              warp&level&x&y[&force=1] | open_chest[&x&y] | pickup[&x&y]
+       move attempts ONE quarter-tile step with finite float dx/dy clamped
+       to [-1, 1] (e.g. dy=-0.25 requests a 0.0625-tile upward step).
        move/walkto accept follow_links=0 to disable auto-warping onto a
        door mid-move (default is on, matching the real client - see
        GameBot.move()). warp accepts force=1 to warp onto a tile that looks
@@ -33,8 +35,8 @@ Run: python -m game_tester.playtest_daemon [port]   (default 14990)
 Game server via PYREBORN_TEST_HOST/PYREBORN_TEST_PORT (default localhost:14900).
 
 Agent-prompt caveats:
-  - /map draws @ at the sprite's TOP-LEFT while movement collision uses two
-    direction-sensitive body probes — tell agents or they report false clips.
+  - /map draws @ at the sprite's TOP-LEFT while movement collision checks a
+    2x2 feet rectangle offset by (0.5, 1) from that anchor.
   - npc_dialogue (PLO_SAY2 text: sign reads / NPC chatter) is in BOTH /state
     and /log, not just one - without it in /state, an agent polling only
     /state never sees scripted NPC dialogue at all.
@@ -51,6 +53,7 @@ Agent-prompt caveats:
     /act's warp param is also level-local, matching client.warp_to_level().
 """
 import argparse
+from collections import Counter
 from contextlib import ExitStack
 import json
 import os
@@ -80,7 +83,8 @@ def pump_loop():
         with lock:
             for bot in bots.values():
                 try:
-                    bot.client.update()
+                    # One short packet pump plus GameBot's position/death checks.
+                    bot.update(0.01)
                 except Exception:
                     pass
         time.sleep(0.05)
@@ -139,9 +143,22 @@ def bot_state(bot):
     c = bot.client
     p = c.player
     others = {}
-    for pid, pl in (bot.players or {}).items():
-        others[pid] = {k: pl.get(k) for k in ('account', 'nickname', 'x', 'y', 'chat')
-                       if pl.get(k) is not None}
+    others_by_id = {}
+    players = bot.players or {}
+    nicknames = {pid: (pl.get('nickname') or '').strip()
+                 for pid, pl in players.items()}
+    counts = Counter(nicknames.values())
+    # Reserve IDs so a nickname like "7" cannot overwrite player 7's fallback.
+    ids = {str(pid) for pid in players}
+    for pid, pl in players.items():
+        entry = {k: pl.get(k) for k in ('account', 'nickname', 'x', 'y', 'chat')
+                 if pl.get(k) is not None}
+        entry['id'] = int(pid)
+        nickname = nicknames[pid]
+        key = (nickname if nickname and counts[nickname] == 1
+               and (nickname not in ids or nickname == str(pid)) else str(pid))
+        others[key] = entry
+        others_by_id[str(pid)] = entry
     npcs = {}
     for nid, npc in c.npcs.items():
         if len(npcs) >= 30:
@@ -179,6 +196,7 @@ def bot_state(bot):
         'max_hearts': p.max_hearts, 'bombs': p.bombs, 'arrows': p.arrows,
         'rupees': p.rupees, 'swimming': getattr(bot, 'is_swimming', False),
         'players_visible': others,
+        'players_visible_by_id': others_by_id,
         'npcs_nearby': npcs,
         'baddies_nearby': baddies,
         'chests': [{'level': level_name, 'x': x, 'y': y, 'opened': opened,
@@ -289,7 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         body = (obj if isinstance(obj, str) else
                 json.dumps(obj, default=str, indent=1)).encode()
         self.send_response(code)
-        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Type', 'text/plain' if isinstance(obj, str)
+                         else 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -359,10 +378,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as e:
             # Bad caller input (e.g. non-numeric x/y for open_chest) — a clean
             # 400, not a 500 with a stack trace leaked to the agent.
-            self._send(f'bad argument: {e}', 400)
+            self._send({'error': f'bad argument: {e}'}, 400)
         except Exception as e:
-            import traceback
-            self._send(f'error: {e}\n{traceback.format_exc()}', 500)
+            self._send({'error': f'error: {e}'}, 500)
 
 
 def disconnect_all_bots():

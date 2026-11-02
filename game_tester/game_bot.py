@@ -35,7 +35,7 @@ from pyreborn.tiletypes import (
 )
 
 from .login import login_client
-from .pathing import plan_path
+from .pathing import UNREACHABLE, plan_path
 
 
 @dataclass
@@ -77,6 +77,13 @@ def _as_int(default: Any) -> Callable[[Optional[str]], int]:
 
 def _as_float(default: Any) -> Callable[[Optional[str]], float]:
     return lambda raw: float(default if raw is None else raw)
+
+
+def _move_component(raw: str | float | None) -> float:
+    value = float(0 if raw is None else raw)
+    if not math.isfinite(value):
+        raise ValueError("move components must be finite")
+    return max(-1.0, min(1.0, value))
 
 
 def _as_str(default: Optional[str]) -> Callable[[Optional[str]], Optional[str]]:
@@ -382,21 +389,18 @@ class GameBot:
                            f"Bot respawned at ({self.client.x:.1f}, {self.client.y:.1f})")
         self._was_dead = is_dead
 
-    def move(self, dx: int, dy: int, check_collision: bool = True,
+    def move(self, dx: float, dy: float, check_collision: bool = True,
              follow_links: bool = True) -> bool:
-        """Move in direction (dx, dy in -1, 0, 1).
+        """Attempt ONE quarter-tile step, scaled by dx/dy clamped to [-1, 1].
 
-        PARITY NOTE: This matches pygame_game.py:_move() which:
-        1. Checks collision 1 full tile ahead (x + dx, y + dy)
-        2. But only moves 0.25 tiles per call via client.move()
-
-        This "look ahead" approach allows smooth movement near walls
-        by checking if the destination is clear, not every micro-step.
+        Fractional components allow a waypoint correction smaller than a step.
+        Check the complete feet rectangle at the actual step destination so
+        planning and movement agree on where the bot can stand.
 
         Args:
-            dx: X direction (-1, 0, 1)
-            dy: Y direction (-1, 0, 1)
-            check_collision: If True, check for blocking tiles (parity with pygame)
+            dx: X step multiplier, clamped to [-1, 1]
+            dy: Y step multiplier, clamped to [-1, 1]
+            check_collision: If True, check blocking tiles and NPCs
             follow_links: If True (default), auto-warp through a door/link the
                 bot ends up standing on, matching the real client
                 (pygame_game.py's ActionsMixin calls _try_link_warp() after
@@ -410,16 +414,13 @@ class GameBot:
             True if moved, False if blocked or failed
         """
         start = time.time()
+        dx, dy = _move_component(dx), _move_component(dy)
         old_x, old_y = self.client.x, self.client.y
 
-        # PARITY: pygame checks 1 full tile ahead, not 0.25 tile step
-        # This matches pygame_game.py line 782-783:
-        #   dest_x = self.client.x + dx
-        #   dest_y = self.client.y + dy
-        dest_x = old_x + dx  # Full tile lookahead
-        dest_y = old_y + dy
+        dest_x = old_x + dx * 0.25
+        dest_y = old_y + dy * 0.25
 
-        # Check collision BEFORE moving (parity with pygame_game.py)
+        # Check the actual step destination before moving.
         if check_collision and self._is_position_blocked(dest_x, dest_y, dx, dy):
             # Position is blocked - don't move. Still check for a link: cave/
             # door entrances sit on solid tiles you can't step onto, so
@@ -452,7 +453,8 @@ class GameBot:
         return moved
 
     def walk_to(self, target_x: float, target_y: float, timeout: float = 10.0,
-                follow_links: bool = True, *, pathing: bool = True) -> bool:
+                follow_links: bool = True, *, pathing: bool = True,
+                tolerance: float = 0.5) -> bool:
         """
         Walk to a target position using A*, with greedy walking as fallback.
 
@@ -465,23 +467,44 @@ class GameBot:
         long as callers pass the same frame - do not pass a local (0-63)
         target while on a GMAP.
 
-        follow_links: forwarded to move() - if True (default) walking into a
-        door/link along the way auto-warps through it, same as the real
-        client. If that happens mid-walk the target is almost certainly no
-        longer reachable in the new level, so this returns False rather than
-        continuing to burn the timeout comparing against a stale target.
+        Links are obstacles unless the goal lies inside that link. For a
+        targeted link, follow_links is forwarded to move(). A warp out of
+        this world ends the walk; segment crossings within one GMAP continue.
+        After the last lattice waypoint, approach the exact goal greedily
+        until its distance is within tolerance.
 
         pathing: set False to use the original greedy loop. Planning failure
         or four stalled ticks after each of three replans also falls back to
         that loop, sharing the original timeout and movement reporting.
+        An exhausted search allows two seconds of greedy recovery without
+        progress toward the goal before reporting a LOW target unreachable.
 
         Returns True if reached target, False if stuck/timeout/warped away.
         """
         start = time.time()
         walk_start = time.monotonic()
         walk_deadline = walk_start + timeout
-        tolerance = 0.5
         start_level = self.level
+        start_gmap = self.client.gmap_name if self.client.in_gmap_segment else None
+
+        def warped():
+            # A segment-name change preserves the world frame. Interiors and
+            # another GMAP do not, even if the old grid is still cached.
+            same_world = (start_gmap is not None and self.client.in_gmap_segment
+                          and self.client.gmap_name == start_gmap)
+            return ((self.level != start_level and not same_world)
+                    or (start_gmap is not None and
+                        (not self.client.in_gmap_segment
+                         or self.client.gmap_name != start_gmap)))
+
+        def walk_step(dx, dy):
+            if self._walk_link_blocked(self.client.x + dx * 0.25,
+                                       self.client.y + dy * 0.25,
+                                       target_x, target_y):
+                self.update(0.05)
+                return False
+            return self.move(dx, dy, follow_links=follow_links)
+
         # Did we ever actually move during this call? Distinguishes a
         # permanent hard strand (never moved a single step, even after the
         # stuck-recovery sidestepping below tried other directions) from an
@@ -493,24 +516,29 @@ class GameBot:
         stalled_ticks = 0
         replans = 0
         if (pathing and timeout > 0
-                and (abs(target_x - self.client.x) >= tolerance
-                     or abs(target_y - self.client.y) >= tolerance)):
+                and math.hypot(target_x - self.client.x,
+                               target_y - self.client.y) > tolerance):
             path = self._plan_walk_path(
                 target_x, target_y, walk_start + min(timeout * 0.4, 2.0))
+        unreachable = path is UNREACHABLE
+        if unreachable:
+            path = None
+        progress_at = time.monotonic()
+        best_distance = math.hypot(target_x - self.client.x, target_y - self.client.y)
 
         while time.monotonic() < walk_deadline:
             dx = target_x - self.client.x
             dy = target_y - self.client.y
 
             # Check if arrived
-            if abs(dx) < tolerance and abs(dy) < tolerance:
+            if math.hypot(dx, dy) <= tolerance:
                 self._log_action("walk_to", {"x": target_x, "y": target_y}, True, start)
                 return True
 
             if path is not None:
                 while waypoint < len(path):
                     wx, wy = path[waypoint]
-                    if abs(wx - self.client.x) > 0.125 or abs(wy - self.client.y) > 0.125:
+                    if abs(wx - self.client.x) > 1e-6 or abs(wy - self.client.y) > 1e-6:
                         break
                     waypoint += 1
                 if waypoint == len(path):
@@ -518,14 +546,14 @@ class GameBot:
                     continue
                 wx, wy = path[waypoint]
                 old_x, old_y = self.client.x, self.client.y
-                move_dx = 0 if abs(wx - old_x) <= 0.125 else (1 if wx > old_x else -1)
-                move_dy = 0 if abs(wy - old_y) <= 0.125 else (1 if wy > old_y else -1)
-                self.move(move_dx, move_dy, follow_links=follow_links)
+                move_dx = max(-1, min(1, (wx - old_x) / 0.25))
+                move_dy = max(-1, min(1, (wy - old_y) / 0.25))
+                walk_step(move_dx, move_dy)
                 if (abs(self.client.x - old_x) < 0.01
                         and abs(self.client.y - old_y) < 0.01):
                     # Blocked move() returns before pumping incoming packets.
                     self.update(0.05)
-                if follow_links and self.level != start_level:
+                if warped():
                     self._log_action("walk_to", {"x": target_x, "y": target_y,
                                                  "warped_to": self.level}, False, start)
                     return False
@@ -541,20 +569,26 @@ class GameBot:
                         walk_deadline, now + min(max(0.0, walk_deadline - now) * 0.1, 0.5))
                     path = (self._plan_walk_path(target_x, target_y, replan_deadline)
                             if replans < 3 and now < walk_deadline else None)
+                    unreachable = path is UNREACHABLE
+                    if unreachable:
+                        path = None
+                        progress_at = time.monotonic()
+                        best_distance = math.hypot(target_x - self.client.x,
+                                                   target_y - self.client.y)
                     replans += 1
                     waypoint = 0
                     stalled_ticks = 0
                 continue
 
             # Determine direction
-            move_dx = 0 if abs(dx) < tolerance else (1 if dx > 0 else -1)
-            move_dy = 0 if abs(dy) < tolerance else (1 if dy > 0 else -1)
+            move_dx = max(-1, min(1, dx / 0.25))
+            move_dy = max(-1, min(1, dy / 0.25))
 
             # Try to move
             old_x, old_y = self.client.x, self.client.y
-            self.move(move_dx, move_dy, follow_links=follow_links)
+            walk_step(move_dx, move_dy)
 
-            if follow_links and self.level != start_level:
+            if warped():
                 # A link fired mid-walk (see move()/_maybe_follow_link) and
                 # dropped us on a different level - target_x/target_y were
                 # meant for start_level's frame and are now meaningless.
@@ -576,16 +610,42 @@ class GameBot:
                     # west of the bot).
                     if move_dx != 0:
                         step_y = 1 if dy >= 0 else -1
-                        self.move(0, step_y, follow_links=follow_links)
-                        self.move(0, step_y, follow_links=follow_links)
+                        walk_step(0, step_y)
+                        walk_step(0, step_y)
                     if move_dy != 0:
                         step_x = 1 if dx >= 0 else -1
-                        self.move(step_x, 0, follow_links=follow_links)
-                        self.move(step_x, 0, follow_links=follow_links)
+                        walk_step(step_x, 0)
+                        walk_step(step_x, 0)
                     self._stuck_count = 0
             else:
                 self._stuck_count = 0
                 moved_ever = True
+
+            if (unreachable and abs(self.client.x - old_x) < 0.01
+                    and abs(self.client.y - old_y) < 0.01):
+                # Blocked move() does not pump packets. Keep recovery responsive
+                # to server changes and avoid spinning during the grace period.
+                self.update(0.05)
+
+            if warped():
+                self._log_action("walk_to", {"x": target_x, "y": target_y,
+                                             "warped_to": self.level}, False, start)
+                return False
+
+            if unreachable:
+                distance = math.hypot(target_x - self.client.x, target_y - self.client.y)
+                if distance < best_distance - 0.05:
+                    best_distance = distance
+                    progress_at = time.monotonic()
+                elif distance > tolerance and time.monotonic() - progress_at >= 2.0:
+                    self._add_issue("LOW", "movement",
+                                    f"target unreachable: target=({target_x}, {target_y})")
+                    self._log_action("walk_to", {"x": target_x, "y": target_y}, False, start)
+                    return False
+
+        if math.hypot(target_x - self.client.x, target_y - self.client.y) <= tolerance:
+            self._log_action("walk_to", {"x": target_x, "y": target_y}, True, start)
+            return True
 
         if moved_ever:
             self._add_issue("LOW", "movement", f"walk_to timeout: target=({target_x}, {target_y})")
@@ -629,36 +689,48 @@ class GameBot:
             return sum(4.0 for px, py in others
                        if abs(x - px) < width and abs(y - py) < height)
 
+        def blocked(x, y):
+            return (self._path_position_blocked(x, y)
+                    or self._walk_link_blocked(x, y, target_x, target_y))
+
         return plan_path((c.x, c.y), (target_x, target_y),
-                         self._path_position_blocked, cost=cost, deadline=deadline)
+                         blocked, cost=cost, deadline=deadline)
 
     def _path_position_blocked(self, x: float, y: float) -> bool:
-        """Conservative feet-box clearance plus the actual movement probes.
+        """Use exactly the standing clearance used by move()."""
+        return self._is_position_blocked(x, y)
 
-        Each half-tile edge takes two quarter-tile move() calls. The last
-        call probes 0.75 tile beyond the waypoint. Reserve that clearance in
-        every direction so the position-only planner can turn at any node.
+    def _walk_link_blocked(self, x, y, goal_x, goal_y):
+        """Avoid door footprints and directional triggers unless targeted.
+
+        Seam links between GMAP neighbours are ordinary world movement.
+        Other links use inclusive floored probes, matching check_link_collision.
+        Test all facings since a path node can be approached from any side.
         """
-        if self._is_position_blocked(x, y):
-            return True
         c = self.client
-        left, right = x + PLAYER_COLLISION_LEFT, x + PLAYER_COLLISION_RIGHT
-        top, bottom = y + PLAYER_COLLISION_TOP, y + PLAYER_COLLISION_BOTTOM
-        for tx in range(math.floor(left), math.ceil(right)):
-            for ty in range(math.floor(top), math.ceil(bottom)):
-                px, py = max(left, tx), max(top, ty)
-                if c.in_gmap_segment:
-                    level = c.gmap_grid.get(segment_at(px, py))
-                    if not level or not c.levels.get(level):
+        grid = c.gmap_grid if c.in_gmap_segment else {}
+        cells = {name: cell for cell, name in grid.items()}
+        for level, links in c.links.items():
+            if level != self.level and level not in cells:
+                continue
+            origin = local_to_world(0, 0, *cells[level]) if level in cells else (0, 0)
+            for link in links:
+                lx, ly = link.get('x', 0), link.get('y', 0)
+                width, height = link.get('width', 1), link.get('height', 1)
+                edge = lx <= 1 or lx + width >= 63 or ly <= 1 or ly + height >= 63
+                if grid and edge and link.get('dest_level') in c.get_adjacent_levels(level):
+                    continue
+                lx, ly = lx + origin[0], ly + origin[1]
+                if lx <= goal_x < lx + width and ly <= goal_y < ly + height:
+                    continue
+                if (x + PLAYER_COLLISION_LEFT < lx + width + 1
+                        and x + PLAYER_COLLISION_RIGHT > lx
+                        and y + PLAYER_COLLISION_TOP < ly + height + 1
+                        and y + PLAYER_COLLISION_BOTTOM > ly):
+                    return True
+                for ox, oy in ((1.5, 1), (0, 2), (1.5, 3.5), (3, 2)):
+                    if lx <= math.floor(x + ox) <= lx + width and ly <= math.floor(y + oy) <= ly + height:
                         return True
-                elif not in_level_bounds(px, py):
-                    return True
-                if is_blocking(self._get_tile_at(px, py)):
-                    return True
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
-                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
-            if self._is_position_blocked(x + dx * 0.75, y + dy * 0.75, dx, dy):
-                return True
         return False
 
     def _check_stuck(self):
@@ -766,49 +838,53 @@ class GameBot:
         return tiles[tile_idx]
 
     def _is_position_blocked(self, x: float, y: float, dx: int = 0, dy: int = 0) -> bool:
-        """Check if a position is blocked by tiles or NPC footprints.
+        """Check every tile overlapped by the half-open 2x2 feet rectangle.
 
-        (x, y) here is already the full-tile-ahead destination (see move()'s
-        parity note), so this probes the LEADING EDGE of the sprite's
-        footprint in the direction of travel. This mirrors collision.py's
-        two-point tables inline to keep the headless bot pygame-free.
+        The sprite anchor is (x, y); feet span (x+.5, y+1) to (x+2.5, y+3).
+        Merely touching a wall edge is allowed. Both planning and actual
+        movement use this predicate, including across loaded GMAP seams.
         """
-        check_offsets = [(1.5, 2.0)]
-        directions = []
-        if dy < 0:
-            directions.append(0)
-        if dx < 0:
-            directions.append(1)
-        if dy > 0:
-            directions.append(2)
-        if dx > 0:
-            directions.append(3)
-        if not directions:
-            directions.append(2)
-        p2 = {0: (2.0, 1.0), 1: (1.0, 0.5),
-              2: (2.0, 0.5), 3: (2.0, 0.5)}
-        for direction in directions:
-            if p2[direction] not in check_offsets:
-                check_offsets.append(p2[direction])
-
-        for ox, oy in check_offsets:
-            check_x = x + ox
-            check_y = y + oy
-            tile_id = self._get_tile_at(check_x, check_y)
-            if is_blocking(tile_id):
-                return True
-            if self.client.npcs:
-                # Reuse the pygame client's NPC wall predicate without pygame.
-                from pyreborn.gs1_client import ClientGS1
-                host = self.client.gs1_host
-                if host is None:
-                    host = getattr(self, '_npc_collision', None)
-                    if host is None or host.client is not self.client:
-                        host = self._npc_collision = ClientGS1(self.client)
-                if host.npc_blocks_at(check_x, check_y):
+        c = self.client
+        left, right = x + PLAYER_COLLISION_LEFT, x + PLAYER_COLLISION_RIGHT
+        top, bottom = y + PLAYER_COLLISION_TOP, y + PLAYER_COLLISION_BOTTOM
+        for tx in range(math.floor(left), math.ceil(right)):
+            for ty in range(math.floor(top), math.ceil(bottom)):
+                check_x, check_y = max(left, tx), max(top, ty)
+                if c.in_gmap_segment:
+                    level = c.gmap_grid.get(segment_at(check_x, check_y))
+                    if not level or not c.levels.get(level):
+                        return True
+                elif not in_level_bounds(check_x, check_y):
                     return True
-
+                if is_blocking(self._get_tile_at(check_x, check_y)):
+                    return True
+                if c.npcs and self._npc_blocks_at(check_x, check_y):
+                    return True
+        if c.npcs:
+            host = self._npc_collision_host()
+            for npc in c.npcs.values():
+                rect = host.npc_image_rect(npc)
+                if rect is None:
+                    continue
+                nx, ny, width, height = rect
+                px, py = max(left, nx), max(top, ny)
+                if (px < min(right, nx + width) and py < min(bottom, ny + height)
+                        and host.npc_blocks_at(px, py)):
+                    return True
         return False
+
+    def _npc_blocks_at(self, check_x, check_y):
+        return self._npc_collision_host().npc_blocks_at(check_x, check_y)
+
+    def _npc_collision_host(self):
+        # Reuse the pygame client's NPC wall predicate without pygame.
+        from pyreborn.gs1_client import ClientGS1
+        host = self.client.gs1_host
+        if host is None:
+            host = getattr(self, '_npc_collision', None)
+            if host is None or host.client is not self.client:
+                host = self._npc_collision = ClientGS1(self.client)
+        return host
 
     def _check_water_at_position(self, x: float, y: float) -> bool:
         """Check if the standing point is in deep, swimmable water."""
@@ -964,9 +1040,13 @@ class GameBot:
         self._log_action("drop_bomb", {"power": power}, result, start)
         return result
 
-    def attack_player(self, player_id: int, damage: float = 0.5) -> bool:
+    def attack_player(self, player_id: int, damage: float = 0.5) -> bool | str:
         """Attack another player."""
         start = time.time()
+        if player_id not in self.client.players:
+            error = f"no visible player with id {player_id}"
+            self._log_action("attack_player", {"id": player_id, "damage": damage}, error, start)
+            return error
         result = self.client.attack_player(player_id, damage)
         self.update(0.1)
         self._log_action("attack_player", {"id": player_id, "damage": damage}, result, start)
@@ -1291,8 +1371,8 @@ class GameBot:
     ACTIONS: Dict[str, BotAction] = {
         action.name: action for action in (
             BotAction('move', 'move', (
-                ActionParam('dx', _as_int(0)),
-                ActionParam('dy', _as_int(0)),
+                ActionParam('dx', _move_component),
+                ActionParam('dy', _move_component),
                 ActionParam('follow_links', _as_flag(True)))),
             BotAction('walkto', 'walk_to', (
                 ActionParam('x', _as_float(None), 'target_x'),

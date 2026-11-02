@@ -9,13 +9,19 @@ broken, wrong, or strange. You do not write tests. You are the tester.
 - `GET /spawn?name=YOU` — connect your bot. Call it once at the start. It is
   idempotent and returns the state.
 - `GET /state?name=YOU` — JSON: pos (x,y), direction, hearts/max_hearts, bombs, arrows,
-  rupees, swimming, players_visible {name: {x,y,...}}, npcs_nearby, chests (with
-  x/y/opened/item), signs (with x/y/text), links, npc_dialogue (last ~10 sign/NPC texts).
+  rupees, swimming,
+  `players_visible {"Alice": {"id": 7, "nickname": "Alice", "x": 30, "y": 31, ...}}`,
+  npcs_nearby, chests (with x/y/opened/item), signs (with x/y/text), links,
+  npc_dialogue (last ~10 sign/NPC texts).
+  Empty or duplicate nicknames (including collisions with reserved ID keys) use
+  the player's ID string as the key; use the `id` field for `pm`/`attack`.
+  `players_visible_by_id` provides the same entries keyed by ID strings for
+  consumers that need the previous lookup shape.
 - `GET /map?name=YOU` — ASCII of the level around you. Legend: `@`=you, `P`=other player,
   `B`=blocking/wall, `W`=water, `C`=chest, `S`=sign, `L`=link/warp, `N`=npc, `.`=walkable.
 - `GET /act?name=YOU&cmd=CMD&...` — do something. It returns the resulting state.
   Commands:
-  - `move&dx=1&dy=0` (step in a direction; dx/dy in tiles)
+  - `move&dx=1&dy=0` (one scaled quarter-tile step; finite float dx/dy clamped to [-1, 1])
   - `walkto&x=35&y=35` (pathfind-ish walk to a tile)
   - `say&msg=hello`
   - `sword` (optionally `&dir=0..3`; 0=up 1=left 2=down 3=right)
@@ -37,6 +43,12 @@ Do NOT call `/quit`. It stops the whole shared daemon for every agent, not just 
 curl pattern: `curl -s 'http://127.0.0.1:14990/act?name=YOU&cmd=walkto&x=40&y=40'`
 Keep every URL safe. Use `+` or `%20` for a space in `msg`. Parse the JSON with
 `../.venv/bin/python -c` if that helps.
+
+`move` performs one scaled quarter-tile step, so use `walkto` to cover a distance.
+Chat uses single-byte wire encoding: characters outside Latin-1/CP1252 arrive
+as `?`, which is expected behavior.
+On the default world, the start position is also the respawn position, so die
+away from the start tile when testing the respawn warp.
 
 ## CRITICAL caveat (or you WILL report false bugs)
 
