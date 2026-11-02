@@ -25,7 +25,8 @@ def server_source(tmp_path):
     (source / "config" / "serveroptions.txt").write_bytes(
         b"# startlevel = ignored.nw\r\n// gmaps = ignored.gmap\r\n"
         b"unrelated option\r\nUNSTICKMELEVEL = lobby.nw\r\n"
-        b"gmaps = first.gmap, second.gmap, \r\nserverport = 9999\r\n")
+        b"gmaps = first.gmap, second.gmap, \r\nserverport = 9999\r\n"
+        b"serverside = false # classic script mode\r\n")
     return source
 
 
@@ -54,6 +55,7 @@ def test_server_directory_defaults_and_layout(server_source, mode):
         assert config.start_level == local.start_level == "lobby.nw"
         assert config.gmaps == local.gmaps == ["first.gmap", "second.gmap"]
         assert config.port == 0  # Source network settings are not inherited.
+        assert config.serverside is False
         account = json.loads((local.server_dir / "accounts" / "testbot1.json").read_text())
         assert account["level_name"] == "lobby.nw"
         assert local.start_xy == (30.0, 30.5)

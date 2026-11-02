@@ -24,7 +24,7 @@ READY_MARKER = "Server listening on"
 STARTUP_TIMEOUT = 20.0
 FORWARDED_OPTIONS = frozenset({
     "name", "description", "language", "swordlimit", "shieldlimit",
-    "healswords", "heartlimit", "putnpcenabled"})
+    "healswords", "heartlimit", "putnpcenabled", "serverside"})
 SHUTDOWN_TIMEOUT = 10.0
 _WORLDS = weakref.WeakSet()
 
