@@ -184,7 +184,10 @@ def test_bot_connect_closes_the_real_socket_on_a_refused_login():
     """End-to-end socket proof: connect to a listener that never answers the
     login, then confirm the peer saw the client hang up rather than the
     connection being left open (the leak this fixes)."""
-    listener = socket.socket()
+    try:
+        listener = socket.socket()
+    except PermissionError as exc:
+        pytest.skip(f"loopback sockets unavailable: {exc}")
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     try:

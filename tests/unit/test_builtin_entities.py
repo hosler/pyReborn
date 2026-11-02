@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pygame
 
 from pyreborn.game.render_effects import EffectsRenderMixin
+from pyreborn.game.constants import BOMB_FUSE_TIME, EXPLOSION_DURATION
 from pyreborn.liftobjects import BUSH_OBJECTS, BUSH_REPLACE
 from pyreborn.tiletypes import TileType
 
@@ -33,8 +34,8 @@ class _Harness(EffectsRenderMixin):
         self.active_bombs = []
         self.active_projectiles = []
         self.break_effects = []
-        self.bomb_fuse_time = 2.0
-        self.explosion_duration = 0.5
+        self.bomb_fuse_time = BOMB_FUSE_TIME
+        self.explosion_duration = EXPLOSION_DURATION
         self.world_surface = object()
         self.board = {}
         self.sent = {}                # tiles the blast pushed over the wire
@@ -143,3 +144,19 @@ def test_blast_breaks_bushes_inside_radius_only():
     assert (9, 10) not in broken
     tl, bl, tr, br = BUSH_REPLACE[0]
     assert h.sent[(11, 10)] == tl and h.sent[(12, 11)] == br
+
+
+def test_server_explosion_lasts_twelve_ticks(monkeypatch):
+    h = _Harness()
+    explosion = {'x': 4.0, 'y': 5.0, 'time': 0.0}
+    h.client.active_explosions = [explosion]
+    draws = []
+    h._render_world_object = lambda *args: draws.append(args)
+    monkeypatch.setattr('pyreborn.game.render_effects.time.time', lambda: 0.55)
+    h._render_server_explosions()
+    assert h.client.active_explosions == [explosion]
+    assert len(draws) == 1
+    monkeypatch.setattr('pyreborn.game.render_effects.time.time', lambda: EXPLOSION_DURATION)
+    h._render_server_explosions()
+    assert h.client.active_explosions == []
+    assert len(draws) == 1

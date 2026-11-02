@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import pytest
 
 from reborn_protocol import Gen2Codec, PacketBuilder, SVO
 
@@ -36,6 +37,12 @@ def _open_registered_server(port: int) -> socket.socket:
 
 
 def test_registered_game_server_appears_in_client_serverlist():
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+    except PermissionError as exc:
+        pytest.skip(f"loopback sockets unavailable: {exc}")
+
     async def exercise_serverlist():
         async with FakeListServer(port=0) as fake_server:
             game_server = await asyncio.to_thread(

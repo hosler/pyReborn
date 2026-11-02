@@ -50,9 +50,10 @@ Agent-prompt caveats:
     their per-level stores).
     /act's warp param is also level-local, matching client.warp_to_level().
 """
+import argparse
+from contextlib import ExitStack
 import json
 import os
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,10 +62,8 @@ from urllib.parse import urlparse, parse_qs
 from game_tester.game_bot import GameBot
 from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
 
-# Only read argv when actually run as the daemon: importing this module (the
-# unit tests drive do_act() directly) would otherwise try to parse pytest's
-# own arguments as a port number and fail at import time.
-PORT = int(sys.argv[1]) if __name__ == '__main__' and len(sys.argv) > 1 else 14990
+# Argument parsing stays in main(): unit tests import do_act() directly.
+PORT = 14990
 GAME_HOST = os.environ.get('PYREBORN_TEST_HOST', 'localhost')
 GAME_PORT = int(os.environ.get('PYREBORN_TEST_PORT', 14900))
 
@@ -377,17 +376,40 @@ def disconnect_all_bots():
         bots.clear()
 
 
+def main(argv=None):
+    global GAME_HOST, GAME_PORT, PORT, running
+    from game_tester.local_world import add_world_arguments, world_from_arguments
+    parser = argparse.ArgumentParser(description="LLM playtest bot daemon")
+    parser.add_argument("daemon_port", nargs="?", type=int, default=14990,
+                        help="HTTP port (default: 14990)")
+    parser.add_argument("--host", default=GAME_HOST, help="Game server hostname")
+    parser.add_argument("--port", type=int, default=GAME_PORT, help="Game server port")
+    add_world_arguments(parser)
+    args = parser.parse_args(argv)
+    if (args.start or args.gmap) and not args.world:
+        parser.error("--start/--gmap require --world")
+    with ExitStack() as stack:
+        GAME_HOST, GAME_PORT, PORT = args.host, args.port, args.daemon_port
+        if args.world:
+            try:
+                world = stack.enter_context(world_from_arguments(args))
+            except ValueError as exc:
+                parser.error(str(exc))
+            GAME_HOST, GAME_PORT = world.host, world.port
+        running = True
+        srv = stack.enter_context(ThreadingHTTPServer(('127.0.0.1', PORT), Handler))
+        worker = threading.Thread(target=pump_loop, daemon=True)
+        worker.start()
+        print(f'playtest daemon on 127.0.0.1:{PORT} -> game {GAME_HOST}:{GAME_PORT}')
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            running = False
+            worker.join(timeout=2)
+            disconnect_all_bots()
+
+
 if __name__ == '__main__':
-    threading.Thread(target=pump_loop, daemon=True).start()
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
-    print(f'playtest daemon on 127.0.0.1:{PORT} -> game {GAME_HOST}:{GAME_PORT}')
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Ctrl-C (or any crash out of serve_forever) used to leave every bot
-        # logged in on the game server until it timed them out, so the next
-        # daemon run met its own accounts already online.
-        running = False
-        disconnect_all_bots()
+    main()

@@ -29,19 +29,7 @@ def log(msg):
     print(f"[{ACCOUNT} {time.time()-t0:7.2f}] {msg}", flush=True)
 
 
-class FakeKeys:
-    """Stand-in for pygame.key.get_pressed(), controlled by the bot below.
-    _feed_gs1_input does `for i in range(len(keys))` to scan the whole
-    keycode range for keydown2's VK translation, so this needs a real
-    __len__ matching pygame's key array size (512)."""
-    def __init__(self):
-        self._held = set()
-    def set(self, *keys):
-        self._held = set(keys)
-    def __getitem__(self, key):
-        return key in self._held
-    def __len__(self):
-        return 512
+from game_tester.headless_client import FakeKeys, pump_frame
 
 
 fake_keys = FakeKeys()
@@ -76,34 +64,7 @@ last_default_movement = [None]
 
 
 def frame(current_time):
-    """One iteration of pygame_game.GameClient.run()'s loop body, minus the
-    real pygame event pump / display flip (headless).
-
-    _frame_dt must be set BEFORE _handle_input runs (matches run()'s real
-    ordering) — normal movement accumulates distance via
-    self._move_accum += self.walk_speed * self._frame_dt in input.py, so a
-    stale/zero _frame_dt silently drops all movement (harness-only bug,
-    found live: player never moved a single frame across 60s of held
-    arrow keys on the first run of this script)."""
-    game._frame_dt = dt
-    game._handle_events()
-    game._handle_input(current_time)
-    client.update(timeout=0)
-    game._load_new_npcs()
-    game._process_pending_warp()
-    game._process_self_shoots()
-    game.gs1.process_coroutines(dt)
-    game.gs1.process_timeouts(dt)
-    game.gs2.process_coroutines(dt)
-    game.gs2.process_timeouts(dt)
-    game._check_scripted_link_warp()
-    game.gs1.advance_input_frame()
-    game._check_level_change()
-    game._update_swimming_state()
-    game._update_visual_position(dt)
-    game._update_animations(dt)
-    game._last_dt = dt
-    game._render()
+    pump_frame(game, dt, current_time)
 
 
 def pump(seconds, label=""):

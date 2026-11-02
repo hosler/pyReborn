@@ -12,6 +12,7 @@ Usage:
 import sys
 import argparse
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 # Add parent to path for imports
@@ -148,6 +149,11 @@ def run_explorer_mode(host: str, port: int, duration: float,
 
 
 def main():
+    with ExitStack() as stack:
+        return _main(stack)
+
+
+def _main(stack):
     parser = argparse.ArgumentParser(
         description="Game Tester - Automated QA for pyReborn",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -204,8 +210,8 @@ Examples:
                             "refused by a server that enforces them")
     parser.add_argument("--password", default=None,
                        help="Password for --account (default: testpass)")
-    parser.add_argument("--gmap", action="store_true",
-                       help="Run the GMAP world test suite (needs gmaps=chicken.gmap)")
+    from game_tester.local_world import add_world_arguments
+    add_world_arguments(parser, gmap_suite=True)
     parser.add_argument("--tier1", action="store_true",
                        help="Run the board-modify/large-file protocol-parity suite")
     parser.add_argument("--tier2", action="store_true",
@@ -259,6 +265,23 @@ Examples:
                             "of catalogued servers that have a baseline")
 
     args = parser.parse_args()
+    if args.start and not args.world:
+        parser.error("--start requires --world")
+    if isinstance(args.gmap, str) and not args.world:
+        parser.error("--gmap NAME requires --world (bare --gmap runs the suite)")
+    if args.world:
+        from game_tester.local_world import world_from_arguments
+        accounts = [f"testbot{i + 1}" for i in range(max(2, args.bots))]
+        accounts.extend(["explorer"] if args.explore else [])
+        if args.account and args.account not in accounts:
+            accounts.append(args.account)
+        try:
+            world = stack.enter_context(world_from_arguments(args, accounts=accounts))
+        except ValueError as exc:
+            parser.error(str(exc))
+        args.host, args.port = world.host, world.port
+        # Naming a map selects world config; the legacy bare flag selects QA.
+        args.gmap = args.gmap is True
 
     if args.gs2_crawl:
         import os
@@ -434,7 +457,7 @@ Examples:
         reporter.set_config(host=f"{args.host}:{args.port}", bots=1, mode="gs1")
         # An explicit host/port means "capture that one server"; the bare
         # --gs1 spawns pygserver + gs2emu itself and diffs.
-        explicit = ("--host" in sys.argv) or ("--port" in sys.argv)
+        explicit = bool(args.world) or ("--host" in sys.argv) or ("--port" in sys.argv)
         tresults = run_gs1_conformance(
             host=args.host, port=args.port, explicit_target=explicit)
         for r in tresults:

@@ -1049,6 +1049,17 @@ trapped the player on one segment with nothing stitched to it. Every path that
 resolves a `.gmap` now goes through `handlers/files.adopt_gmap`, including the
 uptodate one. `test_uptodate_gmap_still_builds_the_world_grid` pins it.
 
+## Local world playtests
+
+`python -m game_tester --world ../funtimes/world --gmap chicken.gmap --start onlinestartlocal.nw 30 30.5`
+`python -m game_tester.playtest_daemon 14990 --world ../funtimes/world --gmap chicken.gmap --start onlinestartlocal.nw 30 30.5`
+Import `LocalWorld` from `game_tester.local_world`; use `with LocalWorld(DIR, start_level=LEVEL, start_xy=(X, Y)) as world:`.
+Connect `GameBot("testbot1", world.host, world.port)` or `HeadlessGameClient(world.host, world.port, "testbot1", "testpass")` from `game_tester.headless_client`.
+Accounts start fresh with 3 hearts and default inventory; the world is symlinked and the launcher only reads it.
+Logout every client before `world.snapshot("start")` / `world.restore("start")`; registered connected bots are rejected.
+Snapshots copy account JSON; restore restarts a running server to clear caches. Server flags and transient world state are not persisted.
+`world.stop()` retains `server_dir`/`log_path`; `world.close()` and context exit remove them. Bare `--gmap` keeps the existing QA suite.
+
 ## Running the tests
 
 Use the repo-root venv **`../.venv/bin/python`** (Python 3.14, created

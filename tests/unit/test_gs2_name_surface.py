@@ -460,3 +460,16 @@ def test_mouse_button_globals_report_the_mask():
     assert rt.host.get_object("mousebuttonsglobal") == 1.0
     assert rt.host.get_object("rightmousebutton") is False
     assert rt.host.get_object("mousewheeldelta") == 0.0
+
+
+def test_walk_speed_members_report_raw_tick_fields_and_keep_script_writes():
+    from pyreborn.game.constants import WALK_SPEED
+
+    rt = _runtime()
+    rt.game_shell = SimpleNamespace(walk_speed=99.0)
+    assert rt.player_object.get("defaultwalkspeed") == WALK_SPEED / 20 == 0.5
+    assert rt.player_object.get("diagonalwalkspeed") == 1.0
+    rt.player_object.set("defaultwalkspeed", 0.75)
+    rt.player_object.set("diagonalwalkspeed", 1.2)
+    assert rt.player_object.get("defaultwalkspeed") == 0.75
+    assert rt.player_object.get("diagonalwalkspeed") == 1.2

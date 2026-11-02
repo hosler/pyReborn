@@ -211,6 +211,12 @@ class GameBot:
         # State tracking
         self._stuck_count = 0
         self._connected = False
+
+        # Local harnesses track clients and seed dynamic daemon account names.
+        from .local_world import local_world_for
+        world = local_world_for(host, port)
+        if world is not None:
+            world.register_bot(self)
         self._stuck_warned = False  # Only warn once when stuck
 
         # Death/respawn tracking (parity with pygame_game.py's _was_dead):

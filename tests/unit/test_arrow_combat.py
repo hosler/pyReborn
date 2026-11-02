@@ -98,8 +98,8 @@ class TestArrowSimGeometry:
         assert len(c._arrow_sims) == 1
 
         initial_hearts = c.player.hearts
-        # Enough time for the arrow (8 tiles/sec) to cross our position
-        # (5 tiles away) well before the 2s lifetime expires.
+        # Enough time for the arrow (20 tiles/sec) to cross our position
+        # (5 tiles away) well before the 128-tile travel cap.
         c._tick_arrow_sims(now=1.0)
 
         # The hit is detected but not applied immediately - it's queued for
@@ -131,9 +131,10 @@ class TestArrowSimGeometry:
         assert c.player.hearts == initial_hearts
         assert len(c._arrow_sims) == 1  # still in flight, hasn't expired
 
-        # Tick past the arrow's 2s lifetime - it should be dropped as a
-        # miss, not linger forever.
         c._tick_arrow_sims(now=2.1)
+        assert len(c._arrow_sims) == 1  # survives the former 2s limit
+        # Tick past the arrow's 128-tile range at 20 tiles/s.
+        c._tick_arrow_sims(now=6.5)
         assert c.player.hearts == initial_hearts
         assert c._arrow_sims == []
 
@@ -146,23 +147,25 @@ class TestArrowSimGeometry:
         c._start_arrow_sim(info, now=0.0)
         initial_hearts = c.player.hearts
 
-        c._tick_arrow_sims(now=2.1)
+        c._tick_arrow_sims(now=6.5)
         assert c.player.hearts == initial_hearts
         assert c._arrow_sims == []
 
     def test_expired_arrow_is_pruned_without_hit(self):
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        # Arrow far enough away that it would eventually reach us, but not
-        # before its lifetime runs out (2s * 8 tiles/s = 16 tiles max range;
-        # this one is 20 tiles out).
-        info = {'owner_id': 3, 'x': 10.0, 'y': 30.0, 'direction': 3}
+        # A target 140 tiles away lies beyond the 128-tile cap.
+        info = {'owner_id': 3, 'x': -110.0, 'y': 30.0, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
+        sim = c._arrow_sims[0]
         initial_hearts = c.player.hearts
 
-        c._tick_arrow_sims(now=2.1)
+        c._tick_arrow_sims(now=7.1)
         assert c.player.hearts == initial_hearts
         assert c._arrow_sims == []
+        assert c._pending_arrow_hits == []
+        assert sim['distance'] == pytest.approx(128.0)  # GServer Level.cpp:2629
+        assert sim['x'] == pytest.approx(18.0)
 
     def test_own_recent_arrow_echo_not_simulated(self):
         c = _fake_connected_client()

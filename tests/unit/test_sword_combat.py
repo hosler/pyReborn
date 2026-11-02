@@ -135,10 +135,10 @@ class TestSwordHitBaddies:
 
 
 class TestSwordArcGeometry:
-    """Sword and target geometry share the collision-box center axes."""
+    """NPC collision-box reach stays at its previous envelope."""
 
     GAP_HITS = 1.8
-    GAP_MISSES = 3.1
+    GAP_MISSES = 2.6
 
     DIRECTIONS = {
         0: (0, -1),  # up
@@ -173,9 +173,7 @@ class TestSwordArcGeometry:
         assert self._hit(1, gap) == self._hit(3, gap)
 
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_front_gap_reach_envelope_is_preserved(self, direction):
-        # A 1.5-tile blade plus the target box's 1.0-tile half-size
-        # reaches a target whose body center is exactly 2.5 tiles away.
+    def test_front_gap_preserves_npc_reach(self, direction):
         assert self._hit(direction, 2.5) is True
         assert self._hit(direction, 2.5001) is False
 
@@ -198,30 +196,44 @@ class TestSwordArcDirections:
             c.players[1] = {'x': x, 'y': y, 'world_x': x, 'world_y': y}
             c.attack_player = lambda player_id, **kwargs: hits.append(player_id)
             c._sword_hit_players(direction)
+        elif kind == "baddy":
+            c.baddies[1] = {'x': x, 'y': y}
+            c.hurt_baddy = lambda baddy_id, **kwargs: hits.append(baddy_id)
+            c._sword_hit_baddies(direction)
         else:
             c.npcs[1] = {'x': x, 'y': y, 'world_x': x, 'world_y': y}
             c.on_sword_hit_npc = hits.append
             c._sword_hit_npcs(direction)
         return hits
 
-    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_directly_in_front_is_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (fx * 1.8, fy * 1.8)) == [1]
 
-    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_behind_is_not_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (-fx * 2.2, -fy * 2.2)) == []
 
-    @pytest.mark.parametrize("kind", ["player", "npc"])
+    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_beside_arc_is_not_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (fx * 1.0 + fy * 3.0,
                                              fy * 1.0 - fx * 3.0)) == []
+
+    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_player_rectangle_and_npc_baddy_reach_differ(self, kind, direction):
+        fx, fy = self.DIRECTIONS[direction]
+        expected = [1] if kind == "player" else []
+        assert self._hits(kind, direction, (fx * 3.0, fy * 3.0)) == expected
+        # The restored collision-box test retains a 1.5-tile lateral reach.
+        assert self._hits(kind, direction,
+                          (fx + fy * 1.6, fy - fx * 1.6)) == expected
 
 
 class TestBaddyHurtWireFormat:

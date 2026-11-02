@@ -237,7 +237,7 @@ def test_putbomb_sends_wire_and_spawns_via_callback():
     gs1.on_putbomb = lambda *a: spawned.append(a)
     gs1.trigger_npc_event(5, "playertouchsme")
     assert _sent(client, PacketID.PLI_BOMBADD) == [
-        build_bomb_add(20, 20, 1, 3050)]
+        build_bomb_add(20, 20, 1, 3000)]  # GServer Level.cpp:1986
     assert spawned == [(1, 20.0, 20.0, 3.0)]
     assert client.player.bombs == 0    # no ammo touched, no BOMBSCOUNT report
 
