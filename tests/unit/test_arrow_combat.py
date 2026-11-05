@@ -46,6 +46,7 @@ def _fake_connected_client():
     c = Client("localhost", 14900)
     c._authenticated = True
     c._protocol = _SentRecorder()
+    c._current_level_name = 'arrows.nw'
     return c
 
 
@@ -93,7 +94,7 @@ class TestArrowSimGeometry:
     def test_hit_when_arrow_crosses_player(self):
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 3, 'x': 25.0, 'y': 30.0, 'direction': 3}  # heading right, toward us
+        info = {'owner_id': 3, 'x': 25.0, 'y': 31.5, 'direction': 3}  # heading right, toward us
         c._start_arrow_sim(info, now=0.0)
         assert len(c._arrow_sims) == 1
 
@@ -118,7 +119,7 @@ class TestArrowSimGeometry:
     def test_dodge_when_player_moves_away(self):
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 3, 'x': 20.0, 'y': 30.0, 'direction': 3}  # heading right
+        info = {'owner_id': 3, 'x': 20.0, 'y': 31.5, 'direction': 3}  # heading right
         c._start_arrow_sim(info, now=0.0)
 
         # We dodge: move well away from the arrow's path before it arrives.
@@ -155,7 +156,7 @@ class TestArrowSimGeometry:
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
         # A target 140 tiles away lies beyond the 128-tile cap.
-        info = {'owner_id': 3, 'x': -110.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 3, 'x': -110.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
         sim = c._arrow_sims[0]
         initial_hearts = c.player.hearts
@@ -211,7 +212,7 @@ class TestArrowDoubleDamageGuard:
     def test_client_detects_first_server_echo_during_grace_is_dropped(self):
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 5, 'x': 25.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 5, 'x': 25.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
 
         initial_hearts = c.player.hearts
@@ -236,7 +237,7 @@ class TestArrowDoubleDamageGuard:
     def test_server_detects_first_client_sim_is_dropped(self):
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 5, 'x': 25.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 5, 'x': 25.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
         assert len(c._arrow_sims) == 1
 
@@ -272,7 +273,7 @@ class TestArrowDoubleDamageGuard:
         assert after_server_hit == pytest.approx(initial_hearts - 0.5)
 
         # Only now does the PLO_ARROWADD relay for that same arrow arrive.
-        info = {'owner_id': 5, 'x': 25.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 5, 'x': 25.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
         c._tick_arrow_sims(now=1.0)
 
@@ -284,7 +285,7 @@ class TestArrowDoubleDamageGuard:
         # once the grace period elapses with nothing else arriving.
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 5, 'x': 25.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 5, 'x': 25.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
         initial_hearts = c.player.hearts
 
@@ -298,7 +299,7 @@ class TestArrowDoubleDamageGuard:
         # in flight must apply normally.
         c = _fake_connected_client()
         c.player.x, c.player.y = 30.0, 30.0
-        info = {'owner_id': 5, 'x': 25.0, 'y': 30.0, 'direction': 3}
+        info = {'owner_id': 5, 'x': 25.0, 'y': 31.5, 'direction': 3}
         c._start_arrow_sim(info, now=0.0)
 
         initial_hearts = c.player.hearts

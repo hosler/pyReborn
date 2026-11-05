@@ -1,4 +1,5 @@
 from .common import *
+from .common import _CARRY_PLAYER_PROPS, _set_carry
 
 def parse_rawdata(data: bytes) -> int:
     """
@@ -35,7 +36,7 @@ def parse_rawdata(data: bytes) -> int:
 # rule stopped the parse after the account and silently dropped the nick and
 # the category flags of every pseudo-player.
 _OTHER_STREAM = StreamPolicy(
-    table=PLAYER_PROPS, max_prop_id=83, require_ascending=True,
+    table=_CARRY_PLAYER_PROPS, max_prop_id=83, require_ascending=True,
     ascending_exempt=frozenset({34, 50}), check_alignment=True,
     handle_empty=frozenset({12, 51}))
 
@@ -56,6 +57,7 @@ _OTHER_PROP_HANDLERS = {
     16: _set('y'),
     17: _set_sprite,
     18: _set('status'),
+    19: _set_carry,
     20: _set('level'),
     26: _set('mp'),
     32: _set('ap'),

@@ -115,6 +115,56 @@ def test_server_optional_npcs_and_missing_defaults(server_source):
         local.close()
 
 
+@pytest.mark.parametrize("assets", [
+    (), ("images", "sounds"),
+    ("images", "gani", "sounds", "bodies", "heads", "swords", "shields", "hats"),
+])
+def test_full_server_links_available_assets_without_changing_sources(server_source, assets):
+    for name in assets:
+        directory = server_source / name
+        directory.mkdir()
+        (directory / "asset.bin").write_bytes(name.encode())
+    # A file with a directory's name must not become an asset directory link.
+    missing = next((name for name in ("images", "gani") if name not in assets), None)
+    if missing is not None:
+        (server_source / missing).write_text("not an asset tree")
+    original = {name: (server_source / name).stat().st_mode for name in assets}
+    local = LocalWorld(server_source)
+    try:
+        local.prepare()
+        local.prepare()  # Existing links are left intact on repeated prepares.
+        for name in ("images", "gani", "sounds", "bodies", "heads",
+                     "swords", "shields", "hats"):
+            destination = local.server_dir / name
+            if name in assets:
+                assert destination.is_symlink()
+                assert destination.resolve() == server_source / name
+                assert (destination / "asset.bin").read_bytes() == name.encode()
+            else:
+                assert not destination.exists()
+    finally:
+        local.close()
+    for name in assets:
+        assert (server_source / name).stat().st_mode == original[name]
+        assert (server_source / name / "asset.bin").read_bytes() == name.encode()
+
+
+def test_full_server_image_can_be_requested_from_linked_assets(server_source):
+    from pygserver.filesystem import FileSystem
+    images = server_source / "images"
+    images.mkdir()
+    sprite = b"arcane sprite bytes"
+    (images / "arcane_bolt.png").write_bytes(sprite)
+    local = LocalWorld(server_source)
+    try:
+        local.prepare()
+        filesystem = FileSystem(SimpleNamespace(), str(local.server_dir))
+        assert filesystem.read_file("arcane_bolt.png") == sprite
+    finally:
+        local.close()
+    assert (images / "arcane_bolt.png").read_bytes() == sprite
+
+
 @pytest.mark.parametrize("child", ["world", "config"])
 def test_server_detection_requires_world_and_config(tmp_path, child):
     (tmp_path / child).mkdir()

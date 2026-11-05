@@ -248,13 +248,10 @@ def get_tile_type(tile_id: int, tilestype: Optional[int] = None) -> int:
 def type_is_blocking(tile_type: int) -> bool:
     """Return True if a tile *type* blocks walking.
 
-    Mirrors the C# client's IsOnWall, which is just a threshold: anything at
-    THROW_THROUGH (20) or above blocks — throw-through, jump-stone, solid walls,
-    and the liftable object types (23-26). Beds (4/5) block too, so they
-    are the one explicit addition below the threshold.
+    TServerLevel.cpp:742 blocks types >=20 and type 4; type 5 is passable.
     """
     return (tile_type >= TileType.THROW_THROUGH or
-            tile_type in (TileType.BED_UPPER, TileType.BED_LOWER))
+            tile_type == TileType.BED_UPPER)
 
 
 def is_blocking(tile_id: int) -> bool:

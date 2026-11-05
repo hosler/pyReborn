@@ -52,9 +52,8 @@ _DEFAULT_ITEM_COLOR = (220, 220, 100)
 # for chests) -- _get_item_sprite() already knows how to use them.
 _ITEM_SPRITE_TABLE = {}
 
-_CHEST_REVEAL_DURATION_MS = 1500
-_CHEST_REVEAL_FADE_MS = 400
-_CHEST_REVEAL_RISE_TILES = 0.5
+# TPlayer.cpp:2812-2814 putExtra(..., 0x18): 24 ticks at 20 Hz, no rise or fade.
+_CHEST_REVEAL_DURATION_MS = 24 * 50
 
 
 class LevelObjectsRenderMixin:
@@ -199,19 +198,13 @@ class LevelObjectsRenderMixin:
 
     @staticmethod
     def _chest_reveal_visual(reveal, now_ms: int):
-        """Return (rise in tiles, alpha), or None once the reveal expires."""
+        """Return (rise in tiles, alpha), or None once the reveal expires.
+
+        The item sits still and opaque for its whole life (always (0.0, 255))."""
         age = max(0, now_ms - reveal["started_ms"])
         if age >= _CHEST_REVEAL_DURATION_MS:
             return None
-        progress = age / _CHEST_REVEAL_DURATION_MS
-        rise = progress * _CHEST_REVEAL_RISE_TILES
-        fade_start = _CHEST_REVEAL_DURATION_MS - _CHEST_REVEAL_FADE_MS
-        if age <= fade_start:
-            alpha = 255
-        else:
-            alpha = round(255 * (_CHEST_REVEAL_DURATION_MS - age) /
-                          _CHEST_REVEAL_FADE_MS)
-        return rise, alpha
+        return 0.0, 255
 
     def _render_chest_reveals(self, now_ms: Optional[int] = None) -> None:
         """Update and draw short-lived item reveals above opened chests."""

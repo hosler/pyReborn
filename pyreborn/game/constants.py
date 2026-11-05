@@ -25,7 +25,7 @@ REVIVAL_INPUT_DELAY = 1.5  # FourPlay TPlayer.cpp:7319
 # Classic-engine movement feel (collision.py's corner-assist, actions.py's
 # push/grab/pull hold state — see their docstrings).
 CORNER_ASSIST_MAX = 0.5  # tiles - max perpendicular nudge near a doorway/corner
-PUSH_HOLD_TIME = 0.5     # seconds a blocked direction must be held before "push"
+PUSH_HOLD_TIME = (38 - 18) * .05  # Batch A countdown to the push pose.
 
 # Player collision geometry relative to the 3x3 sprite's top-left anchor.
 PLAYER_COLLISION_LEFT = 0.5

@@ -164,6 +164,14 @@ class LocalWorld:
             for name in ("config", "accounts", "snapshots"):
                 (self.server_dir / name).mkdir()
             (self.server_dir / "world").symlink_to(self.world_dir, target_is_directory=True)
+            if self.server_dir_source is not None:
+                # Content is read through source links, like world/; never copy,
+                # modify, or change permissions on these shared asset trees.
+                for name in ("images", "gani", "sounds", "bodies", "heads",
+                             "swords", "shields", "hats"):
+                    source = self.server_dir_source / name
+                    if source.is_dir():
+                        (self.server_dir / name).symlink_to(source, target_is_directory=True)
             if self.npcs_dir is None:
                 (self.server_dir / "npcs").mkdir()
             else:

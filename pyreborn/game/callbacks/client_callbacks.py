@@ -125,6 +125,24 @@ def wire_client_callbacks(game):
         game._append_chat(f"<- {_roster_name(info)} left")
 
     def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
+        state = game.client.player.hurt
+        stamp = (state.generation, time.time())
+        advanced = state.generation > getattr(game, '_presented_hurt_generation', 0)
+        tracked = state.generation > 0 and game.client.auto_respond_hurt and damage > 0
+        if (tracked and stamp == getattr(game, '_presented_hurt_stamp', None)
+                and (game.client.player.hearts > 0 or game.current_anim_name == 'dead')):
+            return
+        game._presented_hurt_stamp = stamp if advanced and tracked else None
+        game._presented_hurt_generation = state.generation
+        # TPlayer.cpp:5771-5779,6574: hurt/death release through the normal throw path.
+        if game.client.player.is_carrying():
+            game._throw_object()
+        if getattr(game.client.player, 'hurt_vector_pending', False):
+            from ...hurt import hurt_vector
+            if source_x or source_y:
+                state.dx, state.dy = hurt_vector(
+                    game.client.x - source_x, game.client.y - source_y)
+            game.client.player.hurt_vector_pending = False
         now = time.monotonic()
         # Spawn floating damage number at player position
         game.damage_numbers.append({
@@ -144,23 +162,33 @@ def wire_client_callbacks(game):
             game.sound_mgr.play("dead.wav")
             # Set death animation
             game.player_anim.set_animation("dead", game.client.player.direction)
+            game.current_anim_name = "dead"
         else:
             game.sound_mgr.play("hurt.wav")
+            game.player_anim.set_animation("hurt", game.client.player.direction, force=True)
+            game.current_anim_name = "hurt"
 
     def on_item(x, y, item_type, removed):
         pass
 
     def on_explosion(x, y, radius, power):
-        game._start_camera_shake(x, y)
+        game._start_camera_shake(*_wire_to_world(x, y))
+
+    def on_bush_cut(x, y, index):
+        game._spawn_leaf_particles(x, y)
+        # The existing putleaps renderer carries both bush colour variants
+        # and plays crush.wav, as TServerLevel::putLeaps does (:2850-2867).
+        game._spawn_leaps(index, x, y)
+        game.world_surface = None
 
     def on_minimap(data: bytes):
         """Handle minimap data from server."""
         game.minimap_data = data
         game._build_minimap_surface()
 
-    def on_ghost_mode(enabled: bool):
-        """Handle ghost mode toggle."""
-        game.ghost_mode = enabled
+    def on_ghost_mode(mode: int):
+        """Preserve the server's spectator mode."""
+        game.ghost_mode = mode
 
     # Tier 3b: PLO_SERVERTEXT - a text answer from the server (e.g. a
     # gr.getstring()/gettext() reply) - surface it in the chat log like an
@@ -299,11 +327,58 @@ def wire_client_callbacks(game):
 
     game.client.on_packet[PacketID.PLO_NPCWEAPONDEL] = on_weapon_del
 
+    def _wire_to_world(x, y):
+        # Bomb packets are level-local (PLO_BOMBADD/BOMBDEL/EXPLOSION carry
+        # the sender's level coordinates); game.active_bombs holds WORLD
+        # coordinates on a gmap, like local lays and the lift/throw code.
+        if not game.client.in_gmap_segment:
+            return x, y
+        from reborn_protocol.coords import segment_origin
+        level = game.client._pending_level_name or game.client._current_level_name
+        grid = next((cell for cell, name in game.client.gmap_grid.items()
+                     if name == level), None)
+        if grid is None:
+            return x, y
+        ox, oy = segment_origin(*grid)
+        return x + ox, y + oy
+
     def on_bomb_add(info):
-        game._add_remote_bomb(info)
+        wx, wy = _wire_to_world(info.get('x', 0.0), info.get('y', 0.0))
+        game._add_remote_bomb(dict(info, x=wx, y=wy))
 
     def on_bomb_del(x, y):
-        game._detonate_bomb_at(x, y)
+        from ...carrying import BOMB_CODES
+        from ...throwing import remote_origin
+        from ...liftobjects import LIFT_PROBE
+        import math
+        # GServer-v2 PlayerClientPackets.cpp:251: BOMBDEL only removes.
+        level = game.client._pending_level_name or game.client._current_level_name
+        from reborn_protocol.coords import segment_origin
+        grid = next((cell for cell, name in game.client.gmap_grid.items()
+                     if name == level), None) if game.client.in_gmap_segment else None
+        origin_x, origin_y = segment_origin(*grid) if grid is not None else (0, 0)
+        game.client.bombs.setdefault(level, {}).pop((x, y), None)
+        for pid, owner in game.client.players.items():
+            if owner.get('carry_sprite', -1) not in BOMB_CODES or owner.get('_carried_bomb'):
+                continue
+            ox, oy = remote_origin(game.client, owner)
+            px, py = owner.get('world_x'), owner.get('world_y')
+            px = owner.get('x', 0) + ox if px is None else px
+            py = owner.get('y', 0) + oy if py is None else py
+            dx, dy = LIFT_PROBE[owner.get('direction', 2)]
+            tx, ty = math.floor(px + dx + .0001), math.floor(py + dy + .0001)
+            if not (x + origin_x <= tx < x + origin_x + 2 and y + origin_y <= ty < y + origin_y + 2):
+                continue
+            bomb = next((b for b in game.active_bombs
+                         if b['x'] == x + origin_x and b['y'] == y + origin_y and not b.get('exploded')), None)
+            if bomb is not None:
+                bomb['fuse_remaining'] = max(.05, bomb['time'] + bomb['fuse_time'] - time.time())
+                bomb['carried_by'] = pid
+                owner['_carried_bomb'] = bomb
+                return
+        game.active_bombs[:] = [bomb for bomb in game.active_bombs
+                               if not (bomb['x'] == x + origin_x and bomb['y'] == y + origin_y
+                                       and not bomb.get('exploded'))]
 
     def on_arrow_add(info):
         game._add_remote_arrow(info)
@@ -319,33 +394,16 @@ def wire_client_callbacks(game):
     def on_board_layer(layer, x, y, tiles):
         game.world_surface = None
 
-    # PLO_HITOBJECTS - a player's sword/weapon connected with a bush/pot/
-    # etc; spawn the same break/spark burst a thrown object landing uses
-    # (see render_effects._spawn_hit_break_effect).
+    # PLO_HITOBJECTS keeps the weapon-hit sparks and leaves.
     def on_hit_objects(x, y, power, player_id):
         game._spawn_hit_break_effect(x, y)
         game._spawn_leaf_particles(x, y)
 
-    # PLO_THROWCARRIED - another player threw whatever they were
-    # carrying. The packet only names the owner (see
-    # packets.parse_throwcarried), so look up their last known
-    # position/direction and launch a generic thrown-arc from there (see
-    # render_effects._update_and_render_other_thrown / on init below).
     def on_throwcarried(owner_id):
-        owner = game.client.players.get(owner_id)
-        if not owner:
-            return
-        direction = owner.get('direction', 2) or 2
-        ddx, ddy = game._facing_delta(direction)
-        x, y = owner.get('x', 0.0), owner.get('y', 0.0)
-        z0 = 2.75
-        game.other_thrown_objects.append({
-            'x': x, 'y': y + 1.0,
-            'z': z0, 'z0': z0,
-            'dx': ddx, 'dy': ddy,
-            'speed': 20.0, 'dist': 0.0, 'range': 16.0,
-            'colors': game.BREAK_COLORS['bush'],
-        })
+        from ...throwing import remote_throw
+        obj = remote_throw(game.client, owner_id)
+        if obj is not None:
+            game.other_thrown_objects.append(obj)
 
     # PLO_FIRESPY - a GS1 firespy/fireball effect from another player's
     # weapon script. Like PLO_THROWCARRIED, the payload is just the owner
@@ -370,12 +428,11 @@ def wire_client_callbacks(game):
             'start_x': x, 'start_y': y,
         })
 
-    # PLO_PUSHAWAY (packet 38) - a knockback impulse. Queued here and
-    # applied/decayed per-frame in render_effects._apply_pushaway (see its
-    # docstring for the conservative-decode note).
+    # TClient.cpp:3168-3175: pushaway replaces hurtFly's vector without
+    # starting another hurt action or changing HP/immunity.
     def on_pushaway(dx, dy):
-        vx, vy = game._pushaway_velocity
-        game._pushaway_velocity = (vx + dx, vy + dy)
+        game.client.player.hurt.dx = dx
+        game.client.player.hurt.dy = dy
 
     def on_say2(text):
         game._show_dialogue(text, classic_font=True)
@@ -388,6 +445,7 @@ def wire_client_callbacks(game):
     game.client.on_hurt = on_hurt
     game.client.on_item = on_item
     game.client.on_explosion = on_explosion
+    game.client.on_bush_cut = on_bush_cut
     game.client.on_minimap = on_minimap
     game.client.on_ghost_mode = on_ghost_mode
     if hasattr(game.client, 'on_bomb_del'):

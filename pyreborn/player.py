@@ -4,6 +4,9 @@ Simple dataclass for player state.
 """
 
 from dataclasses import dataclass, field
+import time
+
+from .hurt import HurtState
 
 
 @dataclass
@@ -48,11 +51,12 @@ class Player:
     horse_bushes: int = 0
 
     # Carrying state
-    carry_sprite: int = 0
+    carry_sprite: int = -1
     carry_npc: int = 0
     carried_object_type: str = ""  # "bush", "rock", "pot", "sign", or ""
     carried_tile_ids: tuple = ()  # 4 tile IDs for 2x2 object: (tl, tr, bl, br)
     carried_tile_pos: tuple = ()  # Position where object was picked up: (x, y)
+    carried_bomb: dict = field(default=None, repr=False, compare=False)
 
     # Sitting state
     is_sitting: bool = False
@@ -74,6 +78,32 @@ class Player:
 
     # Hurt state tracking
     hurt_timeout: float = 0.0  # When hurt animation should end
+    action_mode: int = 0
+    hurt: HurtState = field(default_factory=HurtState, repr=False, compare=False)
+
+    def no_hurt(self, now=None):
+        """Representable getNoHurt gates (TPlayer.cpp:3013-3043).
+
+        Mode 10 is swimming; death is pause mode 2 / the DEAD status bit.
+        Server HP assignments use update_from_props and bypass this test.
+        """
+        now = time.time() if now is None else now
+        if self.action_mode == 3 and self.hurt.generation and not self.hurt.immune(now):
+            self.action_mode = 0
+        return (self.hurt.immune(now) or self.hearts <= 0
+                or bool(self.status & 0x09)
+                or self.action_mode in (3, 10)
+                or self.animation in ('swim', 'lava', 'dead'))
+
+    def __setattr__(self, name, value):
+        # Some script hosts assign hearts again after respond_to_hurt. Guard
+        # local decreases here too, so those writes cannot bypass immunity.
+        # Server property updates explicitly use object.__setattr__ below.
+        if (name == 'hearts' and 'hurt' in self.__dict__
+                and value < self.__dict__.get('hearts', value)
+                and self.no_hurt()):
+            return
+        object.__setattr__(self, name, value)
 
     @property
     def is_hidden(self) -> bool:
@@ -97,7 +127,8 @@ class Player:
         if 'direction' in props:
             self.direction = props['direction']
         if 'hearts' in props:
-            self.hearts = props['hearts']
+            # PLO_PLAYERPROPS is authoritative, including during immunity.
+            object.__setattr__(self, 'hearts', props['hearts'])
         if 'max_hearts' in props:
             self.max_hearts = props['max_hearts']
         if 'rupees' in props:
@@ -144,6 +175,9 @@ class Player:
             self.horse_bushes = props['horse_bushes']
         if 'carry_sprite' in props:
             self.carry_sprite = props['carry_sprite']
+            if self.carry_sprite == -1 and self.carried_bomb is not None:
+                self.carried_bomb['discarded'] = True
+                self.throw_object()
         if 'carry_npc' in props:
             self.carry_npc = props['carry_npc']
         for key, value in props.items():
@@ -152,7 +186,7 @@ class Player:
 
         # Clamp hearts to valid range after updating both values
         if self.max_hearts > 0:
-            self.hearts = max(0, min(self.hearts, self.max_hearts))
+            object.__setattr__(self, 'hearts', max(0, min(self.hearts, self.max_hearts)))
 
     def is_carrying(self) -> bool:
         """Check if player is currently carrying an object."""
@@ -169,6 +203,11 @@ class Player:
         self.carried_object_type = object_type
         self.carried_tile_ids = tile_ids
         self.carried_tile_pos = pos
+        from .liftobjects import LIFT_NAMES, LIFT_SPRITES
+        from .throwing import carry_code
+        kind = {'rock': 'stone', 'pot': 'vase'}.get(object_type, object_type)
+        if kind in LIFT_NAMES:
+            self.carry_sprite = carry_code(LIFT_SPRITES[LIFT_NAMES.index(kind)])
         # Stop sitting when picking up
         self.is_sitting = False
 
@@ -184,6 +223,10 @@ class Player:
         self.carried_object_type = ""
         self.carried_tile_ids = ()
         self.carried_tile_pos = ()
+        self.carry_sprite = -1
+        self.carried_bomb = None
+        if self.action_mode == 4:
+            self.action_mode = 0
         return (thrown_type, thrown_tiles, thrown_pos)
 
     def sit_down(self, direction: int = 2):

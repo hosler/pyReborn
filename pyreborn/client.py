@@ -299,6 +299,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         finally:
             self._in_update = False
 
+        self._tick_sword_attack()
         self._tick_arrow_sims()
 
         return packets
@@ -584,6 +585,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_arrow_sims': ('combat_state', 'arrow_sims'),
     '_pending_arrow_hits': ('combat_state', 'pending_arrow_hits'),
     '_arrow_hurt_suppress': ('combat_state', 'arrow_hurt_suppress'),
+    '_local_arrow_reports': ('combat_state', 'local_arrow_reports'),
     '_own_recent_arrows': ('combat_state', 'own_recent_arrows'),
     'auto_respond_hurt': ('combat_state', 'auto_respond_hurt'),
     'hurt_animation': ('combat_state', 'hurt_animation'),
@@ -627,6 +629,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_file_send_failed': ('callbacks', 'on_file_send_failed'),
     'on_sign': ('callbacks', 'on_sign'),
     'on_explosion': ('callbacks', 'on_explosion'),
+    'on_bush_cut': ('callbacks', 'on_bush_cut'),
     'on_hit_objects': ('callbacks', 'on_hit_objects'),
     'on_minimap': ('callbacks', 'on_minimap'),
     'on_board_layer': ('callbacks', 'on_board_layer'),

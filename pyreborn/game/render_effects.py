@@ -12,8 +12,8 @@ import pygame
 from reborn_protocol.coords import in_level_bounds
 
 from ..gani import AnimationState
-from ..liftobjects import BUSH_REPLACE, match_bush
 from ..prefs import Prefs
+from ..throwing import LEAP_FRAMES, TICK, advance_throw, landing_type
 from ..tiletypes import TileType
 from .constants import TILE_SIZE, EXPLOSION_DURATION
 from .frame_context import FrameContext, FrameContextMixin
@@ -255,6 +255,14 @@ class EffectsRenderMixin(FrameContextMixin):
         pygame.draw.circle(self.screen, (255, 200, 50),
                            (int(screen_x + 4), int(screen_y - 8)), 3)
 
+    def _render_carried_bomb(self, x, y, bomb=None):
+        sprite = self._get_effect_sprite((bomb or {}).get('image') or 'bomb.gif')
+        if sprite is not None:
+            self.screen.blit(sprite, (x, y))
+        else:
+            pygame.draw.circle(self.screen, (50, 50, 50),
+                               (round(x + TILE_SIZE), round(y + TILE_SIZE)), TILE_SIZE)
+
     def _render_explosion_burst(self, screen_x: float, screen_y: float, elapsed: float,
                                  radius: int, alpha: int):
         """Draw an explosion: the classic explosion gani if it's been
@@ -277,13 +285,29 @@ class EffectsRenderMixin(FrameContextMixin):
         current_time = time.time()
         active_bombs = []
         for bomb in self.active_bombs:
+            if bomb.get('discarded'):
+                continue
+            carrier = bomb.get('carried_by')
+            if carrier == self.client.player.id:
+                bomb['x'], bomb['y'] = self.client.x + .5, self.client.y - 1.375
+            elif carrier is not None:
+                owner = self.client.players.get(carrier)
+                if owner is not None:
+                    from ..throwing import remote_origin
+                    ox, oy = remote_origin(self.client, owner)
+                    bx, by = owner.get('world_x'), owner.get('world_y')
+                    bomb['x'] = (owner.get('x', 0) + ox if bx is None else bx) + .5
+                    bomb['y'] = (owner.get('y', 0) + oy if by is None else by) - 1.375
             fuse_time = max(0.05, bomb.get('fuse_time', self.bomb_fuse_time))
             elapsed = current_time - bomb['time']
 
             # Convert world position to screen position
             screen_x, screen_y = self.camera.world_to_screen(bomb['x'], bomb['y'])
 
-            if not bomb.get('exploded') and elapsed < fuse_time:
+            if not bomb.get('exploded') and (carrier is not None or bomb.get('in_flight') or elapsed < fuse_time):
+                if carrier is not None or bomb.get('in_flight'):
+                    active_bombs.append(bomb)
+                    continue
                 # Bomb is still counting down - render bomb sprite
                 # Flash faster as fuse runs out
                 flash_rate = 5 + (elapsed / fuse_time) * 10
@@ -339,8 +363,11 @@ class EffectsRenderMixin(FrameContextMixin):
     def _detonate_bomb_at(self, x: float, y: float, now: Optional[float] = None):
         """Honor a removal packet immediately, without starting a second burst."""
         now = time.time() if now is None else now
-        matches = [b for b in self.active_bombs
-                   if abs(b['x'] - x) < 0.01 and abs(b['y'] - y) < 0.01]
+        matches = []
+        for bomb in self.active_bombs:
+            tolerance = .51 if bomb.get('carried_by') is not None or bomb.get('in_flight') else .01
+            if abs(bomb['x'] - x) < tolerance and abs(bomb['y'] - y) < tolerance:
+                matches.append(bomb)
         if matches:
             bomb = next((b for b in matches if not b.get('exploded')), matches[0])
         else:
@@ -356,6 +383,24 @@ class EffectsRenderMixin(FrameContextMixin):
         now = time.time() if now is None else now
         bomb['exploded'] = True
         bomb['explosion_time'] = now
+        own_carry = (getattr(self.client.player, 'carried_bomb', None) is bomb
+                     or any(obj.get('bomb') is bomb and not obj.get('remote')
+                            for obj in getattr(self, 'thrown_objects', ())))
+        if own_carry:
+            # TClient.cpp:1386-1414: report the blast through PLI_EXPLOSION.
+            self.client.send_explosion(2, bomb['x'], bomb['y'], bomb.get('power', 1))
+        if getattr(self.client.player, 'carried_bomb', None) is bomb:
+            from ..carrying import publish_carry
+            self.client.player.throw_object()
+            publish_carry(self.client, -1)
+            if self.client.player.action_mode == 4:
+                self.client.player.action_mode = 0
+            self.player_anim.set_animation('idle', self.client.player.direction)
+            self.current_anim_name = 'idle'
+        for owner in getattr(self.client, 'players', {}).values():
+            if owner.get('_carried_bomb') is bomb:
+                owner.pop('_carried_bomb', None)
+                owner['carry_sprite'] = -1
         self.sound_mgr.play("explode.wav")
         self._start_camera_shake(bomb['x'], bomb['y'])
         self._break_bushes_in_blast(bomb['x'], bomb['y'], bomb.get('power', 1))
@@ -373,55 +418,9 @@ class EffectsRenderMixin(FrameContextMixin):
             self._camera_shake_started = now
         return True
 
-    def _clear_bush_tiles(self, ox: int, oy: int, index: int) -> None:
-        """Replace a cut bush's 2x2 with its own stump tiles.
-
-        `bushobjreplace` gives one stump per bush row (TInitStatics.cpp:1502),
-        so this is not a blanket fill with the level's grass tile. Sent over
-        the wire when the bush sits in the segment the player stands in, the
-        way the reference cuts (TPlayer::slayBushes -> modifyBoard with its
-        send flag set).
-        """
-        from reborn_protocol.coords import level_index, world_to_local
-
-        replacement = BUSH_REPLACE[index]
-        standing = self.client.get_current_level_from_position()
-        for i, (dx, dy) in enumerate(((0, 0), (0, 1), (1, 0), (1, 1))):
-            wx, wy = ox + dx, oy + dy
-            level_name, tiles = self._level_tiles_at(wx, wy)
-            if not level_name:
-                continue
-            lx, ly = world_to_local(wx, wy)
-            if level_name == standing:
-                self.client.modify_board(lx, ly, 1, 1, [replacement[i]])
-            elif tiles:
-                tiles[level_index(lx, ly)] = replacement[i]
-
     def _break_bushes_in_blast(self, x: float, y: float, power: int):
-        """Remove vegetation objects whose tiles overlap the circular blast."""
-        radius = 2.5 + power * 0.5
-        # A bush is one of the reference client's `bushobj` 2x2 tile patterns
-        # (pyreborn/liftobjects.py), not a tile type - matching on the whole
-        # pattern is also what stops a lone bush-coloured tile from popping.
-        matches = {}
-        lo_x, hi_x = math.floor(x - radius), math.ceil(x + radius)
-        lo_y, hi_y = math.floor(y - radius), math.ceil(y + radius)
-        for ty in range(lo_y, hi_y + 1):
-            for tx in range(lo_x, hi_x + 1):
-                if math.hypot(tx + 0.5 - x, ty + 0.5 - y) > radius:
-                    continue
-                hit = match_bush(self._get_tile_at, tx, ty)
-                if hit is not None:
-                    index, ox, oy = hit
-                    matches[(ox, oy)] = index
-        origins = set(matches)
-        for (ox, oy), index in matches.items():
-            self._clear_bush_tiles(ox, oy, index)
-            self._spawn_hit_break_effect(ox + 1.0, oy + 1.0)
-            self._spawn_leaf_particles(ox + 1.0, oy + 1.0)
-        if origins:
-            self.world_surface = None
-        return origins
+        """Use the official 2x2 explosion probes for bombs and script bursts."""
+        return self.client._cut_bushes_at_explosion(x, y)
     # Fallback triangle colors, keyed by the projectile's 'gani' name -
     # 'arrow' (the default, matching the classic brown arrow it replaces)
     # and 'firespy' (a distinct fire-orange, so a fireball doesn't look like
@@ -530,7 +529,7 @@ class EffectsRenderMixin(FrameContextMixin):
         self.active_projectiles.append(arrow)
         return arrow
 
-    # Debris tints for thrown-object breaks: (bright, dark) per liftable type.
+    # Fallback tints for weapon-hit bursts.
     BREAK_COLORS = {
         'bush': ((60, 145, 60), (28, 96, 28)),
         'pot':  ((198, 150, 104), (140, 96, 60)),
@@ -541,120 +540,47 @@ class EffectsRenderMixin(FrameContextMixin):
 
     def _update_and_render_thrown(self, dt: float,
                                   frame: Optional[FrameContext] = None):
-        """Fly thrown liftables along their arc and break them
-        on landing or on the first blocking tile. The 2x2 tile graphic is drawn
-        lifted by its arc height, so the throw actually reads as a throw."""
-        survivors = []
-        for obj in self.thrown_objects:
-            step = obj['speed'] * dt
-            obj['x'] += obj['dx'] * step
-            obj['y'] += obj['dy'] * step
-            obj['dist'] += step
-            frac = min(1.0, obj['dist'] / obj['range'])
-            obj['z'] = obj['z0'] * (1.0 - frac * frac)  # eases to the ground
-
-            # Break when the leading edge of the 2x2 meets a wall, or at the
-            # end of the arc.
-            lead_x = obj['x'] + 1.0 + obj['dx']
-            lead_y = obj['y'] + 1.0 + obj['dy']
-            pelted_npc = None
-            for npc_id, npc in (getattr(self.client, 'npcs', {}) or {}).items():
-                nx = float(npc.get('world_x', npc.get('x', 0)) or 0)
-                ny = float(npc.get('world_y', npc.get('y', 0)) or 0)
-                if (npc.get('visible', True) and
-                        nx <= lead_x < nx + 2.0 and ny <= lead_y < ny + 2.0):
-                    pelted_npc = (npc_id, npc)
-                    break
-            if step > 0 and pelted_npc is not None:
-                npc_id, npc = pelted_npc
-                kind = obj.get('type', '')
-                npc['pelt_kind'] = {'pot': 'vase', 'rock': 'stone'}.get(kind, kind)
-                gs1 = getattr(self, 'gs1', None)
-                if gs1 is not None:
-                    gs1.trigger_npc_event(npc_id, 'waspelt')
-                gs2 = getattr(self, 'gs2', None)
-                if gs2 is not None:
-                    gs2.trigger_npc_event(npc_id, 'onWasPelt')
-                self._spawn_break_effect(obj)
-                continue
-            off_level = (not self.client.in_gmap_segment and
-                         not in_level_bounds(lead_x, lead_y))
-            if obj['dist'] >= obj['range'] or off_level or \
-                    self._is_tile_blocking(self._get_tile_at(lead_x, lead_y)):
-                self._spawn_break_effect(obj)
-                continue
-
-            sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
-
-            def draw_thrown(obj=obj, sx=sx, sy=sy):
-                for i, (dx, dy) in enumerate(
-                        [(0, 0), (1, 0), (0, 1), (1, 1)]):
-                    tile_surf = self.tileset_mgr.get_tile_or_color(
-                        obj['tiles'][i])
-                    self.screen.blit(
-                        tile_surf,
-                        (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
-
-            # The sprite rises, but its depth stays on the ground. Sorting by
-            # the lifted bottom makes it jump behind characters near the arc.
-            self._render_world_object(frame, obj['y'], draw_thrown,
-                                      height_tiles=2.0)
-            survivors.append(obj)
-        self.thrown_objects = survivors
-        # Piggy-back the other-players'-throw arc and pushaway-knockback decay
-        # on this method since it already runs every frame with dt (see
-        # game/render.py's render loop, which calls this by name - it isn't
-        # touched by this change).
+        self.thrown_objects = self._advance_and_render_throws(
+            self.thrown_objects, dt, frame)
         self._update_and_render_other_thrown(dt, frame)
         self._apply_pushaway(dt)
 
     def _update_and_render_other_thrown(self, dt: float,
                                         frame: Optional[FrameContext] = None):
-        """Fly OTHER players' thrown objects (PLO_THROWCARRIED - see
-        game/setup.py's on_throwcarried) along the same arc as our own thrown
-        objects above, but drawn as a generic colored 2x2 block rather than
-        real level tiles: parse_throwcarried's payload is just the owner's
-        player id (see packets.py) - the protocol never says what was thrown,
-        so there's no tile graphic to look up for it."""
+        self.other_thrown_objects = self._advance_and_render_throws(
+            self.other_thrown_objects, dt, frame, remote=True)
+
+    def _advance_and_render_throws(self, objects, dt, frame, remote=False):
         survivors = []
-        for obj in self.other_thrown_objects:
-            step = obj['speed'] * dt
-            obj['x'] += obj['dx'] * step
-            obj['y'] += obj['dy'] * step
-            obj['dist'] += step
-            frac = min(1.0, obj['dist'] / obj['range'])
-            obj['z'] = obj['z0'] * (1.0 - frac * frac)  # eases to the ground
-
-            lead_x = obj['x'] + 1.0 + obj['dx']
-            lead_y = obj['y'] + 1.0 + obj['dy']
-            off_level = (not self.client.in_gmap_segment and
-                         not in_level_bounds(lead_x, lead_y))
-            if obj['dist'] >= obj['range'] or off_level or \
-                    self._is_tile_blocking(self._get_tile_at(lead_x, lead_y)):
-                self.break_effects.append({
-                    'x': obj['x'] + 1.0, 'y': obj['y'] + 1.0,
-                    'time': time.time(), 'colors': obj['colors'],
-                })
-                self.sound_mgr.play("crush.wav")
+        for obj in objects:
+            bomb = obj.get('bomb')
+            if bomb is not None and (bomb.get('exploded') or bomb.get('discarded')):
                 continue
+            if advance_throw(self, obj, dt, remote=remote):
+                self._spawn_break_effect(obj)
+                continue
+            if bomb is not None:
+                bomb['x'], bomb['y'] = obj['x'], obj['y'] - obj['z']
 
-            sx, sy = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
-            bright, dark = obj['colors']
+            def draw_thrown(obj=obj):
+                # TServerCarry.cpp:86-97: shadow stays on the ground track.
+                sx, sy = self.camera.world_to_screen(obj['x'] + .25, obj['y'] + 2.5)
+                scale = getattr(self.camera, 'scale', TILE_SIZE)
+                pygame.draw.ellipse(self.screen, (25, 25, 30),
+                                    (sx, sy, max(1, 1.5 * scale), max(1, .4 * scale)))
+                if obj.get('type') == 'bomb':
+                    px, py = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
+                    self._render_carried_bomb(px, py, obj.get('bomb'))
+                    return
+                for i, (dx, dy) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
+                    px, py = self.camera.world_to_screen(
+                        obj['x'] + dx, obj['y'] - obj['z'] + dy)
+                    self.screen.blit(self.tileset_mgr.get_tile_or_color(obj['tiles'][i]),
+                                     (px, py))
 
-            def draw_other_thrown(obj=obj, sx=sx, sy=sy, bright=bright,
-                                   dark=dark):
-                for i, (dx, dy) in enumerate(
-                        [(0, 0), (1, 0), (0, 1), (1, 1)]):
-                    chunk = pygame.Surface(
-                        (TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                    chunk.fill((*(bright if i % 2 == 0 else dark), 255))
-                    self.screen.blit(
-                        chunk, (sx + dx * TILE_SIZE, sy + dy * TILE_SIZE))
-
-            self._render_world_object(frame, obj['y'], draw_other_thrown,
-                                      height_tiles=2.0)
+            self._render_world_object(frame, obj['y'], draw_thrown, height_tiles=2.0)
             survivors.append(obj)
-        self.other_thrown_objects = survivors
+        return survivors
 
     PUSHAWAY_DECAY = 6.0  # velocity damping per second; settles in well under a second
 
@@ -682,13 +608,7 @@ class EffectsRenderMixin(FrameContextMixin):
         self._pushaway_velocity = (vx, vy)
 
     def _spawn_hit_break_effect(self, x: float, y: float):
-        """PLO_HITOBJECTS (see game/setup.py's on_hit_objects): spawn a short
-        break/spark burst at the hit point when a player's sword/weapon connects
-        with a bush/pot/etc. Reuses the same break_effects visual pipeline as
-        _spawn_break_effect below (that one takes a thrown-object dict with a
-        2x2 top-left `x`/`y` needing a +1.0 recentre and a `type` key for
-        color; here x/y are already the exact hit point and there's no object
-        type in the packet, so this appends directly with a neutral color)."""
+        """Queue the existing weapon-hit spark burst at its reported point."""
         self.break_effects.append({
             'x': x, 'y': y,
             'time': time.time(),
@@ -697,14 +617,32 @@ class EffectsRenderMixin(FrameContextMixin):
         self.sound_mgr.play("crush.wav")
 
     def _spawn_break_effect(self, obj):
-        """Queue a debris burst where a thrown object broke."""
+        """Queue a table-driven burst at the object's ground landing point."""
+        if obj.get('type') == 'bomb' and obj.get('remote'):
+            bomb = obj.get('bomb')
+            self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
+            return
+        leap_type = landing_type(self, obj)
+        if obj.get('type') == 'bomb' and obj.get('bomb') is not None:
+            bomb = obj['bomb']
+            if leap_type != 5:
+                # TServerCarry.cpp:237-258: re-place the live bomb using sprite y.
+                bomb['x'], bomb['y'] = obj['x'], obj['y'] - obj['z'] + 1.5
+                bomb['in_flight'] = False
+                remaining = max(50, round(bomb.get('fuse_remaining', bomb['fuse_time']) * 1000))
+                bomb['time'], bomb['fuse_time'] = time.time(), remaining / 1000
+                bomb.pop('fuse_remaining', None)
+                if not obj.get('remote'):
+                    self.client.put_bomb(bomb['x'], bomb['y'], bomb.get('power', 1),
+                                         timer_ms=remaining, consume_ammo=False)
+                return
+            self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
         self.break_effects.append({
-            'x': obj['x'] + 1.0,   # ground center of the 2x2
-            'y': obj['y'] + 1.0,
-            'time': time.time(),
-            'colors': self.BREAK_COLORS.get(obj.get('type'), self.BREAK_COLORS['bush']),
+            'x': obj['x'], 'y': obj['y'], 'time': time.time(),
+            'leap_type': leap_type, 'tiles': obj.get('tiles', ()),
         })
-        self.sound_mgr.play("crush.wav")
+        # TServerLevel.cpp:2850-2866: only landing plays the object sound.
+        self.sound_mgr.play('water.wav' if leap_type == 5 else 'crush.wav')
 
     BREAK_DURATION = 0.45
     LEAF_DURATION = 0.6
@@ -858,20 +796,8 @@ class EffectsRenderMixin(FrameContextMixin):
             color = (*colors[leaf['shade']], int(255 * (1.0 - t)))
             pygame.draw.rect(self.screen, color, (round(px), round(py), size, 2))
 
-    # -- putleaps bursts ---------------------------------------------------
-    #
-    # GS1 `putleaps type,x,y` debris/splash bursts, the reference client's
-    # exact frame data: TServerLeap.cpp's leapslen/leaps0..leaps5 tables
-    # (Preagonal/FourPlay/quattroplay/src/TServerLeap.cpp:11-71), each packed
-    # int decoded as (sprite index, dx, dy) with dx/dy signed eighth-tiles
-    # (TServerLeap::draw applies offset * 0.125 tiles, :107-131). Sprites are
-    # rects on the classic built-in sheet sprites.png (TPlayer::
-    # drawSpriteAbsoluteOffset reads spritespos[], TPlayer.cpp:5315-5326;
-    # rect table at TInitStatics.cpp:1045, defaults *spritesname =
-    # "sprites.png" :4811). One frame advances per 0.05s engine tick;
-    # spawn plays water.wav for type 5, else crush.wav
-    # (TServerLevel::putLeaps, TServerLevel.cpp:2850-2866).
-    LEAP_FRAME_TIME = 0.05
+    # Scripted bursts and thrown-object landings share the leap frame data.
+    LEAP_FRAME_TIME = TICK
     MAX_LEAP_BURSTS = 64
 
     _LEAP_SPRITE_RECTS = {  # sprite index -> (x, y, w, h) on sprites.png
@@ -883,51 +809,7 @@ class EffectsRenderMixin(FrameContextMixin):
         135: (0, 144, 16, 32), 326: (54, 114, 30, 30), 327: (90, 196, 16, 20),
     }
 
-    _LEAP_FRAMES = (
-        (  # type 0
-            ((25, 0, 4), (25, 6, 0), (26, 6, 8), (26, 9, 17)),
-            ((25, -2, 4), (25, 4, -4), (26, 8, 10), (26, 9, 19)),
-            ((26, -4, 4), (25, 2, -8), (26, 10, 12), (26, 9, 21)),
-            ((25, -5, 4), (25, 1, -10), (25, 9, 13), (25, 9, 22)),
-            ((25, -6, 4), (25, 0, -12), (25, 10, 14), (25, 10, 23)),
-            ((26, -7, 4), (25, -1, -14), (26, 10, 15), (26, 10, 24)),
-            ((26, -8, 4), (25, -2, -16), (26, 10, 22), (26, 10, 25)),
-        ),
-        (  # type 1
-            ((24, 0, 8), (24, 8, 0), (24, 12, 8)),
-            ((24, -2, 8), (24, 8, -2), (24, 14, 8)),
-            ((24, -4, 8), (24, 8, -4), (24, 16, 8)),
-            ((24, -6, 8), (24, 8, -6), (24, 18, 8)),
-        ),
-        (  # type 2
-            ((96, -1, 0), (96, 0, 9), (98, 9, -1), (98, 10, 8)),
-            ((99, -3, -2), (99, -2, 11), (97, 11, -3), (97, 12, 10)),
-            ((96, -5, -4), (96, -4, 13), (98, 13, -5), (98, 14, 12)),
-            ((99, -7, -6), (99, -6, 15), (97, 15, -7), (97, 16, 14)),
-        ),
-        (  # type 3
-            ((100, -1, 0), (100, 0, 9), (102, 9, -1), (102, 10, 8)),
-            ((103, -3, -2), (103, -2, 11), (101, 11, -3), (101, 12, 10)),
-            ((100, -5, -4), (100, -4, 13), (102, 13, -5), (102, 14, 12)),
-            ((103, -7, -6), (103, -6, 15), (101, 15, -7), (101, 16, 14)),
-        ),
-        (  # type 4
-            ((132, 0, 0), (133, 10, 0), (134, 0, 9), (135, 10, 9)),
-            ((132, -4, -4), (133, 14, -4), (134, -4, 13), (135, 14, 13)),
-            ((132, -8, -8), (133, 18, -8), (134, -8, 17), (135, 18, 17)),
-            ((132, -12, -12), (133, 22, -12), (134, -12, 21), (135, 22, 21)),
-        ),
-        (  # type 5
-            ((326, -6, 3), (327, 7, 3)),
-            ((326, -8, 1), (327, 9, 1)),
-            ((326, -9, -1), (327, 10, -1)),
-            ((326, -10, -3), (327, 11, -3)),
-            ((326, -13, -4), (327, 14, -4)),
-            ((326, -15, -4), (327, 16, -4)),
-            ((326, -17, -3), (327, 18, -3)),
-            ((326, -19, -1), (327, 20, -1)),
-        ),
-    )
+    _LEAP_FRAMES = LEAP_FRAMES
 
     def _spawn_leaps(self, leap_type: int, x: float, y: float, now=None):
         """GS1 `putleaps type,x,y` (wired from gs1.on_putleaps): queue the
@@ -1007,10 +889,27 @@ class EffectsRenderMixin(FrameContextMixin):
                                        py - surface.get_height() / 2))
 
     def _render_break_effects(self):
-        """Draw active debris bursts: 8 chunks scattering outward and fading."""
+        """Draw thrown-object leap frames and the existing weapon-hit sparks."""
         now = time.time()
         active = []
         for eff in self.break_effects:
+            if 'leap_type' in eff:
+                frames = LEAP_FRAMES[eff['leap_type']]
+                frame = max(0, int((now - eff['time'] + 1e-9) / TICK))
+                if frame >= len(frames):
+                    continue
+                for i, (_sprite, dx, dy) in enumerate(frames[frame]):
+                    px, py = self.camera.world_to_screen(
+                        eff['x'] + dx / 8, eff['y'] + dy / 8)
+                    if eff['leap_type'] == 5:
+                        scale = max(1, round(getattr(self.camera, 'scale', TILE_SIZE)))
+                        pygame.draw.rect(self.screen, (150, 215, 255),
+                                         (px, py, scale, scale))
+                    elif i < len(eff['tiles']):
+                        self.screen.blit(
+                            self.tileset_mgr.get_tile_or_color(eff['tiles'][i]), (px, py))
+                active.append(eff)
+                continue
             t = (now - eff['time']) / self.BREAK_DURATION
             if t >= 1.0:
                 continue

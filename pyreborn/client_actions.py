@@ -52,7 +52,7 @@ class ActionsMixin:
         Returns:
             True if packet sent successfully
         """
-        if not self.connected or not self._authenticated:
+        if self.ghost_mode or not self.connected or not self._authenticated:
             return False
 
         if x is None:
@@ -114,12 +114,18 @@ class ActionsMixin:
             return False
 
         if hearts is not None:
+            from .pausing import can_heal
+            flags = getattr(getattr(self, 'gs2_host', None), 'player_object', None)
+            disabled = flags.get('disableapnoheal') if flags is not None else False
+            if hearts > self.player.hearts and not can_heal(self.player, disabled):
+                return False
             self.player.hearts = max(0, min(hearts, self.player.max_hearts))
 
         data = build_hearts(self.player.hearts)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
-    def respond_to_hurt(self, damage: float, gani_name: str = "hurt") -> bool:
+    def respond_to_hurt(self, damage: float, gani_name: str = "hurt", *,
+                        server_forced: bool = False, knockback=None) -> bool:
         """
         Respond to being hurt by sending updated health and hurt animation.
         This should be called when the client receives a PLO_HURTPLAYER packet.
@@ -134,11 +140,22 @@ class ActionsMixin:
         if not self.connected or not self._authenticated:
             return False
 
-        # Calculate new health (client is source of truth)
+        if damage <= 0:
+            return False
+        if not server_forced and not self.can_receive_local_hit():
+            return False
+        now = time.time()
+        was_immune = self.player.hurt.immune(now)
         new_hearts = max(0, self.player.hearts - damage)
-        self.player.hearts = new_hearts
+        # A server damage notification must still change HP during immunity.
+        # Local hit detection/reporting is the only path immunity suppresses.
+        object.__setattr__(self.player, 'hearts', new_hearts)
         self.player.animation = gani_name
-        self.player.hurt_timeout = time.time() + 0.5  # 500ms hurt animation
+        if not was_immune:
+            self.player.hurt.start(*(knockback or (0.0, 0.0)), now)
+            self.player.hurt_vector_pending = knockback is None
+            self.player.action_mode = 3
+        self.player.hurt_timeout = self.player.hurt.until
 
         # Send combined hurt response with health + animation. Always send
         # LOCAL coords (0-63) via X2/Y2 - self.player.x/y are WORLD coords
@@ -193,6 +210,10 @@ class ActionsMixin:
         if not self.connected or not self._authenticated:
             return False
 
+        # Fractional radial vectors need precision in the existing integer
+        # direction fields; hurt normalizes this vector at the receiver.
+        if isinstance(knockback_x, float) or isinstance(knockback_y, float):
+            knockback_x, knockback_y = round(knockback_x * 16), round(knockback_y * 16)
         data = build_attack_player(victim_id, knockback_x, knockback_y, damage)
         return self._protocol.send_packet(PacketID.PLI_HURTPLAYER, data)
 
@@ -532,7 +553,7 @@ class ActionsMixin:
         is a free level projectile, not a shot from the player's bag."""
         if not self.connected or not self._authenticated:
             return False
-        if consume_ammo and self.player.bombs <= 0:
+        if consume_ammo and (self.ghost_mode or self.player.bombs <= 0):
             logger.debug("put_bomb: no bombs left, not firing")
             return False
         if x is None:
@@ -582,7 +603,7 @@ class ActionsMixin:
         put_bomb for the full parity story vs pygserver's server-side echo)."""
         if not self.connected or not self._authenticated:
             return False
-        if self.player.arrows <= 0:
+        if self.ghost_mode or self.player.arrows <= 0:
             logger.debug("shoot_arrow: no arrows left, not firing")
             return False
         # ARROWADD wire coords are LEVEL-LOCAL (0-63) like move()/sword —

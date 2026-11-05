@@ -59,14 +59,15 @@ def handle_hurt_player(client, data):
         # arrows at all (no NPCServer => arrows are a pure client-
         # authoritative relay, see msgPLI_ARROWADD), so this is a
         # pygserver-only concern in practice.
-        already_applied = (
-            attacker_id in client._arrow_hurt_suppress
-            and time.time() < client._arrow_hurt_suppress[attacker_id])
+        local_arrow_until = client._local_arrow_reports.pop(attacker_id, 0.0)
+        already_applied = time.time() < local_arrow_until
 
         # We got hurt - client is source of truth for health
         # Auto-respond with new health and hurt animation
         if client.auto_respond_hurt and damage > 0 and not already_applied:
-            client.respond_to_hurt(damage, client.hurt_animation)
+            client.respond_to_hurt(
+                damage, client.hurt_animation, server_forced=True,
+                knockback=(hurt_info['knockback_x'], hurt_info['knockback_y']))
             # This may be the server's own independent detection of
             # a hit our own arrow sim hasn't caught up to yet (it
             # might not have even started - the PLO_ARROWADD relay
@@ -101,6 +102,14 @@ def handle_explosion(client, data):
     # Explosion effect (packet 36)
     exp = parse_explosion(data)
     if exp:
+        # PLO_EXPLOSION is level-local; bush cutting and presentation use
+        # world coordinates on a map, like locally detonated bombs.
+        if client.in_gmap_segment:
+            from reborn_protocol.coords import segment_at, segment_origin
+            ox, oy = segment_origin(*segment_at(client.player.x, client.player.y))
+            exp['x'] += ox
+            exp['y'] += oy
+        client._cut_bushes_at_explosion(exp['x'], exp['y'])
         client.active_explosions.append({
             'x': exp['x'],
             'y': exp['y'],

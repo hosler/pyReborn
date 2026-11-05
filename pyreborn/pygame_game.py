@@ -271,16 +271,10 @@ class GameClient(
         self.is_moving = False
         self.is_swimming = False  # Track if player is in water
 
-        # Push/grab/pull hold-state (classic-engine feel — see
-        # game/actions.py's _update_push_hold / _update_grab_pull_state and
-        # game/input.py's held-key wiring). Push: holding a movement key
-        # into a wall for PUSH_HOLD_TIME. Grab/pull: holding A (grab) into a
-        # plain wall, optionally pulling by also holding the opposite
-        # movement key. Purely a feel/animation state — no server support
-        # for actually pushing/pulling a tile.
+        # Built-in push/grab/pull prediction; actions dispatch NPC triggers.
         self._push_hold_dir = None    # (dx, dy) of the currently-blocked held direction
-        self._push_hold_start = 0.0   # time.time() the block started
-        self.is_pushing = False       # True once held blocked past PUSH_HOLD_TIME
+        self._push_hold_start = None  # time.time() the block started, None when not holding
+        self.is_pushing = False       # True when the push countdown reaches 18
         self.grab_state = None        # None | "grab" | "pull"
         self._grab_direction = None   # facing direction pinned for the current grab
         # Link-warp guards. `_was_on_link`: True while standing on a warp link, so
@@ -370,7 +364,7 @@ class GameClient(
         self._bigmap_image_name: Optional[str] = None
 
         # Ghost mode state
-        self.ghost_mode = False
+        self.ghost_mode = self.client.ghost_mode
 
         # Controls/help overlay (toggle with H)
         self.show_help = False

@@ -54,15 +54,15 @@ def test_ghost_icon_and_mode_packets_have_independent_state():
     mode_changes = []
     client.on_ghost_mode = mode_changes.append
 
-    client._handle_packet(PacketID.PLO_GHOSTMODE, b"\x01")
+    client._handle_packet(PacketID.PLO_GHOSTMODE, b"!")
     client._handle_packet(PacketID.PLO_GHOSTICON, b"!")
-    assert client.ghost_mode is True
+    assert client.ghost_mode == 1
     assert client.ghost_icon is True
 
     client._handle_packet(PacketID.PLO_GHOSTICON, b" ")
-    assert client.ghost_mode is True
+    assert client.ghost_mode == 1
     assert client.ghost_icon is False
-    assert mode_changes == [True]
+    assert mode_changes == [1]
 
 
 def test_newworldtime_decodes_four_gbytes():

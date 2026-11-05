@@ -6,6 +6,7 @@ Uses the shared reborn_protocol library for core protocol components.
 """
 
 import math
+from dataclasses import replace
 from typing import Dict, Any, Optional
 
 # Import shared protocol components
@@ -14,6 +15,7 @@ from reborn_protocol.props import (
     COLORS_CLASSIC,
     PLAYER_PROPS,
     StreamPolicy,
+    Wire,
     parse_prop_stream,
 )
 from reborn_protocol import BDPROP, PLPROP, PacketBuilder, PacketReader  # noqa: F401  - kept: original import block (star-import consumers rely on it)
@@ -81,6 +83,15 @@ def build_player_gattrib(index: int, value: str) -> bytes:
 def _set(key):
     """Handler that stores a decoded prop value under `key` verbatim."""
     return lambda props, value: props.__setitem__(key, value)
+
+
+# TServerPlayer.cpp:38-40,1754-1755: carry byte 0x1f must decode to -1.
+_CARRY_PLAYER_PROPS = dict(PLAYER_PROPS)
+_CARRY_PLAYER_PROPS[19] = replace(PLAYER_PROPS[19], wire=Wire.RAW)
+
+
+def _set_carry(props, value):
+    props['carry_sprite'] = value[0] - 32
 
 
 def _set_scaled(key, scale):
@@ -195,7 +206,7 @@ def _parse_with_colors_retry(run_once, colors_len: int,
 # =============================================================================
 
 _PLAYER_STREAM = StreamPolicy(
-    table=PLAYER_PROPS, max_prop_id=83, require_ascending=True,
+    table=_CARRY_PLAYER_PROPS, max_prop_id=83, require_ascending=True,
     ascending_exempt=frozenset({50}), check_alignment=True)
 LEVEL_ITEM_NAMES = {
     0: 'greenrupee', 1: 'bluerupee', 2: 'redrupee', 3: 'bombs', 4: 'darts',
@@ -229,7 +240,7 @@ _SELF_PROP_HANDLERS = {
     16: _set('y'),
     17: _set_sprite,
     18: _set('status'),
-    19: _set('carry_sprite'),
+    19: _set_carry,
     20: _set('level'),
     21: _set('horse_image'),
     22: _set('horse_bushes'),

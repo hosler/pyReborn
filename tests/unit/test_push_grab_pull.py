@@ -9,9 +9,8 @@ _clear_* counterparts):
 - Pull: while grabbing, also holding the movement key OPPOSITE the grabbed
   facing switches to "pull" without re-facing that direction.
 
-None of this actually moves a tile — there is no server support for
-pushable/pullable blocks. It is purely animation/feel state, verified here at
-the state-machine level (no live server/pygame display needed).
+Push/pull also dispatch point-based NPC actions; test_batch_a.py checks
+the timing, direction parameter and script delivery.
 
 Uses the same minimal ActionsMixin+CollisionMixin harness pattern as
 tests/unit/test_swimming_state.py, extended with the handful of extra

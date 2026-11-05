@@ -55,9 +55,47 @@ class LoginOutcome:
 
 
 def level_ready(client: Any) -> bool:
-    """True once the level we logged into has both a name and a board."""
-    return bool(getattr(client, "_current_level_name", "") and
-                getattr(client, "tiles", None))
+    """True once the level we logged into has both a name and a board.
+
+    On a gmap spawn the board arrives long before the login stream is over:
+    the server still has the segment's chests/signs/baddies, the props of
+    every player already in the world and the adjacent segments queued, and
+    the .gmap file (which the client requests on PLO_LEVELNAME) is served
+    after all of that. A caller that warps as soon as connect() returns then
+    files those in-flight packets under the warp target (chest (60,46) of
+    chicken1.nw showing up in onlinestartlocal.nw) and the late grid flips
+    its coordinate frame. So on a gmap spawn also wait for the grid: its
+    arrival proves the login stream has been drained. `is_gmap` already
+    holds when the board lands - PLO_PLAYERWARP2 (grid offsets) travels in
+    the same write as the board (pygserver player.py _send_level) and the
+    .gmap PLO_LEVELNAME follows right behind - so this does not depend on
+    the announcement having been processed yet. A failed map download or a
+    three-second grace after name+board lets servers with missing map files
+    settle too.
+    """
+    if not (getattr(client, "_current_level_name", "") and
+            getattr(client, "tiles", None)):
+        client._level_ready_gmap_wait = None
+        return False
+    if not getattr(client, "is_gmap", False) or getattr(client, "gmap_grid", None):
+        client._level_ready_gmap_wait = None
+        return True
+    map_name = (getattr(client, "_requested_gmap", "") or
+                getattr(client, "gmap_name", ""))
+    if not map_name:
+        level_name = client._current_level_name
+        map_name = level_name if level_name.endswith(".gmap") else ""
+    if map_name and map_name in (getattr(client, "_failed_files", None) or ()):
+        client._level_ready_gmap_wait = None
+        return True
+    now = time.monotonic()
+    waiting = getattr(client, "_level_ready_gmap_wait", None)
+    if waiting is None or (waiting[0] and map_name and waiting[0] != map_name):
+        waiting = client._level_ready_gmap_wait = (map_name, now)
+    elif map_name and not waiting[0]:
+        # Learning the map name later must not restart the name+board grace.
+        waiting = client._level_ready_gmap_wait = (map_name, waiting[1])
+    return now - waiting[1] >= 3.0
 
 
 def wait_for_level(client: Any, timeout: float, *, poll: float = 0.1,
@@ -85,6 +123,7 @@ def login_client(client: Any, account: str, password: str, *,
     its client across reconnects). Use `login_session` when you want the
     teardown handled too.
     """
+    client._level_ready_gmap_wait = None  # A reconnect starts a fresh grace.
     requested = str(getattr(client, "version", "") or "")
     outcome = LoginOutcome(client=client, version=requested,
                            requested_version=requested)

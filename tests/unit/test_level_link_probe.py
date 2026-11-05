@@ -12,11 +12,12 @@ def _client_with_link(link):
     return client
 
 
+# TPlayer.cpp:6122 uses offsets (1.5,1), (.5,2), (1.5,3), (2.5,2).
 @pytest.mark.parametrize("direction, position", [
     (0, (8.5, 9.0)),   # up
-    (1, (10.0, 8.0)),  # left
-    (2, (8.5, 6.5)),   # down
-    (3, (7.0, 8.0)),   # right
+    (1, (9.5, 8.0)),  # left
+    (2, (8.5, 7.0)),   # down
+    (3, (7.5, 8.0)),   # right
 ])
 def test_flush_contact_with_wall_door_triggers_in_each_direction(
         direction, position):
@@ -29,14 +30,14 @@ def test_flush_contact_with_wall_door_triggers_in_each_direction(
     assert client.check_link_collision() is link
 
 
-def test_probe_wraps_coherently_across_gmap_segment_seam():
+def test_probe_does_not_wrap_onto_the_opposite_side_of_the_board():
     link = {"x": 1, "y": 12, "width": 0, "height": 0,
             "dest_level": "inside.nw"}
     client = _client_with_link(link)
     client.player.x, client.player.y = 62.8, 10.0
     client.player.direction = 3
 
-    assert client.check_link_collision() is link
+    assert client.check_link_collision() is None
 
 
 def test_near_door_facing_away_does_not_trigger():

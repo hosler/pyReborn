@@ -22,6 +22,7 @@ from ..packets import (
     parse_staff_guilds,
     parse_status_list,
 )
+from ..ground_items import ITEM_NAMES, WEAPON_GRANT_ITEMS
 from .registry import handles
 
 
@@ -59,11 +60,12 @@ def handle_list_processes(client, data):
 @handles(PacketID.PLO_GHOSTMODE)
 def handle_ghost_mode(client, data):
     # Ghost mode (packet 170)
-    # Ghost mode packet - typically just a toggle flag
-    enabled = data[0] != 0 if data else True
-    client.ghost_mode = enabled
+    # TClient.cpp:5162: the payload is an encoded integer, not a boolean.
+    if not data:
+        return
+    client.ghost_mode = data[0] - 32
     if client.on_ghost_mode:
-        client.on_ghost_mode(enabled)
+        client.on_ghost_mode(client.ghost_mode)
 
 
 @handles(PacketID.PLO_SIGNATURE)
@@ -165,6 +167,17 @@ def handle_set_net_cookie(client, data):
 def handle_default_weapon(client, data):
     # Default weapon id (packet 43).
     client.default_weapon = parse_default_weapon(data)
+    # The server's built-in item weapons are keyed by lowercase item name
+    # (GServer-v2 LevelItem::getItemName); no script, the client's own
+    # bow/bomb handling runs them.
+    if client.default_weapon in WEAPON_GRANT_ITEMS:
+        name = ITEM_NAMES[client.default_weapon]
+        weapon = client.weapons.get(name)
+        if weapon is None:
+            weapon = client.weapons[name] = {
+                'name': name, 'image': name + '.png', 'script': ''}
+            if client.on_weapon_add:
+                client.on_weapon_add(name, weapon)
 
 
 @handles(PacketID.PLO_STAFFGUILDS)

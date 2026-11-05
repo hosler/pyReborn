@@ -57,6 +57,17 @@ def _same_gmap_world(client, other_level):
         return False
     if other_level == getattr(client, 'gmap_name', None):
         return True
+    # gmap_name/gmap_grid are only filled once the .gmap FILE has been
+    # downloaded and parsed, but the server names the gmap in PLO_LEVELNAME
+    # (-> player.level) before that, and it sends the props of every player
+    # already in the world in the same login stream. Trusting the announced
+    # name keeps them: without it the second player to log into a populated
+    # gmap dropped everyone present (later X/Y-only updates then re-created
+    # them as nickname-less ghosts; QA multi_visibility on a gmap spawn).
+    announced = getattr(getattr(client, 'player', None), 'level', None)
+    if other_level and announced and other_level == announced \
+            and announced.endswith('.gmap'):
+        return True
     grid = getattr(client, 'gmap_grid', None) or {}
     return other_level in grid.values()
 

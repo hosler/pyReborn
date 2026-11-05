@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from reborn_protocol.coords import local_to_world
 from reborn_protocol.gs1.runtime import Host, UNSET
 from reborn_protocol.gs1.values import to_num
 from reborn_protocol.gs2 import GS2Object
@@ -60,10 +61,21 @@ class GS1ClientHost(
                 "account": getattr(p, "account", ""),
                 "nickname": getattr(p, "nickname", ""),
                 "chat": getattr(p, "chat", "")}]
+        # World frame, like playerx/playery in host_builtins.py::_pb_position.
+        # Reference: GServer-v2/server/include/object/Character.h:getTilePosition (map*64 + local).
+        segments = {name: cell for cell, name in (getattr(cl, "gmap_grid", {}) or {}).items()}
+        current_segment = segments.get(getattr(cl, "_current_level_name", ""), (0, 0))
         for op in getattr(cl, "players", {}).values():
             if isinstance(op, dict):
-                out.append({"x": float(op.get("x", 0) or 0),
-                            "y": float(op.get("y", 0) or 0),
+                x, y = local_to_world(float(op.get("x", 0) or 0),
+                                      float(op.get("y", 0) or 0),
+                                      *segments.get(op.get("level"), current_segment))
+                if getattr(cl, "is_gmap", False):
+                    if op.get("world_x") is not None:
+                        x = float(op["world_x"])
+                    if op.get("world_y") is not None:
+                        y = float(op["world_y"])
+                out.append({"x": x, "y": y,
                             "account": op.get("account", ""),
                             "nickname": op.get("nickname", ""),
                             "chat": op.get("chat", "")})

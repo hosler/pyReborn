@@ -209,8 +209,11 @@ class TestCheckSignNearbySegmentOrigin:
     def test_finds_a_sign_off_the_origin_segment(self):
         c = _client_with_grid()
         c.signs = {"chicken1.nw": {(5, 5): "hello"}}
-        c.player.x, c.player.y = 64 + 5.2, 64 + 1.6  # see test_collision_gmap_frames
-        c.player.direction = 2  # down
+        # TPlayer.cpp:2849 reads a sign only with the upward wall probe.
+        c.player.x, c.player.y = 64 + 4.0, 64 + 5.0
+        c.player.direction = 0
+        c.levels["chicken1.nw"] = [0] * 4096
+        c.levels["chicken1.nw"][5 * 64 + 5] = -1
 
         h = _SignCheckHarness(c)
         assert h._check_sign_nearby() == "hello"
@@ -222,12 +225,10 @@ class TestCheckSignNearbySegmentOrigin:
         c = _client_with_grid()
         c._current_level_name = "chicken4.nw"  # grid (0, 0), origin (0, 0)
         c.signs = {"chicken4.nw": {(0, 0): "far away"}}
-        # Both x and y touch points land just past 64 (world (64.4, 64.1));
-        # %64 wraps that to (0.4, 0.1) -- right next to the sign at local
-        # (0, 0), even though the player is actually clear across the
-        # level from it.
-        c.player.x, c.player.y = 63.9, 60.6
-        c.player.direction = 2  # down
+        # The upward probe crosses the segment edge; it must not wrap
+        # back into the sign box at the current level's opposite corner.
+        c.player.x, c.player.y = 63.0, 63.5
+        c.player.direction = 0
 
         h = _SignCheckHarness(c)
         assert h._check_sign_nearby() is None

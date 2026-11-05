@@ -232,19 +232,15 @@ class BuiltinsMixin:
                   "carriesstone", "carriesvase", "carriessign",
                   "carriesblackstone", "carriesnpc")
     def _pb_carrying(self, name, indices, ctx):
-        # pyReborn only models bush/rock/pot lift objects
-        # (game/collision.py _get_liftable_name); "rock"/"pot" are the
-        # same objects Reborn's docs call "stone"/"vase". The remaining
-        # carry flags are defined for script compatibility, but nothing in
-        # this client can currently lift those object types.
         player = self._player
+        from ..throwing import carry_object
+        code = getattr(player, 'carry_sprite', -1)
         if name == "carrying":
-            return bool(player.is_carrying())
-        wanted = {"carriesbush": "bush", "carriesstone": "rock",
-                  "carriesvase": "pot"}.get(name)
-        if wanted is None:
-            return False
-        return player.carried_object_type == wanted
+            return code != -1
+        if name == 'carriesnpc':
+            return bool(getattr(player, 'carry_npc', 0))
+        carried = carry_object(code)
+        return carried is not None and name == 'carries' + carried[0]
 
     # -- _GS1_NPC_BUILTINS (gate: the script has an NPC dict) ---------------
 

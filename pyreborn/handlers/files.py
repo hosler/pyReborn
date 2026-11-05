@@ -32,6 +32,23 @@ _MAX_FILE_ATTEMPTS = 3
 MAX_CONCURRENT_LARGE_FILE_TRANSFERS = 16
 
 
+def _gmap_segments(text: str):
+    """Level names listed in a .gmap's LEVELNAMES block (no side effects)."""
+    names = set()
+    in_block = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line == 'LEVELNAMES':
+            in_block = True
+        elif line == 'LEVELNAMESEND':
+            in_block = False
+        elif in_block:
+            for name in line.replace('"', '').rstrip(',').split(','):
+                if name.strip():
+                    names.add(name.strip())
+    return names
+
+
 def adopt_gmap(client, filename: str, blob: bytes) -> bool:
     """Build the world grid from a .gmap's bytes. True if the grid was built.
 
@@ -44,8 +61,24 @@ def adopt_gmap(client, filename: str, blob: bytes) -> bool:
     edge of their own level: the world is one lone segment with nothing
     stitched to it.
     """
+    text = blob.decode('latin-1', errors='replace')
+    # A .gmap answer can outlive the world it describes: the server announces
+    # the gmap (PLO_LEVELNAME) in the login stream, the client requests the
+    # file, and a warp issued in between lands first - the file then arrives
+    # with the player already confirmed in an interior. load_gmap would put
+    # the player back into the spawn segment (world coords and all) while the
+    # server has them elsewhere, so only activate a grid the current level
+    # belongs to. The bytes stay in the download cache; clearing the request
+    # marker lets the next announcement of this gmap request it again.
+    current = getattr(client, '_current_level_name', '') or ''
+    if current and current != filename and current not in _gmap_segments(text):
+        logger.info("ignoring %s: current level %s is not one of its segments",
+                    filename, current)
+        if getattr(client, '_requested_gmap', '') == filename:
+            client._requested_gmap = ''
+        return False
     try:
-        client.load_gmap(blob.decode('latin-1', errors='replace'))
+        client.load_gmap(text)
     except Exception:
         return False
     client.gmap_name = filename

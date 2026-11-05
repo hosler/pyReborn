@@ -83,7 +83,7 @@ class SessionState:
         self.in_update = False
 
         # Ghost mode state
-        self.ghost_mode = False
+        self.ghost_mode = 0
 
         # Server-control state (tier 3).
         self.frozen = False              # PLO_FREEZEPLAYER2 / PLO_UNFREEZEPLAYER
@@ -328,6 +328,8 @@ class CombatState:
         # server-side arrow simulation and send a real PLO_HURTPLAYER for
         # the same hit - see _tick_arrow_sims's docstring.
         self.arrow_hurt_suppress: Dict[int, float] = {}
+        # Only locally applied arrows may consume one matching server echo.
+        self.local_arrow_reports: Dict[int, float] = {}
         # Arrows we fired ourselves, so an echo of our own PLI_ARROWADD
         # coming back as PLO_ARROWADD (pygserver's handle_arrow_add
         # broadcasts to the WHOLE level including the shooter; GServer-v2
@@ -465,6 +467,9 @@ class Callbacks:
         # Explosion callback: handler(x, y, radius, power) - explosion effect
         self.on_explosion: Optional[Callable[[float, float, int, int], None]] = None
 
+        # A classic bush was cut: world origin and bushobj/putLeaps row.
+        self.on_bush_cut: Optional[Callable[[float, float, int], None]] = None
+
         # Hit objects callback: handler(x, y, power, player_id) - object hit feedback
         self.on_hit_objects: Optional[Callable[[float, float, int, int], None]] = None
 
@@ -475,7 +480,7 @@ class Callbacks:
         self.on_board_layer: Optional[Callable[[int, int, int, bytes], None]] = None
 
         # Ghost mode callback: handler(enabled) - ghost/spectator mode toggled
-        self.on_ghost_mode: Optional[Callable[[bool], None]] = None
+        self.on_ghost_mode: Optional[Callable[[int], None]] = None
         # Initial server message callback: handler(text).
         self.on_start_message: Optional[Callable[[str], None]] = None
 

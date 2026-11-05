@@ -295,14 +295,14 @@ class FunctionsMixin:
         tiles and scales back to 96x16 px here."""
         if not isinstance(npc, dict):
             return None
+        if npc.get("visible", True) is False:
+            return None
         x, y = to_num(npc.get("x", 0)) * 16, to_num(npc.get("y", 0)) * 16
         shape = self.rt.shapes.get(npc_id)
         if shape and len(shape) >= 2:
             return x, y, to_num(shape[0]) * 16, to_num(shape[1]) * 16
         if npc.get("gani") or npc.get("body_image") or npc.get("head_image"):
             return self._char_rect(npc.get("x", 0), npc.get("y", 0))
-        if npc.get("visible", True) is False:
-            return None
         rect = self.rt.npc_image_rect(npc)
         if rect is not None:
             rx, ry, rw, rh = rect

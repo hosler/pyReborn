@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import re
 import time
 from typing import Optional, Tuple
@@ -20,6 +19,10 @@ logger = logging.getLogger(__name__)
 # must stay in [0, 255]. That bounds the warp target to [-16, 111.5] tiles.
 WARP_COORD_MIN = -16.0
 WARP_COORD_MAX = 111.5
+
+
+# TPlayer.cpp:6122: body centre plus the unit direction vector.
+LINK_PROBE_OFFSETS = ((1.5, 1.0), (0.5, 2.0), (1.5, 3.0), (2.5, 2.0))
 
 
 def _eval_warp_coord(expr, player_x: float, player_y: float) -> Optional[float]:
@@ -123,7 +126,14 @@ class WarpMixin:
             self.players.clear()
 
         self._current_level_name = level_name
-        self._pending_level_name = level_name
+        # _pending_level_name is NOT flipped here: it routes level-scoped
+        # stream data (board/chest/sign/link/baddy/NPC) and everything the
+        # server sends before its PLO_LEVELNAME for this warp is, by
+        # construction, data for the level we are LEAVING (its login/entry
+        # stream is still in flight when a warp follows a login within
+        # milliseconds). The server's PLO_LEVELNAME / PLO_SETACTIVELEVEL set
+        # the key when the new stream really starts (handlers/level.py).
+        # Flipping it early filed chicken1.nw's chest under the warp target.
         # Keep player.level (the source of client.level and GS1 #L) in step
         # with the optimistic flip: it is otherwise only assigned on
         # PLO_PLAYERWARP, which a client-initiated warp may not receive before
@@ -417,17 +427,16 @@ class WarpMixin:
         if not links:
             return None
 
-        # The reference engine tests one whole-tile directional probe, not
-        # collision-box overlap. These offsets are GServer-v2
-        # PlayerClient.cpp testForLinks()'s touchTest table; Level.cpp
-        # getLink() then performs an inclusive point-in-bounding-box test.
-        # Floor the world point before folding it into a 64-tile segment so
-        # the probe wraps coherently when it crosses a GMAP seam.
+        # One continuous directional point; both rectangle bounds are inclusive.
         px, py = self.player.x, self.player.y
-        probe_offsets = ((1.5, 1.0), (0.0, 2.0),
-                         (1.5, 3.5), (3.0, 2.0))
-        dx, dy = probe_offsets[int(self.player.direction) & 3]
-        tile_x, tile_y = world_to_local(math.floor(px + dx), math.floor(py + dy))
+        dx, dy = LINK_PROBE_OFFSETS[int(self.player.direction) & 3]
+        # Use a signed offset from this level's origin: a probe across a
+        # seam must not wrap onto a link at the opposite side of this board.
+        origin = next((grid for grid, name in self.gmap_grid.items()
+                       if name == self._current_level_name), (0, 0)) \
+            if self.in_gmap_segment else (0, 0)
+        tile_x = px + dx - origin[0] * 64
+        tile_y = py + dy - origin[1] * 64
 
         for link in links:
             lx = link.get('x', 0)

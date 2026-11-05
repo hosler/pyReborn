@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class CombatPresentation:
     """Visual combat state. No value here participates in game simulation."""
 
-    INVULN_SECONDS = 1.2
+    INVULN_SECONDS = 2.0  # TPlayer::hurtPlayer: 0x28 ticks at 20 Hz.
     BLINK_HZ = 10.0
     HIT_FLASH_SECONDS = 0.15
     DEATH_FADE_SECONDS = 1.0

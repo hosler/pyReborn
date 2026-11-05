@@ -134,48 +134,24 @@ class TestSwordHitBaddies:
         assert any(pid == int(PacketID.PLI_BADDYHURT) for pid, _ in c._protocol.sent)
 
 
-class TestSwordArcGeometry:
-    """NPC collision-box reach stays at its previous envelope."""
-
-    GAP_HITS = 1.8
-    GAP_MISSES = 2.6
-
-    DIRECTIONS = {
-        0: (0, -1),  # up
-        1: (-1, 0),  # left
-        2: (0, 1),   # down
-        3: (1, 0),   # right
-    }
-
-    def _hit(self, direction: int, gap: float) -> bool:
+class TestSwordPointGeometry:
+    # TPlayer.cpp:6484-6520. These points differ from the bush probe.
+    @pytest.mark.parametrize('direction,point', [
+        (0, (31.0, 30.2)), (1, (29.7, 31.5)),
+        (2, (31.0, 33.8)), (3, (33.3, 31.5))])
+    def test_point_inside_and_outside_small_npc(self, direction, point):
         c = _fake_connected_client()
-        c.player.x, c.player.y = 30.0, 30.0
-        c.player.direction = direction
-        fx, fy = self.DIRECTIONS[direction]
-        c.npcs[1] = {'x': 30.0 + fx * gap, 'y': 30.0 + fy * gap,
-                     'world_x': 30.0 + fx * gap, 'world_y': 30.0 + fy * gap}
+        c.player.x = c.player.y = 30
         hits = []
         c.on_sword_hit_npc = hits.append
-        c.sword_attack(direction=direction)
-        return hits == [1]
-
-    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_hit_at_same_near_gap(self, direction):
-        assert self._hit(direction, self.GAP_HITS) is True
-
-    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_miss_at_same_far_gap(self, direction):
-        assert self._hit(direction, self.GAP_MISSES) is False
-
-    @pytest.mark.parametrize("gap", [2.2, 2.5, 2.6])
-    def test_opposite_directions_have_symmetric_reach(self, gap):
-        assert self._hit(0, gap) == self._hit(2, gap)
-        assert self._hit(1, gap) == self._hit(3, gap)
-
-    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_front_gap_preserves_npc_reach(self, direction):
-        assert self._hit(direction, 2.5) is True
-        assert self._hit(direction, 2.5001) is False
+        c.npcs[1] = {'x': point[0] - .1, 'y': point[1] - .1,
+                     'width': .2, 'height': .2}
+        c._sword_hit_npcs(direction)
+        assert hits == [1]
+        hits.clear()
+        c.npcs[1]['x'] += .21
+        c._sword_hit_npcs(direction)
+        assert hits == []
 
 
 class TestSwordArcDirections:
@@ -206,26 +182,26 @@ class TestSwordArcDirections:
             c._sword_hit_npcs(direction)
         return hits
 
-    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
+    @pytest.mark.parametrize("kind", ["player", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_directly_in_front_is_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (fx * 1.8, fy * 1.8)) == [1]
 
-    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
+    @pytest.mark.parametrize("kind", ["player", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_behind_is_not_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (-fx * 2.2, -fy * 2.2)) == []
 
-    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
+    @pytest.mark.parametrize("kind", ["player", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_target_beside_arc_is_not_hit(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]
         assert self._hits(kind, direction, (fx * 1.0 + fy * 3.0,
                                              fy * 1.0 - fx * 3.0)) == []
 
-    @pytest.mark.parametrize("kind", ["player", "npc", "baddy"])
+    @pytest.mark.parametrize("kind", ["player", "baddy"])
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
     def test_player_rectangle_and_npc_baddy_reach_differ(self, kind, direction):
         fx, fy = self.DIRECTIONS[direction]

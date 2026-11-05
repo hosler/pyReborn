@@ -11,7 +11,7 @@ import time
 import pytest
 
 from game_tester.game_bot import GameBot
-from game_tester.login import LoginOutcome, login_client, login_session
+from game_tester.login import LoginOutcome, level_ready, login_client, login_session
 from game_tester.multi_bot import MultiBotTest
 
 
@@ -92,6 +92,83 @@ def test_login_client_never_disconnects_the_caller_s_client():
     client = FakeClient(login_ok=False)
     login_client(client, "acc", "pw")
     assert client.disconnect_calls == 0
+
+
+@pytest.fixture
+def gmap_login(monkeypatch):
+    client = FakeClient()
+    client.is_gmap = True
+    client.gmap_grid = {}
+    client._requested_gmap = "chicken.gmap"
+    client._failed_files = set()
+    clock = [100.0]
+    monkeypatch.setattr("game_tester.login.time.monotonic", lambda: clock[0])
+    return client, clock
+
+
+def test_level_ready_waits_for_gmap_grid_during_grace(gmap_login):
+    client, clock = gmap_login
+    assert not level_ready(client)
+    clock[0] += 2.99
+    assert not level_ready(client)
+    client.gmap_grid = {(1, 1): "chicken1.nw"}
+    assert level_ready(client)
+
+
+@pytest.mark.parametrize("name_field", ["_requested_gmap", "gmap_name", "_current_level_name"])
+def test_level_ready_settles_when_announced_gmap_download_failed(gmap_login, name_field):
+    client, _ = gmap_login
+    client._requested_gmap = ""
+    setattr(client, name_field, "chicken.gmap")
+    client._failed_files = {"unrelated.png"}
+    assert not level_ready(client)
+    client._failed_files.add("chicken.gmap")
+    assert level_ready(client)
+
+
+def test_level_ready_missing_gmap_settles_after_three_seconds(gmap_login):
+    client, clock = gmap_login
+    assert not level_ready(client)
+    clock[0] += 3.0
+    assert level_ready(client)
+
+
+def test_level_ready_late_map_announcement_keeps_name_and_board_grace(gmap_login):
+    client, clock = gmap_login
+    client._requested_gmap = ""
+    assert not level_ready(client)
+    clock[0] += 1
+    client._requested_gmap = "chicken.gmap"
+    assert not level_ready(client)
+    clock[0] += 2
+    assert level_ready(client)
+
+
+@pytest.mark.parametrize("missing", ["tiles", "_current_level_name"])
+def test_level_ready_grace_requires_both_level_name_and_board(gmap_login, missing):
+    client, clock = gmap_login
+    value = getattr(client, missing)
+    setattr(client, missing, [] if missing == "tiles" else "")
+    assert not level_ready(client)
+    clock[0] += 10
+    assert not level_ready(client)
+    setattr(client, missing, value)
+    assert not level_ready(client)
+    clock[0] += 3
+    assert level_ready(client)
+
+
+def test_level_ready_new_map_and_reconnect_get_a_fresh_grace(gmap_login):
+    client, clock = gmap_login
+    assert not level_ready(client)
+    clock[0] += 3
+    assert level_ready(client)
+    client._requested_gmap = "another.gmap"
+    assert not level_ready(client)
+    clock[0] += 3
+    assert level_ready(client)
+    outcome = login_client(client, "acc", "pw", settle_timeout=0)
+    assert outcome.ok and not outcome.settled
 
 
 def test_login_session_disconnects_after_a_successful_body():

@@ -90,6 +90,9 @@ class _Harness(ActionsMixin, CollisionMixin, EffectsRenderMixin):
     def _touch_points(self, direction):
         return [(10, 10)]
 
+    def _lift_probe_tile(self, direction):
+        return (10, 10)
+
     def _update_and_render_other_thrown(self, dt, frame=None):
         pass
 
@@ -207,5 +210,6 @@ def test_thrown_post_sign_uses_smash_path():
     game._update_and_render_thrown(1.0)
     assert game.thrown_objects == []
     assert len(game.break_effects) == 1
-    assert game.break_effects[0]["colors"] == game.BREAK_COLORS["sign"]
+    assert game.break_effects[0]["leap_type"] == 3
+    assert game.break_effects[0]["tiles"] == POST_SIGN_TILES
     assert "crush.wav" in game.sound_mgr.played

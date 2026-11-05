@@ -70,7 +70,7 @@ def _fake_connected_client():
         'x': 30, 'y': 32, 'width': 4, 'height': 2,
         'dest_level': 'house1.nw', 'dest_x': '30', 'dest_y': '30',
     }]
-    c.player.direction = 2  # facing down: link probe at (x+1.5, y+3.5)
+    c.player.direction = 2  # facing down: link probe at (x+1.5, y+3.0)
     return c
 
 

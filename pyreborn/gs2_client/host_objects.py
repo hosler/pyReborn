@@ -10,7 +10,7 @@ from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .objects_player import _CanvasObject, _engine_object
 from .registry import GS2GuiManager, _gs2_object
-from ..liftobjects import LIFT_SPRITES
+from ..throwing import carry_object
 
 class HostObjectsMixin:
 
@@ -22,9 +22,8 @@ class HostObjectsMixin:
             return False
         if name == "carriesnpc":
             return bool(getattr(player, "carry_npc", 0))
-        index = {"carriesbush": 0, "carriessign": 1, "carriesvase": 2,
-                 "carriesstone": 3, "carriesblackstone": 4}[name]
-        return getattr(player, "carry_sprite", 0) == LIFT_SPRITES[index]
+        carried = carry_object(getattr(player, 'carry_sprite', -1))
+        return carried is not None and name == 'carries' + carried[0]
 
     @_gs2_object("weaponsenabled")
     def _obj_weapons_enabled(self, name):
@@ -251,10 +250,8 @@ class HostObjectsMixin:
     def _obj_iscarrying(self, name):
         # b RO, TInitStatics.cpp:2754 (getter :2418-2421). Same answer the
         # GS1 `carrying` builtin gives, so one carry state serves both.
-        gs1 = self.rt2.gs1
-        if gs1 is None:
-            return False
-        return gs1._host.get_builtin("carrying", [], self.rt2._gs1_ctx(None))
+        player = getattr(self.rt2.client, 'player', None)
+        return player is not None and getattr(player, 'carry_sprite', -1) != -1
 
     @_gs2_object("isonmap")
     def _obj_isonmap(self, name):
@@ -380,7 +377,8 @@ class HostObjectsMixin:
                 return False
         player = getattr(self.rt2.client, "player", None)
         if name == "canspin":
-            return bool(getattr(player, "carry_sprite", None))
+            from ..sword import owns_spin
+            return player is not None and owns_spin(self.rt2.client)
         return False
 
     @_gs2_object("shotbyplayer", "shotbybaddy", "wasshooted")

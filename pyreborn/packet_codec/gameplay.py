@@ -16,8 +16,12 @@ def parse_hurt_player(data: bytes) -> dict:
 
     reader = PacketReader(data)
     player_id = reader.read_gshort()
-    hurt_dx = reader.read_gchar() if reader.has_data() else 0
-    hurt_dy = reader.read_gchar() if reader.has_data() else 0
+    # hurtdx/hurtdy are SIGNED gchars (GServer-v2 msgPLI_HURTPLAYER relays
+    # readGChar() verbatim); the unsigned reader clamps left/up knockback to
+    # 0, which hurt_vector() then turns into the (1, 0) default - victims
+    # flew toward the attacker.
+    hurt_dx = (reader.read_byte() - 32) if reader.has_data() else 0
+    hurt_dy = (reader.read_byte() - 32) if reader.has_data() else 0
     power = reader.read_gchar() if reader.has_data() else 0
     npc_id = reader.read_gint3() if reader.has_data() else 0
 

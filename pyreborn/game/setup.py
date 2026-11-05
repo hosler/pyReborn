@@ -268,6 +268,10 @@ class SetupMixin:
             # Clearing the stamp forces _reload_level_scripts (idempotent;
             # weapon/NPC playerenters are re-runnable by design).
             self._gs1_level = None
+            # A held push/grab belongs to the wall it was aimed at; a new
+            # level must start the 38-tick countdown over.
+            self._clear_push_hold()
+            self._pull_fired = False
         self._gs1_visual_level_epoch = epoch
         # A reload that had to skip `playerenters` because the board hadn't
         # arrived yet (see _trigger_playerenters) owes the level one: replay

@@ -14,6 +14,7 @@ from pygame.locals import (
     K_F1, K_F2, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12, K_PAGEUP, K_PAGEDOWN,
 )
 
+from ..hiding import HIDDEN_SPEED, is_hidden
 from .constants import (
     MOVE_STEP, pygame_key_to_vk, SHIELD_SPEED_MULTIPLIER,
     DEAD_STATUS_DELAY, REVIVAL_INPUT_DELAY,
@@ -33,6 +34,13 @@ class InputMixin:
             return
         if getattr(self, '_death_started', None) is None:
             self._death_started = current_time
+            if player.is_carrying():
+                self._throw_object()
+            # An authoritative HP=0 may arrive without PLO_HURTPLAYER.
+            if getattr(self, 'current_anim_name', None) != 'dead':
+                self.player_anim.set_animation('dead', player.direction)
+                self.current_anim_name = 'dead'
+                self.sound_mgr.play('dead.wav')
         if (current_time - self._death_started >= DEAD_STATUS_DELAY
                 and not player.status & PLSTATUS.DEAD):
             player.status |= PLSTATUS.DEAD
@@ -50,7 +58,9 @@ class InputMixin:
                                      K_a, K_s, K_d, K_SPACE)):
             return False
         player.status &= ~PLSTATUS.DEAD
-        player.hearts = player.max_hearts
+        # TPlayer.cpp:5581: predict the server's alignment-based restart HP.
+        player.hearts = (3.0 if player.ap <= 19 else min(player.max_hearts, 5.0)
+                         if player.ap <= 39 else player.max_hearts)
         self.client._send_appearance_prop(PLPROP.STATUS, player.status)
         self.client._send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
         self._death_started = None
@@ -395,6 +405,10 @@ class InputMixin:
             self.running = False
     def _handle_key_press(self, event):
         """Handle single key press events."""
+        if event.key == pygame.K_p:
+            from ..pausing import toggle_pause
+            toggle_pause(self)
+            return
         if event.key == K_ESCAPE:
             # Consistent with the other modal overlays (PM/player-list/server
             # -list/chat all close on Escape instead of quitting): resume the
@@ -595,6 +609,15 @@ class InputMixin:
 
     def _handle_input(self, current_time: float):
         """Handle held key input."""
+        if getattr(self, '_ledge_jump', None) is not None:
+            self.is_moving = False
+            self._clear_gs1_input()
+            return
+        hurt = getattr(self.client.player, 'hurt', None)
+        if hurt is not None and hurt.input_locked(current_time):
+            self.is_moving = False
+            self._clear_gs1_input()
+            return
         if (self.typing or self.dialogue_text is not None
                 or self.inventory_ui.visible or self.show_player_list
                 or self.show_server_list or self.pm_target_id is not None
@@ -606,6 +629,7 @@ class InputMixin:
                 or self._admin_overlay_captures_keys()
                 or self._gs2_gui_captures_keys()):
             self._clear_gs1_input()
+            self._clear_push_hold()
             return
 
         # A GS1 `freezeplayer N` (e.g. talking to a lobby NPC) locks MOVEMENT
@@ -630,6 +654,10 @@ class InputMixin:
             return
 
         self._feed_gs1_input(keys)
+        if getattr(self.client.player, 'status', 0) & PLSTATUS.PAUSED:
+            self.is_moving = False
+            return
+        self._auto_pickup_items()
 
         # Fire any GS1 `keypressed` events queued by _handle_events, now that
         # keys_dir above reflects the just-pressed key — so a script's
@@ -668,12 +696,32 @@ class InputMixin:
         if not a_held:
             self._clear_grab_state()
 
-        # S + A = Cycle weapons
+        # Item giveaway (actionMode 9) ends on any movement/weapon/sword key;
+        # while it is up, a bare A drops the selected item instead of grabbing.
+        if getattr(self, '_giveaway_item', None) is not None:
+            if (any(keys[k] for k in (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE))
+                    or (s_held and not a_held)):
+                self._giveaway_item = None
+            elif a_held and not s_held:
+                if self.key_just_pressed.get(K_a, False):
+                    self._giveaway_drop()
+                return
+
+        # S + D = Cycle weapons (TPlayer.cpp:2297)
+        if s_held and keys[K_d] and not a_held:
+            self._clear_push_hold()
+            if self.key_just_pressed.get(K_d, False) or self.key_just_pressed.get(K_s, False):
+                if current_time - self.last_action_time > self.action_delay:
+                    self._cycle_weapon()
+                    self.last_action_time = current_time
+            return
+
+        # S + A = item giveaway: pick / cycle the item to lay (TPlayer.cpp:2272)
         if s_held and a_held:
             self._clear_push_hold()
             if self.key_just_pressed.get(K_a, False) or self.key_just_pressed.get(K_s, False):
                 if current_time - self.last_action_time > self.action_delay:
-                    self._cycle_weapon()
+                    self._giveaway_select()
                     self.last_action_time = current_time
             return
 
@@ -694,11 +742,17 @@ class InputMixin:
         # Use weapon (D)
         elif keys[K_d]:
             self._clear_push_hold()
-            if self.key_just_pressed.get(K_d, False):
-                if current_time - self.last_action_time > self.action_delay:
-                    self._use_weapon()
-                    self.last_action_time = current_time
-            return
+            # D while carrying hides/un-hides instead of firing a weapon
+            # (TPlayer.cpp:2121), and never roots movement.
+            if getattr(self.client.player, 'carried_object_type', ''):
+                if self.key_just_pressed.get(K_d, False):
+                    self._hide_or_unhide()
+            else:
+                if self.key_just_pressed.get(K_d, False):
+                    if current_time - self.last_action_time > self.action_delay:
+                        self._use_weapon()
+                        self.last_action_time = current_time
+                return
 
         # Get arrow key directions
         dx, dy = 0, 0
@@ -752,11 +806,15 @@ class InputMixin:
             return
 
         # Movement (arrow keys only, no A held)
-        if not a_held and (dx != 0 or dy != 0):
+        held_axes = [delta for key, delta in (
+            (K_UP, (0, -1)), (K_LEFT, (-1, 0)),
+            (K_DOWN, (0, 1)), (K_RIGHT, (1, 0))) if keys[key]]
+        if not a_held and held_axes:
             # A sword swing (or lift) roots you for its duration, classic
             # style. Once the gani finishes (setback -> idle) held arrows
             # resume walking.
-            if self.current_anim_name in ("sword", "lift"):
+            if (self.current_anim_name in ("sword", "spin", "lift")
+                    or getattr(self.client.player, 'action_mode', 0) in (6, 13)):
                 self.is_moving = False
                 self._clear_push_hold()
                 return
@@ -765,12 +823,15 @@ class InputMixin:
             # regardless of frame rate.
             speed = self.walk_speed
             # FourPlay TPlayer.cpp:7447
-            if not self.is_swimming and getattr(self.client.player, 'shield_power', 0) > 2:
+            if is_hidden(self.client.player):
+                speed = HIDDEN_SPEED
+            elif not self.is_swimming and getattr(self.client.player, 'shield_power', 0) > 2:
                 speed *= SHIELD_SPEED_MULTIPLIER
             self._move_accum += speed * self._frame_dt
             steps = 0
             while self._move_accum >= MOVE_STEP and steps < 8:
-                self._move(dx, dy)
+                for ax, ay in held_axes:
+                    self._move(ax, ay)
                 self._move_accum -= MOVE_STEP
                 steps += 1
             self.is_moving = True

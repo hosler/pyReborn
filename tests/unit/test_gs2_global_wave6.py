@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from pyreborn.gs2_client import ClientGS2
-from pyreborn.liftobjects import LIFT_SPRITES
 
 
 def call(rt, name, args=()):
@@ -26,7 +25,7 @@ def test_array_string_and_math_globals():
 
 
 def test_carry_globals_read_player_wire_state():
-    player = SimpleNamespace(carry_npc=0, carry_sprite=LIFT_SPRITES[0])
+    player = SimpleNamespace(carry_npc=0, carry_sprite=1)
     rt = ClientGS2(SimpleNamespace(player=player))
     assert rt.host.get_object("carriesbush") is True
     assert rt.host.get_object("carriessign") is False

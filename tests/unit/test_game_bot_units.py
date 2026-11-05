@@ -160,7 +160,7 @@ class TestCheckLinkCollision:
         bot = self._gmap_bot_with_link()
         # Facing down, the directional probe lands at local (11, 10).
         bot.client.player.x = 64 + 9.5
-        bot.client.player.y = 6.5
+        bot.client.player.y = 7.0  # TPlayer.cpp:6122: downward probe is y+3.
         bot.client.player.direction = 2
         link = bot.check_link_collision()
         assert link is not None

@@ -129,6 +129,7 @@ def test_shield_multiplier_in_movement_input(monkeypatch, shield, swimming, expe
     game._admin_overlay_captures_keys = lambda: False
     game._gs2_gui_captures_keys = lambda: False
     game._feed_gs1_input = game._fire_gs1_keypress_queue = Mock()
+    game._auto_pickup_items = Mock()
     game.gs1 = SimpleNamespace(default_movement=True)
     game._clear_grab_state = Mock()
     game._move = Mock()

@@ -3,6 +3,8 @@
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
 import math
+
+from reborn_protocol import PLSTATUS
 from typing import List, Optional, Tuple
 
 from reborn_protocol.coords import (
@@ -44,8 +46,9 @@ class CollisionMixin:
         return type_is_blocking(self._tile_type(tile_id))
 
     def _is_tile_swimming_water(self, tile_id: int) -> bool:
-        """Check if tile is deep enough for swimming."""
-        return self._tile_type(tile_id) == TileType.WATER
+        """Check if tile is deep enough for swimming (types 11 and 12,
+        TServerLevel::isOnWater :925-927; 12 is lava, swum with the lava gani)."""
+        return self._tile_type(tile_id) in (TileType.WATER, TileType.LAVA)
 
     def _effective_tile_type(self, x: float, y: float) -> int:
         """Tile TYPE in force at world (x, y): a script NPC's setshape2 overlay
@@ -81,6 +84,23 @@ class CollisionMixin:
     # ABOVE _player_feet, which is the community-described standing point.
     PLAYER_GROUND_DX = PLAYER_GROUND_X
     PLAYER_GROUND_DY = PLAYER_GROUND_Y
+
+    def _ledge_ahead(self, direction):
+        """canJump's world-frame type-21 probe (TPlayer.cpp:6439-6445)."""
+        dx, dy = ((0, -1), (-1, 0), (0, 1), (1, 0))[direction]
+        return self._effective_tile_type(
+            self.client.x + 1.5 + 1.5 * dx,
+            self.client.y + 2.0 + 1.5 * dy) == TileType.JUMP_STONE
+
+    def _can_ledge_jump(self, direction):
+        from ..jumping import JUMP_LANDING_OFFSET
+        if not self._ledge_ahead(direction):
+            return False
+        dx, dy = JUMP_LANDING_OFFSET[direction]
+        x, y = self.client.x + 1.5 + dx, self.client.y + 2.0 + dy
+        if self._is_blocked_at(x, y):
+            return False
+        return True
 
     def _player_ground(self) -> Tuple[float, float]:
         """World-tile coordinates the ground TYPE is sampled at (chair, and
@@ -195,11 +215,8 @@ class CollisionMixin:
         full 2x2-tile box blocked on ALL of the sprite's body rows, which is
         the "collision box is the whole sprite" bug.
 
-        A diagonal move has no probe table of its own: the reference walks
-        each held direction as its own movementAction call (TPlayer.cpp:
-        7415 on, driven per direction), so a diagonal candidate here checks
-        both cardinals' probe pairs; _move's axis-slide fallback reproduces
-        the reference's independent per-axis motion.
+        Held axes run independently in up/left/down/right order; each
+        cardinal move uses its own probe pair.
         """
         for cx, cy in self._probe_points(x, y, dx, dy):
             if self._is_blocked_at(cx, cy):
@@ -273,7 +290,7 @@ class CollisionMixin:
             max_x = max_y = LEVEL_SIZE
         return (x + self._FEET_LEFT < 0 or x + self._FEET_RIGHT > max_x or
                 y + self._FEET_TOP < 0 or y + self._FEET_BOTTOM > max_y)
-    def _is_blocked_at(self, x: float, y: float) -> bool:
+    def _is_blocked_at(self, x: float, y: float, *, check_players=True) -> bool:
         """True if the single tile at world position (x, y) blocks movement.
 
         Outside the current level's 64x64 bounds counts as blocking unless we're
@@ -297,7 +314,9 @@ class CollisionMixin:
             if not in_level_bounds(x, y):
                 return True
 
-        if self._chest_blocks(x, y):
+        if self._chest_blocks(x, y) or self._bomb_blocks(x, y):
+            return True
+        if check_players and self._player_blocks(x, y):
             return True
 
         # NPC footprints: the reference wall test asks the level's NPCs
@@ -317,6 +336,71 @@ class CollisionMixin:
 
         tile_id = self._get_tile_at(x, y)
         return self._is_tile_blocking(tile_id)
+    def _player_blocks(self, x: float, y: float) -> bool:
+        # TServerLevel.cpp:789 skips no-PK, nonblocking, dead and hidden
+        # players; remote bounds are [x+.5,x+3) by [y+1,y+3).
+        client = self.client
+        host = getattr(client, 'gs2_host', None)
+        level = getattr(host, 'level_object', None)
+        if getattr(client, 'level_nopk', False) or (level is not None and level.get('isnopkzone')):
+            return False
+        origin = (client.x - local_coord(client.x), client.y - local_coord(client.y)) \
+            if client.in_gmap_segment else (0, 0)
+        for pid, player in getattr(client, 'players', {}).items():
+            if pid == client.player.id:
+                continue
+            # The wire never sends isblocking for an ordinary player, so a
+            # missing/None flag means blocking; only an explicit False opts out.
+            if (player.get('isblocking') is False
+                    or int(player.get('status') or 0) & (PLSTATUS.DEAD | PLSTATUS.HIDDEN)):
+                continue
+            name = player.get('level') or ''
+            offset = origin
+            gx, gy = player.get('gmaplevelx'), player.get('gmaplevely')
+            if client.in_gmap_segment and gx is not None and gy is not None:
+                offset = (gx * LEVEL_SIZE, gy * LEVEL_SIZE)
+            elif name and name != client._current_level_name:
+                # On a gmap the roster carries the MAP name, not the segment:
+                # like render_collect._world_pos_for_level, assume the local
+                # segment then. A different plain level means elsewhere.
+                if not name.lower().endswith('.gmap'):
+                    grid = next((grid for grid, level_name in client.gmap_grid.items()
+                                 if level_name == name), None) if client.in_gmap_segment else None
+                    if grid is None:
+                        continue
+                    offset = (grid[0] * LEVEL_SIZE, grid[1] * LEVEL_SIZE)
+            px, py = player.get('world_x'), player.get('world_y')
+            if px is None:
+                px = player.get('x', 0) + offset[0]
+            if py is None:
+                py = player.get('y', 0) + offset[1]
+            if px + 0.5 <= x < px + 3.0 and py + 1.0 <= y < py + 3.0:
+                return True
+        return False
+
+    def _bomb_blocks(self, x: float, y: float) -> bool:
+        # TServerLevel.cpp:2666 tests active lying bombs in
+        # [bx+.25,bx+3) by [by,by+2), without an owner/contact gate.
+        active = {(bomb['x'], bomb['y']): bomb
+                  for bomb in getattr(self, 'active_bombs', ())
+                  if bomb.get('carried_by') is None and not bomb.get('in_flight')}
+        for (bx, by), bomb in active.items():
+            if not bomb.get('exploded') and bx + .25 <= x < bx + 3 and by <= y < by + 2:
+                return True
+        levels = [(self.client._current_level_name, 0, 0)]
+        if self.client.in_gmap_segment:
+            levels = [(name, gx * LEVEL_SIZE, gy * LEVEL_SIZE)
+                      for (gx, gy), name in self.client.gmap_grid.items()]
+        for name, ox, oy in levels:
+            for bx, by in self.client.bombs_in_level(name):
+                bx, by = bx + ox, by + oy
+                # Presentation owns local fuse expiry, including wire bombs.
+                if (bx, by) in active:
+                    continue
+                if bx + .25 <= x < bx + 3 and by <= y < by + 2:
+                    return True
+        return False
+
     def _chest_blocks(self, x: float, y: float) -> bool:
         """True if (x, y) lies inside a chest's 2x2 footprint. Chests are solid
         objects (open or closed), so they block walking like a wall."""
@@ -334,9 +418,8 @@ class CollisionMixin:
                 return True
         return False
     def _check_water_at_position(self, x: float, y: float) -> bool:
-        """Check if the standing point is in deep, swimmable water."""
-        tile_id = self._get_tile_at(x, y)
-        return self._is_tile_swimming_water(tile_id)
+        """Check if the standing point is in deep, swimmable water (or lava)."""
+        return self._effective_tile_type(x, y) in (TileType.WATER, TileType.LAVA)
 
     def _corner_assist_offset(self, dx: int, dy: int) -> Optional[Tuple[int, int]]:
         """Classic-engine "corner assist": for a blocked pure-cardinal press

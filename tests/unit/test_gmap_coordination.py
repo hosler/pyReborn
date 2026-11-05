@@ -201,6 +201,11 @@ class TestSwordHitAfterNormalization:
         c = self._attacker()
         for i in range(3):
             c._protocol.sent.clear()
+            # Each swing happens after the victim's forty-tick hurt immunity
+            # has lapsed (the attacker keeps a per-victim report window across
+            # swings, TPlayer.cpp:5444 skips victims still in action mode 3).
+            c._sword_hit_until = {}
+            c._sword_state = None
             # Hurt-response relay: world coords via X2/Y2.
             c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
                 9, _pixel_pos(78, 71.5), _pixel_pos(79, 70.0)))

@@ -50,18 +50,12 @@ def test_reveal_spawns_only_on_closed_to_open_transition():
     harness.sound_mgr.play.assert_called_once_with("chest.wav")
 
 
-def test_reveal_rises_fades_and_expires():
+def test_reveal_is_static_and_expires_after_24_ticks():
     reveal = {"started_ms": 100}
 
     assert _Harness._chest_reveal_visual(reveal, 100) == (0.0, 255)
-    halfway_rise, halfway_alpha = _Harness._chest_reveal_visual(reveal, 850)
-    assert halfway_rise == 0.25
-    assert halfway_alpha == 255
-
-    late_rise, late_alpha = _Harness._chest_reveal_visual(reveal, 1400)
-    assert 0.4 < late_rise < 0.5
-    assert 0 < late_alpha < 255
-    assert _Harness._chest_reveal_visual(reveal, 1600) is None
+    assert _Harness._chest_reveal_visual(reveal, 1250) == (0.0, 255)
+    assert _Harness._chest_reveal_visual(reveal, 1300) is None
 
 
 def test_reveal_draw_position_is_centered_above_chest():

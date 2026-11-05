@@ -7,15 +7,15 @@ def test_invulnerability_blink_runs_for_full_grace_window():
     assert state.player_alpha(10.00) == 255
     assert state.player_alpha(10.11) == 105
     assert state.player_alpha(10.21) == 255
-    assert state.player_alpha(11.19) == 105
-    assert state.player_alpha(11.20) == 255
+    assert state.player_alpha(11.99) == 105
+    assert state.player_alpha(12.00) == 255
 
 
 def test_new_hurt_restarts_blink_and_hit_flash():
     state = CombatPresentation()
     state.hurt(2.0)
     state.hurt(2.5)
-    assert state.hurt_until == 3.7
+    assert state.hurt_until == 4.5
     assert state.hit_flash_alpha(2.5) == 100
     assert state.hit_flash_alpha(2.65) == 0
 

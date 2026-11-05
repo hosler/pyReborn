@@ -12,16 +12,85 @@ from pygame.locals import (
 
 from reborn_protocol.coords import level_index, segment_at, world_to_local
 
+from .. import ground_items
 from ..gani import direction_from_delta
-from ..liftobjects import match_lift_object
+from ..hurt import TICK_SECONDS
+from ..ground_effects import (
+    BED_TILE_TYPE, LAVA_ANI, LAVA_DAMAGE, LAVA_SWIM_TILE_TYPE, SLEEP_ANI,
+    SLEEP_HEAL, TickCounter, bed_samples, bed_snap_y, is_lava_type,
+)
+from ..hiding import (
+    HIDDEN_ACTION_MODE, HIDDEN_MOVE_ANI, HIDDEN_STILL_ANI, can_hide, is_hidden,
+)
+from ..liftobjects import LIFT_PROBE, match_lift_object
 from ..tiletypes import TileType
 from .constants import (
-    MOVE_STEP, PUSH_HOLD_TIME, THROW_DISTANCE, THROW_DURATION,
+    MOVE_STEP, PUSH_HOLD_TIME,
 )
 
 
 class ActionsMixin:
     """Mixin providing the above methods for GameClient."""
+
+    def _move_hurt_step(self, dx, dy):
+        """hurtFly's twelve wall probes, through the normal world collision path."""
+        from ..hurt import HURT_FLY_PROBES
+        player = self.client.player
+        nx, ny = player.x + dx, player.y + dy
+        if any(self._is_blocked_at(nx + edge[i], ny + edge[i + 1], check_players=False)
+               for edge in HURT_FLY_PROBES for i in (0, 2, 4)):
+            return False
+        return self.client.move(dx, dy, step=1.0, face_direction=player.direction)
+
+    def _advance_hurt(self, dt):
+        player = self.client.player
+        state = getattr(player, 'hurt', None)
+        if state is None or player.hearts <= 0 or player.status & 1:
+            return
+        state.advance(dt, self._move_hurt_step)
+        if state.ticks >= 40 and player.action_mode == 3:
+            player.action_mode = 0
+
+    def _try_start_ledge_jump(self, direction):
+        from ..jumping import JumpState
+        player = self.client.player
+        if (getattr(self, '_ledge_jump', None) is not None or player.hearts <= 0
+                or self.client.frozen or player.hurt.input_locked(time.time())
+                or getattr(self.client, 'ghost_mode', 0) or player.is_sitting
+                or not self._can_ledge_jump(direction)):
+            return False
+        player.direction = direction
+        player.action_mode = 2
+        self._ledge_jump = JumpState(player.x, player.y, direction)
+        self.is_moving = False
+        self._clear_push_hold()
+        # animateJumping (:6453-6482) moves independently of any gani and
+        # never waits for one. Preserve the current pose if jump is absent.
+        if self.gani_parser.parse('jump') is not None:
+            self._play_action_animation('jump')
+        self.sound_mgr.play('jump.wav')
+        return True
+
+    def _advance_ledge_jump(self, dt):
+        jump = getattr(self, '_ledge_jump', None)
+        if jump is None:
+            return
+        player = self.client.player
+        if player.action_mode != 2 or player.hearts <= 0:
+            self._ledge_jump = None
+            return
+        if self.client.frozen:
+            return
+        def move_to(x, y):
+            # Scripted arc: no collision along the path, but normal segment
+            # entry and local-coordinate wire updates still run in move().
+            self.client.move(x - player.x, y - player.y, step=1.0,
+                             face_direction=jump.direction)
+        if jump.advance(dt, move_to):
+            self._ledge_jump = None
+            player.action_mode = 0
+            self._play_action_animation('carry' if player.is_carrying() else 'idle')
+            self._update_swimming_state()
 
     def _facing_delta(self, direction: int) -> Tuple[int, int]:
         """(dx, dy) tile delta for a facing direction (0=up,1=left,2=down,3=right)."""
@@ -30,6 +99,8 @@ class ActionsMixin:
     def _pickup_ground_item(self, x: Optional[float] = None,
                             y: Optional[float] = None) -> bool:
         """Request a local pickup and play its sound when an item is present."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return False
         target_x = self.client.player.x if x is None else x
         target_y = self.client.player.y if y is None else y
         level_resolver = getattr(self.client, "get_current_level_from_position", None)
@@ -51,13 +122,169 @@ class ActionsMixin:
             self.sound_mgr.play(sound)
         return sent
 
-    def _move(self, dx: int, dy: int):
-        """Move the player, checking for blocking tiles.
+    def _auto_pickup_items(self) -> int:
+        """Walk-over pickup (TServerLevel::animateExtras).
 
-        If a diagonal move is blocked, slide along whichever axis is still free
-        so the player glides along walls instead of sticking to them.
-        """
+        Sends PLI_ITEMTAKE addressed at the item's own spot after checking
+        its age and distance. The server validates the request independently.
+        A sent request is forgotten when the item disappears."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return 0
+        client = self.client
+        if not (client.connected and client._authenticated):
+            return 0
+        level_resolver = getattr(client, "get_current_level_from_position", None)
+        level_name = level_resolver() if level_resolver is not None else ""
+        items = client.items_in_level(level_name)
+        now = time.monotonic()
+        ages = ground_items.item_ages(self, level_name, items, now)
+        if not items:
+            return 0
+        sent = self.__dict__['_item_take_sent']
+        local_x, local_y = world_to_local(client.player.x, client.player.y)
+        count = 0
+        for key in ground_items.walkover_takes(local_x, local_y, items, ages):
+            if (level_name, key) in sent:
+                continue
+            if client.pickup_item(key[0], key[1]):
+                sent.add((level_name, key))
+                count += 1
+                item_type = str(items[key]).lower()
+                self.sound_mgr.play("item2.wav" if any(
+                    part in item_type for part in ('heart', 'key')) else "item.wav")
+        return count
+
+    def _giveaway_stats(self):
         player = self.client.player
+        return {'rupees': player.rupees, 'bombs': player.bombs,
+                'arrows': player.arrows, 'hearts': player.hearts}
+
+    def _giveaway_select(self):
+        """S+A: enter / advance the item giveaway (TPlayer::setSelecting)."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
+        stats = self._giveaway_stats()
+
+        def available(index):
+            return ground_items.giveaway_available(
+                index, stats['rupees'], stats['bombs'], stats['arrows'],
+                stats['hearts'])
+
+        self._giveaway_item = ground_items.next_give_item(
+            available, getattr(self, '_giveaway_item', None))
+        if self._giveaway_item < 0:
+            self._giveaway_item = None
+            return
+        self.sound_mgr.play("item2.wav")
+
+    def _giveaway_drop(self) -> bool:
+        """A while the giveaway is up: lay the selected item (loseItem +
+        putExtra + PLI_ITEMADD)."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return False
+        index = getattr(self, '_giveaway_item', None)
+        if index is None or index not in ground_items.GIVEAWAY_COST:
+            return False
+        stats = self._giveaway_stats()
+        if not ground_items.giveaway_available(
+                index, stats['rupees'], stats['bombs'], stats['arrows'],
+                stats['hearts']):
+            return False
+        from reborn_protocol import PLPROP
+        client, player = self.client, self.client.player
+        stat, amount = ground_items.GIVEAWAY_COST[index]
+        if stat == 'hearts':
+            object.__setattr__(player, 'hearts', player.hearts - amount)
+            client._send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
+        else:
+            value = getattr(player, stat) - amount
+            setattr(player, stat, value)
+            prop = {'rupees': PLPROP.RUPEESCOUNT, 'bombs': PLPROP.BOMBSCOUNT,
+                    'arrows': PLPROP.ARROWSCOUNT}[stat]
+            client._send_appearance_prop(prop, value)
+        local_x, local_y = world_to_local(player.x, player.y)
+        x, y = ground_items.drop_position(local_x, local_y, player.direction)
+        level_name = client.get_current_level_from_position()
+        client.items.setdefault(level_name, {})[(x, y)] = ground_items.ITEM_NAMES[index]
+        client.send_item_add(x, y, index)
+        self.sound_mgr.play("item.wav")
+        return True
+
+    def _open_chest_sign(self, level_name: str, cx: int, cy: int) -> bool:
+        """A chest's sign index opens that level sign as a modal sign and stops
+        walking (TPlayer.cpp:2825-2837). An index past the level's sign list
+        shows nothing."""
+        index = self.client.chest_signs.get(level_name, {}).get((cx, cy), -1)
+        if index < 0:
+            return False
+        texts = list(self.client.signs.get(level_name, {}).values())
+        if index >= len(texts):
+            return False
+        self._show_dialogue(texts[index], classic_font=True)
+        self.is_moving = False
+        self._move_accum = 0.0
+        return True
+
+    def _move(self, dx: int, dy: int):
+        """Walk held axes in up, left, down, right order."""
+        # TPlayer.cpp:3496 dispatches every held direction in index order.
+        for ax, ay in ((0, -1), (-1, 0), (0, 1), (1, 0)):
+            if (ax and ax == dx) or (ay and ay == dy):
+                self._move_axis(ax, ay)
+
+    # A gap of more than this many 20 Hz ticks between moved steps means the
+    # walk restarted (the "first movement tick").
+    _FOOTSTEP_RESTART_TICKS = 3
+
+    def _gani_plays_sound(self, name: str) -> bool:
+        """True when the current animation's own PLAYSOUND lines include name."""
+        directions = getattr(getattr(self.player_anim, 'gani', None),
+                             'directions', None)
+        if not isinstance(directions, (list, tuple)):
+            return False
+        return any(sound[0].lower() == name
+                   for frames in directions for frame in frames
+                   for sound in frame.sounds)
+
+    def _play_footsteps(self, tick: Optional[int] = None):
+        """Footstep sounds for one moved step: steps.wav (water.wav on water)
+        when the walk starts, then steps2.wav every 5th tick and water.wav
+        every 15th while on water, modes 0/10 only (TPlayer.cpp:7494-7502,
+        :7599-7612). Ghost mode suppresses them. The oracle plays the first
+        one on every movementAction call, not only the first, but its engine
+        keeps one voice per file; replayed here that would stack 20 voices/s.
+        The unknown205 no-sound flag is not tracked by this client. The stock
+        walk gani already PLAYSOUNDs steps2.wav, so that one is left to it."""
+        if tick is None:
+            tick = int(time.time() / TICK_SECONDS)
+        last = getattr(self, '_footstep_tick', None)
+        if tick == last:
+            return  # two MOVE_STEPs fit in one tick; sound once per tick
+        self._footstep_tick = tick
+        # serverMoved flips the swamp sprite parity every step (TServerPlayer.cpp:1468).
+        self._step_parity = 1 - getattr(self, '_step_parity', 0)
+        if getattr(self.client, 'ghost_mode', 0):
+            return
+        on_water = self._effective_tile_type(
+            *self._player_ground()) == TileType.WATER
+        if last is None or tick - last > self._FOOTSTEP_RESTART_TICKS:
+            self.sound_mgr.play('water.wav' if on_water else 'steps.wav')
+        if tick % 5 or getattr(self.client.player, 'action_mode', 0) not in (0, 10):
+            return
+        if on_water:
+            if tick % 15 == 0:
+                self.sound_mgr.play('water.wav')
+        elif not self._gani_plays_sound('steps2.wav'):
+            self.sound_mgr.play('steps2.wav')
+
+    def _move_axis(self, dx: int, dy: int):
+        """Apply one cardinal sub-step, retaining its facing even if blocked."""
+        player = self.client.player
+
+        if getattr(self, '_ledge_jump', None) is not None:
+            return
+        if getattr(player, 'hurt', None) is not None and player.hurt.input_locked(time.time()):
+            return
 
         # Press a direction INTO an adjacent object to interact, the classic
         # Reborn way (no separate action key): a chest in front opens, a chair in
@@ -67,6 +294,9 @@ class ActionsMixin:
         player.direction = facing
         self.player_anim.set_direction(facing)
 
+        if self._walk_sign_contact():
+            return
+
         chest = self._find_chest_in_front()
         if chest is not None:
             cx, cy = chest
@@ -74,18 +304,25 @@ class ActionsMixin:
             if not self.client.get_chest_opened(level_name, cx, cy):
                 self.client.open_chest(cx, cy)
                 self.client.set_chest_opened(level_name, cx, cy)
+                self._open_chest_sign(level_name, cx, cy)
             return
 
         # Sitting is walk-on: having your feet on a chair tile IS sitting (see
         # _update_sitting_state) — movement is never intercepted or blocked
         # for chairs, you just ride across them in the sit ani.
 
-        step = MOVE_STEP
-        # Candidate moves: the full input first, then each single axis as a slide.
-        candidates = [(dx, dy)]
-        if dx != 0 and dy != 0:
-            candidates += [(dx, 0), (0, dy)]
+        if self._ledge_ahead(facing):
+            from ..jumping import JUMP_PUSH_TICKS
+            from ..hurt import TICK_SECONDS
+            self._update_push_hold(dx, dy)
+            started = getattr(self, '_push_hold_start', None)
+            if started is not None and time.time() - started >= JUMP_PUSH_TICKS * TICK_SECONDS:
+                self._try_start_ledge_jump(facing)
+            return
 
+        if self.current_anim_name == SLEEP_ANI:
+            self.current_anim_name = "idle"  # movementAction restarts walk (:7587)
+        step = MOVE_STEP
         mdx = mdy = 0
         # Escape hatch: if we're ALREADY overlapping a wall (bad server spawn,
         # warp onto a solid tile), blocking every move would trap us — allow
@@ -93,20 +330,17 @@ class ActionsMixin:
         # board and don't deepen the overlap: a blanket allow is noclip (walk
         # through walls, off the level edge, into negative coords).
         stuck_count = self._blocked_sample_count(self.client.x, self.client.y)
-        for cdx, cdy in candidates:
-            nx = self.client.x + cdx * step
-            ny = self.client.y + cdy * step
-            if stuck_count:
-                if (not self._position_out_of_bounds(nx, ny)
-                        and self._blocked_sample_count(nx, ny) <= stuck_count):
-                    mdx, mdy = cdx, cdy
-                    break
-            elif not self._is_position_blocked(nx, ny, cdx, cdy):
-                mdx, mdy = cdx, cdy
-                break
+        nx = self.client.x + dx * step
+        ny = self.client.y + dy * step
+        if stuck_count:
+            allowed = (not self._position_out_of_bounds(nx, ny)
+                       and self._blocked_sample_count(nx, ny) <= stuck_count)
+        else:
+            allowed = not self._is_position_blocked(nx, ny, dx, dy)
+        if allowed:
+            mdx, mdy = dx, dy
 
-        # Corner-assist: a blocked pure-cardinal press (no diagonal slide
-        # applied above) that's only blocked by being slightly off a
+        # Corner-assist: a cardinal press blocked by being slightly off a
         # doorway/corner opening gets nudged perpendicular instead of
         # stopping dead (see collision.py's _corner_assist_offset for the
         # geometry). Facing stays the PRESSED cardinal direction throughout
@@ -138,10 +372,9 @@ class ActionsMixin:
         # A move went through — no longer holding into a wall.
         self._clear_push_hold()
 
-        # Move is allowed (full, slid onto a free axis, or a corner-assist
-        # nudge). A corner-assist nudge keeps the originally-pressed facing
-        # instead of the inferred nudge-axis direction (see face_direction).
+        # Each axis keeps its pressed facing, including a corner nudge.
         self.client.move(mdx, mdy, face_direction=corner_assist_dir)
+        self._play_footsteps()
 
         # Face the direction we actually moved (or the pressed direction,
         # for a corner-assist nudge).
@@ -160,7 +393,9 @@ class ActionsMixin:
         # animate instead of resetting to frame 0 every step. (Sword/lift
         # can't be active here — those root the player in _handle_input.)
         if self.is_swimming:
-            move_anim = "swim"
+            move_anim = LAVA_ANI if getattr(self, '_swim_in_lava', False) else "swim"
+        elif self._is_hidden():
+            move_anim = HIDDEN_MOVE_ANI
         elif self.client.player.is_carrying():
             move_anim = "carry"
         else:
@@ -291,125 +526,153 @@ class ActionsMixin:
         client.send_position()
         return client.enter_gmap_segment(level, *world_to_local(client.x, client.y))
 
-    def _update_push_hold(self, dx: int, dy: int):
-        """Track how long the currently-pressed direction has been held
-        fully blocked; past PUSH_HOLD_TIME switches to the "push" gani
-        (classic-engine feel: lean on a wall for a moment and the character
-        visibly pushes against it). Called every frame _move() ends up
-        fully blocked, including after a failed corner-assist — a real
-        flat/solid wall, not a clearable corner.
+    def _stone_npcs_at(self, x, y):
+        """NPC footprints at a point, including nonblocking NPCs."""
+        runtime = getattr(self, 'gs1', None)
+        shapes = getattr(runtime, 'shapes', {})
+        for npc_id, npc in self.client.npcs.items():
+            if not npc.get('visible', True):
+                continue
+            shape = shapes.get(npc_id)
+            if shape and shape[0] > 0 and shape[1] > 0:
+                nx = npc.get('world_x', npc.get('x', 0))
+                ny = npc.get('world_y', npc.get('y', 0))
+                if nx <= x < nx + shape[0] and ny <= y < ny + shape[1]:
+                    yield npc_id
+            elif runtime is not None and runtime.npc_footprint_hit(npc, x, y):
+                yield npc_id
 
-        _clear_push_hold (called from _move whenever a move actually
-        succeeds, and from input.py when no movement key is held at all)
-        resets this; render.py's _update_animations falls back to idle if
-        is_pushing goes False while the gani is still showing "push"."""
-        # Carrying/sitting already own the gani (carry, sit) — walking a
-        # carried object or a chair into a wall shouldn't switch to "push".
-        if self.client.player.is_carrying() or self.client.player.is_sitting:
-            self._clear_push_hold()
+    def _pull_wall_before(self, direction):
+        # TInitStatics.cpp:1536: the four pulltest points.
+        ox, oy = ((1.5, .9), (0, 2), (1.5, 3.1), (3, 2))[direction]
+        x, y = self.client.x + ox, self.client.y + oy
+        # TPlayer.cpp:5805: players veto grabbing, even over a wall/NPC.
+        if self._player_blocks(x, y):
+            return False
+        if next(self._stone_npcs_at(x, y), None) is not None:
+            return True
+        from ..tiletypes import type_is_blocking
+        return type_is_blocking(self._effective_tile_type(x, y))
+
+    def _stone_action(self, action, direction):
+        # TPlayer.cpp:5817: push targets 1.5 tiles beyond the body centre.
+        reach = 2.0 if action == 'pull' else 1.5
+        dx, dy = self._facing_delta(direction)
+        lx, ly = world_to_local(self.client.x, self.client.y)
+        x, y = lx + 1.5 + reach * dx, ly + 2.0 + reach * dy
+        if not (0 <= x < 64 and 0 <= y < 64):
             return
+        # TPlayer.cpp:5858: pull supplies the opposite direction.
+        param = (direction + 2) & 3 if action == 'pull' else direction
+        runtime = getattr(self, 'gs1', None)
+        if runtime is not None:
+            wx, wy = self.client.x + 1.5 + reach * dx, self.client.y + 2 + reach * dy
+            for npc_id in list(self._stone_npcs_at(wx, wy)):
+                runtime.call_npc(npc_id, 'action' + action, (param,))
+        # TPlayer.cpp:5880: also send the action to the server.
+        self.client.triggeraction(f'{action},{param}', x, y)
 
+    def _update_push_hold(self, dx: int, dy: int):
+        """Predict the requested 38-to-18 push countdown at 20 Hz."""
+        player = self.client.player
         now = time.time()
-        if self._push_hold_dir != (dx, dy):
+        if self._push_hold_dir != (dx, dy) or self._push_hold_start is None:
             self._push_hold_dir = (dx, dy)
             self._push_hold_start = now
+            self._push_fired = False
+            self.is_pushing = False
+        ticks = int((max(0, now - self._push_hold_start) + 1e-9) / .05)
+        self._push_counter = max(18, 38 - ticks)
+        if self._push_counter > 18:
+            return
+        # The countdown itself is shared with the ledge jump and runs for
+        # everyone; only the push pose and its NPC event need a free-handed,
+        # standing, non-ghost player.
+        if getattr(self.client, 'ghost_mode', 0) or player.is_carrying() or player.is_sitting:
             self.is_pushing = False
             return
-        if not self.is_pushing and now - self._push_hold_start >= PUSH_HOLD_TIME:
-            self.is_pushing = True
-        if self.is_pushing:
-            direction = direction_from_delta(dx, dy)
-            self.player_anim.set_direction(direction)
-            if self.current_anim_name != "push":
-                self.player_anim.set_animation("push", direction, force=True)
-                self.current_anim_name = "push"
-                # Broadcast the push gani the same way the sit/sword states
-                # do (client.set_animation -> PLI_PLAYERPROPS with PLPROP_GANI
-                # + PLPROP_SPRITE direction — never the legacy prop 14).
-                self.client.set_animation("push")
+        self.is_pushing = True
+        direction = direction_from_delta(dx, dy)
+        self.player_anim.set_direction(direction)
+        if self.current_anim_name != 'push':
+            self._play_action_animation('push')
+        if not getattr(self, '_push_fired', False):
+            self._push_fired = True
+            self._stone_action('push', direction)
 
     def _clear_push_hold(self):
-        """Stop tracking a held-blocked direction (a move succeeded, the key
-        was released, or something else — grab, sword, sitting — took
-        over)."""
         self._push_hold_dir = None
+        self._push_hold_start = None
+        self._push_counter = 38
+        self._push_fired = False
         self.is_pushing = False
 
     def _update_grab_pull_state(self, dx: int, dy: int):
-        """Continuous per-frame update while the grab key (A) is held —
-        called every frame from input.py's A-held branches, in addition to
-        (not instead of) _try_grab's one-shot fresh-press dispatch.
-
-        Holding A while facing a plain blocking wall tile (nothing
-        liftable/interactable there — a bush/pot/rock, a chest, a door link,
-        or a sign all keep taking priority and are handled, one-shot, by
-        _try_grab) shows the "grab" gani. Once grabbing, additionally
-        holding the movement key OPPOSITE the grabbed facing switches to
-        "pull". Facing is pinned to whatever it was when the grab started —
-        pulling doesn't spin the player to face the direction they're
-        pulling toward. Releasing A (see _clear_grab_state, called from
-        input.py) exits back to idle/walk.
-
-        This never actually moves a block — there's no server support for
-        pushable/pullable tiles; it's purely the character's held-against-
-        a-wall animation."""
+        """Grab at counter 1; an opposite-direction hold advances 2 to 19."""
         player = self.client.player
-        # Lifting/carrying/sitting/swimming already own current_anim_name —
-        # never fight them with a grab gani of our own.
-        if player.is_carrying() or player.is_sitting or self.is_swimming:
+        if (getattr(self.client, 'ghost_mode', 0) or player.is_carrying() or player.is_sitting
+                or self.is_swimming):
             self._clear_grab_state()
             return
-
-        # Facing is pinned once a grab starts (see docstring); otherwise use
-        # whatever we're currently facing to decide whether one CAN start.
         direction = self._grab_direction if self.grab_state is not None else player.direction
-
-        # A liftable/chest/door/sign in front is already handled, with
-        # priority, by _try_grab's one-shot dispatch — don't show a grab
-        # gani over top of it.
-        points = self._touch_points(direction)
-        interactable = (
-            any(match_lift_object(self._get_tile_at, math.floor(tx),
-                                  math.floor(ty), player.glove_power) is not None
-                for tx, ty in points)
-            or self._find_chest_in_front() is not None
-            or self._get_non_edge_door() is not None
-            or self._check_sign_nearby() is not None
-        )
-        if interactable:
+        if not self._pull_wall_before(direction):
             self._clear_grab_state()
             return
-
-        if not any(self._is_blocked_at(tx, ty) for tx, ty in points):
-            self._clear_grab_state()
-            return
-
-        opposite = {0: 2, 1: 3, 2: 0, 3: 1}[direction]
-        pulling = self.grab_state is not None and (dx, dy) == self._facing_delta(opposite)
-        new_state = "pull" if pulling else "grab"
-
-        if self.grab_state != new_state:
-            if self.grab_state is None:
-                self._grab_direction = direction
-            self.grab_state = new_state
-            self.player_anim.set_animation(new_state, self._grab_direction, force=True)
-            self.current_anim_name = new_state
-            # Same broadcast mechanism as push/sit/sword (see _update_push_hold).
-            self.client.set_animation(new_state)
+        if self.grab_state is None:
+            # TPlayer.cpp:2058: A enters action mode 5 with counter 1.
+            self._grab_direction = direction
+            self._pull_started = None
+            self._pull_fired = False
+            self._pull_counter = 1
+            player.action_mode = 5
+        pulling = (dx, dy) == self._facing_delta((direction + 2) & 3)
+        state = 'pull' if pulling else 'grab'
+        if pulling:
+            now = time.time()
+            if self._pull_started is None:
+                self._pull_started = now
+            self._pull_counter = min(19, 2 + int((max(0, now - self._pull_started) + 1e-9) / .05))
+            # TPlayer.cpp:7475: dispatch when the pull counter reaches 19.
+            if self._pull_counter == 19 and not self._pull_fired:
+                self._pull_fired = True
+                self._stone_action('pull', direction)
+        else:
+            self._pull_started = None
+            self._pull_fired = False
+            self._pull_counter = 1
+        if self.grab_state != state:
+            self.grab_state = state
+            self.player_anim.set_animation(state, direction, force=True)
+            self.current_anim_name = state
+            self.client.set_animation(state)
         self.is_moving = False
 
     def _clear_grab_state(self):
-        """Stop the grab/pull hold state (A released, or a lift/chest/door/
-        sign/carry/sit took over)."""
+        if self.client.player.action_mode == 5:
+            self.client.player.action_mode = 0
         self.grab_state = None
         self._grab_direction = None
+        self._pull_started = None
+        self._pull_fired = False
+        self._pull_counter = 1
 
     def _swing_sword(self):
         """Swing sword attack."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
         player = self.client.player
+        # slaySword (TPlayer.cpp:7681-7689): refused in action mode 10
+        # (swimming), and when canLayItem's laytest point is water (:7678).
+        if self.is_swimming:
+            return
+        ox, oy = LIFT_PROBE[int(player.direction) & 3]
+        if self._effective_tile_type(self.client.x + ox, self.client.y + oy) in (
+                TileType.WATER, TileType.LAVA):
+            return
         self.client.sword_attack(player.direction)
         # sword_attack already carries the sword gani in its wire update.
-        self._play_action_animation("sword", broadcast=False)
+        from ..sword import play_sword_pose
+        play_sword_pose(self)
 
     def _play_action_animation(self, name: str, broadcast: bool = True):
         """Start a one-shot local gani and expose it to nearby players."""
@@ -429,11 +692,20 @@ class ActionsMixin:
         (Sitting is walk-on state, not a grab action — see
         _update_sitting_state.)
         """
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
         player = self.client.player
 
-        # If carrying something, throw it
+        # If carrying something, throw it (hidden: A only un-hides)
         if player.is_carrying():
-            self._throw_object()
+            if self._is_hidden():
+                self._unhide()
+            else:
+                self._throw_object()
+            return
+
+        # TPlayer.cpp:2039-2047: A cannot start another action in these modes.
+        if player.action_mode in (4, 5, 10):
             return
 
         # Open a chest in front of the player
@@ -444,6 +716,7 @@ class ActionsMixin:
             if not self.client.get_chest_opened(level_name, cx, cy):
                 self.client.open_chest(cx, cy)
                 self.client.set_chest_opened(level_name, cx, cy)
+                self._open_chest_sign(level_name, cx, cy)
             return
 
         # Lift an object in front — plain A lifts, classic style (no
@@ -466,35 +739,43 @@ class ActionsMixin:
 
         # Try to pickup item at current position
         self._pickup_ground_item()
-    def _check_sign_nearby(self) -> Optional[str]:
-        """Check for a sign at the player's touch points and return its text.
-
-        Reads client.signs (the real parsed sign data: {level_name: {(x, y):
-        text}}, tile coords LOCAL to the level) — the same source
-        render_objects.py's _check_and_render_signs auto-popup reads, so the
-        A-press path and the proximity popup agree. This replaces the old
-        regex-scraping of NPC scripts/images, which only ever matched signs
-        implemented as NPCs and could return garbage for anything else."""
-        signs = self.client.signs.get(self.client._current_level_name)
+    def _sign_contact(self):
+        """Return the sign under the upward wall probe, including its key."""
+        if self.client.player.direction != 0:
+            return None
+        signs = self.client.signs.get(self.client._current_level_name, {})
         if not signs:
             return None
-
-        # Touch points are world coords (matter in a GMAP); sign keys are
-        # level-local, so fold via a signed offset from the current
-        # segment's grid origin — same helper/pattern as render_objects.py's
-        # _check_and_render_signs. A raw %64 wrap snaps a touch point just
-        # past a segment's edge back to a low local value, missing near-edge
-        # signs and falsely matching signs on the level's opposite edge.
+        # TPlayer.cpp:2849 uses (x+1.5,y+0.5), on a wall; the sign box is
+        # inclusive and 2x1 tiles (TServerLevel.cpp:297).
+        x, y = self.client.x + 1.5, self.client.y + 0.5
         origin_x, origin_y = self._current_segment_origin()
-
-        player = self.client.player
-        for tx, ty in self._touch_points(player.direction):
-            lx, ly = tx - origin_x, ty - origin_y
-            for (sx, sy), text in signs.items():
-                if abs(lx - sx) < 1.5 and abs(ly - sy) < 1.5:
-                    return text
-
+        lx, ly = x - origin_x, y - origin_y
+        for (sx, sy), text in signs.items():
+            if sx <= lx <= sx + 2.0 and sy <= ly <= sy + 1.0:
+                if self._is_blocked_at(x, y, check_players=False):
+                    return (self.client._current_level_name, sx, sy), text
         return None
+
+    def _walk_sign_contact(self):
+        contact = self._sign_contact()
+        if contact is None:
+            self._sign_contact_key = None
+            return False
+        key, text = contact
+        if key != getattr(self, '_sign_contact_key', None):
+            self._sign_contact_key = key
+            self._show_dialogue(text, classic_font=True)
+        return True
+
+    def _check_sign_nearby(self) -> Optional[str]:
+        """Use the same sign box and wall probe for the A interaction."""
+        contact = self._sign_contact()
+        if contact is None:
+            return None
+        self._sign_contact_key = contact[0]
+        return contact[1]
+
     def _show_dialogue(self, text: str, classic_font: bool = False):
         """Show dialogue text in the dialogue box.
 
@@ -525,16 +806,23 @@ class ActionsMixin:
     def _try_pickup(self, dx: int, dy: int):
         """A + arrow: lift a 2x2 object in that direction, or
         throw the carried one."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
         player = self.client.player
+        if not player.is_carrying() and player.action_mode in (4, 5, 10):
+            return
 
         # Update direction first
         direction = direction_from_delta(dx, dy)
         self.player_anim.set_direction(direction)
         player.direction = direction
 
-        # If already carrying, throw instead
+        # If already carrying, throw instead (hidden: A only un-hides)
         if player.is_carrying():
-            self._throw_object()
+            if self._is_hidden():
+                self._unhide()
+            else:
+                self._throw_object()
             return
 
         if not self._lift_in_front(direction):
@@ -543,6 +831,18 @@ class ActionsMixin:
             # at empty ground on every failed grab read as pure jank.
             px, py = self._touch_points(direction)[0]
             self._pickup_ground_item(px, py)
+
+    def _lift_probe_tile(self, direction: int) -> Tuple[int, int]:
+        """The single tile `TPlayer::liftObjects` probes (liftobjects.LIFT_PROBE).
+
+        It is NOT one of the _touch_points: the reference's "up" probe is the
+        row the box's top edge touches (player y + 0), so a solid object such
+        as a vase, which the player cannot walk into, is still reached when
+        standing flush against it. The generic touch row for "up" is one tile
+        further down, inside the player's own box."""
+        ox, oy = LIFT_PROBE[direction]
+        return (math.floor(self.client.x + ox + 0.0001),
+                math.floor(self.client.y + oy + 0.0001))
 
     def _lift_in_front(self, direction: int) -> bool:
         """Lift the 2x2 object at the touch points for the given facing.
@@ -553,32 +853,78 @@ class ActionsMixin:
         no "you need a glove for this" message to print: a row out of reach
         simply never matches, exactly as `TPlayer::liftObjects` behaves.
         """
+        if getattr(self.client, 'ghost_mode', 0):
+            return False
         player = self.client.player
+        if (player.is_carrying() or player.action_mode in (4, 5, 10)
+                or getattr(self, 'is_swimming', False)):
+            return False
 
-        for tx, ty in self._touch_points(direction):
-            match = match_lift_object(self._get_tile_at, math.floor(tx),
-                                      math.floor(ty), player.glove_power)
-            if match is None:
-                continue
-
+        match = match_lift_object(self._get_tile_at,
+                                  *self._lift_probe_tile(direction),
+                                  player.glove_power)
+        if match is None:
+            if not self._lift_bomb(direction):
+                return False
+        else:
             self._replace_lifted_tiles(match)
-            # The renderer draws the carried tiles row-major (TL, TR, BL, BR);
-            # the reference table is column-major.
             tl, bl, tr, br = match.tiles
             player.pickup_object(match.name, (tl, tr, bl, br),
                                  (match.origin_x, match.origin_y))
-            break
-        else:
-            return False
+            from ..throwing import carry_code
+            from ..carrying import publish_carry
+            publish_carry(self.client, carry_code(match.carry_sprite))
 
         # Play lift animation then switch to carry
         self.player_anim.set_animation("lift", direction, force=True)
         self.current_anim_name = "lift"
-        self.sound_mgr.play("lift.wav")
+        player.action_mode = 4
+        set_animation = getattr(self.client, 'set_animation', None)
+        if set_animation is not None:
+            set_animation('lift')
+        # lift.gani:129: PLAYSOUND is consumed by local animation playback.
 
         # Invalidate world surface to show removed tiles
         self.world_surface = None
         return True
+
+    def _lift_bomb(self, direction):
+        # TPlayer.cpp:1983-2003: bombs are the second loop, using the same tile probe.
+        if getattr(self.client, 'ghost_mode', 0):
+            return False
+        from ..carrying import bomb_sprite, publish_carry
+        from ..throwing import carry_code
+        tx, ty = self._lift_probe_tile(direction)
+        bombs = getattr(self, 'active_bombs', [])
+        if not bombs and not getattr(self.client, 'bombs', {}):
+            return False
+        level_name, _ = self._level_tiles_at(tx, ty)
+        registry = getattr(self.client, 'bombs', {}).get(level_name, {})
+        ox, oy = ((tx // 64) * 64, (ty // 64) * 64) if self.client.in_gmap_segment else (0, 0)
+        for info in list(registry.values()):
+            bx, by = info['x'] + ox, info['y'] + oy
+            if not any(b['x'] == bx and b['y'] == by for b in bombs):
+                self._add_remote_bomb(dict(info, x=bx, y=by))
+        for bomb in bombs:
+            if bomb.get('exploded') or bomb.get('carried_by') is not None or bomb.get('in_flight'):
+                continue
+            bx, by = bomb['x'], bomb['y']
+            if not (bx <= tx < bx + 2 and by <= ty < by + 2):
+                continue
+            if time.time() >= bomb['time'] + bomb.get('fuse_time', 3.0):
+                continue
+            sprite = bomb_sprite(bomb, time.time())
+            self.client.player.pickup_object('bomb', (), (bx, by))
+            self.client.player.carried_bomb = bomb
+            # TServerLevel.cpp:1310-1340: removed/non-lying bombs do not count down.
+            bomb['fuse_remaining'] = bomb['time'] + bomb.get('fuse_time', 3.0) - time.time()
+            bomb['carried_by'] = self.client.player.id
+            publish_carry(self.client, carry_code(sprite))
+            self.client.remove_bomb(bx, by)
+            registry.pop((bx - ox, by - oy), None)
+            return True
+        return False
+
     def _replace_lifted_tiles(self, match) -> None:
         """Put the object's replacement tiles on the board, and on the wire.
 
@@ -601,51 +947,79 @@ class ActionsMixin:
             elif tiles:
                 tiles[level_index(lx, ly)] = replacement
 
+    def _is_hidden(self) -> bool:
+        return is_hidden(self.client.player)
+
+    def _hide_or_unhide(self):
+        """D while carrying (TPlayer.cpp:2121-2135): un-hide when hidden,
+        else a carried bush/stone/blackstone starts mode 14."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
+        player = self.client.player
+        if self._is_hidden():
+            self._unhide()
+        elif (can_hide(player.carried_object_type) and not self.is_swimming
+                and player.action_mode == 0):
+            player.action_mode = HIDDEN_ACTION_MODE
+            self._play_action_animation(HIDDEN_STILL_ANI)
+
+    def _unhide(self):
+        """TPlayer::unHide (:6412): mode 14 ends, the object stays carried."""
+        self.client.player.action_mode = 0
+        from ..carrying import standing_carry
+        self._play_action_animation(standing_carry(self))
+
     def _throw_object(self):
-        """Throw the carried object: it flies ahead in an arc and breaks on
-        landing (or on the first wall it hits), classic style. It does NOT
-        re-plant itself in the level — a thrown bush is a destroyed bush."""
+        """Release the carried tiles through the shared throw simulation."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
         player = self.client.player
         if not player.is_carrying():
             return
 
+        bomb = getattr(player, 'carried_bomb', None)
         thrown_type, thrown_tiles, thrown_pos = player.throw_object()
+        from ..throwing import make_throw, report_throw
+        report_throw(self.client)
         direction = player.direction
+        if getattr(player, 'action_mode', 0) == HIDDEN_ACTION_MODE:  # TPlayer.cpp:2032
+            player.action_mode = 0
 
-        # Play throw animation; fall back to idle if the gani isn't available
-        # (otherwise we'd stay stuck in the looping carry pose after throwing).
-        throw_gani = self.gani_parser.parse("throw")
-        if throw_gani is not None:
-            prefetch = getattr(self, '_prefetch_gani_assets', None)
-            if prefetch is not None:
-                prefetch(throw_gani)
-        anim = "throw" if throw_gani else "idle"
-        self.player_anim.set_animation(anim, direction, force=True)
-        self.current_anim_name = anim
-        self.sound_mgr.play("put.wav")
+        # TPlayer.cpp:7845: release immediately starts idle, without a sound.
+        from ..carrying import publish_carry
+        publish_carry(self.client, -1)
+        if getattr(player, 'action_mode', 0) == 4:
+            player.action_mode = 0
+        self.player_anim.set_animation('idle', direction, force=True)
+        self.current_anim_name = 'idle'
+        set_animation = getattr(self.client, 'set_animation', None)
+        if set_animation is not None:
+            set_animation('idle')
 
-        if not thrown_tiles:
+        if not thrown_tiles and bomb is None:
             return
 
-        ddx, ddy = self._facing_delta(direction)
-        # Launch from where the carried object is drawn: 2x2 top-left over the
-        # head, i.e. z0 tiles above a ground anchor just below the torso — so
-        # the sprite doesn't jump on release.
-        z0 = 2.75
-        self.thrown_objects.append({
-            'tiles': thrown_tiles,
-            'type': thrown_type,
-            'x': self.client.x,          # ground-projected 2x2 top-left
-            'y': self.client.y + 1.0,
-            'z': z0, 'z0': z0,           # height above ground, eases to 0
-            'dx': ddx, 'dy': ddy,
-            'speed': THROW_DISTANCE / THROW_DURATION,
-            'dist': 0.0,
-            'range': THROW_DISTANCE,
-        })
+        obj = make_throw(self.client.x, self.client.y, direction, thrown_type, thrown_tiles)
+        if bomb is not None:
+            obj['bomb'] = bomb
+            bomb['carried_by'] = None
+            bomb['in_flight'] = True
+        self.thrown_objects.append(obj)
     def _find_chest_in_front(self) -> Optional[Tuple[int, int]]:
         """Return the local key of the chest being faced."""
-        for tx, ty in self._touch_points(self.client.player.direction):
+        direction = self.client.player.direction
+        points = self._touch_points(direction)
+        if direction in (0, 2):
+            # Vertical TOUCH_OFFSETS probe a full tile off the box edge:
+            # facing up y+1.0 is exactly the box top (y+1), so a player flush
+            # against a chest's south face floors into the tile BELOW it and
+            # misses; facing down y+4.0 reaches a whole tile past the box
+            # bottom (y+3), opening chests from a gap. Probe half a tile
+            # beyond the box edge, as the left/right probes do.
+            oy = 0.5 if direction == 0 else 3.5
+            points = [(self.client.x + ox, self.client.y + oy)
+                      for ox in (1.0, 2.0)]
+        for tx, ty in points:
             # Touch points are world coords (matter in a GMAP); chest keys
             # are level-local (0-63), so fold to the current segment's local
             # frame the same way collision.py's _chest_blocks does — else
@@ -690,6 +1064,12 @@ class ActionsMixin:
             self.client.set_animation("walk" if self.is_moving else "idle")
     def _use_weapon(self):
         """Use the currently equipped weapon."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return None
+        # keyAction D (TPlayer.cpp:2100-2103): no weapon while the ground
+        # point is water. Weapon cycling (S+D) is not gated.
+        if self.is_swimming:
+            return
         # Get selected weapon from inventory
         weapon = self.inventory_ui.get_selected_weapon(self.weapons)
         if weapon:
@@ -830,17 +1210,76 @@ class ActionsMixin:
 
         # Edge links are at level boundaries
         return x <= 1 or x + w >= 63 or y <= 1 or y + h >= 63
+    def _advance_ground_effects(self, dt):
+        """Lava damage and the sleeping heal, both on the 20 Hz tick
+        (TPlayer.cpp:5887-5912 testForLava, :7350-7362 sleep heal)."""
+        player = self.client.player
+        if getattr(self, '_ground_ticks', None) is None:
+            self._ground_ticks = (TickCounter(), TickCounter())
+        lava_ticks, sleep_ticks = self._ground_ticks
+        alive = player.hearts > 0
+        on_lava = (alive and not getattr(self.client, 'frozen', False)
+                   and is_lava_type(self._effective_tile_type(*self._player_ground())))
+        if lava_ticks.advance(dt, on_lava):
+            # changePower2(-0.5, forceDamage=true) skips the swimming/pause
+            # gates, so write past Player's immunity guard. The client owns
+            # its HP; pygserver takes the CURPOWER report as-is.
+            object.__setattr__(player, 'hearts', max(0.0, player.hearts - LAVA_DAMAGE))
+            self.client.send_hearts()
+        sleeping = alive and self.current_anim_name == SLEEP_ANI
+        if sleep_ticks.advance(dt, sleeping) and player.hearts < player.max_hearts:
+            self.client.send_hearts(player.hearts + SLEEP_HEAL)
+
+    def _update_sleeping_state(self):
+        """testSittingSleeping's bed half. The oracle runs it when a direction
+        key is released (:3429) and on level entry (:1041), not every frame."""
+        was_moving = getattr(self, '_sleep_was_moving', False)
+        entered = getattr(self, '_sleep_level', None) != self.client._current_level_name
+        self._sleep_was_moving = self.is_moving
+        self._sleep_level = self.client._current_level_name
+        if not self.is_moving and (was_moving or entered):
+            self._test_sleeping()
+
+    def _test_sleeping(self):
+        player = self.client.player
+        if (player.hearts <= 0 or player.is_carrying() or player.is_sitting
+                or player.action_mode not in (0, 1)):
+            return
+        if self._effective_tile_type(*self._player_ground()) == TileType.CHAIR:
+            return
+        left, right = bed_samples(self.client.x, self.client.y)
+        left_hits = [self._effective_tile_type(*p) == BED_TILE_TYPE for p in left]
+        right_hits = [self._effective_tile_type(*p) == BED_TILE_TYPE for p in right]
+        if not any(left_hits) or not any(right_hits):
+            return
+        self._play_action_animation(SLEEP_ANI)
+        target = bed_snap_y(self.client.y, left_hits[0] or right_hits[0])
+        if target != self.client.y:
+            self.client.move(0, target - self.client.y, step=1.0,
+                             face_direction=player.direction)
+
     def _update_swimming_state(self):
         """Update swimming state based on current position."""
+        if getattr(self, '_ledge_jump', None) is not None:
+            return  # testForWater refuses action mode 2 (TPlayer.cpp:5990).
         was_swimming = self.is_swimming
-        # Sample the collision box's centre point (x+1.5, y+2.5), not the
-        # sprite's top-left — otherwise swimming is judged off from where
-        # the player visibly stands.
-        self.is_swimming = self._check_water_at_position(*self._player_feet())
+        # testForWater samples (x+1.5, y+2.0), the shared ground point
+        # (TPlayer.cpp:5997-5999), not the y+2.5 feet point.
+        self.is_swimming = self._check_water_at_position(*self._player_ground())
+        self._swim_in_lava = (self.is_swimming and self._effective_tile_type(
+            *self._player_ground()) == LAVA_SWIM_TILE_TYPE)
+
+        player = self.client.player
+        swim_anim = LAVA_ANI if self._swim_in_lava else "swim"
+        # Swimming drops a carried object: testForWater's setActionMode(10)
+        # runs with a non-carry gani, which throws it (TPlayer.cpp:5774-5779).
+        if self.is_swimming and player.is_carrying():
+            self._throw_object()
+            self.player_anim.set_animation(swim_anim, player.direction, force=True)
+            self.current_anim_name = swim_anim
 
         # If swimming state changed, update animation
         if self.is_swimming != was_swimming:
-            player = self.client.player
             if self.is_swimming:
                 # Just entered water: splash feedback, and snap the gani to
                 # swim immediately if we're not mid-move/mid-action (a step
@@ -851,13 +1290,18 @@ class ActionsMixin:
                 self.sound_mgr.play("splash.wav")
                 if not player.is_carrying() and not player.is_sitting and \
                         self.current_anim_name in ("idle", "walk"):
-                    self.player_anim.set_animation("swim", player.direction)
-                    self.current_anim_name = "swim"
+                    self.player_anim.set_animation(swim_anim, player.direction)
+                    self.current_anim_name = swim_anim
             else:
                 # Just left water: splash out, and restore idle/walk from
                 # swim/swim-idle so the player doesn't stay in the swim pose
                 # standing on dry land.
                 self.sound_mgr.play("splash.wav")
-                if self.current_anim_name == "swim" and not self.is_moving:
+                if self.current_anim_name in ("swim", LAVA_ANI) and not self.is_moving:
                     self.player_anim.set_animation("idle", player.direction)
                     self.current_anim_name = "idle"
+        elif (self.is_swimming and self.current_anim_name in ("swim", LAVA_ANI)
+                and self.current_anim_name != swim_anim):
+            # Water <-> lava without leaving the swim (testForWater :6021).
+            self.player_anim.set_animation(swim_anim, player.direction)
+            self.current_anim_name = swim_anim

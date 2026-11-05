@@ -184,6 +184,26 @@ def test_testnpc_cannot_hit_a_hidden_image_npc():
     assert _this(gs1, 5)["n"] == -1.0
 
 
+@pytest.mark.parametrize("kind", ["image", "character", "shape"])
+def test_testnpc_visibility_precedes_every_kind_of_geometry(kind):
+    target = {"x": 12.0, "y": 30.0, "image": "koni_vase.png",
+              "visible": False}
+    if kind == "character":
+        target["gani"] = "idle"
+    _c, gs1 = _engine({
+        9: target,
+        5: {"x": 0.0, "y": 0.0, "image": "-",
+            "script": "if (timeout) { this.n = testnpc(13,31); }"},
+    })
+    if kind == "shape":
+        gs1.shapes[9] = (2.0, 2.0)
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["n"] == -1.0
+    target["visible"] = True
+    gs1.trigger_npc_event(5, "timeout")
+    assert _this(gs1, 5)["n"] == 1.0
+
+
 def test_testnpc_without_both_coordinates_is_a_miss():
     _c, gs1 = _engine(_shape_npcs("if (timeout) { this.n = testnpc(45); }"))
     gs1.trigger_event("playerenters")

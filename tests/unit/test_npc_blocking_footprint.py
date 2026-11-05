@@ -309,3 +309,29 @@ def test_gs2_timeout_zero_cancels():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+# -- BLOCKFLAGS wire prop (server-run dontblock) -----------------------------
+
+def _npc_props_packet(npc_id, *props):
+    """PLO_NPCPROPS payload: gint3 id + [gchar prop][raw payload] pairs."""
+    body = bytes([32 + (npc_id >> 14), 32 + ((npc_id >> 7) & 127), 32 + (npc_id & 127)])
+    for prop_id, payload in props:
+        body += bytes([32 + prop_id]) + payload
+    return body + b'\n'
+
+
+def test_blockflags_prop_sets_dontblock_and_blocking_npc_still_blocks():
+    from pyreborn.packets import parse_npc_props
+    light = parse_npc_props(_npc_props_packet(7, (14, bytes([33]))))
+    assert light['dontblock'] is True and light['blockflags'] == 1
+    carried = parse_npc_props(_npc_props_packet(7, (14, bytes([32 + 2]))))
+    assert carried['dontblock'] is False           # CANBECARRIED only
+
+    # Same footprint, with and without the flag: the flag alone exempts it.
+    image = {'x': 10.0, 'y': 10.0, 'image': 'light2.png'}
+    _c, gs1 = _gs1({1: dict(image, **light), 2: {'x': 20.0, 'y': 10.0,
+                                               'image': 'light2.png'}},
+                   image_size=(32, 32))
+    assert gs1.npc_blocks_at(10.5, 10.5) is False
+    assert gs1.npc_blocks_at(20.5, 10.5) is True

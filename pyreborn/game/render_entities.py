@@ -7,7 +7,11 @@ from typing import List, Optional, Tuple
 
 import pygame
 
+from ..alignment import alignment_color
+from ..classic_sprites import draw_sprite, swamp_index, swamp_sprite
 from ..gani import AnimationState
+from ..hurt import TICK_SECONDS
+from ..carrying import BOMB_CODES, carry_position, carry_tiles
 from ..npc_handler import CHARACTER_IMAGE
 from ..player import Player
 from ..sprites import palette_name_to_index
@@ -216,13 +220,39 @@ class EntityRenderMixin(
         return {f'attr{i}_image': str((gattribs or {}).get(i) or '')
                 for i in range(1, ATTR_SLOTS + 1)}
 
+    def _render_swamp_overlay(self, x: float, y: float):
+        """Swamp/lava-swamp sprite pair over the local player's feet. The slot
+        is re-sampled only after a move of 0.5 tile or more, so it lingers
+        briefly after leaving the tile (TServerPlayer.cpp:1239-1262); the
+        sprite's top-left is player + (0.5, 2.0) tiles (:1317-1320). The
+        oracle draws it inside `if (getIsHurt() && ...)`; that reads as a
+        decompile inversion, so it is drawn whenever a slot is set."""
+        if getattr(self.client, 'ghost_mode', 0):
+            return
+        pos = (self.client.x, self.client.y)
+        last = getattr(self, '_swamp_pos', None)
+        if last is None or abs(last[0] - pos[0]) >= 0.5 or abs(last[1] - pos[1]) > 0.5:
+            self._swamp_slot = swamp_index(
+                self._effective_tile_type(*self._player_ground()))
+            self._swamp_pos = pos
+        sprite_index = swamp_sprite(
+            self._swamp_slot, getattr(self, '_step_parity', 0),
+            int(time.time() / TICK_SECONDS))
+        surf = None if sprite_index is None else draw_sprite(
+            self.sprite_mgr, sprite_index)
+        if surf is not None:
+            self.screen.blit(surf, (int(x + TILE_SIZE * 0.5),
+                                    int(y + TILE_SIZE * 2.0)))
+
     def _render_player(self, x: float, y: float, player: Player,
                        anim: AnimationState,
                        frame: Optional[FrameContext] = None):
         """Render the local player with animation."""
+        if getattr(self.client, 'ghost_mode', 0) == 2:
+            return
         frame = self._frame_context() if frame is None else frame
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
-        base_alpha = 115 if self.client.ghost_mode else 255
+        base_alpha = 115 if getattr(self.client, 'ghost_mode', 0) == 1 else 255
         alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
         equip = {
             'body_image': player.body_image or 'body.png',
@@ -237,6 +267,8 @@ class EntityRenderMixin(
         equip.update(self._attr_equipment(player.gattribs))
         self._render_animated_entity(x, y, anim, equip, alpha=alpha)
 
+        self._render_swamp_overlay(x, y)
+
         # Render carried object above player's head
         if player.is_carrying():
             self._render_carried_object(x, y, player)
@@ -245,11 +277,14 @@ class EntityRenderMixin(
 
         # Render nickname below local player
         nickname = player.nickname or player.account
+        if player.status & 1:
+            nickname = f"{nickname} (paused)"
         status_label = self._status_label(player.status)
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self._render_text_outlined_cached(self.font_small, nickname, (255, 255, 255))
+            name_surf = self._render_text_outlined_cached(
+                self.font_small, nickname, alignment_color(getattr(player, 'ap', 0)))
             # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
             # (24px) — the sprite is 3 tiles wide, top-left anchored at x.
             name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
@@ -297,35 +332,31 @@ class EntityRenderMixin(
                     grid_rect = pygame.Rect(grid_x, grid_y, TILE_SIZE, TILE_SIZE)
                     pygame.draw.rect(self.screen, (255, 255, 255, 128), grid_rect, 1)
     def _render_carried_object(self, x: float, y: float, player: Player):
-        """Render the 2x2 object the player is carrying above their head."""
-        if not player.carried_tile_ids:
+        anim = getattr(self, 'player_anim', None)
+        counter = self._lift_subframe(anim) if self.current_anim_name == 'lift' else None
+        self._draw_carried_object(x, y, player.carry_sprite, player.direction,
+                                  player.carried_tile_ids, counter, player.carried_bomb)
+
+    @staticmethod
+    def _lift_subframe(anim):
+        # TGaniObject.cpp:3137-3138,3207-3211: subframe resets on each gani step.
+        return int(getattr(anim, 'frame_time', 0.0) / AnimationState.FRAME_DURATION)
+
+    def _draw_carried_object(self, x, y, code, direction, tiles=(), counter=None, bomb=None):
+        tiles = tiles or carry_tiles(code)
+        if not tiles and code not in BOMB_CODES:
             return
-
-        tile_ids = player.carried_tile_ids
-        # Render 2x2 tiles above player's head
-        # Each tile is TILE_SIZE, so 2x2 = 2*TILE_SIZE x 2*TILE_SIZE
-        obj_width = TILE_SIZE * 2
-        obj_height = TILE_SIZE * 2
-
-        # (x, y) is the sprite's top-left; the sprite is 3 tiles wide (true
-        # centre at x + TILE_SIZE * 1.5) with the head near the top. Hold the
-        # object centered over the head, resting just above it, so the carry
-        # gani's raised hands read as holding each side of the object.
-        # (Verified centered against dusty's bush by pixel measurement — an
-        # apparent lean there is the art's asymmetric transparency letting
-        # the head show through one quadrant, not a placement offset.)
-        obj_x = (x + TILE_SIZE * 1.5) - obj_width // 2
-        obj_y = y - obj_height + 8
-
-        # Render the 4 tiles
-        positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        for i, (dx, dy) in enumerate(positions):
-            if i < len(tile_ids):
-                tile_id = tile_ids[i]
-                tile_surf = self.tileset_mgr.get_tile_or_color(tile_id)
-                tile_x = obj_x + dx * TILE_SIZE
-                tile_y = obj_y + dy * TILE_SIZE
-                self.screen.blit(tile_surf, (tile_x, tile_y))
+        dx, dy, shadow_y = carry_position(direction, counter)
+        px, py = x + dx * TILE_SIZE, y + dy * TILE_SIZE
+        if shadow_y is not None:
+            pygame.draw.ellipse(self.screen, (25, 25, 30),
+                                (px + .25 * TILE_SIZE, y + shadow_y * TILE_SIZE, 24, 6))
+        if code in BOMB_CODES:
+            self._render_carried_bomb(px, py, bomb)
+            return
+        for i, (tx, ty) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
+            self.screen.blit(self.tileset_mgr.get_tile_or_color(tiles[i]),
+                             (px + tx * TILE_SIZE, py + ty * TILE_SIZE))
 
     def _split_other_player_anim(self, player_anim: str) -> Tuple[str, List[str]]:
         """Split a `setani ani,param1,param2` comma-joined string into
@@ -393,10 +424,12 @@ class EntityRenderMixin(
         # PARAMn PLAYSOUND (`setani sen_piano_note2,<note>.wav`) re-issues the
         # SAME gani name with a new sound file, and skipping the call here
         # meant the second note never sounded.
-        current_name = anim.gani.name if anim.gani else ''
-        if (player_anim != current_name or anim.direction != direction
-                or anim.params != gani_params):
+        wire_animation = (player_anim, direction, tuple(gani_params))
+        waiting_for_asset = (anim.requested_name == player_anim
+                             and (anim.gani is None or anim.gani.name != player_anim))
+        if getattr(anim, '_wire_animation', None) != wire_animation or waiting_for_asset:
             anim.set_animation(player_anim, direction, params=gani_params)
+            anim._wire_animation = wire_animation
 
         equip = {
             'body_image': pdata.get('body_image', 'body.png'),
@@ -419,6 +452,9 @@ class EntityRenderMixin(
         anchor_x = x + self._PLAYER_ANCHOR_FIX
         self._render_animated_entity(x, y, anim, equip,
                                      alpha=115 if hidden else 255)
+        counter = self._lift_subframe(anim) if anim.gani and anim.gani.name == 'lift' else None
+        self._draw_carried_object(x, y, pdata.get('carry_sprite', -1), direction,
+                                  counter=counter, bomb=pdata.get('_carried_bomb'))
 
         # Render chat bubble above player (if they have chat text)
         chat_text = pdata.get('chat', '')
@@ -427,11 +463,14 @@ class EntityRenderMixin(
 
         # Render nickname below player
         nickname = pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or ''
+        if pdata.get('status', 0) & 1:
+            nickname = f"{nickname} (paused)"
         status_label = self._status_label(pdata.get('status'))
         if status_label:
             nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
         if nickname:
-            name_surf = self._render_text_outlined_cached(self.font_small, nickname, (255, 255, 255))
+            name_surf = self._render_text_outlined_cached(
+                self.font_small, nickname, alignment_color(pdata.get('ap', 0)))
             # Center name below player (player sprite is ~48 pixels tall).
             # True horizontal centre is x+1.5 tiles (24px), same as the local
             # player (see _render_player).

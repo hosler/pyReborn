@@ -366,7 +366,7 @@ class HUD:
         self.badge_noclip.text = "NOCLIP (N)"
         self.badge_noclip.visible = getattr(g, "noclip", False)
 
-        self.ghost.visible = g.ghost_mode
+        self.ghost.visible = bool(g.ghost_mode)
 
         # showstats: a scripted HUD hiding every panel element hides the
         # panel widget entirely (StatsPanel._draw also gates per element).

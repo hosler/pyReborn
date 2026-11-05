@@ -259,6 +259,10 @@ _NPC_PROP_HANDLERS = {
     2: _set('x'),
     3: _set('y'),
     13: _set('visflags'),
+    # NPCBlockFlags: bit 0 = NOBLOCK (dontblock/blockagain). Surfaced as the
+    # same 'dontblock' key the local GS1 runtime's collision gate reads.
+    14: lambda props, value: props.update(
+        blockflags=int(value), dontblock=bool(int(value) & 1)),
     18: _set_sprite,
     19: _set('colors'),
     # A preset head id is meaningful to the renderer here (unlike the player

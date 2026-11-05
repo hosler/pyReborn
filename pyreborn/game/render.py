@@ -14,6 +14,7 @@ from reborn_protocol.coords import (
 
 from .camera import Camera2D
 from ..liftobjects import match_lift_object
+from ..carrying import standing_carry
 from ..tiletypes import TileType, active_tilestype
 from .constants import (
     TILE_SIZE,
@@ -29,8 +30,17 @@ class RenderMixin(FrameContextMixin):
 
     def _update_animations(self, dt: float):
         """Update all animation states."""
+        if getattr(self.client.player, 'hurt', None) is not None:
+            self._advance_hurt(dt)
+        if hasattr(self, '_advance_ground_effects'):
+            self._advance_ground_effects(dt)
+        if getattr(self, '_ledge_jump', None) is not None:
+            self._advance_ledge_jump(dt)
         # Walk-on sitting: derive seated state from the tile under the feet.
-        self._update_sitting_state()
+        if getattr(self, '_ledge_jump', None) is None:
+            self._update_sitting_state()
+            if hasattr(self, '_update_sleeping_state'):
+                self._update_sleeping_state()
 
         # Script-driven movement (disabledefmovement): the movement weapon
         # writes player.dir on EVERY tick a held key changes (Bomber v6
@@ -57,7 +67,11 @@ class RenderMixin(FrameContextMixin):
             setback = self.player_anim.get_setback()
             anim = self.player_anim
             requested = getattr(anim, 'requested_name', None)
-            if (requested and getattr(anim, 'gani', None) is not None
+            if (getattr(self, '_ledge_jump', None) is not None
+                    or (getattr(self.client.player, 'hurt', None) is not None
+                        and self.client.player.hurt.input_locked(time.time()))):
+                pass  # Keep hurt's last frame throughout the input lock.
+            elif (requested and getattr(anim, 'gani', None) is not None
                     and requested != anim.gani.name):
                 # A scripted gani (GS1 setani -> setup.py on_setani) was asked
                 # for but is still downloading, so the anim state is playing a
@@ -66,6 +80,8 @@ class RenderMixin(FrameContextMixin):
                 # arriving could no longer re-assert it — bomber's piano
                 # sen_piano_idle lost this race every first seating).
                 pass
+            elif self.current_anim_name == "sleep":
+                pass  # sleep holds its pose until a move or another action
             elif (not setback
                   and self.current_anim_name ==
                       getattr(self, '_scripted_player_ani', None)):
@@ -83,13 +99,18 @@ class RenderMixin(FrameContextMixin):
                 # whole death spin).
                 pass
             elif setback:
+                if self.current_anim_name == 'lift':
+                    self.client.player.action_mode = 0
+                if setback == 'carrystill':
+                    setback = standing_carry(self)
                 self.player_anim.set_animation(setback, self.client.player.direction)
                 self.current_anim_name = setback
                 self.client.set_animation(setback)
             elif self.client.player.is_carrying():
                 # Switch to carry animation after lift finishes
-                self.player_anim.set_animation("carry", self.client.player.direction)
-                self.current_anim_name = "carry"
+                carry = "hiddenstill" if self._is_hidden() else standing_carry(self)
+                self.player_anim.set_animation(carry, self.client.player.direction)
+                self.current_anim_name = carry
             elif self.client.player.is_sitting:
                 # Stay in sit animation
                 self.player_anim.set_animation("sit", self.client.player.direction)
@@ -98,11 +119,15 @@ class RenderMixin(FrameContextMixin):
                 self.player_anim.set_animation("idle", self.client.player.direction)
                 self.current_anim_name = "idle"
 
-        # If carrying and not in a transition animation, use carry
-        if self.client.player.is_carrying():
-            if self.current_anim_name not in ("lift", "throw", "carry"):
-                self.player_anim.set_animation("carry", self.client.player.direction)
-                self.current_anim_name = "carry"
+        if self.client.player.is_carrying() and self.current_anim_name != 'lift':
+            if self._is_hidden():
+                carry = 'hidden' if self.is_moving else 'hiddenstill'
+            else:
+                carry = 'carry' if self.is_moving else standing_carry(self)
+            if self.current_anim_name != carry:
+                self.player_anim.set_animation(carry, self.client.player.direction)
+                self.current_anim_name = carry
+                self.client.set_animation(carry)
 
         # If sitting and not already in sit animation. Don't stomp a one-shot
         # action gani (sword swing while seated) — its setback returns here.
@@ -138,15 +163,21 @@ class RenderMixin(FrameContextMixin):
         # setani("walk") back to idle every frame — the script sets idle
         # itself when the keys are released (ReturnIdle).
         if (getattr(getattr(self, "gs1", None), "default_movement", True)
+                and getattr(self, '_ledge_jump', None) is None
                 and not self.is_moving
-                and self.current_anim_name in ("walk", "swim")):
+                and self.current_anim_name in ("walk", "swim", "lava", "hidden")):
             if self.is_swimming:
                 # Use swim idle animation (or swim if no swim_idle exists)
-                self.player_anim.set_animation("swim", self.client.player.direction)
-                self.current_anim_name = "swim"
+                swim = "lava" if getattr(self, '_swim_in_lava', False) else "swim"
+                self.player_anim.set_animation(swim, self.client.player.direction)
+                self.current_anim_name = swim
+            elif self._is_hidden():
+                self.player_anim.set_animation("hiddenstill", self.client.player.direction)
+                self.current_anim_name = "hiddenstill"
             elif self.client.player.is_carrying():
-                self.player_anim.set_animation("carry", self.client.player.direction)
-                self.current_anim_name = "carry"
+                carry = standing_carry(self)
+                self.player_anim.set_animation(carry, self.client.player.direction)
+                self.current_anim_name = carry
             else:
                 self.player_anim.set_animation("idle", self.client.player.direction)
                 self.current_anim_name = "idle"
@@ -161,6 +192,8 @@ class RenderMixin(FrameContextMixin):
                 self.other_player_visual.pop(pid, None)  # else this leaks per
                 continue                                 # player id for the session
             self._play_entity_sounds(anim.update(dt), self.other_player_visual.get(pid))
+            if anim.is_finished() and anim.get_setback():
+                anim.set_animation(anim.get_setback(), anim.direction)
 
         for npc_id, anim in list(self.npc_anims.items()):
             if npc_id not in self.client.npcs:

@@ -149,3 +149,31 @@ class TestNoTileDataBlocking:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+class TestChestProbeAllSides:
+    """Chest at local (60, 46) (chicken1.nw, the funtimes 2x2 chest): standing
+    flush against each face (player box (x+0.5,y+1)-(x+2.5,y+3)) opens it, one
+    tile of gap does not. Facing up used to probe y+1.0 == the box top, which
+    floors into the tile below a flush chest and missed it."""
+
+    # direction -> (flush x, flush y) in chicken1.nw-local tiles
+    FLUSH = {0: (60.0, 47.0), 2: (60.0, 43.0), 3: (57.5, 45.5), 1: (61.5, 45.5)}
+
+    def _found(self, direction, x, y):
+        c = _client_with_grid()
+        c.chests = {(60, 46): False}
+        c.player.x, c.player.y = 64 + x, 64 + y
+        c.player.direction = direction
+        return _GameHarness(c)._find_chest_in_front()
+
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_flush_against_each_face_opens(self, direction):
+        x, y = self.FLUSH[direction]
+        assert self._found(direction, x, y) == (60, 46)
+
+    @pytest.mark.parametrize("direction", [0, 1, 2, 3])
+    def test_a_tile_of_gap_does_not_open(self, direction):
+        x, y = self.FLUSH[direction]
+        dx, dy = {0: (0, 1), 2: (0, -1), 3: (-1, 0), 1: (1, 0)}[direction]
+        assert self._found(direction, x + dx, y + dy) is None

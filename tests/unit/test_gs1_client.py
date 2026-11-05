@@ -226,7 +226,7 @@ class TestNewBuiltinFlags:
         assert _this(gs1, 'npc_1')['stone'] == 1.0
         assert _this(gs1, 'npc_1')['vase'] == 0.0
 
-        c.player.carried_object_type = "pot"
+        c.player.pickup_object("pot", (1, 2, 3, 4), (5, 5))
         gs1.trigger_npc_event(1, 'created')
         assert _this(gs1, 'npc_1')['stone'] == 0.0
         assert _this(gs1, 'npc_1')['vase'] == 1.0

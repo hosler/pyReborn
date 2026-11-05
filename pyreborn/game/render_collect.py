@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from typing import List, Optional, Tuple
 
 from reborn_protocol.coords import local_to_world, segment_origin
 
+from .. import ground_items
 from ..npc_handler import CHARACTER_IMAGE
 from .constants import TILE_SIZE
 from .frame_context import FrameContext
@@ -236,13 +238,21 @@ class EntityCollectMixin:
         if not items:
             return
         surf_w, surf_h = frame.screen_size
+        ages = ground_items.item_ages(self, level_name, items, time.monotonic())
         # Item keys are level-local while the camera and every depth key use
         # world coordinates. Folding only the blit reproduces the live failure
         # where an item draws beside the player but sorts as if in segment zero.
         for (ix, iy), item_type in items.items():
+            age = ages[(ix, iy)]
+            # Presentation only (TServerExtra::draw): the server still owns
+            # removal, so an expired or blink-off item is just not drawn.
+            if ground_items.item_expired(age) or ground_items.item_blink_hidden(age):
+                continue
             sprite = self._get_item_sprite(item_type)
             world_x, world_y = ix + origin_x, iy + origin_y
             sx, sy = self._world_to_screen(world_x, world_y)
+            sy -= (ground_items.item_bob_tiles(age) * TILE_SIZE
+                   * getattr(self.camera, 'zoom', 1.0))
             if sx < -TILE_SIZE or sx > surf_w or \
                sy < -TILE_SIZE or sy > surf_h:
                 continue
@@ -256,7 +266,8 @@ class EntityCollectMixin:
         uses — so it stays correct under zoom and the camera can aim at the
         body centre without dragging the sprite off its real position. Never
         culled."""
-        if getattr(self.client, '_local_level_transition', ''):
+        # TPlayer.cpp:8097: only mode 2 suppresses the player's draw object.
+        if getattr(self.client, 'ghost_mode', 0) == 2 or getattr(self.client, '_local_level_transition', ''):
             return
         # Depth-sort key must be in the SAME frame as every other entity
         # (world tiles). visual_y is already world-frame.

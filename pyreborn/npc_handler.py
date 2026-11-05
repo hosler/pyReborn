@@ -23,14 +23,6 @@ import os
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
 
-from .game.constants import PLAYER_STAND_X, PLAYER_STAND_Y
-
-# player_x/player_y (as passed to check_touch) are the sprite's TOP-LEFT, same
-# as CollisionMixin's self.client.x/y. The feet point follows the standing
-# point between the feet (shared PLAYER_STAND constants), not the shifted box
-# centre or the wider visual sprite.
-PLAYER_FEET_DX = PLAYER_STAND_X
-PLAYER_FEET_DY = PLAYER_STAND_Y
 # NPC-touch probe points: the reference client's `touchtestd` table verbatim
 # (TPlayer::touchNPCs probes touchtestd[dir] and touchtestd[dir+4] each
 # frame — Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:1792-1831, table at
@@ -231,8 +223,8 @@ class NPCHandler:
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.
 
-        Test points are the feet point plus the reference client's two
-        per-direction `touchtestd` probe points (see TOUCH_OFFSETS above).
+        Test only the two per-direction `touchtestd` probe points
+        (TPlayer.cpp:1800).
         collision.py's CollisionMixin keeps its own, different offsets for
         grab/read interactions (chests/signs/doors) — NPC touch follows the
         NPC-touch oracle, not that table.
@@ -245,8 +237,7 @@ class NPCHandler:
         # resting gap a check-then-move movement script leaves are inside a
         # faced NPC's footprint with margin — no epsilon extension needed
         # (this replaces the old 1/16-tile flush-contact hack).
-        test_points = [(player_x + PLAYER_FEET_DX, player_y + PLAYER_FEET_DY)]
-        test_points += [(player_x + ox, player_y + oy)
+        test_points = [(player_x + ox, player_y + oy)
                          for ox, oy in TOUCH_OFFSETS.get(player_dir, [])]
 
         for npc_id, shape in self.npc_shapes.items():

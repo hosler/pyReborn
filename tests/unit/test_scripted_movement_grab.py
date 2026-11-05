@@ -133,6 +133,9 @@ class _InputHarness(InputMixin):
     def _try_grab(self):
         self.grab_calls += 1
 
+    def _auto_pickup_items(self):
+        pass
+
 
 def _run_input(harness, keys, now=100.0):
     orig = pygame.key.get_pressed

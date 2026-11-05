@@ -8,7 +8,6 @@ import pygame
 
 from pyreborn.game.render_effects import EffectsRenderMixin
 from pyreborn.game.constants import BOMB_FUSE_TIME, EXPLOSION_DURATION
-from pyreborn.liftobjects import BUSH_OBJECTS, BUSH_REPLACE
 from pyreborn.tiletypes import TileType
 
 
@@ -43,6 +42,7 @@ class _Harness(EffectsRenderMixin):
             player=SimpleNamespace(x=4.0, y=5.0),
             get_current_level_from_position=lambda: "test.nw",
             modify_board=self._modify_board,
+            _cut_bushes_at_explosion=lambda x, y: set(),
         )
 
     def _get_tile_at(self, x, y):
@@ -121,29 +121,16 @@ def test_arrow_stops_at_wall_then_spark_expires(monkeypatch):
     assert h.active_projectiles == []
 
 
-def _plant_bush(harness, ox, oy):
-    """Lay BUSH_OBJECTS row 0 as its 2x2 pattern (column-major table)."""
-    tl, bl, tr, br = BUSH_OBJECTS[0]
-    harness.board[(ox, oy)] = tl
-    harness.board[(ox, oy + 1)] = bl
-    harness.board[(ox + 1, oy)] = tr
-    harness.board[(ox + 1, oy + 1)] = br
-
-
-def test_blast_breaks_bushes_inside_radius_only():
-    """A bush is a whole 2x2 pattern, so a lone matching tile does not pop."""
+def test_blast_uses_client_explosion_probes():
+    """Bombs and script bursts share the headless client's bounded matcher."""
     h = _Harness()
-    _plant_bush(h, 11, 10)
-    _plant_bush(h, 15, 10)
-    h.board[(9, 10)] = BUSH_OBJECTS[0][0]      # one tile of a bush: not a bush
-
-    broken = h._break_bushes_in_blast(10.0, 10.0, power=1)
-
-    assert (11, 10) in broken
-    assert (15, 10) not in broken, "outside the blast radius"
-    assert (9, 10) not in broken
-    tl, bl, tr, br = BUSH_REPLACE[0]
-    assert h.sent[(11, 10)] == tl and h.sent[(12, 11)] == br
+    calls = []
+    def cut(x, y):
+        calls.append((x, y))
+        return {(11, 10)}
+    h.client._cut_bushes_at_explosion = cut
+    assert h._break_bushes_in_blast(10.0, 10.0, power=3) == {(11, 10)}
+    assert calls == [(10.0, 10.0)]
 
 
 def test_server_explosion_lasts_twelve_ticks(monkeypatch):

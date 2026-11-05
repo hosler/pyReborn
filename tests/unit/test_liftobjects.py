@@ -112,3 +112,24 @@ def test_is_lift_tile_is_only_a_prefilter():
     assert is_lift_tile(LIFT_OBJECTS[4][0], glove_power=0) is False
     assert is_lift_tile(LIFT_OBJECTS[4][0], glove_power=3) is True
     assert is_lift_tile(77) is False
+
+
+def test_vase_reachable_at_default_player_glove_power():
+    # Player GLOVEPOWER is 1-based (1 = bare hands), so the ceiling at a
+    # fresh account's power 1 is row 2: bush, sign and vase (pot) are liftable.
+    vase = LIFT_OBJECTS[2]
+    assert max_lift_index(1) == 2
+    assert match_lift_object(_board(vase), 10, 10, glove_power=1).name == 'vase'
+    assert match_lift_object(_board(vase), 10, 10, glove_power=0) is None
+
+
+def test_lift_probe_uses_reference_offsets():
+    from types import SimpleNamespace
+    from pyreborn.game.actions import ActionsMixin
+    me = SimpleNamespace(client=SimpleNamespace(x=35.5, y=9.0))
+    probe = lambda d: ActionsMixin._lift_probe_tile(me, d)
+    # Flush against a vase whose bottom row is 9: "up" probes row y+0.
+    assert probe(0) == (37, 9)
+    assert probe(1) == (35, 11)
+    assert probe(2) == (37, 13)
+    assert probe(3) == (39, 11)

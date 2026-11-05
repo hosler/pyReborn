@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyreborn import Client
+from pyreborn.client_warp import LINK_PROBE_OFFSETS
 from pyreborn.game.constants import (
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
@@ -751,16 +752,16 @@ class GameBot:
                 (t * .5 + ox, hop.y + oy, 0, 0) for t in range(128)]
         else:
             points = []
-            # The reference uses a floored, directional body probe, including
+            # The reference uses a continuous directional probe, including
             # the rectangle's far edge. Probe-ready standable positions also
             # handle solid doors: face them and attempt the last blocked step.
             for tx in range(max(0, math.ceil(hop.x)), min(63, math.floor(hop.x + hop.width)) + 1):
                 for ty in range(max(0, math.ceil(hop.y)), min(63, math.floor(hop.y + hop.height)) + 1):
-                    for px, py, dx, dy in ((1.5, 1, 0, -1), (0, 2, -1, 0),
-                                          (1.5, 3.5, 0, 1), (3, 2, 1, 0)):
+                    for direction, (px, py) in enumerate(LINK_PROBE_OFFSETS):
+                        dx, dy = ((0, -1), (-1, 0), (0, 1), (1, 0))[direction]
                         for fraction in (0, .5):
-                            if not (hop.x <= math.floor(tx + fraction + dx * .25) <= hop.x + hop.width
-                                    and hop.y <= math.floor(ty + fraction + dy * .25) <= hop.y + hop.height):
+                            if not (hop.x <= tx + fraction + dx * .25 <= hop.x + hop.width
+                                    and hop.y <= ty + fraction + dy * .25 <= hop.y + hop.height):
                                 continue
                             points.append((tx + fraction - px + ox,
                                            ty + fraction - py + oy, dx, dy))
@@ -867,7 +868,7 @@ class GameBot:
         """Avoid door footprints and directional triggers unless targeted.
 
         Seam links between GMAP neighbours are ordinary world movement.
-        Other links use inclusive floored probes, matching check_link_collision.
+        Other links use inclusive continuous probes, matching check_link_collision.
         Test all facings since a path node can be approached from any side.
         """
         c = self.client
@@ -892,8 +893,8 @@ class GameBot:
                         and y + PLAYER_COLLISION_TOP < ly + height + 1
                         and y + PLAYER_COLLISION_BOTTOM > ly):
                     return True
-                for ox, oy in ((1.5, 1), (0, 2), (1.5, 3.5), (3, 2)):
-                    if lx <= math.floor(x + ox) <= lx + width and ly <= math.floor(y + oy) <= ly + height:
+                for ox, oy in LINK_PROBE_OFFSETS:
+                    if lx <= x + ox <= lx + width and ly <= y + oy <= ly + height:
                         return True
         return False
 
@@ -1082,15 +1083,13 @@ class GameBot:
         if not links:
             return None
 
-        # Match client.check_link_collision(): the reference engine uses one
-        # directional probe, floors it to a whole tile, then folds that point
-        # into the level-local coordinate frame.
+        # Keep the client probe geometry in the position-derived level frame.
         px, py = c.x, c.y
-        probe_offsets = ((1.5, 1.0), (0.0, 2.0),
-                         (1.5, 3.5), (3.0, 2.0))
-        dx, dy = probe_offsets[c.player.direction & 3]
-        tile_x = math.floor(px + dx) % 64
-        tile_y = math.floor(py + dy) % 64
+        dx, dy = LINK_PROBE_OFFSETS[c.player.direction & 3]
+        cell = next((grid for grid, name in c.gmap_grid.items()
+                     if name == level_name), (0, 0)) if c.in_gmap_segment else (0, 0)
+        tile_x = px + dx - cell[0] * 64
+        tile_y = py + dy - cell[1] * 64
 
         for link in links:
             lx = link.get('x', 0)

@@ -63,3 +63,15 @@ def test_observed_payload_reaches_client_weapon_inventory():
     client = Client()
     client._handle_packet(PacketID.PLO_NPCWEAPONADD, b"$Beer   ")
     assert client.weapons["Beer"] == {"name": "Beer", "image": "", "script": ""}
+
+
+def test_default_weapon_packets_accumulate_in_inventory():
+    client = Client()
+    client._handle_packet(PacketID.PLO_DEFAULTWEAPON, bytes([32 + 8]))
+    assert client.default_weapon == 8
+    assert client.weapons["bomb"]["script"] == ""
+    client._handle_packet(PacketID.PLO_DEFAULTWEAPON, bytes([32 + 7]))
+    assert client.default_weapon == 7
+    assert set(client.weapons) == {"bomb", "bow"}
+    client._handle_packet(PacketID.PLO_DEFAULTWEAPON, bytes([32 + 8]))
+    assert set(client.weapons) == {"bomb", "bow"}
