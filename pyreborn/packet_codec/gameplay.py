@@ -962,35 +962,41 @@ def build_horse_add(x: float, y: float, image: str = "horse.png",
 def parse_bomb_add(data: bytes) -> dict:
     """
     Parse PLO_BOMBADD (11).
-    Format: {GSHORT owner_id}{GCHAR x2}{GCHAR y2}{GCHAR player_power}{GCHAR timer}
+    Format: {GSHORT owner_id}{GCHAR x2}{GCHAR y2}{GCHAR power|8}{GCHAR ticks}
     x2/y2 are tile position * 2 (half-tile precision, like PLPROP_X/Y).
-    player_power packs (player_local_id << 2 | power) - power is bits 0-1.
-    timer is 50ms increments until explosion (+50ms - see msgPLI_BOMBADD).
+    The power byte is the bomb type in bits 0-2 and bit 3 (8) set when the
+    owner placed it as a player (TClient.cpp:3555-3576, scriptfun_client_addbomb:
+    `bombFlags & 7` is the type, `bombFlags & 8` assigns the owner).
+    ticks is 50ms increments until explosion (+50ms: animateBombs explodes
+    when the counter goes negative, TServerLevel.cpp:1310-1337).
     """
     reader = PacketReader(data)
     owner_id = reader.read_gshort()
     x2 = reader.read_gchar()
     y2 = reader.read_gchar()
-    player_power = reader.read_gchar()
-    timer = reader.read_gchar()
+    flags = reader.read_gchar()
+    ticks = reader.read_gchar()
     return {
         'owner_id': owner_id, 'x': x2 / 2.0, 'y': y2 / 2.0,
-        'power': player_power & 0x03, 'timer_ms': timer * 50 + 50,
+        'power': flags & 0x07, 'from_player': bool(flags & 0x08),
+        'ticks': ticks, 'timer_ms': ticks * 50 + 50,
     }
 
 
-def build_bomb_add(x: float, y: float, power: int = 1, timer_ms: int = 3050) -> bytes:
+def build_bomb_add(x: float, y: float, power: int = 1, timer_ms: int = 3050,
+                   from_player: bool = False) -> bytes:
     """
     Build PLI_BOMBADD (4) payload.
-    Format (msgPLI_BOMBADD): {GCHAR x*2}{GCHAR y*2}{GCHAR player_power}{GCHAR timer_increments}
-    timer_ms mirrors what parse_bomb_add reports back (increments*50 + 50).
+    Format (TClient.cpp:1661-1690): {GCHAR x*2}{GCHAR y*2}{GCHAR power|8 if
+    from_player}{GCHAR ticks}
+    timer_ms mirrors what parse_bomb_add reports back (ticks*50 + 50).
     """
     # Safe for local inputs because values already in [0, 64) are unchanged.
     x, y = world_to_local(x, y)
     builder = PacketBuilder()
     builder.write_gchar(int(x * 2))
     builder.write_gchar(int(y * 2))
-    builder.write_gchar(power & 0x03)
+    builder.write_gchar((power & 0x07) | (0x08 if from_player else 0))
     builder.write_gchar(max(0, (timer_ms - 50) // 50))
     return builder.build()
 

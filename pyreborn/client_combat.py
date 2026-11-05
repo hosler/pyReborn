@@ -8,8 +8,13 @@ from typing import Optional
 from reborn_protocol import BDMODE, BDPROP
 from reborn_protocol.coords import level_index, segment_at, segment_origin, world_to_local
 
-from .bushcut import BUSH_PROBE, BUSH_REPLACE, bush_probe, find_bush_block
-from .explosions import board_blocks_at
+from .bushcut import (
+    BUSH_PROBE, BUSH_REPLACE, EXPLOSION_PROBE, bush_probe, find_bush_block,
+)
+from .explosions import (
+    board_blocks_at, bomb_crosses, cross_cells, explosion_damage, hits_player,
+    knockback,
+)
 from .game.constants import (
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
     PLAYER_COLLISION_BOTTOM, PLAYER_COLLISION_LEFT,
@@ -267,6 +272,160 @@ class CombatMixin:
 
     def _cut_bushes_at_explosion(self, x: float, y: float):
         return self._blast_board_at(x, y)
+
+    # ------------------------------------------------------------------
+    # Bomb fuses, chain detonation and our own explosion damage.
+    #
+    # The reference client owns all three. putBomb creates a TICKING bomb for
+    # the owner and for every other client alike (TServerLevel.cpp:1087-1130;
+    # sendToServer only gates the PLI_BOMBADD send). animateBombs counts it
+    # down every frame and explodes it below zero (:1310-1337). explodeBomb
+    # removes it and makes the explosion (:1691-1725); every explosion cell
+    # then probes for further bombs and explodes those inline (putExplosion,
+    # :1494-1500). TExplosion::animate hurts the LOCAL player (TExplosion.cpp:
+    # 48-96) and no hurt packet exists: hearts reach the server as CURPOWER.
+    # So the Client simulates all of it from client.bombs, like the arrow sim.
+
+    @staticmethod
+    def _bomb_ticks(timer_ms: int) -> int:
+        """PLI/PLO_BOMBADD tick counter for a fuse in ms (+50ms, see
+        parse_bomb_add)."""
+        return max(0, (int(timer_ms) - 50) // 50)
+
+    def _level_world_origin(self, level: str):
+        """World origin of a level's board: its gmap segment, else (0, 0)."""
+        if not self.in_gmap_segment:
+            return 0, 0
+        for cell, name in self.gmap_grid.items():
+            if name == level:
+                return segment_origin(*cell)
+        return 0, 0
+
+    def _register_bomb(self, level: str, local_x: float, local_y: float, *,
+                       wx: float, wy: float, owner_id: int, from_player: bool,
+                       power: int, fuse_s: float, placed_at: float,
+                       extra: Optional[dict] = None) -> dict:
+        record = dict(extra or {})
+        record.update(
+            x=local_x, y=local_y, wx=wx, wy=wy, level=level, owner_id=owner_id,
+            from_player=from_player, power=power, placed_at=placed_at,
+            fuse_s=fuse_s, timer_ms=int(round(fuse_s * 1000)))
+        self.bombs.setdefault(level, {})[(local_x, local_y)] = record
+        return record
+
+    def _bomb_records(self):
+        """Every simulated bomb record, tolerating the legacy flat shape."""
+        for level, bucket in list(self.bombs.items()):
+            if not isinstance(bucket, dict):
+                continue
+            for record in list(bucket.values()):
+                if isinstance(record, dict) and 'fuse_s' in record:
+                    yield record
+
+    def _drop_bomb_record(self, record: dict) -> bool:
+        bucket = self.bombs.get(record.get('level'))
+        key = (record['x'], record['y'])
+        if bucket is None or bucket.get(key) is not record:
+            return False
+        del bucket[key]
+        return True
+
+    def _tick_bomb_sims(self, now: Optional[float] = None):
+        """animateBombs (TServerLevel.cpp:1310-1337): explode every registry
+        bomb whose fuse has run out. Call regularly (update() does)."""
+        if not self.bombs:
+            return
+        if now is None:
+            now = time.time()
+        live_levels = {self._current_level_name, self._pending_level_name}
+        if self.in_gmap_segment:
+            live_levels.update(self.gmap_grid.values())
+        for record in list(self._bomb_records()):
+            if record['level'] not in live_levels:
+                # The reference frees a level's bombs when the player leaves.
+                self._drop_bomb_record(record)
+                continue
+            if now - record['placed_at'] >= record['fuse_s'] - 1e-9:
+                self._explode_bomb(record, now)
+
+    def _is_on_bomb(self, x: float, y: float, level: str):
+        """TServerLevel::isOnBomb (:2666-2718) for a point probe."""
+        for record in self._bomb_records():
+            if not self.in_gmap_segment and record['level'] != level:
+                continue
+            if (record['wx'] + 0.25 <= x < record['wx'] + 3.0
+                    and record['wy'] <= y < record['wy'] + 2):
+                return record
+        return None
+
+    def _explode_bomb(self, record: dict, now: Optional[float] = None):
+        """TServerLevel::explodeBomb (:1691-1725): remove the bomb, then make
+        its explosion (one cross, or five for a superbomb)."""
+        if not self._drop_bomb_record(record):
+            return False  # already gone: re-entry from a chain
+        now = time.time() if now is None else now
+        power = record.get('power', 1)
+        crosses = bomb_crosses(record['wx'], record['wy'], power)
+        groups = [cross_cells(x, y, radius) for x, y, radius in crosses]
+        if self.on_bomb_exploded:
+            self.on_bomb_exploded(record, [cell for group in groups for cell in group])
+        owner = record.get('owner_id', 0) if record.get('from_player') else 0
+        hit = None
+        for cells in groups:
+            hit = self._explosion_cells(cells, record['level'], now) or hit
+        if hit is not None:
+            self._hurt_by_explosion(hit, power, owner)
+        return True
+
+    def _explosion_cells(self, cells, level: str, now: float):
+        """putExplosion per cell (:1494-1500, 1614-1641): probe for bombs and
+        chain them inline, then the board effects. Returns the first cell
+        that overlaps the local player, which TExplosion::animate would use."""
+        on_active_board = (self.in_gmap_segment
+                           or level == self.get_current_level_from_position())
+        hit = None
+        for cell in cells:
+            for dx, dy in EXPLOSION_PROBE:
+                bomb = self._is_on_bomb(cell.x + dx, cell.y + dy, level)
+                if bomb is not None:
+                    self._explode_bomb(bomb, now)
+            if on_active_board:
+                self._blast_board_at(cell.x, cell.y)
+            # TExplosion.cpp:54-61: only a player on the explosion's own level.
+            if (hit is None and on_active_board
+                    and hits_player(cell.x, cell.y, self.player.x, self.player.y)):
+                hit = cell
+        return hit
+
+    def _hurt_by_explosion(self, cell, bomb_type: int, attacker_id: int):
+        """TExplosion.cpp:62-91: hurt the local player once for this
+        explosion. hurtPlayer's 40-tick immunity (can_receive_local_hit)
+        collapses the remaining cells."""
+        pvp = bool(attacker_id) and attacker_id != self.player.id and attacker_id in self.players
+        if not self.can_receive_local_hit(attacker_id, pvp=pvp):
+            return False
+        damage = explosion_damage(bomb_type)
+        push = knockback(cell.sprite_row)
+        if not self.respond_to_hurt(damage, self.hurt_animation, knockback=push):
+            return False
+        if self.on_hurt:
+            # damage_type 1 = BOMB, matching pygserver's DamageType.BOMB.
+            self.on_hurt(attacker_id, damage, 1, push[0], push[1])
+        return True
+
+    def _apply_explosion(self, x: float, y: float, radius: int, bomb_type: int,
+                         owner_id: int, from_player: bool,
+                         now: Optional[float] = None):
+        """scriptfun_client_addexplosion -> makeExplosion (TClient.cpp:3593-
+        3620): the same chain, board and self-damage path a bomb uses.
+        x/y are world coordinates. Returns the cells."""
+        now = time.time() if now is None else now
+        cells = cross_cells(x, y, radius)
+        level = self.get_current_level_from_position()
+        hit = self._explosion_cells(cells, level, now)
+        if hit is not None:
+            self._hurt_by_explosion(hit, bomb_type, owner_id if from_player else 0)
+        return cells
 
     _SWORD_REACH = 4.0  # FourPlay TInitStatics.cpp:1251
     _SWORD_HALF_WIDTH = 2.0  # FourPlay TInitStatics.cpp:1277

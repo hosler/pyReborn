@@ -146,18 +146,28 @@ def parse_level_sign(data: bytes) -> dict:
 def parse_explosion(data: bytes) -> dict:
     """
     Parse PLO_EXPLOSION (packet 36) - explosion effect.
-    Format: [x:GCHAR][y:GCHAR][radius:GCHAR][power:GCHAR?]
+    Format: {GSHORT owner_id}{GCHAR radius}{GCHAR x*2}{GCHAR y*2}{GCHAR type|8}
 
-    Position values are in half-tiles. Power is optional.
+    Decompiled reference client TClient.cpp:3593-3620
+    (scriptfun_client_addexplosion): type is `flags & 7` (0 -> 1, >= 4 -> 3)
+    and bit 3 (8) marks a player-owned explosion. Positions are half-tiles.
     """
-    if len(data) < 3:
+    if len(data) < 6:
         return {}
     reader = PacketReader(data)
+    owner_id = reader.read_gshort()
+    radius = reader.read_gchar()
+    x = reader.read_gchar() / 2.0
+    y = reader.read_gchar() / 2.0
+    flags = reader.read_gchar()
+    kind = flags & 0x07
+    if kind == 0:
+        kind = 1
+    elif kind >= 4:
+        kind = 3
     return {
-        'x': reader.read_gchar() / 2.0,
-        'y': reader.read_gchar() / 2.0,
-        'radius': reader.read_gchar(),
-        'power': reader.read_gchar() if reader.has_data() else 1
+        'owner_id': owner_id, 'x': x, 'y': y, 'radius': radius,
+        'power': kind, 'from_player': bool(flags & 0x08),
     }
 
 

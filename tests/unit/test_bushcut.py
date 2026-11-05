@@ -262,7 +262,7 @@ def test_server_explosion_cuts_once_and_preserves_outside_bush(index):
     c = FakeClient()
     plant(c.tiles, index=index)
     plant(c.tiles, x=15)
-    handle_explosion(c, bytes((52, 52, 33, 35)))  # (10,10), radius 1, power 3
+    handle_explosion(c, bytes((32, 32, 33, 52, 52, 35)))  # owner 0, radius 1, (10,10), type 3
     assert len(c.modifications) == 1
     assert c.effects == [(10, 10, index)]
     assert c.get_tile(15, 10) == BUSH_OBJECTS[0][0]
@@ -273,14 +273,14 @@ def test_explosions_only_cut_classic_tiles(tiles_type, monkeypatch):
     c = FakeClient()
     plant(c.tiles)
     monkeypatch.setattr(tiletypes, '_active_tilestype', tiles_type)
-    handle_explosion(c, bytes((52, 52, 33)))
+    handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
     assert c.modifications == c.effects == []
 
 
 def test_server_explosion_local_position_on_gmap():
     c, board = gmap_client()
     plant(board)
-    handle_explosion(c, bytes((52, 52, 33)))
+    handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
     assert c.effects == [(74, 138, 0)]
     assert (c.active_explosions[0]['x'], c.active_explosions[0]['y']) == (74, 138)
 

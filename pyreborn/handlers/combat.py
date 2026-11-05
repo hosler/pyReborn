@@ -6,7 +6,6 @@ bomb, arrow, horse, and firespy entity families.
 
 import time
 
-from ..explosions import cross_cells
 from ..packets import (
     PacketID,
     parse_arrow_add,
@@ -100,7 +99,8 @@ def handle_hurt_player(client, data):
 
 @handles(PacketID.PLO_EXPLOSION)
 def handle_explosion(client, data):
-    # Explosion effect (packet 36)
+    # Explosion effect (packet 36). TClient.cpp:3593-3620 makeExplosion: the
+    # same board, chain-detonation and self-damage path a fused bomb takes.
     exp = parse_explosion(data)
     if exp:
         # PLO_EXPLOSION is level-local; bush cutting and presentation use
@@ -110,10 +110,11 @@ def handle_explosion(client, data):
             ox, oy = segment_origin(*segment_at(client.player.x, client.player.y))
             exp['x'] += ox
             exp['y'] += oy
-        # TServerLevel.cpp:1614-1641: one object and board probe loop per cell.
         now = time.time()
-        for cell in cross_cells(exp['x'], exp['y'], exp['radius']):
-            client._blast_board_at(cell.x, cell.y)
+        cells = client._apply_explosion(
+            exp['x'], exp['y'], exp['radius'], exp['power'],
+            exp['owner_id'], exp['from_player'], now)
+        for cell in cells:
             client.active_explosions.append({
                 'x': cell.x, 'y': cell.y, 'sprite_row': cell.sprite_row,
                 'order_offset': 0.0, 'type': exp['power'], 'time': now,
@@ -153,17 +154,31 @@ def handle_baddy_hurt(client, data):
 
 @handles(PacketID.PLO_BOMBADD)
 def handle_bomb_add(client, data):
-    # Bomb placed by another player (packet 11).
+    # Bomb placed by another player (packet 11). TClient.cpp:3555-3576: it
+    # ticks here too (putBomb with sendToServer=false), with the wire fuse.
     info = parse_bomb_add(data)
     level_name = client._pending_level_name or client._current_level_name
-    client.bombs.setdefault(level_name, {})[(info['x'], info['y'])] = info
+    key = (info['x'], info['y'])
+    existing = client.bombs.get(level_name, {}).get(key)
+    if (existing is not None and existing.get('local')
+            and existing.get('owner_id') == info['owner_id']):
+        # A server that echoes PLO_BOMBADD to the placer: the local record
+        # already holds the full fuse (the wire one is 250ms shorter).
+        return
+    ox, oy = client._level_world_origin(level_name)
+    client._register_bomb(
+        level_name, info['x'], info['y'], wx=info['x'] + ox, wy=info['y'] + oy,
+        owner_id=info['owner_id'], from_player=info['from_player'],
+        power=info['power'], fuse_s=(info['ticks'] + 1) * 0.05,
+        placed_at=time.time(), extra=info)
     if client.on_bomb_add:
         client.on_bomb_add(info)
 
 
 @handles(PacketID.PLO_BOMBDEL)
 def handle_bomb_del(client, data):
-    # Bomb removed/exploded (packet 12).
+    # Bomb removed (packet 12): a plain removal, GServer-v2
+    # PlayerClientPackets.cpp:251 - it stops ticking and does not explode.
     info = parse_bomb_del(data)
     level_name = client._pending_level_name or client._current_level_name
     client.bombs.setdefault(level_name, {}).pop((info['x'], info['y']), None)

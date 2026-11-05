@@ -363,6 +363,9 @@ def wire_client_callbacks(game):
         wx, wy = _wire_to_world(info.get('x', 0.0), info.get('y', 0.0))
         game._add_remote_bomb(dict(info, x=wx, y=wy))
 
+    def on_bomb_exploded(record, cells):
+        game._on_client_bomb_exploded(record, cells)
+
     def on_bomb_del(x, y):
         from ...carrying import BOMB_CODES
         from ...throwing import remote_origin
@@ -470,6 +473,7 @@ def wire_client_callbacks(game):
         game.client.on_bomb_del = on_bomb_del
     if hasattr(game.client, 'on_bomb_add'):
         game.client.on_bomb_add = on_bomb_add
+    game.client.on_bomb_exploded = on_bomb_exploded
     if hasattr(game.client, 'on_arrow_add'):
         game.client.on_arrow_add = on_arrow_add
     if hasattr(game.client, 'on_board_modify'):

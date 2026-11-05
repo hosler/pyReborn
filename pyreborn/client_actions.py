@@ -8,7 +8,7 @@ import math
 from typing import Optional
 
 from reborn_protocol import BDMODE, BDPROP
-from reborn_protocol.coords import local_coord, world_to_local
+from reborn_protocol.coords import local_coord, segment_at, world_to_local
 
 from .game.constants import BOMB_FUSE_TIME
 from .packets import (
@@ -535,12 +535,27 @@ class ActionsMixin:
         data = build_horse_add(x, y, image, direction)
         return self._protocol.send_packet(PacketID.PLI_HORSEADD, data)
 
+    def _level_at_world(self, x: float, y: float) -> str:
+        """Level whose board holds world (x, y): its gmap segment, else the
+        current level."""
+        if self.in_gmap_segment:
+            name = self.gmap_grid.get(segment_at(x, y))
+            if name:
+                return name
+        return self.get_current_level_from_position()
+
     def put_bomb(self, x: Optional[float] = None, y: Optional[float] = None,
                 power: int = 1, timer_ms: int = int(BOMB_FUSE_TIME * 1000),
-                consume_ammo: bool = True) -> bool:
-        """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time. The server
-        expects fuse = (counter + 1) * 50ms, so the 3s default sends counter 59
-        (see build_bomb_add).
+                consume_ammo: bool = True,
+                from_player: Optional[bool] = None) -> bool:
+        """Place a bomb (PLI_BOMBADD). timer_ms is total fuse time. The wire
+        counter is (counter + 1) * 50ms, so the 3s default is counter 59.
+
+        The bomb also ticks HERE: the reference client's putBomb creates it
+        ticking for owner and non-owner alike (TServerLevel.cpp:1087-1130), so
+        it is registered in client.bombs and _tick_bomb_sims detonates it.
+        The owner sends ticks-5 when ticks > 5 as latency compensation
+        (:1117-1119) and keeps the full fuse locally.
 
         Ammo is client-authoritative on GServer-v2 (PLI_BOMBADD only spawns
         the projectile. The server never touches the count), so this refuses
@@ -550,7 +565,10 @@ class ActionsMixin:
         value equal to our prediction, so the two do not double-decrement.
 
         consume_ammo=False is the GS1 `putbomb` path: a script-spawned bomb
-        is a free level projectile, not a shot from the player's bag."""
+        is a free level projectile, not a shot from the player's bag, and it
+        does not carry the player-placed flag (bit 3 of the power byte,
+        TClient.cpp:1661-1690). from_player overrides that flag, which the
+        reference client keeps when a carried bomb is re-placed."""
         if not self.connected or not self._authenticated:
             return False
         if consume_ammo and (self.ghost_mode or self.player.bombs <= 0):
@@ -560,8 +578,19 @@ class ActionsMixin:
             x = self.player.x
         if y is None:
             y = self.player.y
-        data = build_bomb_add(x, y, power, timer_ms)
+        if from_player is None:
+            from_player = consume_ammo
+        ticks = self._bomb_ticks(timer_ms)
+        wire_ms = timer_ms - 5 * 50 if ticks > 5 else timer_ms
+        data = build_bomb_add(x, y, power, wire_ms, from_player)
         ok = self._protocol.send_packet(PacketID.PLI_BOMBADD, data)
+        if ok:
+            lx, ly = world_to_local(x, y)
+            self._register_bomb(
+                self._level_at_world(x, y), int(lx * 2) / 2.0, int(ly * 2) / 2.0,
+                wx=x, wy=y, owner_id=self.player.id or 0, from_player=from_player,
+                power=power & 0x07, fuse_s=(ticks + 1) * 0.05,
+                placed_at=time.time(), extra={'local': True})
         if ok and consume_ammo:
             self.player.bombs -= 1
             self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
@@ -569,7 +598,12 @@ class ActionsMixin:
         return ok
 
     def remove_bomb(self, x: float, y: float) -> bool:
-        """Remove a bomb at (x, y) (PLI_BOMBDEL)."""
+        """Remove a bomb at (x, y) (PLI_BOMBDEL). It stops ticking here too."""
+        lx, ly = world_to_local(x, y)
+        key = (int(lx * 2) / 2.0, int(ly * 2) / 2.0)
+        for level in (self._level_at_world(x, y), self.get_current_level_from_position()):
+            if isinstance(self.bombs.get(level), dict) and self.bombs[level].pop(key, None):
+                break
         if not self.connected or not self._authenticated:
             return False
         data = build_bomb_del(x, y)

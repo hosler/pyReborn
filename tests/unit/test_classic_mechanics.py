@@ -39,7 +39,10 @@ def test_default_bomb_sends_counter_59():
     assert client.put_bomb()
     bomb = next(call.args[1] for call in client._protocol.send_packet.call_args_list
                 if call.args[0] == PacketID.PLI_BOMBADD)
-    assert bomb[-1] - 32 == 59  # GServer Level.cpp:1986
+    # Level.cpp:1986 fuse (counter 59) minus the owner's 5-tick latency
+    # compensation, TServerLevel.cpp:1117-1119; the full fuse stays local.
+    assert bomb[-1] - 32 == 54
+    assert next(iter(client.bombs[''].values()))['fuse_s'] == pytest.approx(3.0)
 
 
 class InputHarness(InputMixin):

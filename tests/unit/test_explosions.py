@@ -163,7 +163,7 @@ def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
     client.on_explosion = Mock()
     client.on_leaps = Mock()
     hearts = client.player.hearts
-    handle_explosion(client, bytes((52, 52, 34, 35)))  # x=10,y=10,radius=2,type=3
+    handle_explosion(client, bytes((32, 32, 34, 52, 52, 35)))  # owner 0,radius=2,x=10,y=10,type=3
     ox, oy = (64, 128) if gmap else (0, 0)
     cells = cross_cells(ox + 10, oy + 10, 2)
     assert [(e['x'], e['y'], e['sprite_row']) for e in client.active_explosions] == [
@@ -173,7 +173,9 @@ def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
     assert client.modifications == [(14, 10, 2, 2, [0x2a5, 0x2a6, 0x2b5, 0x2b6])]
     client.on_explosion.assert_called_once_with(ox + 10, oy + 10, 2, 3)
     client.on_leaps.assert_called_once_with(0, ox + 14, oy + 10)
-    assert client.player.hearts == hearts
+    # TExplosion.cpp:48-96: the standing player is inside an arm cell, so the
+    # client hurts itself (type 3 = one heart), once, with no hurt packet.
+    assert client.player.hearts == hearts - 1.0
 
 
 @pytest.mark.parametrize('gmap', [False, True])

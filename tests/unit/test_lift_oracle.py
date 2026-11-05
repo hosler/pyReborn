@@ -243,7 +243,7 @@ def test_bomb_pickup_and_landing_preserve_fuse(game, monkeypatch, sprite, wire):
     assert not game.thrown_objects
     assert (bomb['x'], bomb['y']) == pytest.approx((29.5, 21.925))
     assert bomb['time'] == 100.45 and bomb['fuse_time'] == 2
-    expected = build_bomb_add(29.5, 21.925, 1, 2000)
+    expected = build_bomb_add(29.5, 21.925, 1, 1750, True)  # ticks-5
     assert any(c.args == (PacketID.PLI_BOMBADD, expected) for c in calls)
     assert game.break_effects == []
 

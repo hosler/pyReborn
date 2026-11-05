@@ -335,13 +335,21 @@ class EffectsRenderMixin(FrameContextMixin):
             # Convert world position to screen position
             screen_x, screen_y = self.camera.world_to_screen(bomb['x'], bomb['y'])
 
-            if not bomb.get('exploded') and (carrier is not None or bomb.get('in_flight') or elapsed < fuse_time):
+            # A lying bomb the client simulates detonates when
+            # Client._tick_bomb_sims fires (_on_client_bomb_exploded), not by
+            # this clock (TServerLevel.cpp:1310-1337 lives in the Client).
+            # Carried and in-flight bombs are not in that registry, and a
+            # bomb the client does not know keeps the legacy clock.
+            if not bomb.get('exploded') and (
+                    carrier is not None or bomb.get('in_flight')
+                    or elapsed < fuse_time
+                    or self._client_bomb_record(bomb) is not None):
                 if carrier is not None or bomb.get('in_flight'):
                     active_bombs.append(bomb)
                     continue
                 # Bomb is still counting down - render bomb sprite
                 # Flash faster as fuse runs out
-                flash_rate = 5 + (elapsed / fuse_time) * 10
+                flash_rate = 5 + min(1.0, elapsed / fuse_time) * 10
                 if int(elapsed * flash_rate) % 2 == 0:
                     self._render_world_object(
                         frame, bomb['y'],
@@ -376,7 +384,7 @@ class EffectsRenderMixin(FrameContextMixin):
                             fuse_time=max(0.05, info.get('timer_ms', 3050) / 1000.0))
                 return bomb
         bomb = {
-            'x': x, 'y': y, 'time': now,
+            'x': x, 'y': y, 'time': info.get('placed_at', now),
             'fuse_time': max(0.05, info.get('timer_ms', 3050) / 1000.0),
             'power': info.get('power', 1), 'exploded': False,
             'source': 'remote',
@@ -401,7 +409,38 @@ class EffectsRenderMixin(FrameContextMixin):
         self._detonate_bomb(bomb, now)
         return bomb
 
-    def _detonate_bomb(self, bomb: dict, now: Optional[float] = None):
+    def _client_bomb_record(self, bomb: dict):
+        """The Client simulation's record for a lying registry bomb, if any."""
+        records = getattr(self.client, '_bomb_records', None)
+        if records is None:
+            return None
+        for record in records():
+            if (abs(record['wx'] - bomb['x']) < .01
+                    and abs(record['wy'] - bomb['y']) < .01):
+                return record
+        return None
+
+    def _on_client_bomb_exploded(self, record: dict, cells, now: Optional[float] = None):
+        """Present a detonation the Client simulation already resolved (board
+        blast, chain, damage): sound, shake and the cell animation."""
+        now = time.time() if now is None else now
+        bomb = next((b for b in self.active_bombs
+                     if not b.get('exploded') and not b.get('discarded')
+                     and b.get('carried_by') is None and not b.get('in_flight')
+                     and abs(record['wx'] - b['x']) < .01
+                     and abs(record['wy'] - b['y']) < .01), None)
+        if bomb is None:
+            bomb = {'x': record['wx'], 'y': record['wy'], 'time': now,
+                    'fuse_time': 0.05, 'power': record.get('power', 1),
+                    'exploded': False, 'source': 'remote'}
+            self.active_bombs.append(bomb)
+        bomb['power'] = record.get('power', bomb.get('power', 1))
+        return self._detonate_bomb(bomb, now, cells=cells)
+
+    def _detonate_bomb(self, bomb: dict, now: Optional[float] = None, *,
+                       cells=None):
+        """Start a bomb's burst. `cells` marks a detonation the Client
+        simulation already applied to the board, so it is not blasted again."""
         if bomb.get('exploded'):
             return False
         now = time.time() if now is None else now
@@ -428,6 +467,9 @@ class EffectsRenderMixin(FrameContextMixin):
         # TServerLevel.cpp:1697: power is the bomb type, including joltbombs.
         self.sound_mgr.play(explosion_sound(bomb.get('power', 1)))
         self._start_camera_shake(bomb['x'], bomb['y'])
+        if cells is not None:
+            bomb['cells'] = list(cells)
+            return True
         bomb['cells'] = self._bomb_explosion_cells(bomb)
         for cell in bomb['cells']:
             self.client._blast_board_at(cell.x, cell.y)
@@ -660,8 +702,11 @@ class EffectsRenderMixin(FrameContextMixin):
                 bomb['time'], bomb['fuse_time'] = time.time(), remaining / 1000
                 bomb.pop('fuse_remaining', None)
                 if not obj.get('remote'):
+                    # TServerCarry.cpp:243-253: the carry's own player flag
+                    # rides sendBomb, so the re-placed bomb stays ours.
                     self.client.put_bomb(bomb['x'], bomb['y'], bomb.get('power', 1),
-                                         timer_ms=remaining, consume_ammo=False)
+                                         timer_ms=remaining, consume_ammo=False,
+                                         from_player=True)
                 return
             self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
         self.break_effects.append({

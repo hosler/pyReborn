@@ -300,6 +300,9 @@ class EntityState:
 
         # Bomb coordinates are level-local on the wire. Keep the owning level
         # or identical positions in adjacent segments overwrite each other.
+        # Each record is the simulated bomb: x/y level-local wire position,
+        # wx/wy world position, owner_id, from_player, power, placed_at and
+        # fuse_s (seconds from placed_at to detonation). See _tick_bomb_sims.
         self.bombs: Dict[str, Dict[Tuple[float, float], dict]] = {}
         self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
         # Horse coordinates are level-local on the wire. Keep the owning level
@@ -498,6 +501,10 @@ class Callbacks:
         # Entity family callbacks (tier 2).
         self.on_bomb_add: Optional[Callable[[dict], None]] = None
         self.on_bomb_del: Optional[Callable[[float, float], None]] = None
+        # A registry bomb detonated in the client simulation (fuse end, chain
+        # or PLO_EXPLOSION never fire this): handler(record, cells) where cells
+        # are the ExplosionCell objects of every cross, in world coordinates.
+        self.on_bomb_exploded: Optional[Callable[[dict, list], None]] = None
         self.on_arrow_add: Optional[Callable[[dict], None]] = None
         self.on_horse_add: Optional[Callable[[dict], None]] = None
         self.on_horse_del: Optional[Callable[[float, float], None]] = None

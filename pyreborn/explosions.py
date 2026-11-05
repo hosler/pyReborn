@@ -1,8 +1,8 @@
 """Classic explosion cells and board effects, without presentation state.
 
-Damage stays server-side here; clients answer hurt packets rather than applying
-TExplosion.cpp:62-91 locally. Chain detonation (TServerLevel.cpp:1497-1500)
-also stays server-side because the server owns bomb timers.
+Pure geometry. The client simulation (client_combat.py) applies it: fuse,
+chain detonation (TServerLevel.cpp:1497-1500) and damage to the local player
+(TExplosion.cpp:62-91) all run in the client, as in the reference.
 """
 
 from dataclasses import dataclass
@@ -106,7 +106,10 @@ def hits_player(cell_x, cell_y, player_x, player_y):
 
 def knockback(sprite_row):
     # TExplosion.cpp:89-90; TInitStatics.cpp:1159 (explodir), TInput.cpp:13 (movevec).
-    direction = (0, 1, 2, 3, 0)[sprite_row]
+    # explodir has 5 entries but arm cells use sprite rows up to 8
+    # (TInitStatics.cpp:1159): the reference reads past the array there, which
+    # is unspecified. Fall back to the centre's direction for those rows.
+    direction = (0, 1, 2, 3, 0)[sprite_row] if sprite_row < 5 else 0
     return ((0.0, -1.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 0.0))[direction]
 
 

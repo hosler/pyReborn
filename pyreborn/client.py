@@ -301,6 +301,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
         self._tick_sword_attack()
         self._tick_arrow_sims()
+        self._tick_bomb_sims()
 
         return packets
 
@@ -640,6 +641,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_file_uptodate': ('callbacks', 'on_file_uptodate'),
     'on_bomb_add': ('callbacks', 'on_bomb_add'),
     'on_bomb_del': ('callbacks', 'on_bomb_del'),
+    'on_bomb_exploded': ('callbacks', 'on_bomb_exploded'),
     'on_arrow_add': ('callbacks', 'on_arrow_add'),
     'on_horse_add': ('callbacks', 'on_horse_add'),
     'on_horse_del': ('callbacks', 'on_horse_del'),
