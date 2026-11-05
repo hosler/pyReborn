@@ -22,6 +22,17 @@ def can_hide(carried_object_type):
     return carried_object_type in HIDABLE_OBJECTS
 
 
+def unhide_leap(carried_object_type, x, y):
+    # TPlayer.cpp:6415-6422: only the carried bush sprite throws leaves.
+    sprite = dict(zip(LIFT_NAMES, LIFT_SPRITES)).get(carried_object_type)
+    if sprite != HIDABLE_SPRITES[0]:
+        return None
+    # TPlayer.cpp:6421 reads x + 5.0; a burst five tiles to the right of a
+    # two-tile-wide sprite is a decompiler artifact. Use x + 0.5, as in the
+    # companion water burst (TPlayer.cpp:6039; TInitStatics.cpp:1253).
+    return 0, x + 0.5, y + 0.3125  # TPlayer.cpp:6420-6422
+
+
 def is_hidden(player):
     return (getattr(player, "action_mode", 0) == HIDDEN_ACTION_MODE
             and bool(getattr(player, "carried_object_type", "")))

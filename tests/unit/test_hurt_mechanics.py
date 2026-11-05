@@ -1,6 +1,7 @@
 """Literal official-client hurt geometry, timing, and authority regressions."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 import math
 
 import pytest
@@ -9,6 +10,7 @@ from reborn_protocol import PacketBuilder, PLPROP
 from pyreborn import Client
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
+from pyreborn.game.callbacks.client_callbacks import wire_client_callbacks
 from pyreborn.handlers.combat import handle_hurt_player
 from pyreborn.handlers.entities import handle_player_props
 from pyreborn.hurt import HURT_FLY_PROBES, HURT_SECONDS, HurtState, hurt_vector
@@ -33,6 +35,76 @@ def client(monkeypatch):
 class Motion(ActionsMixin, CollisionMixin):
     def __init__(self, client):
         self.client = client
+
+
+@pytest.fixture
+def presentation(client):
+    game = Motion(client)
+    game.current_anim_name = 'idle'
+    game.player_anim = Mock()
+    game.sound_mgr = Mock()
+    game.combat_presentation = Mock()
+    game._request_asset = Mock()
+    game.damage_numbers = []
+    game.visual_x = game.visual_y = 20.0
+    game.gs1 = ClientGS1(client)
+    script = 'if (playerdies) { this.deaths++; }'
+    for npc_id in (1, 2):
+        client.npcs[npc_id] = {'x': 20, 'y': 20}
+        game.gs1.load_script(f'npc_{npc_id}', script, npc_id=npc_id)
+    game.gs1.load_weapon('probe', script)
+    wire_client_callbacks(game)
+    return game
+
+
+@pytest.mark.parametrize('mode', [10, 5, 1, 2, 4, 14])
+def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(
+        client, presentation, monkeypatch, mode):
+    # TPlayer.cpp:5743-5753: clear action/counter, dead ani, NPC event 5.
+    game = presentation
+    player = client.player
+    player.action_mode = mode
+    game._push_hold_dir = (1, 0)
+    game._push_hold_start = 99.0
+    game._push_counter = 18
+    game.is_pushing = True
+    game.grab_state = 'pull'
+    game._pull_started = 99.0
+    game._pull_fired = True
+    game._ledge_jump = object()
+    game._clear_push_hold = Mock(wraps=game._clear_push_hold)
+    game._clear_grab_state = Mock(wraps=game._clear_grab_state)
+    assert client.respond_to_hurt(3, server_forced=True)
+    client.on_hurt(99, 3, 0, 0, 0)
+
+    assert player.action_mode == 0
+    assert game.grab_state is None and game._pull_started is None
+    assert not game._pull_fired
+    assert game._push_hold_start is None and not game.is_pushing
+    assert game._ledge_jump is None
+    game._clear_push_hold.assert_called_once()
+    game._clear_grab_state.assert_called_once()
+    assert game.current_anim_name == 'dead'
+    assert player.hearts == 0
+    # GServer-v2/bin/docs/scripting-gs1-events.md:196-204: NPC event, no weapons.
+    for npc_id in (1, 2):
+        assert game.gs1._progs[f'npc_{npc_id}']['scopes']['this']['deaths'] == 1
+    assert not game.gs1._progs['weapon_probe']['scopes']['this']
+
+    client.on_hurt(99, 3, 0, 0, 0)
+    monkeypatch.setattr('time.time', lambda: 100.5)
+    client.on_hurt(99, 3, 0, 0, 0)
+    for npc_id in (1, 2):
+        assert game.gs1._progs[f'npc_{npc_id}']['scopes']['this']['deaths'] == 1
+
+
+def test_nonfatal_hurt_does_not_fire_playerdies(client, presentation):
+    # TPlayer.cpp:5741-5753: the event is confined to HP <= 0.
+    assert client.respond_to_hurt(0.5)
+    client.on_hurt(99, 0.5, 0, 0, 0)
+    assert presentation.current_anim_name == 'hurt'
+    for entry in presentation.gs1._progs.values():
+        assert not entry['scopes']['this']
 
 
 def test_hurtflyd_matches_oracle():

@@ -15,6 +15,7 @@ state immediately at both warp sites.
 
 import os
 import sys
+from unittest.mock import Mock
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -89,6 +90,7 @@ class _SwimHarness(CollisionMixin, ActionsMixin):
         self.is_moving = False
         self.noclip = False
         self.sound_mgr = _NoopSound()
+        self._spawn_leaps = Mock()
         self.player_anim = _NoopAnim()
         self.npc_handler = _NoopNpcHandler()
         self.world_surface = None
@@ -112,6 +114,7 @@ class _SwimHarnessWithSetup(SetupMixin, CollisionMixin, ActionsMixin):
         self.is_moving = False
         self.noclip = False
         self.sound_mgr = _NoopSound()
+        self._spawn_leaps = Mock()
         self.player_anim = _NoopAnim()
 
 
@@ -173,6 +176,8 @@ class TestSwimmingStateRecompute:
         # Recomputed immediately by _use_door_link, not left stale from
         # chicken5.nw until the next run()-loop frame.
         assert h.is_swimming is False
+        assert c.player.action_mode == 0  # TPlayer.cpp:6012
+        h._spawn_leaps.assert_called_with(5, c.x + 0.5, c.y + 1.0)
 
     def test_gs1_pending_warp_clears_swimming_into_dry_level(self):
         c = _fake_connected_client()
@@ -185,6 +190,8 @@ class TestSwimmingStateRecompute:
         h._process_pending_warp()
         assert c._current_level_name == "chicken_house1.nw"
         assert h.is_swimming is False
+        assert c.player.action_mode == 0  # TPlayer.cpp:6012
+        h._spawn_leaps.assert_called_with(5, c.x + 0.5, c.y + 1.0)
 
     def test_warp_into_water_sets_swimming_true(self):
         # Symmetric case: a dry-level door_link warp landing in water.

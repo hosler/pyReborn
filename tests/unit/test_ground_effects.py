@@ -71,6 +71,7 @@ class Game(ActionsMixin, CollisionMixin):
         self.client.player.hearts = 3.0
         self.player_anim = Mock()
         self.sound_mgr = Mock()
+        self._spawn_leaps = Mock()
         self.gani_parser = SimpleNamespace(parse=lambda name: None)
         self.thrown_objects = []
         self.current_anim_name = 'idle'

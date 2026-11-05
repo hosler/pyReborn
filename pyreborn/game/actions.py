@@ -17,10 +17,12 @@ from ..gani import direction_from_delta
 from ..hurt import TICK_SECONDS
 from ..ground_effects import (
     BED_TILE_TYPE, LAVA_ANI, LAVA_DAMAGE, LAVA_SWIM_TILE_TYPE, SLEEP_ANI,
-    SLEEP_HEAL, TickCounter, bed_samples, bed_snap_y, is_lava_type,
+    SLEEP_HEAL, SWIM_ACTION_MODE, SWIM_LEAP_OFFSET, SWIM_LEAP_TYPE,
+    TickCounter, bed_samples, bed_snap_y, is_lava_type,
 )
 from ..hiding import (
     HIDDEN_ACTION_MODE, HIDDEN_MOVE_ANI, HIDDEN_STILL_ANI, can_hide, is_hidden,
+    unhide_leap,
 )
 from ..liftobjects import LIFT_PROBE, match_lift_object
 from ..tiletypes import TileType
@@ -980,6 +982,10 @@ class ActionsMixin:
     def _unhide(self):
         """TPlayer::unHide (:6412): mode 14 ends, the object stays carried."""
         self.client.player.action_mode = 0
+        leap = unhide_leap(self.client.player.carried_object_type,
+                           self.client.x, self.client.y)
+        if leap is not None:
+            self._spawn_leaps(*leap)
         from ..carrying import standing_carry
         self._play_action_animation(standing_carry(self))
 
@@ -1274,16 +1280,24 @@ class ActionsMixin:
 
     def _update_swimming_state(self):
         """Update swimming state based on current position."""
-        if getattr(self, '_ledge_jump', None) is not None:
-            return  # testForWater refuses action mode 2 (TPlayer.cpp:5990).
+        player = self.client.player
+        # TPlayer.cpp:5990: jumping (2) and the rooted action (6) skip water.
+        if (getattr(self, '_ledge_jump', None) is not None
+                or player.action_mode in (2, 6)):
+            return
+        # TPlayer.cpp:5994-5997: frozen, scripted movement and ghosts skip it.
+        if (getattr(self.client, 'frozen', False)
+                or time.time() < getattr(self, '_frozen_until', 0.0)
+                or not getattr(getattr(self, 'gs1', None), 'default_movement', True)
+                or getattr(self.client, 'ghost_mode', 0)):
+            return
         was_swimming = self.is_swimming
         # testForWater samples (x+1.5, y+2.0), the shared ground point
-        # (TPlayer.cpp:5997-5999), not the y+2.5 feet point.
+        # (TPlayer.cpp:6003-6004), not the y+2.5 feet point.
         self.is_swimming = self._check_water_at_position(*self._player_ground())
         self._swim_in_lava = (self.is_swimming and self._effective_tile_type(
             *self._player_ground()) == LAVA_SWIM_TILE_TYPE)
 
-        player = self.client.player
         swim_anim = LAVA_ANI if self._swim_in_lava else "swim"
         # Swimming drops a carried object: testForWater's setActionMode(10)
         # runs with a non-carry gani, which throws it (TPlayer.cpp:5774-5779).
@@ -1292,30 +1306,25 @@ class ActionsMixin:
             self.player_anim.set_animation(swim_anim, player.direction, force=True)
             self.current_anim_name = swim_anim
 
-        # If swimming state changed, update animation
         if self.is_swimming != was_swimming:
             if self.is_swimming:
-                # Just entered water: splash feedback, and snap the gani to
-                # swim immediately if we're not mid-move/mid-action (a step
-                # that ends in water is already picked up by _move()'s
-                # move_anim choice; this covers standing still / warping into
-                # water, which used to leave the walk/idle gani showing until
-                # the next explicit anim change).
-                self.sound_mgr.play("splash.wav")
-                if not player.is_carrying() and not player.is_sitting and \
-                        self.current_anim_name in ("idle", "walk"):
-                    self.player_anim.set_animation(swim_anim, player.direction)
-                    self.current_anim_name = swim_anim
+                # TPlayer.cpp:6018-6022,6029-6033: enter mode 10 and swim/lava.
+                player.action_mode = SWIM_ACTION_MODE
+                self.player_anim.set_animation(swim_anim, player.direction)
+                self.current_anim_name = swim_anim
             else:
-                # Just left water: splash out, and restore idle/walk from
-                # swim/swim-idle so the player doesn't stay in the swim pose
-                # standing on dry land.
-                self.sound_mgr.play("splash.wav")
+                # TPlayer.cpp:6007-6012: leaving water only clears mode 10.
+                if player.action_mode == SWIM_ACTION_MODE:
+                    player.action_mode = 0
                 if self.current_anim_name in ("swim", LAVA_ANI) and not self.is_moving:
                     self.player_anim.set_animation("idle", player.direction)
                     self.current_anim_name = "idle"
+            # TPlayer.cpp:6010-6011,6039-6040: both transitions burst;
+            # putLeaps supplies water.wav (TServerLevel.cpp:2864-2865).
+            dx, dy = SWIM_LEAP_OFFSET
+            self._spawn_leaps(SWIM_LEAP_TYPE, self.client.x + dx, self.client.y + dy)
         elif (self.is_swimming and self.current_anim_name in ("swim", LAVA_ANI)
                 and self.current_anim_name != swim_anim):
-            # Water <-> lava without leaving the swim (testForWater :6021).
+            # TPlayer.cpp:6016-6022: water <-> lava keeps the swim mode.
             self.player_anim.set_animation(swim_anim, player.direction)
             self.current_anim_name = swim_anim

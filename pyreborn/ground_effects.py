@@ -7,6 +7,10 @@ from .hurt import TICK_SECONDS
 # testForLava :5898-5902 - tile types 2, 9 and 12 at the ground point.
 LAVA_TILE_TYPES = (2, 9, 12)
 LAVA_SWIM_TILE_TYPE = 12  # testForWater :6021 picks defanis[29] "lava" for it.
+SWIM_ACTION_MODE = 10  # TPlayer.cpp:6018,6029
+SWIM_LEAP_TYPE = 5  # TPlayer.cpp:6010-6011,6039-6040; TServerLevel.cpp:2864
+# TPlayer.cpp:6010-6011,6039-6040; TInitStatics.cpp:1253,1274 (0.5, 1.0).
+SWIM_LEAP_OFFSET = (0.5, 1.0)
 LAVA_DAMAGE = 0.5  # DOUBLE_00402678 = -0.5, TInitStatics.cpp:1279.
 SLEEP_HEAL = 0.5  # DOUBLE_00402410 = 0.5, TPlayer.cpp:7359 changePower.
 HP_TICKS = 100  # Counter must exceed 100 (:5906, :7353): the 101st tick fires.

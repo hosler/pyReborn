@@ -19,6 +19,7 @@ class Game(ActionsMixin, InputMixin):
         self.client = SimpleNamespace(player=Player(), set_animation=Mock())
         self.player_anim = Mock()
         self.sound_mgr = Mock()
+        self._spawn_leaps = Mock()
         self.gani_parser = SimpleNamespace(parse=lambda _: None)
         self.thrown_objects = []
         self.current_anim_name = "carry"
@@ -73,6 +74,22 @@ def test_a_unhides_without_throwing():  # TPlayer.cpp:2069-2073
     player = game.client.player
     assert player.action_mode == 0 and player.is_carrying()
     assert not game.thrown_objects
+
+
+@pytest.mark.parametrize('kind', ['bush', 'stone', 'blackstone'])
+def test_unhide_only_bush_throws_leaves(kind):
+    # TPlayer.cpp:6414-6426: clear mode, bush leaves, then standing carry.
+    game = Game(kind)
+    game._hide_or_unhide()
+    game._unhide()
+    assert game.client.player.action_mode == 0
+    assert game.client.player.carried_object_type == kind
+    assert game.current_anim_name == 'carry'
+    if kind == 'bush':
+        # TPlayer.cpp:6420-6422; corrected X per companion burst :6039.
+        game._spawn_leaps.assert_called_once_with(0, 30.5, 30.3125)
+    else:
+        game._spawn_leaps.assert_not_called()
 
 
 def test_s_throw_ends_hiding():  # TPlayer.cpp:2032

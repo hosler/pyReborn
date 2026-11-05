@@ -125,6 +125,7 @@ def wire_client_callbacks(game):
         game._append_chat(f"<- {_roster_name(info)} left")
 
     def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
+        was_dead = game.current_anim_name == 'dead'
         state = game.client.player.hurt
         stamp = (state.generation, time.time())
         advanced = state.generation > getattr(game, '_presented_hurt_generation', 0)
@@ -158,11 +159,25 @@ def wire_client_callbacks(game):
 
         # Check for death (hearts already reduced by client.respond_to_hurt)
         if game.client.player.hearts <= 0:
+            # TPlayer.cpp:5743-5744: death ends the current action and counter.
+            game.client.player.action_mode = 0
+            for clear in ('_clear_push_hold', '_clear_grab_state'):
+                callback = getattr(game, clear, None)
+                if callback is not None:
+                    callback()
+            if hasattr(game, '_ledge_jump'):
+                game._ledge_jump = None
             # Play death sound
             game.sound_mgr.play("dead.wav")
             # Set death animation
             game.player_anim.set_animation("dead", game.client.player.direction)
             game.current_anim_name = "dead"
+            # TPlayer.cpp:5753: playerdies runs on NPCs
+            # (GServer-v2/bin/docs/scripting-gs1-events.md:196-204).
+            gs1 = getattr(game, 'gs1', None)
+            if not was_dead and gs1 is not None:
+                for npc_id in list(game.client.npcs):
+                    gs1.trigger_npc_event(npc_id, 'playerdies')
         else:
             game.sound_mgr.play("hurt.wav")
             game.player_anim.set_animation("hurt", game.client.player.direction, force=True)
