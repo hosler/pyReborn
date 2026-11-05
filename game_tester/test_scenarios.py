@@ -92,6 +92,12 @@ def _reset_pygserver_account(account_name: str, level: str,
     data.setdefault("bombs", 10)
     data["arrows"] = max(int(data.get("arrows") or 0), 5)
     data["bombs"] = max(int(data.get("bombs") or 0), 10)
+    # Zero the kill/death counts. Both servers persist them, but neither sends
+    # KILLSCOUNT/DEATHSCOUNT at login (GServer-v2 loginPropsClientSelf, ids
+    # 27-28 off), so the client reads 0 until the first credit. A count left
+    # over from the previous run then arrives as a jump, not a +1.
+    data["kills"] = 0
+    data["deaths"] = 0
     if mp is not None:
         data["mp"] = mp
     try:
@@ -145,7 +151,9 @@ def reset_account_position(account_name: str,
     # identify players; the scripted gmap world (setnick/setcharprop NPCs) can
     # mutate it, so restore it here too. Preserve the file's CRLF line ending.
     repl = {"LEVEL": f"LEVEL {level}", "X": f"X {x:g}", "Y": f"Y {y:g}",
-            "NICK": f"NICK {account_name}"}
+            "NICK": f"NICK {account_name}",
+            # Same zeroing as the pygserver twin (FlatFileAccountLoader.cpp:663).
+            "KILLS": "KILLS 0", "DEATHS": "DEATHS 0"}
     if mp is not None:
         repl["MP"] = f"MP {mp:g}"
     try:
