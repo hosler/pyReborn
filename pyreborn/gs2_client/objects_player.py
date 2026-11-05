@@ -647,7 +647,11 @@ class _PlayerObject(GS2Object):
                 value = int(to_num(value)) % 4
             elif key == "sprite":
                 value = int(to_num(value))
-            setattr(p, _PLAYER_MEMBER_ATTR[key], value)
+            attr = _PLAYER_MEMBER_ATTR[key]
+            if attr == 'hearts':
+                p.set_hearts(value)
+            else:
+                setattr(p, attr, value)
             return
         super().set(key, value)
 

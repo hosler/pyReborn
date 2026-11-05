@@ -119,7 +119,7 @@ class ActionsMixin:
             disabled = flags.get('disableapnoheal') if flags is not None else False
             if hearts > self.player.hearts and not can_heal(self.player, disabled):
                 return False
-            self.player.hearts = max(0, min(hearts, self.player.max_hearts))
+            self.player.set_hearts(max(0, min(hearts, self.player.max_hearts)))
 
         data = build_hearts(self.player.hearts)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)

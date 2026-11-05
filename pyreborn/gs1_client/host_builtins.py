@@ -486,7 +486,11 @@ class BuiltinsMixin:
             return True
         player = self._player
         if player is not None and name in PLAYER_ATTR:
-            setattr(player, PLAYER_ATTR[name], value)
+            attr = PLAYER_ATTR[name]
+            if attr == 'hearts':
+                player.set_hearts(value)
+            else:
+                setattr(player, attr, value)
             return True
         if player is not None and name == "playerglovepower":
             setattr(player, "glove_power", max(0, int(to_num(value)) - 1))

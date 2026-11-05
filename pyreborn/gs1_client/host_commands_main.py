@@ -186,7 +186,7 @@ class MainCommandsMixin:
                 except Exception:
                     pass
         else:
-            player.hearts = new
+            player.set_hearts(new)
             try:
                 cl.send_hearts()
             except Exception:

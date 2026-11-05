@@ -205,6 +205,36 @@ def test_script_damage_cannot_bypass_immunity_with_second_hp_write(client, mecha
     assert client.player.hurt.generation == 1
 
 
+def test_gs1_hurt_negative_heals_after_property_write_during_immunity(client):
+    # TPlayerProperties.cpp:108: hearts is a property, separate from hurtPlayer.
+    # TPlayer.cpp:6567: getNoHurt gates hurt-driven damage.
+    client.player.hurt.start(0, 0, 100.0)
+    assert client.player.hearts == 3.0 and client.player.no_hurt()
+    gs1 = ClientGS1(client)
+    client.npcs[1] = {'x': 20, 'y': 20}
+    gs1.load_script('npc_1', 'if (playerenters) { '
+                    'playerhearts = 1; this.assigned = playerhearts; hurt -2; }',
+                    npc_id=1)
+    gs1.trigger_npc_event(1, 'playerenters')
+    assert gs1._progs['npc_1']['scopes']['this']['assigned'] == 1.0
+    assert client.player.hearts == 2.0
+    assert client.player.hurt.generation == 1
+
+
+@pytest.mark.parametrize('surface', ['gs2', 'send_hearts'])
+def test_hearts_property_writes_bypass_hurt_immunity(client, surface):
+    # TPlayerProperties.cpp:108: property writes have their own setter.
+    # TPlayer.cpp:8277: setHP stores the value without getNoHurt.
+    client.player.hurt.start(0, 0, 100.0)
+    assert client.player.no_hurt()
+    if surface == 'gs2':
+        from pyreborn.gs2_client import ClientGS2
+        ClientGS2(client).player_object.set('hearts', 1.0)
+    else:
+        assert client.send_hearts(1.0)
+    assert client.player.hearts == 1.0
+
+
 def test_server_hp_and_forced_damage_apply_inside_window(client):
     client.respond_to_hurt(0.5)
     props = PacketBuilder()

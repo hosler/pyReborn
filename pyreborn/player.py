@@ -96,14 +96,21 @@ class Player:
                 or self.animation in ('swim', 'lava', 'dead'))
 
     def __setattr__(self, name, value):
-        # Some script hosts assign hearts again after respond_to_hurt. Guard
-        # local decreases here too, so those writes cannot bypass immunity.
-        # Server property updates explicitly use object.__setattr__ below.
+        # TPlayer.cpp:6567: getNoHurt gates hurtPlayer. Keep this guard for
+        # the script host's second damage write after respond_to_hurt;
+        # property assignments and healing use set_hearts instead.
         if (name == 'hearts' and 'hurt' in self.__dict__
                 and value < self.__dict__.get('hearts', value)
                 and self.no_hurt()):
             return
         object.__setattr__(self, name, value)
+
+    def set_hearts(self, value):
+        """Store a hearts property value independently of hurt immunity."""
+        # TPlayerProperties.cpp:108: hearts has a property setter (0x27f300).
+        # TPlayer.cpp:5716: changePower2 has pause/swim gates, not getNoHurt.
+        # TPlayer.cpp:8277: setHP stores HP without a hurt-immunity check.
+        object.__setattr__(self, 'hearts', value)
 
     @property
     def is_hidden(self) -> bool:
@@ -128,7 +135,7 @@ class Player:
             self.direction = props['direction']
         if 'hearts' in props:
             # PLO_PLAYERPROPS is authoritative, including during immunity.
-            object.__setattr__(self, 'hearts', props['hearts'])
+            self.set_hearts(props['hearts'])
         if 'max_hearts' in props:
             self.max_hearts = props['max_hearts']
         if 'rupees' in props:
@@ -186,7 +193,7 @@ class Player:
 
         # Clamp hearts to valid range after updating both values
         if self.max_hearts > 0:
-            object.__setattr__(self, 'hearts', max(0, min(self.hearts, self.max_hearts)))
+            self.set_hearts(max(0, min(self.hearts, self.max_hearts)))
 
     def is_carrying(self) -> bool:
         """Check if player is currently carrying an object."""
