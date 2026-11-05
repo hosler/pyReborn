@@ -949,17 +949,21 @@ The QA suites do NOT all run against the same server world. A suite run against
 the wrong world gives misleading results instead of an error.
 
 ```bash
-cd pygserver && python run_server.py                      # default world
-python -m game_tester                 # 16/16   base bot QA
-python -m game_tester --tier1         # 2/2     board modify + large file
-python -m game_tester --tier2         # 4/4     bomb/arrow/horse/flag relay
-python -m game_tester --tier3         # 4/4     freeze/say2/triggeraction
-python -m game_tester --tier5         # 5/5     GS2 bytecode transport
-python -m game_tester --gs2           # 6/6
+python -m game_tester.qa_server run --port 14900 -- python -m game_tester  # base bot QA
+# Add --tier1 / --tier2 / --tier3 / --tier5 / --gs2 to the inner game_tester command.
 
-cd pygserver && python run_server.py ../funtimes-pygserver  # gmap world
-python -m game_tester --gmap          # needs `gmaps = chicken.gmap`
+python -m game_tester.qa_server start --name gmap --port 14902 --world ../funtimes-pygserver
+python -m game_tester.qa_server run --name gmap --port 14902 -- python -m game_tester --port 14902 --gmap
+python -m game_tester.qa_server list
+python -m game_tester.qa_server stop --all
 ```
+
+QA scripts must use `qa_server run`, which checks source freshness and stops
+the server when the command finishes; `--keep` retains it for inspection.
+Hand-backgrounded servers can survive for hours with old code, and killing a
+backgrounded subshell leaves its Python child holding the port. The manager
+tracks the Python PID, reports orphans, and prevents shared account writers;
+`--world` stages a private server directory with its own accounts.
 
 `--gmap` refuses to run when the server has no gmap loaded, because it used to
 pass *vacuously*. With `gmaps =` unset, every warp onto a segment fails silently
@@ -1084,9 +1088,15 @@ second `-q` gives `-qq`, which suppresses the pass/fail summary line entirely.
 ```bash
 PY=../.venv/bin/python
 $PY -m pytest                          # unit + integration
-$PY -m game_tester                     # live bot QA (16/16)
+$PY -m game_tester.qa_server run --port 14900 -- $PY -m game_tester  # live bot QA
+$PY -m game_tester.qa_server list       # managed servers and orphans
+# For interactive sessions: qa_server start --name dev; qa_server stop dev
 SDL_VIDEODRIVER=dummy $PY -m game_tester.render_smoke
 ```
+
+`qa_server run` defaults to port 14901 and exports `PYREBORN_TEST_PORT` and
+`PYREBORN_QA_PORT` to its command. Commands with a fixed default port should
+use `run --port 14900` or pass a matching `--port` to the command.
 
 **`pytest` does not cover the render loop.** On 2026-07-25 the pygame client
 crashed on its first rendered frame while all 1295 unit tests and the 16/16 bot
