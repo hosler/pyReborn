@@ -14,15 +14,16 @@ fn_hitplayer :1396-1419, fn_hitnpc :1327-1368). GTA heals through negative
 - players[0] is the LOCAL player. FourPlay's hitplayer applies the local
   branch directly (Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp
   :3447-3464) and reports remote hits over the wire.
-- explosion hitbox is a BOX with an INCLUSIVE boundary and damage is
-  power*2 half-hearts (pygserver gs1/commands/combat.py _explode /
-  _explosion_targets, pinned there by tests/test_gs1_audience.py).
+- scripted explosions use makeExplosion's cross cells (TClient.cpp:3616-3620;
+  TServerLevel.cpp:1614-1641) and deal 0.5 hearts, or 1.0 for type 3
+  (TExplosion.cpp:86), through the local player's hurt immunity.
 - setbackpal swaps the tileset's 256-color palette for the named file's
   (scripting-gs1-commands.md:1715). The pal files are tiny indexed PNGs.
 """
 
 import os
 import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -318,17 +319,33 @@ def test_exploded_bombs_leave_the_script_array():
 
 # -- putexplosion / putexplosion2 / removeexplo / explos[] ------------------
 
-def test_putexplosion_wire_and_visual():
+@pytest.mark.parametrize('segment', [None, (1, 2), (-1, -2)])
+def test_putexplosion_wire_and_visual(segment):
     client = _fake_connected_client()
-    client.player.x = 50.0
-    client.player.y = 50.0
+    ox, oy = 0, 0
+    if segment is not None:
+        from reborn_protocol.coords import segment_origin
+        ox, oy = segment_origin(*segment)
+        client._current_level_name = 'blast.nw'
+        client.gmap_grid[segment] = 'blast.nw'
+        client.gmap_width, client.gmap_height = 2, 3
+    client.player.x = 50.0 + ox
+    client.player.y = 50.0 + oy
+    client.on_explosion = Mock()
     gs1 = _npc_gs1(client, 5, "if (playertouchsme) { putexplosion 1,20,20; }")
+    gs1.on_putexplosion = Mock()
     gs1.trigger_npc_event(5, "playertouchsme")
     assert _sent(client, PacketID.PLI_EXPLOSION) == [
         build_explosion_add(1, 20, 20, 1)]
-    assert len(client.active_explosions) == 1
-    exp = client.active_explosions[0]
-    assert (exp["x"], exp["y"], exp["radius"], exp["power"]) == (20, 20, 1, 1)
+    # TServerLevel.cpp:1620-1641: centre plus four arm tips, per-cell records.
+    assert [(e['x'], e['y'], e['sprite_row']) for e in client.active_explosions] == [
+        (ox + 20, oy + 20, 4), (ox + 20, oy + 18, 0),
+        (ox + 18, oy + 20, 2), (ox + 20, oy + 22, 6),
+        (ox + 22, oy + 20, 8)]
+    assert all(e['type'] == 1 for e in client.active_explosions)
+    assert client.player.hearts == 3.0
+    client.on_explosion.assert_called_once_with(ox + 20, oy + 20, 1, 1)
+    gs1.on_putexplosion.assert_called_once_with(1, 1, 20, 20)
 
 
 def test_putexplosion2_arg_order_is_power_radius_x_y():
@@ -341,22 +358,35 @@ def test_putexplosion2_arg_order_is_power_radius_x_y():
         build_explosion_add(2, 20, 20, 3)]
 
 
-def test_putexplosion_damages_local_player_box_inclusive():
+@pytest.mark.parametrize('power,bomb_type,damage', [
+    (0, 1, 0.5), (1, 1, 0.5), (2, 2, 0.5), (3, 3, 1.0),
+    (4, 3, 1.0), (7, 3, 1.0), (8, 1, 0.5), (9, 1, 0.5), (12, 3, 1.0),
+])
+def test_putexplosion_damages_local_player_cross_cell_inclusive(power, bomb_type, damage):
     client = _fake_connected_client()
-    # exactly radius away on one axis: INCLUSIVE boundary -> hit
+    # TClient.cpp:3599-3603: mask and clamp type; TExplosion.cpp:86: damage.
+    # TExplosion.cpp:62-74: hits_player includes the right arm cell's boundary
+    # at (24,20), beyond the old radius-sized box (TServerLevel.cpp:1635-1637).
     client.player.hearts = 3.0
-    client.player.x = 22.0
+    client.player.id = 42
+    client.player.x = 24.5
     client.player.y = 20.0
+    client.on_hurt = Mock()
     gs1 = _npc_gs1(client, 5,
-                   "if (playertouchsme) { putexplosion2 1,2,20,20; }")
+                   f"if (playertouchsme) {{ putexplosion2 {power},2,20,20; }}")
     gs1.trigger_npc_event(5, "playertouchsme")
-    assert client.player.hearts == 2.0     # power 1 = 2 half-hearts = 1 heart
+    assert client.player.hearts == 3.0 - damage
+    assert client.player.hurt.generation == 1
+    assert client.active_explosions[0]['type'] == bomb_type
+    assert client.on_hurt.call_count == 1
+    assert client.on_hurt.call_args.args[:3] == (42, damage, 1)
 
 
 def test_putexplosion_misses_outside_radius():
     client = _fake_connected_client()
     client.player.hearts = 3.0
-    client.player.x = 23.5
+    # TExplosion.cpp:62-74: just beyond the tip cell's inclusive hit boundary.
+    client.player.x = 24.5001
     client.player.y = 20.0
     gs1 = _npc_gs1(client, 5,
                    "if (playertouchsme) { putexplosion2 1,2,20,20; }")
@@ -375,15 +405,18 @@ def test_putexplosion_fires_washit_on_covered_npcs():
     assert gs1._progs["npc_5"]["scopes"]["this"].get("boomed") == 1
 
 
-def test_explos_array_reads_and_removeexplo():
+@pytest.mark.parametrize('effect', [
+    {"x": 5.0, "y": 6.0, "radius": 2, "power": 3, "time": 0},
+    {"x": 5.0, "y": 6.0, "sprite_row": 4, "type": 3, "time": 0},
+])
+def test_explos_array_reads_and_removeexplo(effect):
     client = _fake_connected_client()
     gs1 = _npc_gs1(client, 5, """if (playertouchsme) {
   this.n = exploscount;
   this.pw = explos[0].power;
   removeexplo 0;
 }""")
-    client.active_explosions.append(
-        {"x": 5.0, "y": 6.0, "radius": 2, "power": 3, "time": 0})
+    client.active_explosions.append(effect)
     gs1.trigger_npc_event(5, "playertouchsme")
     this = gs1._progs["npc_5"]["scopes"]["this"]
     assert this.get("n") == 1.0

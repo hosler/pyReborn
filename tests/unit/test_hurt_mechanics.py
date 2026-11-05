@@ -195,6 +195,8 @@ def test_no_hurt_states_refuse_local_reports(client, state):
 
 @pytest.mark.parametrize('mechanic', ['hurt 1;', 'hitplayer 0,1,10,10;', 'putexplosion 2,20,20;'])
 def test_script_damage_cannot_bypass_immunity_with_second_hp_write(client, mechanic):
+    # TExplosion.cpp:60,86-90: the cell at (20,20) covers this player, but
+    # existing hurt immunity must reject its 0.5-heart local explosion hit.
     gs1 = ClientGS1(client)
     client.npcs[1] = {'x': 20, 'y': 20}
     gs1.load_script('npc_1', 'if (playertouchsme) { ' + mechanic + ' }', npc_id=1)

@@ -160,7 +160,10 @@ class BuiltinsMixin:
         i = int(indices[0]) if indices else 0
         if not 0 <= i < len(explos):
             return 0.0
-        if attr in ("x", "y", "power", "radius"):
+        if attr == "power":
+            # Shared per-cell effects store the explosion's power as type.
+            return to_num(explos[i].get("power", explos[i].get("type", 0)))
+        if attr in ("x", "y", "radius"):
             return to_num(explos[i].get(attr, 0))
         return 0.0
 

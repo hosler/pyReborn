@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 
-from reborn_protocol.coords import world_to_local
+from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.gs1.values import to_num, to_str
 
 from ..sprites import REBORN_PALETTE
@@ -362,30 +362,29 @@ class MainCommandsMixin:
         self._spawn_explosion(power, radius, x, y)
 
     def _spawn_explosion(self, power, radius, x, y):
-        """Client-authoritative scripted explosion: draw it, damage the LOCAL
-        player if covered, fire washit on covered NPCs, and send
-        PLI_EXPLOSION (the server relays PLO_EXPLOSION to everyone else, who
-        each run this same resolution for their own player). The hitbox is a
-        BOX with an INCLUSIVE boundary and the damage is `power` hearts =
-        power*2 half-hearts -- pinned by pygserver's tests/test_gs1_audience
-        (audience.GS1_EXPLOSION_PLAYERS) and _explode's apply_damage call."""
+        """Send the scripted explosion and run the receiving client's effect.
+
+        TClient.cpp:3593-3620 clamps flags' type and calls makeExplosion;
+        TServerLevel.cpp:1614-1641 builds its cross cells, and
+        TExplosion.cpp:86 deals 0.5 hearts (1.0 for type 3).
+        """
         rt, cl = self.rt, self.rt.client
         if cl is not None:
             try:
                 cl.send_explosion(radius, x, y, power)
             except Exception:
                 pass
-            explos = getattr(cl, "active_explosions", None)
-            if explos is not None:
-                import time as _t
-                explos.append({"x": x, "y": y, "radius": radius,
-                               "power": power, "time": _t.time()})
-            px = getattr(cl, "x", None)
-            py = getattr(cl, "y", None)
-            if (px is not None and py is not None
-                    and abs(float(px) - x) <= radius
-                    and abs(float(py) - y) <= radius):
-                self._hurt_local_player(power * 2, x, y)
+            make_explosion = getattr(cl, "make_explosion", None)
+            if callable(make_explosion):
+                wx, wy = x, y
+                if getattr(cl, "in_gmap_segment", False):
+                    # TClient.cpp:3616-3618: script coordinates are level-local.
+                    ox, oy = segment_origin(*segment_at(cl.player.x, cl.player.y))
+                    wx, wy = x + ox, y + oy
+                bomb_type = power & 7  # TClient.cpp:3599-3603.
+                bomb_type = 1 if bomb_type == 0 else min(bomb_type, 3)
+                make_explosion(wx, wy, radius, bomb_type,
+                               getattr(getattr(cl, "player", None), "id", 0), True)
             for npc_id, npc in list(getattr(cl, "npcs", {}).items()):
                 if not isinstance(npc, dict):
                     continue
