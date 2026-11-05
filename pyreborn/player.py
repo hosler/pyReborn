@@ -29,6 +29,7 @@ class Player:
     rupees: int = 0
     mp: int = 0   # magic points (PLPROP_MAGICPOINTS)
     ap: int = 50  # alignment points (PLPROP_ALIGNMENT; 50 = neutral default)
+    kills: int = 0
 
     # Body colors (PLPROP_COLORS): list of palette indices
     # (5 entries on classic clients, 8 on v6 extended body colors).
@@ -144,6 +145,8 @@ class Player:
             self.mp = props['mp']
         if 'ap' in props:
             self.ap = props['ap']
+        if 'kills' in props:
+            self.kills = props['kills']
         if 'colors' in props:
             self.colors = props['colors']
         if 'animation' in props:

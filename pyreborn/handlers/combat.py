@@ -65,9 +65,14 @@ def handle_hurt_player(client, data):
         # We got hurt - client is source of truth for health
         # Auto-respond with new health and hurt animation
         if client.auto_respond_hurt and damage > 0 and not already_applied:
-            client.respond_to_hurt(
+            responded = client.respond_to_hurt(
                 damage, client.hurt_animation, server_forced=True,
                 knockback=(hurt_info['knockback_x'], hurt_info['knockback_y']))
+            # FourPlay/quattroplay/src/TClient.cpp:565-566,
+            # TServerFlying.cpp:225-226, TServerCarry.cpp:207-208 claim
+            # known other players after a fatal attributed hurt.
+            if responded:
+                client._claim_pker_if_dead(attacker_id)
             # This may be the server's own independent detection of
             # a hit our own arrow sim hasn't caught up to yet (it
             # might not have even started - the PLO_ARROWADD relay
@@ -110,17 +115,9 @@ def handle_explosion(client, data):
             ox, oy = segment_origin(*segment_at(client.player.x, client.player.y))
             exp['x'] += ox
             exp['y'] += oy
-        now = time.time()
-        cells = client._apply_explosion(
+        client.make_explosion(
             exp['x'], exp['y'], exp['radius'], exp['power'],
-            exp['owner_id'], exp['from_player'], now)
-        for cell in cells:
-            client.active_explosions.append({
-                'x': cell.x, 'y': cell.y, 'sprite_row': cell.sprite_row,
-                'order_offset': 0.0, 'type': exp['power'], 'time': now,
-            })
-        if client.on_explosion:
-            client.on_explosion(exp['x'], exp['y'], exp['radius'], exp['power'])
+            exp['owner_id'], exp['from_player'])
 
 
 @handles(PacketID.PLO_HITOBJECTS)

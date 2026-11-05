@@ -163,6 +163,9 @@ def handle_player_props(client, data):
                 props['y'] = local_coord(props['y'])
 
     client.player.update_from_props(props)
+    if client.player.hearts > 0:
+        # Authoritative HP restoration starts a new life for kill claims.
+        client._pker_claimed = False
     if 'animation' in props:
         host = getattr(client, 'gs2_host', None)
         if host is not None:

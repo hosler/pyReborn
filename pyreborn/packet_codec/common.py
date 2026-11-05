@@ -246,6 +246,7 @@ _SELF_PROP_HANDLERS = {
     22: _set('horse_bushes'),
     24: _set('carry_npc'),
     26: _set('mp'),
+    27: _set('kills'),
     32: _set('ap'),
     34: lambda props, value: props.setdefault('account', value),
     35: _set('body_image'),

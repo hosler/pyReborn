@@ -1022,6 +1022,14 @@ def build_bomb_del(x: float, y: float) -> bytes:
     return builder.build()
 
 
+def build_claim_pker(killer_id: int) -> bytes:
+    """PLI_CLAIMPKER payload: just the killer's GSHORT client ID.
+
+    FourPlay/quattroplay/src/TClient.cpp:742-760 (sendIsPKer).
+    """
+    return PacketBuilder().write_gshort(killer_id).build()
+
+
 def build_explosion_add(radius: int, x: float, y: float, power: int = 1) -> bytes:
     """Build PLI_EXPLOSION (27) - a client-scripted explosion (GS1
     putexplosion/putexplosion2).

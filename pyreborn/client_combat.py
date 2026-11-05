@@ -27,6 +27,19 @@ from .arrowflight import overlaps_player, shield_blocks, arrow_damage
 
 
 class CombatMixin:
+    _pker_claimed = False
+
+    def _claim_pker_if_dead(self, attacker_id) -> bool:
+        """Claim a known other player's fatal hit once per local death."""
+        if self.player.hearts > 0:
+            self._pker_claimed = False
+            return False
+        if (not attacker_id or attacker_id == self.player.id
+                or attacker_id not in self.players or self._pker_claimed):
+            return False
+        self._pker_claimed = bool(self.send_claim_pker(attacker_id))
+        return self._pker_claimed
+
     def can_receive_local_hit(self, attacker_id=None, *, pvp=False):
         """getNoHurt/getNoHit, TPlayer.cpp:2987-3043, for local reports.
 
@@ -408,6 +421,8 @@ class CombatMixin:
         push = knockback(cell.sprite_row)
         if not self.respond_to_hurt(damage, self.hurt_animation, knockback=push):
             return False
+        # FourPlay/quattroplay/src/TExplosion.cpp:92-94 claims fatal hits.
+        self._claim_pker_if_dead(attacker_id)
         if self.on_hurt:
             # damage_type 1 = BOMB, matching pygserver's DamageType.BOMB.
             self.on_hurt(attacker_id, damage, 1, push[0], push[1])
@@ -426,6 +441,26 @@ class CombatMixin:
         if hit is not None:
             self._hurt_by_explosion(hit, bomb_type, owner_id if from_player else 0)
         return cells
+
+    def make_explosion(self, x: float, y: float, radius: int, power: int,
+                       owner_id: int, from_player: bool,
+                       now: Optional[float] = None):
+        """Apply a scripted explosion and record its cells in world coordinates.
+
+        TClient.cpp:3593-3620 routes scripts through makeExplosion;
+        TServerLevel.cpp:1614-1641 creates cross cells, whose local-player
+        damage is resolved by TExplosion.cpp:48-96.
+        """
+        now = time.time() if now is None else now
+        cells = self._apply_explosion(
+            x, y, radius, power, owner_id, from_player, now)
+        for cell in cells:
+            self.active_explosions.append({
+                'x': cell.x, 'y': cell.y, 'sprite_row': cell.sprite_row,
+                'order_offset': 0.0, 'type': power, 'time': now,
+            })
+        if self.on_explosion:
+            self.on_explosion(x, y, radius, power)
 
     _SWORD_REACH = 4.0  # FourPlay TInitStatics.cpp:1251
     _SWORD_HALF_WIDTH = 2.0  # FourPlay TInitStatics.cpp:1277
@@ -769,6 +804,9 @@ class CombatMixin:
         if not self.respond_to_hurt(damage, self.hurt_animation,
                                     knockback=(pending['dx'], pending['dy'])):
             return
+        # FourPlay/quattroplay/src/TServerFlying.cpp:225-226 also claims
+        # client-simulated projectile deaths before any server hurt echo.
+        self._claim_pker_if_dead(owner_id)
         self._local_arrow_reports[owner_id] = now + self._ARROW_HURT_SUPPRESS_WINDOW
         if self.on_hurt:
             # damage_type 2 = ARROW, matching pygserver's DamageType.ARROW.

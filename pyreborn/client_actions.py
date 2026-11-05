@@ -15,7 +15,7 @@ from .packets import (
     PacketBuilder, PacketID, build_animation, build_arrow_add,
     build_arrow_count, build_attack_player, build_baddy_add,
     build_baddy_hurt, build_baddy_props, build_bomb_add, build_bomb_count, build_bomb_del,
-    build_explosion_add, build_flag_del, build_flag_set,
+    build_claim_pker, build_explosion_add, build_flag_del, build_flag_set,
     build_hearts, build_horse_add, build_horse_del, build_hurt_response,
     build_item_add, build_item_take, build_open_chest,
     build_player_gattrib, build_private_message,
@@ -121,6 +121,8 @@ class ActionsMixin:
                 return False
             self.player.set_hearts(max(0, min(hearts, self.player.max_hearts)))
 
+        if self.player.hearts > 0:
+            self._pker_claimed = False
         data = build_hearts(self.player.hearts)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
@@ -146,6 +148,8 @@ class ActionsMixin:
             return False
         now = time.time()
         was_immune = self.player.hurt.immune(now)
+        if self.player.hearts > 0:
+            self._pker_claimed = False
         new_hearts = max(0, self.player.hearts - damage)
         # A server damage notification must still change HP during immunity.
         # Local hit detection/reporting is the only path immunity suppresses.
@@ -608,6 +612,13 @@ class ActionsMixin:
             return False
         data = build_bomb_del(x, y)
         return self._protocol.send_packet(PacketID.PLI_BOMBDEL, data)
+
+    def send_claim_pker(self, killer_id: int) -> bool:
+        """Tell the server which player killed this client (PLI_CLAIMPKER)."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(
+            PacketID.PLI_CLAIMPKER, build_claim_pker(killer_id))
 
     def send_explosion(self, radius: int, x: float, y: float,
                        power: int = 1) -> bool:

@@ -100,6 +100,11 @@ def test_bomb_damage(bot0: GameBot, bot1: GameBot) -> TestResult:
     bot1.client.on_hurt = record_hurt
     try:
         _pump(bot0, bot1, 1.0)
+        if 0 < bot1.client.player.hearts < 1.0:
+            # The previous run's kill test persists bot1 at 0.5 hearts on
+            # pygserver. Heal first: hearts are client-authoritative.
+            bot1.client.send_hearts(bot1.client.player.max_hearts)
+            _pump(bot0, bot1, 0.5)
         if bot1.client.player.no_hurt() or bot1.client.player.hearts < 1.0:
             return TestResult("bomb_damage", False, time.time() - start,
                               f"bot1 cannot be hurt (hearts={bot1.client.player.hearts})",
@@ -156,6 +161,33 @@ def test_bomb_chain(bot0: GameBot, bot1: GameBot) -> TestResult:
                       f"both_seen={both_seen} left_in_bot1_registry={left}", issues)
 
 
+def test_bomb_kill_credits_killer(bot0: GameBot, bot1: GameBot) -> TestResult:
+    """A fatal local bomb hit must claim its owner and update their kills."""
+    start = time.time()
+    issues: List[Issue] = []
+    # Let the preceding damage test's hurt immunity expire.
+    _pump(bot0, bot1, 2.1)
+    if bot1.client.player.no_hurt() or not bot1.client.send_hearts(0.5):
+        return TestResult("bomb_kill_credits_killer", False, time.time() - start,
+                          "bot1 could not be prepared with 0.5 hearts",
+                          [_issue("MEDIUM", "combat", "bomb kill precondition failed")])
+    before = bot0.client.player.kills
+    bot0.client.put_bomb(bot1.client.x, bot1.client.y, power=1, timer_ms=1500)
+    _pump(bot0, bot1, 6.0, until=lambda: bot1.client.player.hearts <= 0)
+    died = bot1.client.player.hearts <= 0
+    _pump(bot0, bot1, 5.0, until=lambda: bot0.client.player.kills > before)
+    after = bot0.client.player.kills
+    credited = after == before + 1
+    if not died:
+        issues.append(_issue("HIGH", "combat", "bomb did not kill bot1"))
+    if not credited:
+        issues.append(_issue("HIGH", "combat",
+                             f"bomb killer credit incorrect: {before} -> {after}"))
+    return TestResult("bomb_kill_credits_killer", died and credited,
+                      time.time() - start,
+                      f"victim_died={died}, killer kills {before} -> {after}", issues)
+
+
 def test_arrow_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
     """bot0 fires an arrow. Bot1 must see it via on_arrow_add."""
     start = time.time()
@@ -210,17 +242,25 @@ def test_flagdel_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
     """bot0 sets then deletes a server.* flag. Bot1 must see both the set
     (existing PLO_FLAGSET coverage) and the delete (PLO_FLAGDEL, new).
 
-    Only testable without an NPC server: with one, clients cannot set server.*
-    flags at all (msgPLI_FLAGSET: "If we have an npc-server, clients cannot set
-    server flags"), so the whole test is skipped there."""
+    With an NPC server, assert that the client set is not relayed:
+    GServer-v2 PlayerClientPackets.cpp msgPLI_FLAGSET keeps server.* local,
+    and Server.cpp:1935 broadcasts only serverr.* changes in that mode."""
     start = time.time()
     issues: List[Issue] = []
     flag = "server.qa_tier2_flag"
 
     if bot0.client.has_npc_server:
-        return TestResult("flagdel_relay", True, time.time() - start,
-                          "skipped: npc-server active, clients can't set server.* flags",
-                          issues)
+        bot0.client.set_flag(flag, "1")
+        _pump(bot0, bot1, 2.0)
+        not_relayed = flag not in bot1.client.global_flags
+        if not not_relayed:
+            issues.append(_issue("HIGH", "flag",
+                                 "npc-server mode: client server.* set relayed to bot1"))
+        bot0.client.del_flag(flag)
+        details = ("npc-server mode: client server.* set correctly not relayed"
+                   if not_relayed else "npc-server mode: client server.* set incorrectly relayed")
+        return TestResult("flagdel_relay", not_relayed, time.time() - start,
+                          details, issues)
 
     bot0.client.set_flag(flag, "1")
     _pump(bot0, bot1, 5.0, until=lambda: flag in bot1.client.global_flags)
@@ -246,6 +286,13 @@ def run_tier2_tests(host: str = "localhost", port: int = 14900,
     results: List[TestResult] = []
     a, b = accounts
 
+    # pygserver persists the bomb bag. Four bombs per run drained testbot1
+    # to 0 over a few runs against one server and the chain test's second
+    # put_bomb silently refused to fire. Restock like the base suite does.
+    from .test_scenarios import reset_account_position
+    reset_account_position(a)
+    reset_account_position(b)
+
     bot0 = GameBot(a, host, port)
     bot1 = GameBot(b, host, port)
     try:
@@ -254,7 +301,9 @@ def run_tier2_tests(host: str = "localhost", port: int = 14900,
         if not bot1.connect():
             return [TestResult("tier2_multi_connect", False, 0.0, f"{b} failed to connect", [])]
 
-        for test in (test_bomb_relay, test_bomb_damage, test_bomb_chain, test_arrow_relay, test_horse_relay, test_flagdel_relay):
+        for test in (test_bomb_relay, test_bomb_damage, test_bomb_chain,
+                     test_bomb_kill_credits_killer, test_arrow_relay,
+                     test_horse_relay, test_flagdel_relay):
             try:
                 results.append(test(bot0, bot1))
             except Exception as e:  # noqa: BLE001
