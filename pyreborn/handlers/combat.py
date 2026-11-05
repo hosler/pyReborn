@@ -6,6 +6,7 @@ bomb, arrow, horse, and firespy entity families.
 
 import time
 
+from ..explosions import cross_cells
 from ..packets import (
     PacketID,
     parse_arrow_add,
@@ -109,14 +110,14 @@ def handle_explosion(client, data):
             ox, oy = segment_origin(*segment_at(client.player.x, client.player.y))
             exp['x'] += ox
             exp['y'] += oy
-        client._cut_bushes_at_explosion(exp['x'], exp['y'])
-        client.active_explosions.append({
-            'x': exp['x'],
-            'y': exp['y'],
-            'radius': exp['radius'],
-            'power': exp['power'],
-            'time': time.time()
-        })
+        # TServerLevel.cpp:1614-1641: one object and board probe loop per cell.
+        now = time.time()
+        for cell in cross_cells(exp['x'], exp['y'], exp['radius']):
+            client._blast_board_at(cell.x, cell.y)
+            client.active_explosions.append({
+                'x': cell.x, 'y': cell.y, 'sprite_row': cell.sprite_row,
+                'order_offset': 0.0, 'type': exp['power'], 'time': now,
+            })
         if client.on_explosion:
             client.on_explosion(exp['x'], exp['y'], exp['radius'], exp['power'])
 

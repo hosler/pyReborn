@@ -52,7 +52,7 @@ def test_bomb_removal_uses_packet_segment_on_gmap(monkeypatch):
     assert not game.active_bombs and not bomb['exploded']
 
 
-def test_push_countdown_and_single_directional_event(monkeypatch):
+def test_push_countdown_and_repeated_directional_event(monkeypatch):
     now = [100.0]
     monkeypatch.setattr('time.time', lambda: now[0])
     client, game = _harness_facing_wall()
@@ -69,7 +69,7 @@ def test_push_countdown_and_single_directional_event(monkeypatch):
     client.triggeraction.assert_called_once_with('push,0', 31.5, 20.0)
     now[0] += 1
     game._update_push_hold(0, -1)
-    assert client.triggeraction.call_count == 1
+    assert client.triggeraction.call_count == 2  # TPlayer.cpp:7558-7561
     game._clear_push_hold()
     game._update_push_hold(0, -1)
     assert game._push_counter == 38

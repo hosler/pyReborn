@@ -261,11 +261,11 @@ def test_gmap_uses_standing_board_local_probe_and_world_effect_origin():
 def test_server_explosion_cuts_once_and_preserves_outside_bush(index):
     c = FakeClient()
     plant(c.tiles, index=index)
-    plant(c.tiles, x=13)
+    plant(c.tiles, x=15)
     handle_explosion(c, bytes((52, 52, 33, 35)))  # (10,10), radius 1, power 3
     assert len(c.modifications) == 1
     assert c.effects == [(10, 10, index)]
-    assert c.get_tile(13, 10) == BUSH_OBJECTS[0][0]
+    assert c.get_tile(15, 10) == BUSH_OBJECTS[0][0]
 
 
 @pytest.mark.parametrize('tiles_type', [1, 2, 5])
@@ -282,7 +282,7 @@ def test_server_explosion_local_position_on_gmap():
     plant(board)
     handle_explosion(c, bytes((52, 52, 33)))
     assert c.effects == [(74, 138, 0)]
-    assert (c.active_explosions[-1]['x'], c.active_explosions[-1]['y']) == (74, 138)
+    assert (c.active_explosions[0]['x'], c.active_explosions[0]['y']) == (74, 138)
 
 
 def test_explosion_does_not_wrap_at_level_edge():

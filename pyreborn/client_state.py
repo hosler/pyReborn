@@ -469,6 +469,7 @@ class Callbacks:
 
         # A classic bush was cut: world origin and bushobj/putLeaps row.
         self.on_bush_cut: Optional[Callable[[float, float, int], None]] = None
+        self.on_leaps: Optional[Callable[[int, float, float], None]] = None
 
         # Hit objects callback: handler(x, y, power, player_id) - object hit feedback
         self.on_hit_objects: Optional[Callable[[float, float, int, int], None]] = None

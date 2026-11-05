@@ -6,9 +6,10 @@ import time
 from typing import Optional
 
 from reborn_protocol import BDMODE, BDPROP
-from reborn_protocol.coords import segment_at, segment_origin, world_to_local
+from reborn_protocol.coords import level_index, segment_at, segment_origin, world_to_local
 
-from .bushcut import BUSH_PROBE, BUSH_REPLACE, EXPLOSION_PROBE, bush_probe, find_bush_block
+from .bushcut import BUSH_PROBE, BUSH_REPLACE, bush_probe, find_bush_block
+from .explosions import board_blocks_at
 from .game.constants import (
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
     PLAYER_COLLISION_BOTTOM, PLAYER_COLLISION_LEFT,
@@ -230,26 +231,42 @@ class CombatMixin:
         self.modify_board(start_x, start_y, 2, 2, [tl, tr, bl, br])
         if self.on_bush_cut:
             self.on_bush_cut(ox + start_x, oy + start_y, index)
+        if self.on_leaps:
+            self.on_leaps(index, ox + start_x, oy + start_y)  # TPlayer.cpp:2356-2357
         return ox + start_x, oy + start_y
 
-    def _cut_bushes_at_explosion(self, x: float, y: float):
-        """TServerLevel.cpp:1494-1566: four probes, classic tileset only.
-
-        x/y are world coordinates; each explosion covers a 2x2 tile area,
-        independent of the bomb's power. Neighboring segments are excluded.
-        """
+    def _blast_board_at(self, x: float, y: float):
+        """TServerLevel.cpp:1502-1590: board effects on the active level only."""
         from .tiletypes import active_tilestype
         current = self._bush_board()
-        if current is None or active_tilestype() != 0:
+        if current is None:
             return set()
-        _level, _board, ox, oy = current
+        _level, board, ox, oy = current
         origins = set()
-        for dx, dy in EXPLOSION_PROBE:
-            # The oracle casts to an integer (truncation), without rounding.
-            origin = self._cut_bush_at(int(x + dx - ox), int(y + dy - oy))
-            if origin is not None:
-                origins.add(origin)
+        for block in board_blocks_at(lambda tx, ty: board[level_index(tx, ty)],
+                                     active_tilestype(), x - ox, y - oy):
+            tl, bl, tr, br = block.replacement_column_major
+            # TServerLevel.cpp:1534,1558,1582: publish the column-major patch.
+            tiles = [tl, tr, bl, br]
+            if self.modify_board(block.start_x, block.start_y, 2, 2, tiles):
+                # TServerLevel.cpp:1582-1583: stones change the board without
+                # debris; notify its painter even when no leap callback fires.
+                if self.on_board_modify:
+                    info = {'x': block.start_x, 'y': block.start_y,
+                            'width': 2, 'height': 2, 'tiles': tiles}
+                    if self.in_gmap_segment:
+                        info['map_x'], info['map_y'] = segment_at(self.player.x, self.player.y)
+                    self.on_board_modify(info)
+            wx, wy = ox + block.start_x, oy + block.start_y
+            origins.add((wx, wy))
+            if block.bush_index is not None and self.on_bush_cut:
+                self.on_bush_cut(wx, wy, block.bush_index)
+            if block.leap_type is not None and self.on_leaps:
+                self.on_leaps(block.leap_type, wx, wy)
         return origins
+
+    def _cut_bushes_at_explosion(self, x: float, y: float):
+        return self._blast_board_at(x, y)
 
     _SWORD_REACH = 4.0  # FourPlay TInitStatics.cpp:1251
     _SWORD_HALF_WIDTH = 2.0  # FourPlay TInitStatics.cpp:1277

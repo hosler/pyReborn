@@ -630,6 +630,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_sign': ('callbacks', 'on_sign'),
     'on_explosion': ('callbacks', 'on_explosion'),
     'on_bush_cut': ('callbacks', 'on_bush_cut'),
+    'on_leaps': ('callbacks', 'on_leaps'),
     'on_hit_objects': ('callbacks', 'on_hit_objects'),
     'on_minimap': ('callbacks', 'on_minimap'),
     'on_board_layer': ('callbacks', 'on_board_layer'),

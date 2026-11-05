@@ -573,13 +573,18 @@ class ActionsMixin:
         self.client.triggeraction(f'{action},{param}', x, y)
 
     def _update_push_hold(self, dx: int, dy: int):
-        """Predict the requested 38-to-18 push countdown at 20 Hz."""
+        """Keep the initial countdown, then repeat every 20 ticks.
+
+        TPlayer.cpp:7531-7544 fires moveStones and its sound; the counter
+        wraps from 38 to 18 at TPlayer.cpp:7558-7561.
+        """
         player = self.client.player
         now = time.time()
         if self._push_hold_dir != (dx, dy) or self._push_hold_start is None:
             self._push_hold_dir = (dx, dy)
             self._push_hold_start = now
             self._push_fired = False
+            self._push_fire_cycle = -1
             self.is_pushing = False
         ticks = int((max(0, now - self._push_hold_start) + 1e-9) / .05)
         self._push_counter = max(18, 38 - ticks)
@@ -596,15 +601,24 @@ class ActionsMixin:
         self.player_anim.set_direction(direction)
         if self.current_anim_name != 'push':
             self._play_action_animation('push')
-        if not getattr(self, '_push_fired', False):
+        # TPlayer.cpp:7558-7561: each subsequent cycle takes 20 ticks (1 s).
+        cycle = (ticks - 20) // 20
+        if cycle > getattr(self, '_push_fire_cycle', -1):
             self._push_fired = True
+            self._push_fire_cycle = cycle
             self._stone_action('push', direction)
+            # TPlayer.cpp:7535-7542: default movement owns this sound. As with
+            # footsteps, leave an animation's own PLAYSOUND to that animation.
+            if (getattr(getattr(self, 'gs1', None), 'default_movement', True)
+                    and not self._gani_plays_sound('stonemove.wav')):
+                self.sound_mgr.play('stonemove.wav')
 
     def _clear_push_hold(self):
         self._push_hold_dir = None
         self._push_hold_start = None
         self._push_counter = 38
         self._push_fired = False
+        self._push_fire_cycle = -1
         self.is_pushing = False
 
     def _update_grab_pull_state(self, dx: int, dy: int):

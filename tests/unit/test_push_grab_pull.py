@@ -20,6 +20,8 @@ attributes _move()/_try_link_warp() touch.
 import os
 import sys
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -153,6 +155,68 @@ def _harness_facing_wall(direction: int = 0):
 
 
 class TestPushHoldState:
+    def test_push_repeats_after_twenty_ticks_with_sound(self, monkeypatch):
+        # TPlayer.cpp:7531-7544,7558-7561: move and sound on each 20-tick cycle.
+        now = [100.0]
+        monkeypatch.setattr('time.time', lambda: now[0])
+        _, h = _harness_facing_wall()
+        h._stone_action = Mock()
+        h.sound_mgr = Mock()
+        h._update_push_hold(0, -1)
+        now[0] = 100.999
+        h._update_push_hold(0, -1)
+        h._stone_action.assert_not_called()
+        now[0] = 101.0
+        h._update_push_hold(0, -1)
+        h._stone_action.assert_called_once_with('push', 0)
+        h.sound_mgr.play.assert_called_once_with('stonemove.wav')
+        now[0] = 101.9
+        h._update_push_hold(0, -1)
+        assert h._stone_action.call_count == h.sound_mgr.play.call_count == 1
+        now[0] = 102.0
+        h._update_push_hold(0, -1)
+        assert h._stone_action.call_count == h.sound_mgr.play.call_count == 2
+        h._update_push_hold(0, -1)
+        assert h._stone_action.call_count == 2
+
+    def test_direction_change_resets_repeat_cycle_and_counter(self, monkeypatch):
+        # TPlayer.cpp:7529-7531: starting a new push resets the mode counter.
+        now = [100.0]
+        monkeypatch.setattr('time.time', lambda: now[0])
+        _, h = _harness_facing_wall()
+        h._stone_action = Mock()
+        h._update_push_hold(0, -1)
+        now[0] = 102.0
+        h._update_push_hold(0, -1)
+        h._update_push_hold(1, 0)
+        assert h._push_counter == 38
+        assert h._push_fire_cycle == -1
+        assert not h.is_pushing
+        now[0] = 102.9
+        h._update_push_hold(1, 0)
+        assert h._stone_action.call_count == 1
+        now[0] = 103.0
+        h._update_push_hold(1, 0)
+        assert h._stone_action.call_count == 2
+        h._stone_action.assert_called_with('push', 3)
+
+    @pytest.mark.parametrize('scripted,animation_sound', [(True, False), (False, True)])
+    def test_push_sound_leaves_scripted_movement_and_animation_audio_alone(
+            self, monkeypatch, scripted, animation_sound):
+        # TPlayer.cpp:7535: only default movement owns the built-in sound.
+        now = [100.0]
+        monkeypatch.setattr('time.time', lambda: now[0])
+        _, h = _harness_facing_wall()
+        h._stone_action = Mock()
+        h.sound_mgr = Mock()
+        h.gs1 = SimpleNamespace(default_movement=not scripted)
+        h._gani_plays_sound = lambda name: animation_sound
+        h._update_push_hold(0, -1)
+        now[0] = 101.0
+        h._update_push_hold(0, -1)
+        h._stone_action.assert_called_once_with('push', 0)
+        h.sound_mgr.play.assert_not_called()
+
     def test_short_block_does_not_push(self):
         c, h = _harness_facing_wall()
         h._update_push_hold(0, -1)

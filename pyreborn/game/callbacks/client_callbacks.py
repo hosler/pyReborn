@@ -176,9 +176,11 @@ def wire_client_callbacks(game):
 
     def on_bush_cut(x, y, index):
         game._spawn_leaf_particles(x, y)
-        # The existing putleaps renderer carries both bush colour variants
-        # and plays crush.wav, as TServerLevel::putLeaps does (:2850-2867).
-        game._spawn_leaps(index, x, y)
+        game.world_surface = None
+
+    def on_leaps(leap_type, x, y):
+        # TServerLevel.cpp:2850-2867: shared debris and spawn sound.
+        game._spawn_leaps(leap_type, x, y)
         game.world_surface = None
 
     def on_minimap(data: bytes):
@@ -446,6 +448,7 @@ def wire_client_callbacks(game):
     game.client.on_item = on_item
     game.client.on_explosion = on_explosion
     game.client.on_bush_cut = on_bush_cut
+    game.client.on_leaps = on_leaps
     game.client.on_minimap = on_minimap
     game.client.on_ghost_mode = on_ghost_mode
     if hasattr(game.client, 'on_bomb_del'):

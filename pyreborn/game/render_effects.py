@@ -12,6 +12,11 @@ import pygame
 from reborn_protocol.coords import in_level_bounds
 
 from ..gani import AnimationState
+from ..classic_sprites import draw_sprite
+from ..explosions import (
+    EXPLOSION_TICKS, bomb_crosses, cross_cells, explosion_sound,
+    explosion_sprite, order_point_y,
+)
 from ..prefs import Prefs
 from ..throwing import LEAP_FRAMES, TICK, advance_throw, landing_type
 from ..tiletypes import TileType
@@ -280,6 +285,32 @@ class EffectsRenderMixin(FrameContextMixin):
         pygame.draw.circle(explosion_surf, (255, 200, 100, alpha), (radius, radius), int(radius * 0.4))
         self.screen.blit(explosion_surf, (screen_x - radius, screen_y - radius))
 
+    def _render_explosion_cell(self, frame, cell_x, cell_y, sprite_row,
+                                elapsed, order_offset):
+        # TServerLevel.cpp:1606-1607; TExplosion.cpp:24-46: fixed sprite,
+        # top-left draw position, and the time-dependent order point.
+        ticks_left = EXPLOSION_TICKS - int(elapsed / TICK)
+        screen_x, screen_y = self.camera.world_to_screen(cell_x, cell_y)
+
+        def draw():
+            surf = draw_sprite(self.sprite_mgr, explosion_sprite(sprite_row))
+            if surf is not None:
+                self.screen.blit(surf, (screen_x, screen_y))
+            else:
+                alpha = int(255 * (1.0 - elapsed / EXPLOSION_DURATION))
+                self._render_explosion_burst(screen_x, screen_y, elapsed, 16, alpha)
+
+        self._render_world_object(
+            frame, cell_y, draw,
+            height_tiles=order_point_y(0.0, order_offset, ticks_left))
+
+    @staticmethod
+    def _bomb_explosion_cells(bomb):
+        # TServerLevel.cpp:1710-1724: retain overlapping cells of all five crosses.
+        return [cell for x, y, radius in bomb_crosses(
+            bomb['x'], bomb['y'], bomb.get('power', 1))
+                for cell in cross_cells(x, y, radius)]
+
     def _render_bombs(self, frame: Optional[FrameContext] = None):
         """Advance and render the unified local/remote bomb registry."""
         current_time = time.time()
@@ -325,18 +356,11 @@ class EffectsRenderMixin(FrameContextMixin):
                 explosion_elapsed = current_time - bomb['explosion_time']
                 if explosion_elapsed >= self.explosion_duration:
                     continue
-                explosion_progress = explosion_elapsed / self.explosion_duration
-
-                # Expanding explosion radius
-                radius = int(16 + bomb['power'] * 16 * explosion_progress)
-                alpha = int(255 * (1.0 - explosion_progress))
-
-                self._render_world_object(
-                    frame, bomb['y'],
-                    lambda screen_x=screen_x, screen_y=screen_y,
-                    explosion_elapsed=explosion_elapsed, radius=radius,
-                    alpha=alpha: self._render_explosion_burst(
-                        screen_x, screen_y, explosion_elapsed, radius, alpha))
+                if 'cells' not in bomb:
+                    bomb['cells'] = self._bomb_explosion_cells(bomb)
+                for cell in bomb['cells']:
+                    self._render_explosion_cell(frame, cell.x, cell.y, cell.sprite_row,
+                                                explosion_elapsed, 0.0)
                 active_bombs.append(bomb)
 
         self.active_bombs = active_bombs
@@ -401,9 +425,12 @@ class EffectsRenderMixin(FrameContextMixin):
             if owner.get('_carried_bomb') is bomb:
                 owner.pop('_carried_bomb', None)
                 owner['carry_sprite'] = -1
-        self.sound_mgr.play("explode.wav")
+        # TServerLevel.cpp:1697: power is the bomb type, including joltbombs.
+        self.sound_mgr.play(explosion_sound(bomb.get('power', 1)))
         self._start_camera_shake(bomb['x'], bomb['y'])
-        self._break_bushes_in_blast(bomb['x'], bomb['y'], bomb.get('power', 1))
+        bomb['cells'] = self._bomb_explosion_cells(bomb)
+        for cell in bomb['cells']:
+            self.client._blast_board_at(cell.x, cell.y)
         return True
 
     def _start_camera_shake(self, x: float, y: float,
@@ -419,8 +446,8 @@ class EffectsRenderMixin(FrameContextMixin):
         return True
 
     def _break_bushes_in_blast(self, x: float, y: float, power: int):
-        """Use the official 2x2 explosion probes for bombs and script bursts."""
-        return self.client._cut_bushes_at_explosion(x, y)
+        """Compatibility alias for one cell's board effects."""
+        return self.client._blast_board_at(x, y)
     # Fallback triangle colors, keyed by the projectile's 'gani' name -
     # 'arrow' (the default, matching the classic brown arrow it replaces)
     # and 'firespy' (a distinct fire-orange, so a fireball doesn't look like
@@ -1030,22 +1057,16 @@ class EffectsRenderMixin(FrameContextMixin):
         for exp in self.client.active_explosions:
             elapsed = current_time - exp['time']
             if elapsed < explosion_duration:
-                # Calculate screen position
-                screen_x, screen_y = self.camera.world_to_screen(exp['x'], exp['y'])
-
-                # Expanding explosion based on radius
-                progress = elapsed / explosion_duration
-                base_radius = exp.get('radius', 2) * TILE_SIZE
-                radius = int(base_radius * (0.5 + progress * 0.5))
-                alpha = int(255 * (1.0 - progress))
-
-                self._render_world_object(
-                    frame, exp['y'],
-                    lambda screen_x=screen_x, screen_y=screen_y,
-                    elapsed=elapsed, radius=radius,
-                    alpha=alpha: self._render_explosion_burst(
-                        screen_x, screen_y, elapsed, radius, alpha))
-
+                if 'sprite_row' in exp:
+                    self._render_explosion_cell(
+                        frame, exp['x'], exp['y'], exp['sprite_row'], elapsed,
+                        exp.get('order_offset', 0.0))
+                else:
+                    # Legacy script bursts store a whole cross in one entry.
+                    for cell in cross_cells(exp['x'], exp['y'], exp.get('radius', 2)):
+                        self._render_explosion_cell(
+                            frame, cell.x, cell.y, cell.sprite_row, elapsed,
+                            exp.get('order_offset', 0.0))
                 active.append(exp)
 
         self.client.active_explosions = active

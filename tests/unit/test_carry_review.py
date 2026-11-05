@@ -78,7 +78,7 @@ def test_quantized_held_blast_removes_remote_carry_visual(game):
     assert game.active_bombs == [bomb]
     assert game.client.players[8]['carry_sprite'] == -1
     assert '_carried_bomb' not in game.client.players[8]
-    game.sound_mgr.play.assert_called_once_with('explode.wav')
+    game.sound_mgr.play.assert_called_once_with('bomb.wav')  # TServerLevel.cpp:1697
 
 
 def test_authoritative_bomb_drop_clears_local_carry_and_registry(game):
@@ -108,7 +108,7 @@ def test_remote_bomb_waits_for_quantized_relay_without_double_burst(game, linked
     assert game.active_bombs == [bomb]
     game._detonate_bomb_at(9, 2.5)
     game._detonate_bomb_at(9, 2.5)
-    game.sound_mgr.play.assert_called_once_with('explode.wav')
+    game.sound_mgr.play.assert_called_once_with('bomb.wav')  # TServerLevel.cpp:1697
     game._start_camera_shake.assert_called_once()
 
 

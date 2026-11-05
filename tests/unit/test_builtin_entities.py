@@ -42,7 +42,7 @@ class _Harness(EffectsRenderMixin):
             player=SimpleNamespace(x=4.0, y=5.0),
             get_current_level_from_position=lambda: "test.nw",
             modify_board=self._modify_board,
-            _cut_bushes_at_explosion=lambda x, y: set(),
+            _blast_board_at=lambda x, y: set(),
         )
 
     def _get_tile_at(self, x, y):
@@ -85,7 +85,7 @@ def test_removal_detonates_now_and_dedupes():
     h._detonate_bomb_at(4.0, 5.0, now=10.3)
     assert bomb['exploded'] is True
     assert bomb['explosion_time'] == 10.2
-    assert h.sound_mgr.played == ['explode.wav']
+    assert h.sound_mgr.played == ['bomb.wav']  # TServerLevel.cpp:1697
     assert len(h.active_bombs) == 1
     assert h._camera_shake_started > 0
 
@@ -128,17 +128,17 @@ def test_blast_uses_client_explosion_probes():
     def cut(x, y):
         calls.append((x, y))
         return {(11, 10)}
-    h.client._cut_bushes_at_explosion = cut
+    h.client._blast_board_at = cut
     assert h._break_bushes_in_blast(10.0, 10.0, power=3) == {(11, 10)}
     assert calls == [(10.0, 10.0)]
 
 
 def test_server_explosion_lasts_twelve_ticks(monkeypatch):
     h = _Harness()
-    explosion = {'x': 4.0, 'y': 5.0, 'time': 0.0}
+    explosion = {'x': 4.0, 'y': 5.0, 'sprite_row': 4, 'time': 0.0}
     h.client.active_explosions = [explosion]
     draws = []
-    h._render_world_object = lambda *args: draws.append(args)
+    h._render_world_object = lambda *args, **kwargs: draws.append((args, kwargs))
     monkeypatch.setattr('pyreborn.game.render_effects.time.time', lambda: 0.55)
     h._render_server_explosions()
     assert h.client.active_explosions == [explosion]
