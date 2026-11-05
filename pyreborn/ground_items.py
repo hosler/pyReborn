@@ -46,6 +46,11 @@ ITEMS_GIVEAWAY = frozenset({0, 1, 2, 3, 4, 5, 7, 8, 15, 19})
 GIVE_ORDER = (0, 1, 2, 19, 3, 4, 5, 6, 16, 8, 12, 23, 7, 20, 21, 22,
               9, 15, 17, 10, 13, 18, 14, 24)
 
+# Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1197-1201 (giveitems).
+GIVE_SPRITES = (136, 137, 138, 67, 143, 139, 145, 351, 65, 350,
+                314, 315, 321, 323, 322, 324, 325, 328, 329, 330,
+                331, 332, 333, 334, 349)
+
 # TGUIScriptLoader::getDefaultItemScript has a script only for these item
 # indices, so only they grant a built-in weapon (addNPCWeapon): the weapon
 # is the item name with its first letter upper-cased. The server owns the
@@ -131,6 +136,25 @@ def walkover_takes(player_x: float, player_y: float,
 # Only the plain stat items are modelled; the glove/shield/sword downgrade
 # cases depend on the custom-image bookkeeping of the original and are left
 # out (they are never offered).
+
+def giveaway_icon_offset(sprite_size: Tuple[int, int], chat_offset_y: float = 0.0,
+                         on_horse: bool = False) -> Tuple[float, float]:
+    """Icon top-left offset in tiles; sprite_size is in source pixels."""
+    # drawSpriteCentral places the sprite's centre at the supplied tile point:
+    # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:5385-5389.
+    # That C++ transcription repeats 0.5; the assembly loads distinct constants
+    # 0x78 bytes apart (0.5 and 1/16), then multiplies both dimensions by both:
+    # Preagonal/FourPlay/quattroplay/asm/TPlayer/_ZN7TPlayer17drawSpriteCentralEiff.s_decomped:7-18
+    # Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1223-1225.
+    # The centre is player + (1.5, chatOffset.y), or y-1 on horseback:
+    # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:3975-3977,4004-4027.
+    # chatOffset is script-set and defaults to (0, 0):
+    # Preagonal/FourPlay/quattroplay/src/TServerPlayerProperties.cpp:104-107
+    # Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:97
+    # Preagonal/FourPlay/quattroplay/include/TFloatPoint.h:16.
+    width, height = sprite_size
+    return 1.5 - width / 32.0, (-1.0 if on_horse else chat_offset_y) - height / 32.0
+
 
 def giveaway_available(index: int, rupees: int, bombs: int, arrows: int,
                        hearts: float) -> bool:

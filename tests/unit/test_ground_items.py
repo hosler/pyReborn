@@ -199,6 +199,7 @@ def test_giveaway_drop_costs_the_stat_and_lays_the_item():
         player=player, items={}, _send_appearance_prop=Mock(),
         send_item_add=Mock(return_value=True),
         get_current_level_from_position=lambda: 'a.nw')
+    player.action_mode = 9
     game = SimpleNamespace(client=client, sound_mgr=Mock(), _giveaway_item=2)
     game._giveaway_stats = lambda: ActionsMixin._giveaway_stats(game)
     assert ActionsMixin._giveaway_drop(game) is True
@@ -206,6 +207,9 @@ def test_giveaway_drop_costs_the_stat_and_lays_the_item():
     client._send_appearance_prop.assert_called_once_with(PLPROP.RUPEESCOUNT, 10)
     client.send_item_add.assert_called_once_with(12.5, 11.0, 2)
     assert client.items == {'a.nw': {(12.5, 11.0): 'redrupee'}}
+    assert game._giveaway_item is None
+    assert player.action_mode == 0
+    game._giveaway_item = 2
     assert ActionsMixin._giveaway_drop(game) is False        # 10 < 30 now
     assert player.rupees == 10
 
@@ -312,5 +316,7 @@ def test_bare_a_drops_while_giveaway_is_up_and_movement_ends_it():
     _press(h, {K_a}, {K_a})
     assert h.calls == ['auto_pickup', 'drop']
     assert h._giveaway_item == 2
+    h.client.player.action_mode = 9
     _press(h, {K_d}, set())
     assert h._giveaway_item is None
+    assert h.client.player.action_mode == 0

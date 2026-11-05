@@ -10,6 +10,7 @@ import pygame
 from ..alignment import alignment_color
 from ..classic_sprites import draw_sprite, swamp_index, swamp_sprite
 from ..gani import AnimationState
+from ..ground_items import GIVE_SPRITES, giveaway_icon_offset
 from ..hurt import TICK_SECONDS
 from ..carrying import BOMB_CODES, carry_position, carry_tiles
 from ..npc_handler import CHARACTER_IMAGE
@@ -272,6 +273,17 @@ class EntityRenderMixin(
         # Render carried object above player's head
         if player.is_carrying():
             self._render_carried_object(x, y, player)
+
+        item = getattr(self, '_giveaway_item', None)
+        if item is not None and 0 <= item < len(GIVE_SPRITES):
+            # The custom shield branch is omitted: item 9 is never offered.
+            # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:4004-4027.
+            icon = draw_sprite(self.sprite_mgr, GIVE_SPRITES[item])
+            if icon is not None:
+                dx, dy = giveaway_icon_offset(
+                    icon.get_size(), getattr(player, 'chat_offset', (0.0, 0.0))[1],
+                    bool(player.horse_image))
+                self.screen.blit(icon, (x + dx * TILE_SIZE, y + dy * TILE_SIZE))
 
         self._render_player_chat(anchor_x, y)
 

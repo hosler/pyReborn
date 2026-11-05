@@ -702,6 +702,7 @@ class InputMixin:
             if (any(keys[k] for k in (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE))
                     or (s_held and not a_held)):
                 self._giveaway_item = None
+                self.client.player.action_mode = 0
             elif a_held and not s_held:
                 if self.key_just_pressed.get(K_a, False):
                     self._giveaway_drop()

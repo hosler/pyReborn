@@ -176,7 +176,12 @@ class ActionsMixin:
             available, getattr(self, '_giveaway_item', None))
         if self._giveaway_item < 0:
             self._giveaway_item = None
+            if self.client.player.action_mode == 9:
+                self.client.player.action_mode = 0
             return
+        # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:6620-6621.
+        self.client.player.action_mode = 9
+        self._play_action_animation('idle')
         self.sound_mgr.play("item2.wav")
 
     def _giveaway_drop(self) -> bool:
@@ -209,6 +214,8 @@ class ActionsMixin:
         level_name = client.get_current_level_from_position()
         client.items.setdefault(level_name, {})[(x, y)] = ground_items.ITEM_NAMES[index]
         client.send_item_add(x, y, index)
+        self._giveaway_item = None
+        player.action_mode = 0
         self.sound_mgr.play("item.wav")
         return True
 
