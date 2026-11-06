@@ -10,13 +10,17 @@ Run: python -m game_tester --tier2
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import socket
 import time
 from typing import List, Tuple
 
-from pyreborn.packets import PacketID
+from pyreborn.packets import PacketID, parse_player_props
 
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
+from .spar_fixture import SPAR_LEVEL, write_spar_fixture
 
 
 def _issue(sev: str, cat: str, desc: str) -> Issue:
@@ -279,6 +283,143 @@ def test_flagdel_relay(bot0: GameBot, bot1: GameBot) -> TestResult:
                       f"set_ok={set_ok} del_ok={del_ok}", issues)
 
 
+def _spar_rating_test(host: str, port: int, accounts: Tuple[str, str],
+                      same_ip: bool) -> TestResult:
+    name = "spar_same_ip_no_rating_change" if same_ip else "spar_rating_updates"
+    start = time.time()
+
+    def skip(reason):
+        return TestResult(name, False, time.time() - start, reason, skipped=True)
+
+    if host not in ("localhost", "127.0.0.1"):
+        return skip(f"source-IP spar QA needs an IPv4 loopback host, got {host}")
+    source = "127.0.0.1" if same_ip else "127.0.0.2"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((source, 0))
+    except OSError as exc:
+        return skip(f"cannot bind source address {source}: {exc}")
+
+    from .local_world import local_world_for
+    world = local_world_for(host, port)
+    levels_dir = (world.world_dir if world is not None else
+                  Path(os.environ.get("PYGSERVER_LEVELS_DIR",
+                       Path(__file__).resolve().parents[2] / "pygserver" / "levels")))
+    try:
+        if write_spar_fixture(levels_dir):
+            return skip(f"created {levels_dir / SPAR_LEVEL}; restart the server "
+                        "to register its sparringzone NPC, then rerun via qa_server run")
+    except OSError as exc:
+        return skip(f"cannot provision {SPAR_LEVEL}: {exc}")
+
+    # Dedicated accounts avoid racing the preceding suite's disconnect saves.
+    # Reset before login, so reruns start at the server's 1500/350 defaults.
+    from .test_scenarios import reset_account_position
+    suffix = "_spar_same" if same_ip else "_spar"
+    a, b = (account + suffix for account in accounts)
+    reset_account_position(a)
+    reset_account_position(b)
+    bot0 = GameBot(a, host, port, source_address="127.0.0.1")
+    bot1 = GameBot(b, host, port, source_address=source)
+    bots = (bot0, bot1)
+    ratings = [[], []]
+
+    def rating(bot):
+        return (bot.client.player.rating, bot.client.player.rating_deviation)
+
+    def arena_ready(bot):
+        client = bot.client
+        return (client._current_level_name == SPAR_LEVEL
+                and client._tiles_level_name == SPAR_LEVEL and bool(client.tiles)
+                and any(npc.get('_level') == SPAR_LEVEL
+                        and npc.get('script', '').lstrip().startswith('sparringzone')
+                        for npc in client.npcs.values()))
+
+    def sees_killer():
+        # The client never learns its own player id (player.id stays 0), so
+        # find the killer in the victim's roster by name. pygserver's level
+        # entry props carry the nickname (the account name by default) but
+        # not the account prop.
+        return any(isinstance(info, dict)
+                   and a in (info.get('account'), info.get('nickname'))
+                   for info in bot1.client.players.values())
+
+    try:
+        if not bot0.connect() or not bot1.connect():
+            return TestResult(name, False, time.time() - start,
+                              f"spar login failed: {[bot.get_issues() for bot in bots]}")
+        for bot, x in ((bot0, 26.0), (bot1, 30.0)):
+            bot.client.warp_to_level(SPAR_LEVEL, x, 30.0)
+        _pump(bot0, bot1, 8.0,
+              until=lambda: all(arena_ready(bot) for bot in bots)
+              and sees_killer())
+        if not all(arena_ready(bot) for bot in bots):
+            return skip(f"{SPAR_LEVEL} board/sparringzone NPC not received by both bots; "
+                        "check the served world and restart to register the fixture NPC")
+        if not sees_killer():
+            return TestResult(name, False, time.time() - start,
+                              "victim never received killer's player ID")
+        before = [rating(bot) for bot in bots]
+        if before != [(1500, 350), (1500, 350)]:
+            return TestResult(name, False, time.time() - start,
+                              f"rating fixture was not reset: {before}; check account directory")
+
+        for i, bot in enumerate(bots):
+            def record(data, i=i):
+                props = parse_player_props(data)
+                if 'rating' in props:
+                    ratings[i].append(props['rating'])
+            bot.client.on_packet[PacketID.PLO_PLAYERPROPS] = record
+
+        # Same fatal local bomb/CLAIMPKER path as bomb_kill_credits_killer.
+        _pump(bot0, bot1, 2.1)
+        if bot1.client.player.no_hurt() or not bot1.client.send_hearts(0.5):
+            return TestResult(name, False, time.time() - start,
+                              "victim could not be prepared with 0.5 hearts")
+        kills = bot0.client.player.kills
+        deaths = bot1.client.player.deaths
+        bot0.client.put_bomb(bot1.client.x, bot1.client.y, power=1, timer_ms=1500)
+        _pump(bot0, bot1, 6.0, until=lambda: bot1.client.player.hearts <= 0)
+        died = bot1.client.player.hearts <= 0
+        _pump(bot0, bot1, 5.0,
+              until=lambda: bot1.client.player.deaths > deaths
+              and (same_ip or all(ratings)))
+        # Observe late credit, especially in the negative case.
+        _pump(bot0, bot1, 2.0)
+        after = [rating(bot) for bot in bots]
+        death_recorded = bot1.client.player.deaths == deaths + 1
+        no_kill = bot0.client.player.kills == kills
+        if same_ip:
+            rating_ok = after == before and not any(ratings)
+        else:
+            rating_ok = (all(ratings) and after[0][0] > before[0][0]
+                         and after[1][0] < before[1][0]
+                         and all(0 < value[1] < old[1]
+                                 for value, old in zip(after, before)))
+        passed = bool(died and death_recorded and no_kill and rating_ok)
+        details = (f"sources=127.0.0.1/{source}, ratings {before} -> {after}, "
+                   f"RATING packets={ratings}, victim_died={died}, "
+                   f"deaths {deaths}->{bot1.client.player.deaths}, "
+                   f"killer kills {kills}->{bot0.client.player.kills}")
+        issues = [] if passed else [_issue("HIGH", "spar", details)]
+        return TestResult(name, passed, time.time() - start, details, issues)
+    finally:
+        for bot in bots:
+            bot.disconnect()
+
+
+def test_spar_rating_updates(host="localhost", port=14900,
+                             accounts=("testbot1", "testbot2")) -> TestResult:
+    """Different loopback source IPs must receive opposite rating changes."""
+    return _spar_rating_test(host, port, accounts, same_ip=False)
+
+
+def test_spar_same_ip_no_rating_change(host="localhost", port=14900,
+                                      accounts=("testbot1", "testbot2")) -> TestResult:
+    """The faithful same-IP guard must suppress both RATING updates."""
+    return _spar_rating_test(host, port, accounts, same_ip=True)
+
+
 def run_tier2_tests(host: str = "localhost", port: int = 14900,
                     accounts: Tuple[str, str] = ("testbot1", "testbot2")
                     ) -> List[TestResult]:
@@ -312,4 +453,10 @@ def run_tier2_tests(host: str = "localhost", port: int = 14900,
         bot0.disconnect()
         bot1.disconnect()
 
+    for test in (test_spar_rating_updates, test_spar_same_ip_no_rating_change):
+        try:
+            results.append(test(host, port, accounts))
+        except Exception as exc:
+            results.append(TestResult(test.__name__[5:], False,
+                                      0.0, f"Exception: {exc}"))
     return results

@@ -23,6 +23,7 @@ class TestResult:
     details: str = ""
     issues: List[Issue] = None
     screenshot: Optional[bytes] = None
+    skipped: bool = False
 
     def __post_init__(self):
         if self.issues is None:
@@ -83,7 +84,7 @@ class TestReporter:
 
     def add_result(self, name: str, passed: bool, duration: float,
                    details: str = "", issues: List[Issue] = None,
-                   screenshot: bytes = None):
+                   screenshot: bytes = None, skipped: bool = False):
         """Add a test result."""
         normalized = [self._normalize_issue(i) for i in (issues or [])]
 
@@ -93,7 +94,8 @@ class TestReporter:
             duration=duration,
             details=details,
             issues=normalized,
-            screenshot=screenshot
+            screenshot=screenshot,
+            skipped=skipped,
         ))
 
         # Also track issues separately
@@ -116,7 +118,9 @@ class TestReporter:
 
     def print_result(self, result: TestResult):
         """Print a single test result."""
-        if result.passed:
+        if result.skipped:
+            status = f"{self.YELLOW}[SKIP]{self.RESET}"
+        elif result.passed:
             status = f"{self.GREEN}[✓]{self.RESET}"
         else:
             status = f"{self.RED}[✗]{self.RESET}"
@@ -147,8 +151,8 @@ class TestReporter:
             self.print_result(result)
 
         # Summary stats
-        passed = sum(1 for r in self.results if r.passed)
-        failed = sum(1 for r in self.results if not r.passed)
+        passed = sum(1 for r in self.results if r.passed and not r.skipped)
+        failed = sum(1 for r in self.results if not r.passed and not r.skipped)
         total = len(self.results)
         # Handle both Issue objects and strings
         warnings = sum(1 for i in self.issues if hasattr(i, 'severity') and i.severity == "WARN")
@@ -158,12 +162,15 @@ class TestReporter:
         print(f"{'=' * 60}")
         print(f"  {self.GREEN}Passed:{self.RESET}   {passed}/{total}")
         print(f"  {self.RED}Failed:{self.RESET}   {failed}/{total}")
+        skipped = sum(r.skipped for r in self.results)
+        if skipped:
+            print(f"  {self.YELLOW}Skipped:{self.RESET}  {skipped}/{total}")
         if warnings:
             print(f"  {self.YELLOW}Warnings:{self.RESET} {warnings}")
 
         # Pass rate
         if total > 0:
-            rate = passed / total * 100
+            rate = self.get_pass_rate() * 100
             color = self.GREEN if rate >= 80 else (self.YELLOW if rate >= 50 else self.RED)
             print(f"\n  Pass Rate: {color}{rate:.0f}%{self.RESET}")
 
@@ -189,15 +196,17 @@ class TestReporter:
             "start_time": self.start_time,
             "duration": time.time() - self.start_time,
             "summary": {
-                "passed": sum(1 for r in self.results if r.passed),
-                "failed": sum(1 for r in self.results if not r.passed),
+                "passed": sum(1 for r in self.results if r.passed and not r.skipped),
+                "failed": sum(1 for r in self.results if not r.passed and not r.skipped),
                 "total": len(self.results),
+                "skipped": sum(r.skipped for r in self.results),
                 "pass_rate": self.get_pass_rate()
             },
             "results": [
                 {
                     "name": r.name,
                     "passed": r.passed,
+                    "skipped": r.skipped,
                     "duration": r.duration,
                     "details": r.details,
                     "issues": [
@@ -237,7 +246,7 @@ class TestReporter:
         """Save report as HTML with embedded screenshots."""
         path = Path(filename)
 
-        passed = sum(1 for r in self.results if r.passed)
+        passed = sum(1 for r in self.results if r.passed and not r.skipped)
         total = len(self.results)
         rate = self.get_pass_rate() * 100
 
@@ -261,6 +270,7 @@ class TestReporter:
         .test {{ padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid; }}
         .test.passed {{ background: #e8f5e9; border-color: #4CAF50; }}
         .test.failed {{ background: #ffebee; border-color: #f44336; }}
+        .test.skipped {{ background: #fff8e1; border-color: #ff9800; }}
         .test-name {{ font-weight: bold; }}
         .test-duration {{ color: #666; font-size: 14px; }}
         .issue {{ background: #fff3e0; padding: 10px; margin: 5px 0 5px 20px; border-radius: 3px; }}
@@ -289,8 +299,12 @@ class TestReporter:
                 <div class="stat-label">Passed</div>
             </div>
             <div class="stat">
-                <div class="stat-value fail">{total - passed}</div>
+                <div class="stat-value fail">{sum(not r.passed and not r.skipped for r in self.results)}</div>
                 <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{sum(r.skipped for r in self.results)}</div>
+                <div class="stat-label">Skipped</div>
             </div>
             <div class="stat">
                 <div class="stat-value" style="color: {'#4CAF50' if rate >= 80 else '#ff9800' if rate >= 50 else '#f44336'}">{rate:.0f}%</div>
@@ -302,7 +316,7 @@ class TestReporter:
 """
 
         for result in self.results:
-            status = "passed" if result.passed else "failed"
+            status = "skipped" if result.skipped else ("passed" if result.passed else "failed")
             html += f"""
         <div class="test {status}">
             <span class="test-name">{result.name}</span>
@@ -349,10 +363,11 @@ class TestReporter:
 
     def get_pass_rate(self) -> float:
         """Get pass rate as float (0.0 - 1.0)."""
-        if not self.results:
+        executed = [r for r in self.results if not r.skipped]
+        if not executed:
             return 0.0
-        return sum(1 for r in self.results if r.passed) / len(self.results)
+        return sum(r.passed for r in executed) / len(executed)
 
     def has_failures(self) -> bool:
         """Check if any tests failed."""
-        return any(not r.passed for r in self.results)
+        return any(not r.passed and not r.skipped for r in self.results)

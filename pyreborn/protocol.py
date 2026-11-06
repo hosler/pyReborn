@@ -143,9 +143,11 @@ VERSIONS = {
 class Protocol:
     """Low-level protocol: socket + encryption + framing"""
 
-    def __init__(self, host: str, port: int, version: str = "2.22"):
+    def __init__(self, host: str, port: int, version: str = "2.22",
+                 source_address: Optional[str] = None):
         self.host = host
         self.port = port
+        self.source_address = source_address
         self.socket: Optional[socket.socket] = None
         self.connected = False
         self.connect_timeout = 30.0
@@ -202,10 +204,15 @@ class Protocol:
     def connect(self) -> bool:
         """Connect to server"""
         try:
-            # create_connection resolves the host via getaddrinfo, so IPv6
-            # literals/hosts work as well as legacy IPv4.
+            # An IPv4 source cannot bind an IPv6 localhost destination.
+            host = self.host
+            if (self.source_address is not None and ':' not in self.source_address
+                    and host.lower() == 'localhost'):
+                host = '127.0.0.1'
+            bind = ((self.source_address, 0)
+                    if self.source_address is not None else None)
             self.socket = socket.create_connection(
-                (self.host, self.port), timeout=self.connect_timeout)
+                (host, self.port), timeout=self.connect_timeout, source_address=bind)
             self.socket.setblocking(False)
             self.connected = True
 

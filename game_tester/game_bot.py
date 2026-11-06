@@ -193,7 +193,8 @@ class GameBot:
     """
 
     def __init__(self, name: str, host: str = "localhost", port: int = 14900,
-                 password: str = "testpass", version: str = "6.037"):
+                 password: str = "testpass", version: str = "6.037",
+                 source_address: Optional[str] = None):
         self.name = name
         self.host = host
         self.port = port
@@ -203,7 +204,7 @@ class GameBot:
         # pointed at one needs its protocol version. Defaults to 6.037 so
         # every existing caller behaves exactly as before; see
         # game_tester/version_probe.py for finding what a server accepts.
-        self.client = Client(host, port, version=version)
+        self.client = Client(host, port, version=version, source_address=source_address)
         self.issues: List[Issue] = []
         self.action_log: List[ActionLog] = []
         self.position_history: List[Tuple[float, float, float]] = []  # (x, y, time)

@@ -82,7 +82,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
     _last_sent_position = None
 
     def __init__(self, host: str = "localhost", port: int = 14900, version: str = "2.22",
-                 proxy_url: Optional[str] = None):
+                 proxy_url: Optional[str] = None,
+                 source_address: Optional[str] = None):
         """
         Create a new client.
 
@@ -92,6 +93,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             version: Protocol version ("2.22" or "6.037")
             proxy_url: WebSocket proxy URL for browser (e.g., "ws://localhost:14901")
                        Required when running in browser, ignored otherwise.
+            source_address: Local IP to bind before connecting (native sockets only).
         """
         self.host = host
         self.port = port
@@ -120,7 +122,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
                 raise ValueError("proxy_url is required when running in browser")
             self._protocol = WebSocketProtocol(proxy_url, host, port, version)
         else:
-            self._protocol = Protocol(host, port, version)
+            self._protocol = Protocol(host, port, version, source_address=source_address)
 
         self.player = Player()
         self._login_appearance_applied = False

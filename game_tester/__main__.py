@@ -413,12 +413,12 @@ Examples:
         reporter.set_config(host=f"{args.host}:{args.port}", bots=2, mode="tier2")
         tresults = run_tier2_tests(host=args.host, port=args.port)
         for r in tresults:
-            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues)
+            reporter.add_result(r.name, r.passed, r.duration, r.details, r.issues, skipped=r.skipped)
             reporter.print_result(r)
         reporter.print_summary()
         if args.report:
             reporter.save_json(f"{args.report}_tier2.json")
-        sys.exit(0 if all(r.passed for r in tresults) else 1)
+        sys.exit(0 if all(r.passed or r.skipped for r in tresults) else 1)
 
     # Tier5 suite runs standalone (own bot lifecycle).
     if args.tier5:

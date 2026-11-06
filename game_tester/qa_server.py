@@ -279,13 +279,20 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
                 f"serverside = {str(serverside).lower()}\n")
     config.write_text(options)
     launch_config = _prepare_world(name, world, config) if world else config
+    # NPC registration (including sparringzone) happens at startup, even
+    # though pygserver can discover newly added level files while running.
+    from .spar_fixture import write_spar_fixture
+    levels_dir = launch_config / "world" if world else checkout / "levels"
+    accounts_dir = launch_config / "accounts" if world else checkout / "accounts"
+    write_spar_fixture(levels_dir)
     log_path = state_dir() / f"{name}.log"
     record = dict(name=name, port=port, pygserver_dir=str(checkout),
                   config_path=str(config), log_path=str(log_path), started=time.time(),
                   source_stamp=source_stamp(checkout),
                   starter=Path(os.environ["CLAUDE_JOB_DIR"]).name
                   if os.environ.get("CLAUDE_JOB_DIR") else os.getppid(),
-                  serverside=serverside)
+                  serverside=serverside, levels_dir=str(levels_dir),
+                  accounts_dir=str(accounts_dir))
     if world:
         record["world"] = world
     with log_path.open("wb") as log:
@@ -352,7 +359,10 @@ def ensure(name="dev", port=14900, fresh=False):
     if record and is_live(record["pid"]):
         if record["port"] != port:
             raise ValueError(f"{name!r} uses port {record['port']}, requested {port}")
-        return restart(record) if fresh and is_stale(record) else record
+        # Older records predate startup fixture provisioning. Restart them
+        # once so `run` also guarantees the spar NPC was registered.
+        return restart(record) if fresh and (
+            is_stale(record) or not record.get("levels_dir")) else record
     if record:
         parameters = _parameters(record)
         parameters["port"] = port
@@ -396,6 +406,9 @@ def _run(args):
             record = ensure(args.name, args.port, fresh=True)
         env = dict(os.environ, PYREBORN_TEST_PORT=str(record["port"]),
                    PYREBORN_QA_PORT=str(record["port"]))
+        if record.get("levels_dir"):
+            env["PYGSERVER_LEVELS_DIR"] = record["levels_dir"]
+            env["PYGSERVER_ACCOUNTS_DIR"] = record["accounts_dir"]
         result = subprocess.run(command, env=env)
         return result.returncode if result.returncode >= 0 else 128 - result.returncode
     finally:

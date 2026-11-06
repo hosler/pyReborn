@@ -98,6 +98,7 @@ def _reset_pygserver_account(account_name: str, level: str,
     # over from the previous run then arrives as a jump, not a +1.
     data["kills"] = 0
     data["deaths"] = 0
+    data.update(elo_rating=1500.0, elo_deviation=350.0, last_spar_time=0)
     if mp is not None:
         data["mp"] = mp
     try:
@@ -153,7 +154,9 @@ def reset_account_position(account_name: str,
     repl = {"LEVEL": f"LEVEL {level}", "X": f"X {x:g}", "Y": f"Y {y:g}",
             "NICK": f"NICK {account_name}",
             # Same zeroing as the pygserver twin (FlatFileAccountLoader.cpp:663).
-            "KILLS": "KILLS 0", "DEATHS": "DEATHS 0"}
+            "KILLS": "KILLS 0", "DEATHS": "DEATHS 0",
+            "RATING": "RATING 1500", "DEVIATION": "DEVIATION 350",
+            "LASTSPARTIME": "LASTSPARTIME 0"}
     if mp is not None:
         repl["MP"] = f"MP {mp:g}"
     try:

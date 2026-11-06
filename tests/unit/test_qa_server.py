@@ -30,6 +30,10 @@ def managed(tmp_path, monkeypatch):
     launches = []
 
     def launch(directory, config, log):
+        # The arena must exist before the child can index/register its NPCs.
+        from game_tester.spar_fixture import SPAR_LEVEL, spar_level_text
+        levels = config / "world" if Path(config).is_dir() else directory / "levels"
+        assert (levels / SPAR_LEVEL).read_text() == spar_level_text()
         process = subprocess.Popen(
             [sys.executable, "-u", "-c",
              f"import time; print({qa.READY_MARKER!r}, flush=True); time.sleep(120)",
@@ -147,15 +151,18 @@ def test_prune_retains_live_record(managed):
 
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_run_environment_cwd_cleanup_and_exit_code(managed, tmp_path, exit_code):
-    state, _, children, _ = managed
+    state, checkout, children, _ = managed
     output = tmp_path / "command.json"
     command = (
         "import json, os, sys; from pathlib import Path; "
         "Path(sys.argv[1]).write_text(json.dumps([os.getcwd(), "
-        "os.environ['PYREBORN_TEST_PORT'], os.environ['PYREBORN_QA_PORT']])); "
+        "os.environ['PYREBORN_TEST_PORT'], os.environ['PYREBORN_QA_PORT'], "
+        "os.environ['PYGSERVER_LEVELS_DIR'], os.environ['PYGSERVER_ACCOUNTS_DIR']])); "
         f"sys.exit({exit_code})")
     assert qa.main(["run", "--", sys.executable, "-c", command, str(output)]) == exit_code
-    assert json.loads(output.read_text()) == [os.getcwd(), "14901", "14901"]
+    assert json.loads(output.read_text()) == [os.getcwd(), "14901", "14901",
+                                            str(checkout / "levels"),
+                                            str(checkout / "accounts")]
     assert not (state / "qa.json").exists()
     assert not qa.is_live(children[0].pid)
 

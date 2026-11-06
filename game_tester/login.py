@@ -116,13 +116,19 @@ def login_client(client: Any, account: str, password: str, *,
                  timeout: float = 10.0, settle: bool = True,
                  settle_timeout: Optional[float] = None,
                  poll: float = 0.1, sleep: float = 0.05,
+                 source_address: Optional[str] = None,
                  ready: Callable[[Any], bool] = level_ready) -> LoginOutcome:
     """Connect + log in `client`, optionally waiting for the level to arrive.
 
     Never disconnects: the caller owns the client either way (GameBot keeps
     its client across reconnects). Use `login_session` when you want the
     teardown handled too.
+
+    `source_address` overrides the native transport's local IP before connect;
+    None preserves the bind configured on the supplied client.
     """
+    if source_address is not None:
+        client._protocol.source_address = source_address
     client._level_ready_gmap_wait = None  # A reconnect starts a fresh grace.
     requested = str(getattr(client, "version", "") or "")
     outcome = LoginOutcome(client=client, version=requested,
@@ -145,6 +151,7 @@ def login_client(client: Any, account: str, password: str, *,
 @contextmanager
 def login_session(host: str, port: int, account: str, password: str, *,
                   version: str = "6.037",
+                  source_address: Optional[str] = None,
                   client_factory: Optional[Callable[..., Any]] = None,
                   **kwargs: Any) -> Iterator[LoginOutcome]:
     """Own a client for one login, guaranteeing the disconnect.
@@ -160,7 +167,8 @@ def login_session(host: str, port: int, account: str, password: str, *,
     if client_factory is None:
         from pyreborn.client import Client
         client_factory = Client
-    client = client_factory(host, port, version=version)
+    options = {} if source_address is None else {"source_address": source_address}
+    client = client_factory(host, port, version=version, **options)
     try:
         yield login_client(client, account, password, **kwargs)
     finally:
