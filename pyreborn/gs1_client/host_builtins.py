@@ -7,7 +7,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import tokens_count
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
-from .objects import _current_baddies, _num_or_str, _version_number
+from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
 
 
@@ -426,6 +426,17 @@ class BuiltinsMixin:
             if self._with_member_set(this_obj, name, value, indices):
                 return True
         npc = ctx.this_obj
+        if name == "npcs.sprite":
+            ids = self._npc_ids()
+            i = int(indices[0]) if indices else 0
+            if 0 <= i < len(ids):
+                target = self.rt.client.npcs.get(ids[i])
+                if isinstance(target, dict):
+                    _set_npc_sprite(target, value)
+            return True
+        if name == "sprite" and isinstance(npc, dict):
+            _set_npc_sprite(npc, value)
+            return True
         # Bare `save[i] = n` — the running NPC's persistent slots. Without this
         # the write reached VarStore.set(None, "save", ...), which drops an
         # indexed write into a non-existent array (runtime.py:199-201), so

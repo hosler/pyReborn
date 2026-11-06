@@ -6,7 +6,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 
 from ..tiletypes import register_tiledef, remove_tiledefs
 from .board import board_update_region
-from .objects import _pcode
+from .objects import _pcode, _write_npc_command
 from .registry import _FALL_THROUGH, _GS1_PRE_COMMANDS, _NOOP, _NPC_WRITE, _gs1_command
 
 
@@ -173,7 +173,7 @@ class PreCommandsMixin:
             return _FALL_THROUGH
         npc = ctx.this_obj
         if isinstance(npc, dict):
-            npc[_NPC_WRITE[name]] = to_str(args[0])
+            _write_npc_command(npc, name, args[0])
 
     # -- player / game commands (work for weapon scripts too, where there
     # is no NPC object) -----------------------------------------------------

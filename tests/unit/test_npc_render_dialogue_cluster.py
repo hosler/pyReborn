@@ -104,6 +104,81 @@ def test_setcharani_still_targets_the_npc():
     assert game.current_anim_name == "idle"
 
 
+@pytest.mark.parametrize("target,index", [("sprite", 0), ("npcs[1].sprite", 1)])
+@pytest.mark.parametrize("sprite,gani", [
+    (0, "idle"), (1, "walk"), (8, "walk"),
+    (9, "sword"), (13, "sword"), (14, "push"), (18, "push"),
+    (19, "pull"), (22, "pull"), (23, "lift"),
+    (24, "carry"), (25, "carry"), (32, "carry"),
+    (33, "shoot"), (34, "ride"), (36, "ride"),
+    (37, "sit"), (38, "sleep"), (39, "hurt"), (40, "dead"),
+])
+def test_npc_sprite_assignment_sets_local_character_gani(target, index, sprite, gani):
+    client, gs1, game = _gs1_game()
+    other = client.npcs[33] = {"x": 8.0, "y": 8.0, "gani": "other,"}
+    source = client.npcs[7] = {"x": 5.0, "y": 5.0, "gani": "source,"}
+    player_animation = client.player.animation
+    gs1.load_script(
+        "npc_7",
+        "if (created) { showcharacter; dir = 2; "
+        f"{target} = {sprite}; this.observed = {target}; "
+        f"this.indexed = npcs[{index}].sprite; }}",
+        npc_id=7, x=5, y=5,
+    )
+    gs1.trigger_npc_event(7, "created")
+
+    npc = source if index == 0 else other
+    untouched = other if index == 0 else source
+    assert npc["gani"] == gani + ","
+    assert npc["sprite"] == sprite
+    values = gs1._progs["npc_7"]["scopes"]["this"]
+    assert values["observed"] == values["indexed"] == sprite
+    assert untouched["gani"] == ("other," if index == 0 else "source,")
+    assert "sprite" not in untouched
+    assert client.player.animation == player_animation
+    assert game.current_anim_name == "idle"
+    assert game.player_anim.calls == []
+    assert client._protocol.sent == []
+
+
+@pytest.mark.parametrize("target,index", [("sprite", 0), ("npcs[1].sprite", 1)])
+@pytest.mark.parametrize("sprite", [-1, 41, 999])
+def test_npc_sprite_out_of_range_is_stored_without_changing_gani(target, index, sprite):
+    client, gs1, _ = _gs1_game()
+    client.npcs[33] = {"x": 8.0, "y": 8.0, "gani": "custom,param"}
+    client.npcs[7] = {"x": 5.0, "y": 5.0, "gani": "custom,param"}
+    gs1.load_script(
+        "npc_7",
+        f"if (created) {{ {target} = {sprite}; this.observed = {target}; }}",
+        npc_id=7, x=5, y=5,
+    )
+    gs1.trigger_npc_event(7, "created")
+
+    npc = client.npcs[7 if index == 0 else 33]
+    assert npc["gani"] == "custom,param"
+    assert npc["sprite"] == sprite
+    assert gs1._progs["npc_7"]["scopes"]["this"]["observed"] == sprite
+    assert client._protocol.sent == []
+
+
+def test_setcharani_overrides_sprite_and_preserves_last_assigned_number():
+    client, gs1, _ = _gs1_game()
+    npc = client.npcs[7] = {"x": 5.0, "y": 5.0}
+    gs1.load_script(
+        "npc_7",
+        "if (created) { sprite = 37; setcharani custom,; } "
+        "if (timeout) { this.observed = sprite; }",
+        npc_id=7, x=5, y=5,
+    )
+    gs1.trigger_npc_event(7, "created")
+    gs1.trigger_npc_event(7, "timeout")
+
+    assert npc["gani"] == "custom,"
+    assert npc["sprite"] == 37
+    assert gs1._progs["npc_7"]["scopes"]["this"]["observed"] == 37
+    assert client._protocol.sent == []
+
+
 def test_setani_params_reach_the_local_anim():
     """`setani sen_piano_note2,<note>.wav` — the PARAM token names the sound.
     the local mirror must hand the params to set_animation, same as the NPC

@@ -49,7 +49,7 @@ def _report_gs1_error(where: str, exc: Exception):
 # player-prefixed builtin -> attribute on the pyReborn Player
 PLAYER_ATTR = {**A_CLASS_PLAYER_ATTR, "playeraccount": "account"}
 # unprefixed builtin -> key on the client NPC dict (the NPC running the script)
-NPC_ATTR = dict(A_CLASS_NPC_ATTR)
+NPC_ATTR = {**A_CLASS_NPC_ATTR, "sprite": "sprite"}
 # command -> NPC dict key it writes (so the renderer reflects the change).
 # Image commands are handled explicitly in _dispatch (they also manage the
 # imagepart sub-rect), so they're not listed here. NB `setani` is NOT here:

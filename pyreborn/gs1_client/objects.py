@@ -9,7 +9,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import host_value
 
 from ..sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
-from .registry import NPC_ATTR, PLAYER_ATTR
+from .registry import NPC_ATTR, PLAYER_ATTR, _NPC_WRITE
 
 
 
@@ -39,6 +39,37 @@ ENGINE_PLAYER_PROPS = frozenset({
     "rotation", "rotationcenter", "sprite", "stretchx", "stretchy",
     "useowncenter", "zoom",
 })
+
+
+# The reference NPC sprite setter selects a classic "def" frame, with no
+# named-gani mapping: TServerNPCProperties.cpp:271-280 and
+# TGaniObject.cpp:1778-1792 in Preagonal/FourPlay/quattroplay/src/.
+# Map those action groups to ganis using GServer-v2/bin/docs/
+# scripting-gs1-variables.md:571-591 ("Character sprites").
+_NPC_SPRITE_ANIS = {
+    sprite: gani
+    for first, last, gani in (
+        (0, 0, "idle"), (1, 8, "walk"), (9, 13, "sword"),
+        (14, 18, "push"), (19, 22, "pull"), (23, 23, "lift"),
+        (24, 32, "carry"), (33, 33, "shoot"), (34, 36, "ride"),
+        (37, 37, "sit"), (38, 38, "sleep"), (39, 39, "hurt"),
+        (40, 40, "dead"),
+    )
+    for sprite in range(first, last + 1)
+}
+
+
+def _write_npc_command(npc, name, value):
+    """Apply the local NPC appearance write shared by commands and sprites."""
+    npc[_NPC_WRITE[name]] = to_str(value)
+
+
+def _set_npc_sprite(npc, value):
+    sprite = npc["sprite"] = to_num(value)
+    gani = _NPC_SPRITE_ANIS.get(sprite)
+    if gani is not None:
+        # setcharani <name>,; stores its trailing comma with the animation.
+        _write_npc_command(npc, "setcharani", gani + ",")
 
 
 class _GS1ObjectRef:
@@ -81,7 +112,10 @@ class _GS1ObjectRef:
             return True
         attr = table[name]
         if isinstance(self.target, dict):
-            self.target[attr] = value
+            if self.kind == "npc" and name == "sprite":
+                _set_npc_sprite(self.target, value)
+            else:
+                self.target[attr] = value
         else:
             setattr(self.target, attr, value)
         return True
