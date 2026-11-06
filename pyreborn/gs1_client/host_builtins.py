@@ -6,6 +6,8 @@ from reborn_protocol.gs1.runtime import UNSET
 from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import tokens_count
 
+from ..script_player_props import sync_script_player_stat
+
 from .board import GS1NoBoard, board_tile_read, board_tile_write
 from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
@@ -501,12 +503,16 @@ class BuiltinsMixin:
         player = self._player
         if player is not None and name in PLAYER_ATTR:
             attr = PLAYER_ATTR[name]
+            previous = getattr(player, attr, None)
             if attr == 'hearts':
                 player.set_hearts(value)
             else:
                 setattr(player, attr, value)
+            sync_script_player_stat(self.rt.client, player, attr, previous)
             return True
         if player is not None and name == "playerglovepower":
+            previous = player.glove_power
             setattr(player, "glove_power", max(0, int(to_num(value)) - 1))
+            sync_script_player_stat(self.rt.client, player, "glove_power", previous)
             return True
         return False

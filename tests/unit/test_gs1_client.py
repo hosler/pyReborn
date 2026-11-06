@@ -24,9 +24,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1
+from pyreborn.gs2_client import ClientGS2
 from pyreborn.game.setup import SetupMixin
 from pyreborn.packets import PacketID, build_baddy_hurt
 from reborn_protocol import PacketBuilder
+from reborn_protocol import PLPROP
 from pyreborn.tiletypes import TILE_TYPES, TileType
 
 
@@ -49,6 +51,98 @@ def _fake_connected_client():
     c._authenticated = True
     c._protocol = _SentRecorder()
     return c
+
+
+class TestScriptPlayerStats:
+    @staticmethod
+    def _assign(client, engine, member, expression):
+        if engine == "gs1":
+            runtime = ClientGS1(client)
+            runtime.load_weapon("reward", f"player{member} = {expression};")
+            runtime.trigger_event("created", name="weapon_reward")
+        else:
+            surface = ClientGS2(client).player_object
+            value = surface.get(member) + 50 if expression == "add50" else float(expression)
+            surface.set(member, value)
+
+    @pytest.mark.parametrize("engine", ["gs1", "gs2"])
+    def test_rupees_reward_sends_exactly_one_playerprops(self, engine):
+        client = _fake_connected_client()
+        client.player.rupees = 10
+        if engine == "gs1":
+            runtime = ClientGS1(client)
+            runtime.load_weapon("reward", "playerrupees += 50;")
+            runtime.trigger_event("created", name="weapon_reward")
+        else:
+            self._assign(client, engine, "rupees", "add50")
+        assert client.player.rupees == 60
+        expected = PacketBuilder().write_gchar(PLPROP.RUPEESCOUNT).write_gint3(60).build()
+        assert client._protocol.sent == [(int(PacketID.PLI_PLAYERPROPS), expected)]
+        client._protocol.sent.clear()
+        self._assign(client, engine, "rupees", "60")
+        assert client._protocol.sent == []
+
+    @pytest.mark.parametrize("engine", ["gs1", "gs2"])
+    @pytest.mark.parametrize("member,value,attr,prop,wire_value", [
+        ("gralats", 25, "rupees", PLPROP.RUPEESCOUNT, 25),
+        ("hearts", 1.5, "hearts", PLPROP.CURPOWER, 3),
+        ("hp", 2.5, "hearts", PLPROP.CURPOWER, 5),
+        ("arrows", 12, "arrows", PLPROP.ARROWSCOUNT, 12),
+        ("darts", 7, "arrows", PLPROP.ARROWSCOUNT, 7),
+        ("bombs", 9, "bombs", PLPROP.BOMBSCOUNT, 9),
+        ("glovepower", 2, "glove_power", PLPROP.GLOVEPOWER, None),
+        ("ap", 60, "ap", PLPROP.ALIGNMENT, 60),
+        ("mp", 40, "mp", PLPROP.MAGICPOINTS, 40),
+        ("magicpoints", 45, "mp", PLPROP.MAGICPOINTS, 45),
+    ])
+    def test_stat_assignment_and_unchanged_value(self, engine, member, value, attr, prop, wire_value):
+        if engine == "gs1" and member in ("hp", "magicpoints"):
+            pytest.skip("GS2 member alias")
+        client = _fake_connected_client()
+        self._assign(client, engine, member, str(value))
+        if member == "glovepower":
+            wire_value = value - 1 if engine == "gs1" else value
+        assert getattr(client.player, attr) == (wire_value if member == "glovepower" else value)
+        builder = PacketBuilder().write_gchar(prop)
+        expected = (builder.write_gint3(wire_value) if prop == PLPROP.RUPEESCOUNT
+                    else builder.write_gchar(wire_value)).build()
+        assert client._protocol.sent == [(int(PacketID.PLI_PLAYERPROPS), expected)]
+        client._protocol.sent.clear()
+        self._assign(client, engine, member, str(value))
+        assert client._protocol.sent == []
+
+    @pytest.mark.parametrize("engine", ["gs1", "gs2"])
+    @pytest.mark.parametrize("member,value", [
+        ("x", 12), ("y", 15), ("account", 5), ("fullhearts", 5),
+        ("swordpower", 3), ("shieldpower", 2),
+    ])
+    def test_non_synced_builtin_sends_nothing(self, engine, member, value):
+        client = _fake_connected_client()
+        self._assign(client, engine, member, str(value))
+        assert client._protocol.sent == []
+
+    @pytest.mark.parametrize("engine", ["gs1", "gs2"])
+    def test_remote_player_write_sends_nothing(self, engine):
+        client = _fake_connected_client()
+        client.players[2] = {"account": "other", "rupees": 10}
+        if engine == "gs1":
+            runtime = ClientGS1(client)
+            runtime.load_weapon(
+                "reward", 'players[1].rupees += 50; '
+                'with (findplayer("other")) { rupees += 50; }')
+            runtime.trigger_event("created", name="weapon_reward")
+        else:
+            remote = ClientGS2(client).script_player_object(2, client.players[2])
+            remote.set("rupees", 60)
+        assert client.player.rupees == 0
+        assert client._protocol.sent == []
+
+    @pytest.mark.parametrize("engine", ["gs1", "gs2"])
+    def test_glove_clamp_to_existing_value_sends_nothing(self, engine):
+        client = _fake_connected_client()
+        self._assign(client, engine, "glovepower", "-5")
+        assert client.player.glove_power == 0
+        assert client._protocol.sent == []
 
 
 def _this(gs1, key):

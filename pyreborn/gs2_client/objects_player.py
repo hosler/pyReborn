@@ -13,6 +13,7 @@ from reborn_protocol.gs2 import to_str
 from .helpers import FREEZE_MAX_TICKS, FREEZE_TICKS_PER_SECOND, ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN, _GANI_TRANSFORM_DEFAULTS
 from .registry import TIMER_RESOLUTION, _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READONLY, _TIMER_CANCEL
 from ..gs1_client.objects import ENGINE_PLAYER_PROPS
+from ..script_player_props import sync_script_player_stat
 from ..game.constants import WALK_SPEED
 
 class _EngineObject(GS2Object):
@@ -627,7 +628,9 @@ class _PlayerObject(GS2Object):
         if key == "glovepower" and p is not None:
             # The reference's setter floors at 0 and nothing else
             # (TServerPlayerProperties.cpp:119-123).
+            previous = p.glove_power
             setattr(p, "glove_power", max(0, int(to_num(value))))
+            sync_script_player_stat(self._rt2.client, p, "glove_power", previous)
             return
         if key in ("x", "y") and p is not None:
             # p.x/p.y (== client.x/y) are already world-frame - see get()'s
@@ -648,10 +651,12 @@ class _PlayerObject(GS2Object):
             elif key == "sprite":
                 value = int(to_num(value))
             attr = _PLAYER_MEMBER_ATTR[key]
+            previous = getattr(p, attr, None)
             if attr == 'hearts':
                 p.set_hearts(value)
             else:
                 setattr(p, attr, value)
+            sync_script_player_stat(self._rt2.client, p, attr, previous)
             return
         super().set(key, value)
 
