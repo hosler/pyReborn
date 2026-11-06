@@ -83,7 +83,8 @@ _GMAP_GRID = {
 TOUCH_PROBE_HALFSPAN = 0.45
 
 _QUEST_FLAGS = ("eq_stage", "eggq_1", "eggq_2", "eggq_3", "eggq_4",
-                "eggq_done", "peep_found", "peep_done", "lever_last")
+                "eggq_done", "peep_found", "peep_done", "lever_last",
+                "lc_started", "lc_beers", "lc_done")
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +158,10 @@ def reset_quest_account(account: str = ACCOUNT) -> bool:
     # that ended in another segment (e.g. chicken3) refuses the login with
     # "No level available".
     repl = {"LEVEL": "LEVEL chicken1.nw", "X": "X 30", "Y": "Y 36",
-            "MAPX": "MAPX 1", "MAPY": "MAPY 1"}
+            "MAPX": "MAPX 1", "MAPY": "MAPY 1",
+            # Payouts persist now, so zero the purse: Last Call must be
+            # paid for by this run's own egg rewards, not earlier runs.
+            "GRALATS": "GRALATS 0"}
     seen = {k: False for k in repl}
     out = []
     for line in kept:
@@ -518,6 +522,26 @@ _EGG3 = ("chicken_cave_entrance.nw", 29, 22, 26, 22)
 _EGG4 = ("chicken_cave_1.nw", 33.4, 35, 34, 39)
 _PEEP = ("chicken_cave_1.nw", 33.4, 36, 34, 41)
 _HENPENNY = ("chicken_cave_entrance.nw", 32, 12, 34, 10)
+# Last Call. The drinker's script moves him to (34.5, 15.5) and seats him at
+# the banquet table, so he is touched from the open floor to his north. The
+# beer shop is an invisible NPC on the inn patio that answers the chat "beer"
+# anywhere on chicken1; _BAR is just a spot on that patio.
+_DRINKER = ("chicken_cave_entrance.nw", 33.9, 12, 34.5, 15.5)
+_GATE_GUARD_POS = (30.0, 6.0)
+_BAR = ("chicken1.nw", 47, 44)
+
+
+def _gate_guard(s) -> Optional[dict]:
+    """The gate guard if he is still at his post. _find_npc returns the
+    NEAREST NPC at any distance, so once he has gone it would hand back Hen
+    Penny instead; only an NPC on the post itself counts."""
+    gx, gy = _GATE_GUARD_POS
+    for npc in s.client.npcs.values():
+        if (npc.get("_level") == "chicken_cave_entrance.nw"
+                and abs(npc.get("x", -99.0) - gx) < 1.5
+                and abs(npc.get("y", -99.0) - gy) < 1.5):
+            return npc
+    return None
 
 _EGGS = (
     ("egg1_chicken2_west", _EGG1, "eggq_1", "warm. suspiciously warm"),
@@ -737,6 +761,70 @@ def run() -> bool:
             stamp_survived_lap == stamp_after_second,
             f"lever_last={stamp_survived_lap!r} (was {stamp_after_second!r} "
             f"before the lap)")
+
+    # k. Last Call: five beers from the inn put the off-duty guard under,
+    #    the gate guard leaves, the drinker pays out once, and all of it
+    #    survives a relog. Each beer is bought and delivered separately: the
+    #    carried Beer weapon must destroy itself on delivery, or one purchase
+    #    could be counted five times.
+    s.clear_messages()
+    s.go_and_touch(*_DRINKER)
+    _report("k_last_call_hook_sets_started",
+            bool(s.client_flag("lc_started")),
+            f"lc_started={s.client_flag('lc_started')!r}; messages={s.messages}")
+    rupees_start = s.client.player.rupees
+    _report("k_last_call_can_afford", rupees_start >= 25,
+            f"rupees={rupees_start} (five beers cost 25; earlier steps pay)")
+    beer_ok = True
+    detail = []
+    for n in range(1, 6):
+        s.warp(*_BAR)
+        s.client.send_level_chat("beer")  # CURCHAT: what playerchats sees
+        s.pump(30)
+        bought = "Beer" in s.client.weapons
+        s.go_and_touch(*_DRINKER)
+        s.pump(20)
+        count = s.client_flag("lc_beers")
+        consumed = "Beer" not in s.client.weapons
+        detail.append(f"beer{n}: bought={bought} count={count!r} "
+                      f"consumed={consumed}")
+        if n == 1:
+            # Same beer, second touch: nothing left to hand over.
+            s.go_and_touch(*_DRINKER)
+            s.pump(10)
+            _report("k_last_call_one_beer_counts_once",
+                    s.client_flag("lc_beers") == count,
+                    f"lc_beers={s.client_flag('lc_beers')!r} after re-touch "
+                    f"(was {count!r})")
+        if not (bought and consumed and str(count) in (str(n), f"{n}.0")):
+            beer_ok = False
+            break
+    _report("k_last_call_five_deliveries", beer_ok, "; ".join(detail))
+    rupees_end = s.client.player.rupees
+    _report("k_last_call_done_and_paid",
+            bool(s.client_flag("lc_done")) and rupees_end == rupees_start - 25 + 40,
+            f"lc_done={s.client_flag('lc_done')!r}; rupees "
+            f"{rupees_start} -> {rupees_end} (want -25 +40)")
+    s.pump(200)  # let the gate guard's walk-off cutscene play out
+    s.warp("chicken4.nw", 30, 40)
+    s.warp("chicken_cave_entrance.nw", 30, 20)
+    gate = _gate_guard(s)
+    gate_gone = gate is None or gate.get("visible") is False
+    _report("k_last_call_gate_guard_stays_gone", gate_gone,
+            f"gate npc={None if gate is None else (gate.get('x'), gate.get('y'), gate.get('visible'))}")
+    s.reconnect()
+    s.warp("chicken_cave_entrance.nw", 30, 20)
+    gate = _gate_guard(s)
+    rupees_relog = s.client.player.rupees
+    s.clear_messages()
+    s.go_and_touch(*_DRINKER)
+    _report("k_last_call_relog_persists_no_repay",
+            bool(s.client_flag("lc_done"))
+            and (gate is None or gate.get("visible") is False)
+            and s.client.player.rupees == rupees_relog,
+            f"lc_done={s.client_flag('lc_done')!r}; gate_visible="
+            f"{None if gate is None else gate.get('visible')}; rupees "
+            f"{rupees_relog} -> {s.client.player.rupees}; messages={s.messages}")
 
     s.disconnect()
 
