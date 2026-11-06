@@ -926,7 +926,8 @@ class ActionsMixin:
         ox, oy = ((tx // 64) * 64, (ty // 64) * 64) if self.client.in_gmap_segment else (0, 0)
         for info in list(registry.values()):
             bx, by = info['x'] + ox, info['y'] + oy
-            if not any(b['x'] == bx and b['y'] == by for b in bombs):
+            if not any((b.get('bomb_id') == info['bomb_id'] if 'bomb_id' in info
+                        else b['x'] == bx and b['y'] == by) for b in bombs):
                 self._add_remote_bomb(dict(info, x=bx, y=by))
         for bomb in bombs:
             if bomb.get('exploded') or bomb.get('carried_by') is not None or bomb.get('in_flight'):
@@ -944,7 +945,10 @@ class ActionsMixin:
             bomb['carried_by'] = self.client.player.id
             publish_carry(self.client, carry_code(sprite))
             self.client.remove_bomb(bx, by)
-            registry.pop((bx - ox, by - oy), None)
+            position = self.client._bomb_half_tile(bx, by)
+            self.active_bombs[:] = [b for b in self.active_bombs
+                                    if b is bomb or b.get('exploded')
+                                    or self.client._bomb_half_tile(b['x'], b['y']) != position]
             return True
         return False
 
@@ -1150,6 +1154,7 @@ class ActionsMixin:
                     'exploded': False,
                     'source': 'local',
                 })
+                self._client_bomb_record(self.active_bombs[-1])
             else:
                 # Default to sword attack
                 self.client.sword_attack(self.client.player.direction)

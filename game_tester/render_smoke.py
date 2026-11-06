@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from reborn_protocol.coords import segment_at, segment_origin
+from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 
 from pyreborn import Client
 from pyreborn.pygame_game import GameClient
@@ -139,15 +139,17 @@ def _t1a_bomb(game, c1, c2):
     # hasNPCServer() check there). That's a server-config fact, not a bug in
     # this rendering pass, so this check drives client.bombs directly to
     # exercise the render path (already proven live for arrows/horses below).
-    key = (float(int(c1.x)), float(int(c1.y)))
-    level_bombs = c1.bombs.setdefault(c1._current_level_name, {})
-    level_bombs[key] = {'owner_id': 999, 'x': key[0], 'y': key[1], 'power': 1, 'timer_ms': 3050}
+    x, y = float(int(c1.x)), float(int(c1.y))
+    lx, ly = world_to_local(x, y)
+    record = c1._register_bomb(
+        c1._current_level_name, lx, ly, wx=x, wy=y, owner_id=999,
+        from_player=True, power=1, fuse_s=3.05, placed_at=123.0)
     try:
-        bomb = game._add_remote_bomb(level_bombs[key], now=123.0)
+        bomb = game._add_remote_bomb(dict(record, x=x, y=y), now=123.0)
         assert bomb in game.active_bombs
         assert bomb['source'] == 'remote'
     finally:
-        level_bombs.pop(key, None)
+        c1._drop_bomb_record(record)
 
 
 @check("tier1a_server_arrow_renders")

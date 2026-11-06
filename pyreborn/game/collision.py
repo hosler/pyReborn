@@ -381,21 +381,22 @@ class CollisionMixin:
     def _bomb_blocks(self, x: float, y: float) -> bool:
         # TServerLevel.cpp:2666 tests active lying bombs in
         # [bx+.25,bx+3) by [by,by+2), without an owner/contact gate.
-        active = {(bomb['x'], bomb['y']): bomb
-                  for bomb in getattr(self, 'active_bombs', ())
-                  if bomb.get('carried_by') is None and not bomb.get('in_flight')}
-        for (bx, by), bomb in active.items():
+        active = [bomb for bomb in getattr(self, 'active_bombs', ())
+                  if bomb.get('carried_by') is None and not bomb.get('in_flight')]
+        for bomb in active:
+            bx, by = bomb['x'], bomb['y']
             if not bomb.get('exploded') and bx + .25 <= x < bx + 3 and by <= y < by + 2:
                 return True
+        presented = {(bomb['x'], bomb['y']) for bomb in active}
         levels = [(self.client._current_level_name, 0, 0)]
         if self.client.in_gmap_segment:
             levels = [(name, gx * LEVEL_SIZE, gy * LEVEL_SIZE)
                       for (gx, gy), name in self.client.gmap_grid.items()]
         for name, ox, oy in levels:
-            for bx, by in self.client.bombs_in_level(name):
-                bx, by = bx + ox, by + oy
+            for bomb in self.client.bombs_in_level(name).values():
+                bx, by = bomb['x'] + ox, bomb['y'] + oy
                 # Presentation owns local fuse expiry, including wire bombs.
-                if (bx, by) in active:
+                if (bx, by) in presented:
                     continue
                 if bx + .25 <= x < bx + 3 and by <= y < by + 2:
                     return True

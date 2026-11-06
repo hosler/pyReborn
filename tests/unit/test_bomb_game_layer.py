@@ -10,7 +10,12 @@ from unittest.mock import Mock
 import pytest
 
 from pyreborn.game.callbacks.client_callbacks import wire_client_callbacks
+from pyreborn.game.callbacks.gs1_callbacks import wire_gs1_callbacks
+from pyreborn.gs1_client import ClientGS1
+from pyreborn.handlers.combat import handle_bomb_add, handle_bomb_del
+from pyreborn.packets import build_bomb_del
 from pyreborn.packets import PacketID
+from .test_bomb_sim import bomb_add_packet
 from .test_lift_oracle import Game
 
 
@@ -105,7 +110,53 @@ def test_bomb_del_stays_a_plain_removal(game):
 
 def test_remote_entry_adopts_the_records_remaining_fuse(game):
     game.client.put_bomb(30.0, 30.0, consume_ammo=False)
-    record = game.client.bombs[game.client._current_level_name][(30.0, 30.0)]
+    record = next(iter(game.client.bombs[game.client._current_level_name].values()))
     game.clock[0] += 1.0
     bomb = game._add_remote_bomb(dict(record))
     assert bomb['time'] == record['placed_at'] and bomb['fuse_time'] == pytest.approx(3.0)
+
+
+def test_wire_stacks_stay_separate_in_the_game_and_gs1_array(game):
+    game.gs1 = ClientGS1(game.client)
+    wire_gs1_callbacks(game)
+    for power in (1, 3, 2):
+        handle_bomb_add(game.client, bomb_add_packet(9, 30, 30, power=power, ticks=5))
+    assert len(game.active_bombs) == 3
+    assert [b['power'] for b in game.gs1._host._bomb_list()] == [1, 3, 2]
+    game.clock[0] += .3
+    game.client._tick_bomb_sims()
+    assert all(b['exploded'] for b in game.active_bombs)
+    assert game.sound_mgr.play.call_count == 3
+    assert game.gs1._host._bomb_list() == []
+
+
+def test_wire_bomb_del_clears_the_whole_game_stack_without_a_burst(game):
+    for owner in (8, 9):
+        handle_bomb_add(game.client, bomb_add_packet(owner, 30, 30))
+    handle_bomb_del(game.client, build_bomb_del(30, 30))
+    assert game.active_bombs == []
+    assert not list(game.client._bomb_records())
+    game.sound_mgr.play.assert_not_called()
+
+
+@pytest.mark.parametrize('command', ['removebomb', 'explodebomb'])
+def test_game_gs1_stack_removal_uses_the_bound_placement(game, command):
+    game.gs1 = ClientGS1(game.client)
+    wire_gs1_callbacks(game)
+    script = f'if (playertouchsme) {{ {command} 1; }}'
+    game.client.npcs[5] = {'x': 5, 'y': 5, 'script': script}
+    game.gs1.load_script('npc_5', script, npc_id=5, x=5, y=5)
+    for power in (1, 3):
+        handle_bomb_add(game.client, bomb_add_packet(9, 30, 30, power=power))
+    first, second = game.active_bombs
+    game.client._explosion_cells = Mock(return_value=None)
+    game.gs1.trigger_npc_event(5, 'playertouchsme')
+    if command == 'removebomb':
+        assert game.active_bombs == []
+        assert not list(game.client._bomb_records())
+        game.sound_mgr.play.assert_not_called()
+    else:
+        assert not first['exploded'] and second['exploded']
+        assert [b['power'] for b in game.client._bomb_records()] == [1]
+        assert game._bomb_blocks(31, 31)
+        game.sound_mgr.play.assert_called_once_with('thunder.wav')

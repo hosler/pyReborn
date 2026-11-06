@@ -298,12 +298,13 @@ class EntityState:
         # Weapons: maps weapon_name -> weapon dict with name, image, script
         self.weapons: Dict[str, dict] = {}
 
-        # Bomb coordinates are level-local on the wire. Keep the owning level
-        # or identical positions in adjacent segments overwrite each other.
+        # Bomb coordinates are level-local on the wire. Each level's ordered
+        # mapping uses a client-wide placement id, so stacked bombs coexist.
         # Each record is the simulated bomb: x/y level-local wire position,
         # wx/wy world position, owner_id, from_player, power, placed_at and
         # fuse_s (seconds from placed_at to detonation). See _tick_bomb_sims.
-        self.bombs: Dict[str, Dict[Tuple[float, float], dict]] = {}
+        self.bombs: Dict[str, Dict[int, dict]] = {}
+        self.next_bomb_id = 0
         self.arrows: List[dict] = []  # transient - arrows don't persist/despawn explicitly
         # Horse coordinates are level-local on the wire. Keep the owning level
         # or identical positions in adjacent gmap boards overwrite each other

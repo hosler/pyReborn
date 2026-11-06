@@ -155,21 +155,23 @@ def handle_bomb_add(client, data):
     # ticks here too (putBomb with sendToServer=false), with the wire fuse.
     info = parse_bomb_add(data)
     level_name = client._pending_level_name or client._current_level_name
-    key = (info['x'], info['y'])
-    existing = client.bombs.get(level_name, {}).get(key)
-    if (existing is not None and existing.get('local')
-            and existing.get('owner_id') == info['owner_id']):
-        # A server that echoes PLO_BOMBADD to the placer: the local record
-        # already holds the full fuse (the wire one is 250ms shorter).
-        return
+    position = client._bomb_half_tile(info['x'], info['y'])
+    for existing in client.bombs.get(level_name, {}).values():
+        if (existing.get('local') and not existing.get('echoed')
+                and existing.get('owner_id') == info['owner_id']
+                and client._bomb_half_tile(existing['x'], existing['y']) == position):
+            # Consume one echo per local placement, keeping its full fuse
+            # (the wire fuse is 250ms shorter). Other owners still append.
+            existing['echoed'] = True
+            return
     ox, oy = client._level_world_origin(level_name)
-    client._register_bomb(
+    record = client._register_bomb(
         level_name, info['x'], info['y'], wx=info['x'] + ox, wy=info['y'] + oy,
         owner_id=info['owner_id'], from_player=info['from_player'],
         power=info['power'], fuse_s=(info['ticks'] + 1) * 0.05,
         placed_at=time.time(), extra=info)
     if client.on_bomb_add:
-        client.on_bomb_add(info)
+        client.on_bomb_add(record)
 
 
 @handles(PacketID.PLO_BOMBDEL)
@@ -178,7 +180,7 @@ def handle_bomb_del(client, data):
     # PlayerClientPackets.cpp:251 - it stops ticking and does not explode.
     info = parse_bomb_del(data)
     level_name = client._pending_level_name or client._current_level_name
-    client.bombs.setdefault(level_name, {}).pop((info['x'], info['y']), None)
+    client._remove_bombs_at(level_name, info['x'], info['y'])
     if client.on_bomb_del:
         client.on_bomb_del(info['x'], info['y'])
 

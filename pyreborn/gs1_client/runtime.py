@@ -195,7 +195,7 @@ class ClientGS1:
         # 'fuse_time'}). The pygame shell wires this to its active_bombs
         # registry (game/render_effects.py), which holds BOTH local and wire
         # bombs in placement order -- that order is the script-visible
-        # bombs[] index. Headless fallback: the wire-echo dict client.bombs.
+        # bombs[] index. Headless fallback: client.bombs placement order.
         self.bombs_source = None
         # attachplayertoobj state: {'npc_id', 'last_x', 'last_y'} or None.
         # last_* is the NPC's position when we last propagated its movement

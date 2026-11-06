@@ -61,7 +61,7 @@ class Game(ThrowGame, EntityRenderMixin, RenderMixin):
         bomb = {'x': 10, 'y': 10, 'time': 99.0, 'fuse_time': fuse,
                 'power': 1, 'sprite': sprite, 'exploded': False}
         self.active_bombs.append(bomb)
-        self.client.bombs['throw.nw'] = {(10, 10): dict(bomb)}
+        self.client.bombs['throw.nw'] = {0: dict(bomb)}
         self._lift_probe_tile = lambda direction: (10, 10)
         return bomb
 

@@ -377,7 +377,8 @@ def wire_client_callbacks(game):
         grid = next((cell for cell, name in game.client.gmap_grid.items()
                      if name == level), None) if game.client.in_gmap_segment else None
         origin_x, origin_y = segment_origin(*grid) if grid is not None else (0, 0)
-        game.client.bombs.setdefault(level, {}).pop((x, y), None)
+        game.client._remove_bombs_at(level, x, y)
+        position = game.client._bomb_half_tile(x + origin_x, y + origin_y)
         for pid, owner in game.client.players.items():
             if owner.get('carry_sprite', -1) not in BOMB_CODES or owner.get('_carried_bomb'):
                 continue
@@ -390,15 +391,16 @@ def wire_client_callbacks(game):
             if not (x + origin_x <= tx < x + origin_x + 2 and y + origin_y <= ty < y + origin_y + 2):
                 continue
             bomb = next((b for b in game.active_bombs
-                         if b['x'] == x + origin_x and b['y'] == y + origin_y and not b.get('exploded')), None)
+                         if game.client._bomb_half_tile(b['x'], b['y']) == position
+                         and not b.get('exploded')), None)
             if bomb is not None:
                 bomb['fuse_remaining'] = max(.05, bomb['time'] + bomb['fuse_time'] - time.time())
                 bomb['carried_by'] = pid
                 owner['_carried_bomb'] = bomb
-                return
+                break
         game.active_bombs[:] = [bomb for bomb in game.active_bombs
-                               if not (bomb['x'] == x + origin_x and bomb['y'] == y + origin_y
-                                       and not bomb.get('exploded'))]
+                               if bomb.get('exploded') or bomb.get('carried_by') is not None
+                               or game.client._bomb_half_tile(bomb['x'], bomb['y']) != position]
 
     def on_arrow_add(info):
         game._add_remote_arrow(info)

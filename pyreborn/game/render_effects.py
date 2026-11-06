@@ -377,18 +377,14 @@ class EffectsRenderMixin(FrameContextMixin):
         """Insert a wire bomb into the same registry used by local bombs."""
         now = time.time() if now is None else now
         x, y = info.get('x', 0.0), info.get('y', 0.0)
-        for bomb in self.active_bombs:
-            if (not bomb.get('exploded') and bomb.get('source') == 'remote'
-                    and bomb['x'] == x and bomb['y'] == y):
-                bomb.update(power=info.get('power', 1),
-                            fuse_time=max(0.05, info.get('timer_ms', 3050) / 1000.0))
-                return bomb
         bomb = {
             'x': x, 'y': y, 'time': info.get('placed_at', now),
             'fuse_time': max(0.05, info.get('timer_ms', 3050) / 1000.0),
             'power': info.get('power', 1), 'exploded': False,
             'source': 'remote',
         }
+        if 'bomb_id' in info:
+            bomb['bomb_id'] = info['bomb_id']
         self.active_bombs.append(bomb)
         return bomb
 
@@ -414,9 +410,14 @@ class EffectsRenderMixin(FrameContextMixin):
         records = getattr(self.client, '_bomb_records', None)
         if records is None:
             return None
+        if 'bomb_id' in bomb:
+            return next((r for r in records() if r['bomb_id'] == bomb['bomb_id']), None)
+        assigned = {b['bomb_id'] for b in self.active_bombs if 'bomb_id' in b}
         for record in records():
-            if (abs(record['wx'] - bomb['x']) < .01
+            if (record['bomb_id'] not in assigned
+                    and abs(record['wx'] - bomb['x']) < .01
                     and abs(record['wy'] - bomb['y']) < .01):
+                bomb['bomb_id'] = record['bomb_id']
                 return record
         return None
 
@@ -427,6 +428,7 @@ class EffectsRenderMixin(FrameContextMixin):
         bomb = next((b for b in self.active_bombs
                      if not b.get('exploded') and not b.get('discarded')
                      and b.get('carried_by') is None and not b.get('in_flight')
+                     and ('bomb_id' not in b or b['bomb_id'] == record['bomb_id'])
                      and abs(record['wx'] - b['x']) < .01
                      and abs(record['wy'] - b['y']) < .01), None)
         if bomb is None:
@@ -434,6 +436,7 @@ class EffectsRenderMixin(FrameContextMixin):
                     'fuse_time': 0.05, 'power': record.get('power', 1),
                     'exploded': False, 'source': 'remote'}
             self.active_bombs.append(bomb)
+        bomb['bomb_id'] = record['bomb_id']
         bomb['power'] = record.get('power', bomb.get('power', 1))
         return self._detonate_bomb(bomb, now, cells=cells)
 
@@ -701,12 +704,14 @@ class EffectsRenderMixin(FrameContextMixin):
                 remaining = max(50, round(bomb.get('fuse_remaining', bomb['fuse_time']) * 1000))
                 bomb['time'], bomb['fuse_time'] = time.time(), remaining / 1000
                 bomb.pop('fuse_remaining', None)
+                bomb.pop('bomb_id', None)
                 if not obj.get('remote'):
                     # TServerCarry.cpp:243-253: the carry's own player flag
                     # rides sendBomb, so the re-placed bomb stays ours.
                     self.client.put_bomb(bomb['x'], bomb['y'], bomb.get('power', 1),
                                          timer_ms=remaining, consume_ammo=False,
                                          from_player=True)
+                    self._client_bomb_record(bomb)
                 return
             self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
         self.break_effects.append({

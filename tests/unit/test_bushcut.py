@@ -201,7 +201,7 @@ def test_can_lay_item_entity_gate(obstacle):
     elif obstacle == 'chest':
         c.chests['bush.nw'] = {(9, 10): False}
     else:
-        c.bombs['bush.nw'] = {(9, 10): {'x': 9, 'y': 10}}
+        c.bombs['bush.nw'] = {0: {'x': 9, 'y': 10}}
     assert not c._can_lay_item(2)
 
 

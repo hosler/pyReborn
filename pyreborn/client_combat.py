@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
@@ -323,25 +324,41 @@ class CombatMixin:
             x=local_x, y=local_y, wx=wx, wy=wy, level=level, owner_id=owner_id,
             from_player=from_player, power=power, placed_at=placed_at,
             fuse_s=fuse_s, timer_ms=int(round(fuse_s * 1000)))
-        self.bombs.setdefault(level, {})[(local_x, local_y)] = record
+        bomb_id = self.entities.next_bomb_id
+        self.entities.next_bomb_id += 1
+        record['bomb_id'] = bomb_id
+        self.bombs.setdefault(level, {})[bomb_id] = record
         return record
 
     def _bomb_records(self):
-        """Every simulated bomb record, tolerating the legacy flat shape."""
-        for level, bucket in list(self.bombs.items()):
-            if not isinstance(bucket, dict):
-                continue
+        """Every simulated bomb record, in each level's placement order."""
+        for bucket in list(self.bombs.values()):
             for record in list(bucket.values()):
-                if isinstance(record, dict) and 'fuse_s' in record:
+                if 'fuse_s' in record:
                     yield record
 
     def _drop_bomb_record(self, record: dict) -> bool:
-        bucket = self.bombs.get(record.get('level'))
-        key = (record['x'], record['y'])
-        if bucket is None or bucket.get(key) is not record:
-            return False
-        del bucket[key]
-        return True
+        bucket = self.bombs.get(record.get('level'), {})
+        for key, bomb in bucket.items():
+            if bomb is record:
+                del bucket[key]
+                return True
+        return False
+
+    @staticmethod
+    def _bomb_half_tile(x: float, y: float):
+        """TServerLevel.cpp:213-216 halfTileCoord, including its epsilon."""
+        return math.floor(x * 2 + .5 + .0001), math.floor(y * 2 + .5 + .0001)
+
+    def _remove_bombs_at(self, level: str, x: float, y: float):
+        """Remove every bomb at this level-local half-tile, without a blast."""
+        bucket = self.bombs.get(level, {})
+        position = self._bomb_half_tile(x, y)
+        removed = []
+        for key, bomb in list(bucket.items()):
+            if self._bomb_half_tile(bomb['x'], bomb['y']) == position:
+                removed.append(bucket.pop(key))
+        return removed
 
     def _tick_bomb_sims(self, now: Optional[float] = None):
         """animateBombs (TServerLevel.cpp:1310-1337): explode every registry

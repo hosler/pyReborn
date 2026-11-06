@@ -62,7 +62,8 @@ def test_bombs_are_independent_per_level_and_ignore_stale_preload():
 
     client._handle_packet(PacketID.PLO_BOMBADD, payload)
 
-    assert (6.0, 22.0) in client.bombs_in_level("chicken1.nw")
+    bombs = list(client.bombs_in_level("chicken1.nw").values())
+    assert [(b['x'], b['y']) for b in bombs] == [(6.0, 22.0)]
     assert client.bombs_in_level("chicken8.nw") == {}
 
 
@@ -122,9 +123,10 @@ def test_genuine_transfer_clears_layers_when_next_level_has_none():
     assert client._board_layers_level_name == ""
 
 
-def test_bombs_accessor_accepts_the_flat_store_shape():
+def test_bombs_accessor_returns_placements_for_only_the_requested_level():
     client = Client("localhost", 14900)
     bomb = {"power": 2}
-    client.bombs = {(4.0, 5.0): bomb}
+    client.bombs = {"here.nw": {0: bomb}}
 
-    assert client.bombs_in_level("any.nw") == {(4.0, 5.0): bomb}
+    assert client.bombs_in_level("here.nw") == {0: bomb}
+    assert client.bombs_in_level("elsewhere.nw") == {}

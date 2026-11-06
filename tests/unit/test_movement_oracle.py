@@ -152,7 +152,7 @@ def test_player_world_coordinates_and_neighbor_level():
 def test_active_bomb_bounds(source, x, y, blocked):
     game = Game()
     if source == 'wire':
-        game.client.bombs['test.nw'] = {(30, 30): {'x': 30, 'y': 30}}
+        game.client.bombs['test.nw'] = {0: {'x': 30, 'y': 30}}
     else:
         game.active_bombs = [{'x': 30, 'y': 30, 'exploded': False}]
     assert game._is_blocked_at(x, y) is blocked
@@ -268,7 +268,7 @@ def test_bomb_box_crosses_segment_boundary_and_explosion_overrides_wire_copy():
     c.gmap_width, c.gmap_height = 2, 1
     c.gmap_grid = {(0, 0): 'test.nw', (1, 0): 'east.nw'}
     c.levels['east.nw'] = [0] * 4096
-    c.bombs['test.nw'] = {(62, 30): {'x': 62, 'y': 30}}
+    c.bombs['test.nw'] = {0: {'x': 62, 'y': 30}}
     assert game._is_blocked_at(64.5, 31)
     game.active_bombs = [{'x': 62, 'y': 30, 'exploded': True}]
     assert not game._is_blocked_at(64.5, 31)

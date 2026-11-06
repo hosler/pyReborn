@@ -316,11 +316,8 @@ class MainCommandsMixin:
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "explodebomb", "removebomb")
     def _cmd_removebomb(self, name, args, ctx, imgs):
-        # explodebomb index / removebomb index -- bombs[index]. Both take
-        # the bomb off the level and tell the server (PLI_BOMBDEL;
-        # msgPLI_BOMBDEL relays and removes it); explodebomb bursts it now
-        # (the reference routes it into the same explodeBomb the fuse uses,
-        # TInitStatics.cpp:3322-3334), removebomb is the silent pickup.
+        # explodebomb removes the selected object (then chains explosions);
+        # removebomb silently removes every bomb at its half-tile.
         rt = self.rt
         if not args:
             return _FALL_THROUGH
@@ -329,17 +326,23 @@ class MainCommandsMixin:
         if not 0 <= idx < len(bombs):
             return
         bomb = bombs[idx]
-        bx, by = to_num(bomb.get("x", 0)), to_num(bomb.get("y", 0))
+        bx = to_num(bomb.get("wx", bomb.get("x", 0)))
+        by = to_num(bomb.get("wy", bomb.get("y", 0)))
         if rt.client is not None:
             try:
-                rt.client.remove_bomb(*world_to_local(bx, by))
+                if name == "explodebomb":
+                    from ..packets import PacketID, build_bomb_del
+                    level = rt.client._level_at_world(bx, by)
+                    record = rt.client.bombs.get(level, {}).get(bomb.get('bomb_id'))
+                    if record is not None:
+                        rt.client._explode_bomb(record)
+                    if rt.client.connected and rt.client._authenticated:
+                        rt.client._protocol.send_packet(
+                            PacketID.PLI_BOMBDEL, build_bomb_del(bx, by))
+                else:
+                    rt.client.remove_bomb(bx, by)
             except Exception:
                 pass
-            # keep the wire-echo registry consistent for headless callers
-            reg = getattr(rt.client, "bombs", None)
-            if isinstance(reg, dict):
-                level = getattr(rt.client, "_current_level_name", "")
-                reg.get(level, {}).pop((bx, by), None)
         if rt.on_removebomb:
             rt.on_removebomb(bomb, name == "explodebomb")
 

@@ -107,7 +107,7 @@ class BuiltinsMixin:
         return 0.0
 
     def _bomb_list(self):
-        """Live bombs in bombs[] index order (see rt.bombs_source)."""
+        """Live bombs in placement order, including stacked placements."""
         src = self.rt.bombs_source
         if src is not None:
             try:

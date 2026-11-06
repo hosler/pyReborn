@@ -15,8 +15,9 @@ from pyreborn import Client
 from pyreborn.handlers.combat import (
     handle_bomb_add, handle_bomb_del, handle_explosion,
 )
-from pyreborn.packets import PacketID, parse_bomb_add, parse_explosion
+from pyreborn.packets import PacketID, build_bomb_del, parse_bomb_add, parse_explosion
 from reborn_protocol import PacketBuilder
+from .test_gs1_combat_family import _npc_gs1
 
 LEVEL = 'bombs.nw'
 
@@ -109,7 +110,7 @@ def test_put_bomb_sends_ticks_minus_5_and_keeps_full_fuse(client, clock):
     data = sent(client, PacketID.PLI_BOMBADD)[0]
     assert data[2] - 32 == 1 | 8          # player-placed flag
     assert data[3] - 32 == 54             # counter 59 minus 5 (TServerLevel.cpp:1117)
-    record = client.bombs[LEVEL][(30.0, 30.0)]
+    record = next(iter(client.bombs[LEVEL].values()))
     assert record['fuse_s'] == pytest.approx(3.0)
     assert record['owner_id'] == 3 and record['from_player'] is True
     assert record['placed_at'] == clock.now
@@ -120,7 +121,7 @@ def test_short_fuse_is_not_reduced_and_gs1_path_has_no_player_flag(client):
     data = sent(client, PacketID.PLI_BOMBADD)[0]
     assert data[2] - 32 == 2              # no |8 for a scripted bomb
     assert data[3] - 32 == 5              # ticks <= 5 are sent whole
-    record = client.bombs[LEVEL][(30.0, 30.0)]
+    record = next(iter(client.bombs[LEVEL].values()))
     assert record['fuse_s'] == pytest.approx(0.3) and record['from_player'] is False
 
 
@@ -134,10 +135,10 @@ def test_local_bomb_expires_at_its_full_fuse_remote_at_the_wire_fuse(client, clo
     assert len(client.bombs[LEVEL]) == 2
     clock.now += 0.01                     # (54 + 1) * 50ms = 2.75s
     client._tick_bomb_sims()
-    assert list(client.bombs[LEVEL]) == [(30.0, 30.0)]
+    assert [(b['x'], b['y']) for b in client.bombs[LEVEL].values()] == [(30.0, 30.0)]
     clock.now += 0.24
     client._tick_bomb_sims()
-    assert list(client.bombs[LEVEL]) == [(30.0, 30.0)]
+    assert [(b['x'], b['y']) for b in client.bombs[LEVEL].values()] == [(30.0, 30.0)]
     clock.now += 0.01                     # 3.0s since placement
     client._tick_bomb_sims()
     assert client.bombs[LEVEL] == {}
@@ -162,7 +163,154 @@ def test_bomb_del_and_remove_bomb_stop_the_fuse_without_exploding(client, clock)
 def test_echo_of_own_bomb_keeps_the_full_local_fuse(client):
     client.put_bomb(30.0, 30.0)
     handle_bomb_add(client, bomb_add_packet(3, 30, 30, ticks=54))
-    assert client.bombs[LEVEL][(30.0, 30.0)]['fuse_s'] == pytest.approx(3.0)
+    assert next(iter(client.bombs[LEVEL].values()))['fuse_s'] == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize('source', ['local', 'wire'])
+def test_stacked_bombs_both_tick_and_explode_once(client, clock, source):
+    exploded = []
+    client.on_bomb_exploded = lambda record, cells: exploded.append(record)
+    for _ in range(2):
+        if source == 'local':
+            assert client.put_bomb(30.5, 30.0, timer_ms=300, consume_ammo=False)
+        else:
+            handle_bomb_add(client, bomb_add_packet(9, 30.5, 30.0, ticks=5))
+    records = list(client._bomb_records())
+    assert len(records) == 2 and records[0] is not records[1]
+    clock.now += .29
+    client._tick_bomb_sims()
+    assert not exploded and len(list(client._bomb_records())) == 2
+    clock.now += .01
+    client._tick_bomb_sims()
+    assert [id(b) for b in exploded] == [id(b) for b in records]
+    assert client.bombs[LEVEL] == {}
+    client._tick_bomb_sims()
+    assert len(exploded) == 2
+
+
+def test_stacked_bombs_keep_independent_fuses_without_chain_detonation(client, clock):
+    # Isolate animateBombs from the explosion probes to exercise both timers.
+    client._explosion_cells = Mock(return_value=None)
+    exploded = []
+    client.on_bomb_exploded = lambda record, cells: exploded.append(record['bomb_id'])
+    for fuse_ms in (300, 600):
+        client.put_bomb(30.0, 30.0, timer_ms=fuse_ms, consume_ammo=False)
+    first, second = list(client._bomb_records())
+    clock.now += .3
+    client._tick_bomb_sims()
+    assert exploded == [first['bomb_id']]
+    assert list(client._bomb_records()) == [second]
+    clock.now += .3
+    client._tick_bomb_sims()
+    assert exploded == [first['bomb_id'], second['bomb_id']]
+    assert client.bombs[LEVEL] == {}
+
+
+def test_drop_removes_only_the_identical_stacked_record(client):
+    for _ in range(2):
+        client.put_bomb(30, 30, consume_ammo=False)
+    first, second = list(client._bomb_records())
+    assert not client._drop_bomb_record(dict(first))
+    assert client._drop_bomb_record(second)
+    assert list(client._bomb_records()) == [first]
+
+
+@pytest.mark.parametrize('removal', ['wire', 'local'])
+def test_bomb_del_removes_all_stacked_bombs_only_on_its_level(client, clock, removal):
+    for owner in (8, 9):
+        handle_bomb_add(client, bomb_add_packet(owner, 30.5, 30))
+    handle_bomb_add(client, bomb_add_packet(9, 31, 30))
+    neighbor = client._register_bomb(
+        'neighbor.nw', 30.5, 30, wx=94.5, wy=30, owner_id=9,
+        from_player=True, power=1, fuse_s=3, placed_at=clock.now)
+    if removal == 'wire':
+        handle_bomb_del(client, build_bomb_del(30.5, 30))
+        assert not sent(client, PacketID.PLI_BOMBDEL)
+    else:
+        assert client.remove_bomb(30.5, 30)
+        assert sent(client, PacketID.PLI_BOMBDEL) == [build_bomb_del(30.5, 30)]
+    assert [(b['x'], b['y']) for b in client.bombs[LEVEL].values()] == [(31, 30)]
+    assert list(client.bombs['neighbor.nw'].values()) == [neighbor]
+
+
+@pytest.mark.parametrize('x,matches', [
+    (30.24, True), (30.24994, True), (30.24996, False), (30.25, False),
+    (29.75, True), (29.74994, False),
+])
+def test_remove_bombs_uses_reference_half_tile_rounding(client, x, matches):
+    for _ in range(2):
+        client.put_bomb(30, 30, consume_ammo=False)
+    removed = client._remove_bombs_at(LEVEL, x, 30)
+    assert len(removed) == (2 if matches else 0)
+    assert len(client.bombs[LEVEL]) == (0 if matches else 2)
+
+
+def test_stacked_local_echoes_consume_one_pending_placement_each(client):
+    for _ in range(2):
+        client.put_bomb(30, 30)
+    first, second = list(client._bomb_records())
+    handle_bomb_add(client, bomb_add_packet(9, 30, 30))
+    assert len(client.bombs[LEVEL]) == 3  # another owner's bomb must append
+    handle_bomb_add(client, bomb_add_packet(3, 30, 30))
+    assert first['echoed'] and not second.get('echoed')
+    handle_bomb_add(client, bomb_add_packet(3, 30, 30))
+    assert second['echoed'] and len(client.bombs[LEVEL]) == 3
+    assert first['fuse_s'] == second['fuse_s'] == pytest.approx(3)
+    handle_bomb_add(client, bomb_add_packet(3, 30, 30))
+    assert len(client.bombs[LEVEL]) == 4  # no pending echo remains
+
+
+def test_placement_ids_are_client_wide_and_never_reused(client, clock):
+    client.put_bomb(30, 30, consume_ammo=False)
+    first = next(iter(client._bomb_records()))
+    neighbor = client._register_bomb(
+        'neighbor.nw', 30, 30, wx=94, wy=30, owner_id=9,
+        from_player=True, power=1, fuse_s=3, placed_at=clock.now)
+    client._remove_bombs_at(LEVEL, 30, 30)
+    client.put_bomb(30, 30, consume_ammo=False)
+    latest = next(iter(client.bombs[LEVEL].values()))
+    assert first['bomb_id'] < neighbor['bomb_id'] < latest['bomb_id']
+
+
+def test_gs1_bombs_array_keeps_stacked_bombs_in_placement_order(client):
+    gs1 = _npc_gs1(client, 5, """if (playertouchsme) {
+        this.n = bombscount;
+        this.first = bombs[0].power;
+        this.middle = bombs[1].power;
+        this.last = bombs[2].power;
+        this.x0 = bombs[0].x;
+        this.x2 = bombs[2].x;
+    }""")
+    for x, power in ((30, 1), (40, 3), (30, 2)):
+        client.put_bomb(x, 30, power=power, consume_ammo=False)
+    gs1.trigger_npc_event(5, 'playertouchsme')
+    scope = gs1._progs['npc_5']['scopes']['this']
+    assert [scope.get(k) for k in ('n', 'first', 'middle', 'last')] == [3, 1, 3, 2]
+    assert scope.get('x0') == scope.get('x2') == 30
+
+
+def test_gs1_removebomb_removes_the_whole_stack_and_sends_once(client):
+    gs1 = _npc_gs1(client, 5, 'if (playertouchsme) { removebomb 2; }')
+    for x in (30, 40, 30):
+        client.put_bomb(x, 30, consume_ammo=False)
+    gs1.trigger_npc_event(5, 'playertouchsme')
+    assert [b['x'] for b in client._bomb_records()] == [40]
+    assert sent(client, PacketID.PLI_BOMBDEL) == [build_bomb_del(30, 30)]
+
+
+def test_gs1_explodebomb_removes_the_selected_object_before_chaining(client):
+    gs1 = _npc_gs1(client, 5, 'if (playertouchsme) { explodebomb 1; }')
+    for _ in range(2):
+        client.put_bomb(30, 30, consume_ammo=False)
+    first, second = list(client._bomb_records())
+    # Disable chain probes so the unselected object survives this explosion.
+    client._explosion_cells = Mock(return_value=None)
+    exploded = Mock()
+    client.on_bomb_exploded = exploded
+    gs1.trigger_npc_event(5, 'playertouchsme')
+    assert exploded.call_args.args[0] is second
+    assert list(client._bomb_records()) == [first]
+    assert sent(client, PacketID.PLI_BOMBDEL) == [build_bomb_del(30, 30)]
 
 
 def test_bombs_of_a_level_we_left_are_dropped_silently(client, clock):
@@ -187,7 +335,7 @@ def test_chain_detonation_hits_adjacent_bomb_and_spares_distant_one(client, cloc
     clock.now += 0.5
     client._tick_bomb_sims()
     assert exploded == [30.0, 32.0]       # depth-first: A, then the one it lit
-    assert list(client.bombs[LEVEL]) == [(50.0, 50.0)]
+    assert [(b['x'], b['y']) for b in client.bombs[LEVEL].values()] == [(50.0, 50.0)]
 
 
 def test_chain_is_recursive_and_cannot_reenter(client, clock):
@@ -310,7 +458,7 @@ def test_explosion_packet_chains_into_a_ticking_bomb(client, clock):
     client.on_hurt = hurt
     handle_explosion(client, explosion_packet(300, 2, 10, 10, 1, True))
     assert exploded == [14.0]
-    assert list(client.bombs[LEVEL]) == [(50.0, 50.0)]
+    assert [(b['x'], b['y']) for b in client.bombs[LEVEL].values()] == [(50.0, 50.0)]
     assert hurt.call_args.args[0] == 300    # owner bit set -> attributed
     assert client.active_explosions        # presentation cells kept
 

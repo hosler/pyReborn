@@ -602,12 +602,9 @@ class ActionsMixin:
         return ok
 
     def remove_bomb(self, x: float, y: float) -> bool:
-        """Remove a bomb at (x, y) (PLI_BOMBDEL). It stops ticking here too."""
+        """Remove all bombs at this half-tile and send one PLI_BOMBDEL."""
         lx, ly = world_to_local(x, y)
-        key = (int(lx * 2) / 2.0, int(ly * 2) / 2.0)
-        for level in (self._level_at_world(x, y), self.get_current_level_from_position()):
-            if isinstance(self.bombs.get(level), dict) and self.bombs[level].pop(key, None):
-                break
+        self._remove_bombs_at(self._level_at_world(x, y), lx, ly)
         if not self.connected or not self._authenticated:
             return False
         data = build_bomb_del(x, y)

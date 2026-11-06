@@ -431,10 +431,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         return self.horses.get(level_name, {})
 
     def bombs_in_level(
-            self, level_name: str) -> Dict[Tuple[float, float], dict]:
-        """Return bombs for one level, or an empty mapping."""
-        if self.bombs and all(isinstance(key, tuple) for key in self.bombs):
-            return self.bombs  # type: ignore[return-value]
+            self, level_name: str) -> Dict[int, dict]:
+        """Return placement-id -> bomb for one level, in placement order."""
         return self.bombs.get(level_name, {})
 
     def find_baddy(self, baddy_id: int) -> Optional[Tuple[str, dict]]:

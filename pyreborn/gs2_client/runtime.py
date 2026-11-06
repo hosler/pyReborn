@@ -854,7 +854,8 @@ class ClientGS2:
             return list(getattr(client, "items", {}) or {})
         if probe == "testbomb":
             level = getattr(client, "_current_level_name", "") or ""
-            return list((getattr(client, "bombs", {}).get(level, {}) or {}))
+            return [(b['x'], b['y']) for b in
+                    getattr(client, "bombs", {}).get(level, {}).values()]
         return [(to_num(e.get("x", 0)), to_num(e.get("y", 0)))
                 for e in (getattr(client, "active_explosions", None) or [])]
 

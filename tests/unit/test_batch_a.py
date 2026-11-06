@@ -23,7 +23,7 @@ def test_bomb_pickup_never_explodes_for_observer(monkeypatch, carry_update_first
     game = Game()
     wire_client_callbacks(game)
     bomb = game._add_remote_bomb({'x': 10, 'y': 10, 'timer_ms': 2000}, now=100)
-    game.client.bombs['throw.nw'] = {(10, 10): bomb}
+    game.client.bombs['throw.nw'] = {0: bomb}
     owner = {'x': 8.5, 'y': 10, 'direction': 0, 'carry_sprite': 0 if carry_update_first else -1}
     game.client.players[8] = owner
     handle_bomb_del(game.client, build_bomb_del(10, 10))

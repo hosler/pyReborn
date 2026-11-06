@@ -200,16 +200,17 @@ def wire_gs1_callbacks(game):
             'power': max(1, int(power)), 'exploded': False,
             'source': 'script',
         })
+        game._client_bomb_record(game.active_bombs[-1])
 
     # removebomb (silent pickup) / explodebomb (burst now)
     def on_removebomb(bomb, explode):
         if explode:
             game._detonate_bomb(bomb)
             return
-        try:
-            game.active_bombs.remove(bomb)
-        except ValueError:
-            pass
+        position = game.client._bomb_half_tile(bomb['x'], bomb['y'])
+        game.active_bombs[:] = [b for b in game.active_bombs
+                                if b.get('exploded')
+                                or game.client._bomb_half_tile(b['x'], b['y']) != position]
 
     # putexplosion's presentation half (the damage/washit/wire half is
     # client-level, gs1_client._spawn_explosion): boom + shake + bushes.
@@ -235,7 +236,12 @@ def wire_gs1_callbacks(game):
     game.gs1.on_putexplosion = on_putexplosion
     game.gs1.on_setbackpal = on_setbackpal
     # bombs[] index order = the shell's placement-ordered registry
-    game.gs1.bombs_source = lambda: game.active_bombs
+    def bombs_source():
+        for bomb in game.active_bombs:
+            if not bomb.get('exploded') and not bomb.get('discarded'):
+                game._client_bomb_record(bomb)
+        return game.active_bombs
+    game.gs1.bombs_source = bombs_source
     game.gs1.on_say = on_say
     game.gs1.on_say2 = on_say2
     game.gs1.on_setani = on_setani
