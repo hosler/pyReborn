@@ -153,18 +153,31 @@ class LoginScreen(_Screen):
 
     caption = "pyreborn - Login"
 
-    def __init__(self, prefs: Optional[Prefs] = None):
+    def __init__(self, prefs: Optional[Prefs] = None, error: str = "",
+                 fields: Optional[dict] = None):
+        """`error` and `fields` reopen the screen after a failed login: the
+        message shows under Connect and the fields keep what was typed
+        (a previous run()'s result dict), not the saved prefs."""
         super().__init__(prefs)
-        self.use_listserver = self.prefs.use_listserver
+        self._initial_error = error
+        self._fields = fields or {}
+        self.use_listserver = self._fields.get("use_listserver",
+                                               self.prefs.use_listserver)
+
+    def _field(self, key, default):
+        value = self._fields.get(key)
+        return default if value is None else value
 
     def build(self):
-        self.error = ui.Label("", role="small", color=theme.ERROR,
+        self.error = ui.Label(self._initial_error, role="small", color=theme.ERROR,
                               anchor=ui.MIDTOP, offset=(0, 0))
 
         self.user_in = ui.TextInput(w=300, placeholder="Username", max_len=30,
-                                    text=self.prefs.username, on_enter=self._submit)
+                                    text=self._field("username", self.prefs.username),
+                                    on_enter=self._submit)
         self.pass_in = ui.TextInput(w=300, placeholder="Password", password=True,
-                                    max_len=30, text=self.prefs.password,
+                                    max_len=30,
+                                    text=self._field("password", self.prefs.password),
                                     on_enter=self._submit)
         self.user_in.focused = True
 
@@ -172,11 +185,15 @@ class LoginScreen(_Screen):
                                   on_click=self._toggle_mode)
 
         self.ls_in = ui.TextInput(w=300, placeholder="Listserver host", max_len=50,
-                                  text=self.prefs.listserver_host, on_enter=self._submit)
+                                  text=self._field("listserver_host",
+                                                    self.prefs.listserver_host),
+                                  on_enter=self._submit)
         self.host_in = ui.TextInput(w=300, placeholder="Host", max_len=50,
-                                    text=self.prefs.host, on_enter=self._submit)
+                                    text=self._field("host", self.prefs.host),
+                                    on_enter=self._submit)
         self.port_in = ui.TextInput(w=300, placeholder="Port", max_len=5,
-                                    text=str(self.prefs.port), on_enter=self._submit)
+                                    text=str(self._field("port", self.prefs.port)),
+                                    on_enter=self._submit)
 
         connect = ui.Button("Connect", w=300, h=40, on_click=self._submit,
                             role="heading", bg=theme.PRIMARY_BG,

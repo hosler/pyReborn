@@ -154,76 +154,101 @@ def main():
                 host = args[0]
             if len(args) >= 2:
                 port = int(args[1])
-    else:
-        # No credentials - show login screen
+    # No credentials on the command line: the login window stays up until a
+    # login works. Every failure reopens it with the reason shown and the
+    # typed fields kept; only Esc / closing the window quits. Credentials
+    # given on the command line keep the old fail-fast exit.
+    interactive = len(remaining_args) < 2
+    if interactive:
         print("Starting login screen...")
         print("Usage (optional): python -m pyreborn.example_pygame [user] [pass] [host] [port] [--version VER] [--listserver [host]] [--content-dir PATH] [--clear-content-dirs]")
+    login_fields = None
 
-        login_screen = LoginScreen(prefs=prefs)
-        login_result = login_screen.run()
-
-        if not login_result:
-            print("Login cancelled.")
-            pygame.quit()
-            sys.exit(0)
-
-        username = login_result["username"]
-        password = login_result["password"]
-        use_listserver = login_result["use_listserver"]
-        host = login_result["host"]
-        port = login_result["port"]
-        listserver_host = login_result["listserver_host"]
-
-        # Clean up pygame for re-init
+    def fail(message, shown=None, code=1):
+        """Report a failed login. Returns the text to reopen the login window
+        with (`shown`, kept short enough for its panel, else `message`);
+        non-interactive runs exit instead."""
+        print(message)
         pygame.quit()
+        if not interactive:
+            sys.exit(code)
+        return shown or message
 
-    if use_listserver:
-        # Listserver mode - authenticate and show server selection
-        print(f"Connecting to listserver at {listserver_host}:{listserver_port}...")
-        show_loading_screen(f"Connecting to {listserver_host}...",
-                           size=(prefs.window_w, prefs.window_h))
+    def authenticate(error=""):
+        """Ask for credentials (interactive) and, in listserver mode, log in
+        and pick a server, retrying until it works or the player quits."""
+        nonlocal username, password, use_listserver, host, port, version
+        nonlocal listserver_host, servers, login_fields
+        while True:
+            if interactive:
+                login_result = LoginScreen(prefs=prefs, error=error,
+                                           fields=login_fields).run()
+                if not login_result:
+                    print("Login cancelled.")
+                    pygame.quit()
+                    sys.exit(0)
+                login_fields = login_result
+                username = login_result["username"]
+                password = login_result["password"]
+                use_listserver = login_result["use_listserver"]
+                host = login_result["host"]
+                port = login_result["port"]
+                listserver_host = login_result["listserver_host"]
+                # Clean up pygame for re-init
+                pygame.quit()
 
-        ls = ListServerClient(listserver_host, listserver_port)
-        response = ls.login(username, password)
+            if not use_listserver:
+                servers = []
+                return
 
-        if not response.success:
-            print(f"Listserver login failed: {response.error}")
+            # Listserver mode - authenticate and show server selection
+            print(f"Connecting to listserver at {listserver_host}:{listserver_port}...")
+            show_loading_screen(f"Connecting to {listserver_host}...",
+                                size=(prefs.window_w, prefs.window_h))
+
+            ls = ListServerClient(listserver_host, listserver_port)
+            response = ls.login(username, password)
+
+            if not response.success:
+                error = fail(f"Listserver login failed: {response.error}",
+                             response.error or "Listserver login failed")
+                continue
+
+            print(f"Login successful! {response.status}")
+            print(f"Found {len(response.servers)} servers")
+            servers = response.servers  # keep for the in-game F8 server switcher
+
+            # Successful listserver auth: remember it for next launch.
+            prefs.remember_login(username, password, use_listserver=True,
+                                 listserver_host=listserver_host)
+
+            if not response.servers:
+                error = fail("No servers available!")
+                continue
+
+            # Show server selection screen
+            select_screen = ServerSelectScreen(response.servers, username, prefs=prefs)
+            selected_server = select_screen.run()
+
+            if not selected_server:
+                print("No server selected, exiting.")
+                pygame.quit()
+                sys.exit(0)
+
+            print(f"Selected: {selected_server.display_name}")
+            host = selected_server.ip
+            port = selected_server.port
+
+            # Use server's reported version to determine client version.
+            version = version_for(selected_server, version)
+            if selected_server.version:
+                print(f"Using version {version} (server reports: {selected_server.version})")
+
+            # Clean up pygame for re-init by GameClient
             pygame.quit()
-            sys.exit(1)
+            return
 
-        print(f"Login successful! {response.status}")
-        print(f"Found {len(response.servers)} servers")
-        servers = response.servers  # keep for the in-game F8 server switcher
-
-        # Successful listserver auth: remember it for next launch.
-        prefs.remember_login(username, password, use_listserver=True,
-                             listserver_host=listserver_host)
-
-        if not response.servers:
-            print("No servers available!")
-            pygame.quit()
-            sys.exit(1)
-
-        # Show server selection screen
-        select_screen = ServerSelectScreen(response.servers, username, prefs=prefs)
-        selected_server = select_screen.run()
-
-        if not selected_server:
-            print("No server selected, exiting.")
-            pygame.quit()
-            sys.exit(0)
-
-        print(f"Selected: {selected_server.display_name}")
-        host = selected_server.ip
-        port = selected_server.port
-
-        # Use server's reported version to determine client version.
-        version = version_for(selected_server, version)
-        if selected_server.version:
-            print(f"Using version {version} (server reports: {selected_server.version})")
-
-        # Clean up pygame for re-init by GameClient
-        pygame.quit()
+    authenticate()
 
     # Connect to game server. The listserver reports the SERVER software build
     # (e.g. "Beta 4.0.0"), not the client protocol it accepts, so our guessed
@@ -282,7 +307,11 @@ def main():
                 version = version_for(pick, version)
                 print(f"Trying {pick.display_name} ({host}:{port}, version {version})...")
                 continue
-            sys.exit(1)
+            # Direct connect: back to the login window with the reason.
+            authenticate(fail(f"Login failed: {reason}" if reason else
+                              "Login failed! (no response — wrong password or server unreachable)",
+                              reason or "No response from server"))
+            continue
 
         print(f"Logged in! Level: {client.level}, Position: ({client.x:.1f}, {client.y:.1f})")
 
