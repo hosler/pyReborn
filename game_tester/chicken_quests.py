@@ -79,6 +79,9 @@ _GMAP_GRID = {
     "chicken3.nw": (0, 2), "chicken9.nw": (1, 2), "chicken8.nw": (2, 2),
 }
 
+# Half the spread of a facing's two touch probes (TOUCH_OFFSETS: 1.05/1.95).
+TOUCH_PROBE_HALFSPAN = 0.45
+
 _QUEST_FLAGS = ("eq_stage", "eggq_1", "eggq_2", "eggq_3", "eggq_4",
                 "eggq_done", "peep_found", "peep_done", "lever_last")
 
@@ -137,9 +140,11 @@ def reset_quest_account(account: str = ACCOUNT) -> bool:
     path = Path(accounts_dir) / f"{account}.txt"
     if not path.exists():
         return False
+    # The server writes the header CRLF but appends FLAG lines with a bare
+    # LF, so the file has mixed endings: keep each line's own.
     text = path.read_text(newline="")
     eol = "\r\n" if "\r\n" in text else "\n"
-    lines = text.split(eol)
+    lines = text.splitlines(keepends=True)
     kept = []
     for line in lines:
         if line.startswith("FLAG client."):
@@ -147,20 +152,26 @@ def reset_quest_account(account: str = ACCOUNT) -> bool:
             if key in _QUEST_FLAGS:
                 continue
         kept.append(line)
-    repl = {"LEVEL": "LEVEL chicken1.nw", "X": "X 30", "Y": "Y 36"}
+    # MAPX/MAPY must name chicken1's gmap cell too: the server resolves the
+    # login warp from LEVEL plus this cell, and a stale cell left by a run
+    # that ended in another segment (e.g. chicken3) refuses the login with
+    # "No level available".
+    repl = {"LEVEL": "LEVEL chicken1.nw", "X": "X 30", "Y": "Y 36",
+            "MAPX": "MAPX 1", "MAPY": "MAPY 1"}
     seen = {k: False for k in repl}
     out = []
     for line in kept:
         key = line.split(" ", 1)[0]
         if key in repl:
-            out.append(repl[key])
+            ending = line[len(line.rstrip("\r\n")):]
+            out.append(repl[key] + ending)
             seen[key] = True
         else:
             out.append(line)
-    missing = [repl[k] for k, was in seen.items() if not was]
+    missing = [repl[k] + eol for k, was in seen.items() if not was]
     if missing:
         out[1:1] = missing
-    path.write_text(eol.join(out), newline="")
+    path.write_text("".join(out), newline="")
     return True
 
 
@@ -449,7 +460,13 @@ class QuestSession:
             # target_world would double-convert it.
             rx, ry, rw, rh = rect
             feet_x, feet_y = rx + rw / 2.0, ry + rh / 2.0
-            tx = feet_x - PLAYER_STAND_X
+            # Touch is decided by the two per-direction probe points
+            # (npc_handler.TOUCH_OFFSETS), which straddle the feet point at
+            # +/-0.45 tile, and an image NPC is only hit where its art is
+            # opaque. Centring the FEET on a narrow sprite (the 14px egg)
+            # puts both probes on its transparent edge and the push never
+            # touches. Centre the left-hand probe on the sprite instead.
+            tx = feet_x - PLAYER_STAND_X + TOUCH_PROBE_HALFSPAN
             ty = feet_y - PLAYER_STAND_Y
         else:
             # No resolvable shape (script not loaded yet, or a bare "-"
@@ -479,27 +496,27 @@ class QuestSession:
 # chicken_cave_1.nw's dead-end nest corridor), and Peep/Hen Penny.
 # ---------------------------------------------------------------------------
 _MAYOR = ("chicken1.nw", 16, 30, 13, 27)
-_SHELLY = ("chicken1.nw", 22, 35, 19, 39)
+_SHELLY = ("chicken1.nw", 22, 35, 19, 38)
 _LEVER = ("chicken1.nw", 20, 29, 17, 27)
 # Bud and Benedict left the town square on 2026-08-07: the ambient cast now
 # spreads across the gmap (Bud gossips by the chicken7 farm fence, Benedict
 # watches the chicken5 bridge). Their stage-3 reaction lines are unchanged,
 # so the post-quest sweep just travels further.
 _BUD = ("chicken7.nw", 36, 21, 34, 19)
-_CLUCK_NORRIS = ("chicken1.nw", 16, 43, 14, 44)
+_CLUCK_NORRIS = ("chicken1.nw", 16, 41, 14, 42)
 _BENEDICT = ("chicken5.nw", 28, 44, 30, 43)
-# Egg 1's warp point approaches from due north, not the more obvious
-# straight-line NE point (46, 30): the harness's axis-priority walk_to
-# (see its own docstring) can lock into a diagonal-into-the-corner loop
-# approaching this rect from the east/southeast that never resolves within
-# its timeout, even though the tile board is fully open there and a real
-# player walking normally never sees the problem. (44, 26) closes on a
-# single axis at the end instead and lands reliably.
-_EGG1 = ("chicken2.nw", 44, 26, 44, 28)
-_EGG2 = ("chicken3.nw", 28, 6, 30, 3)
+# Eggs and Peep are narrow sprites touched through the two per-direction
+# probe points (see QuestSession.touch), so their warp points sit directly
+# above the sprite on its centre column (x = sprite centre - 0.6) and the
+# walk is a straight push down. A diagonal final approach faces left/right
+# and never probes the sprite, and a warp point already flush against it
+# starts past the probe's reach. Egg 1's nook (x 44-46, y 26-27) opens only
+# to the south, so its warp point is two tiles up, in the wall's shadow.
+_EGG1 = ("chicken2.nw", 43.4, 24, 44, 28)
+_EGG2 = ("chicken3.nw", 34, 5, 34, 3)
 _EGG3 = ("chicken_cave_entrance.nw", 29, 22, 26, 22)
-_EGG4 = ("chicken_cave_1.nw", 33, 36, 34, 39)
-_PEEP = ("chicken_cave_1.nw", 34, 38, 34, 41)
+_EGG4 = ("chicken_cave_1.nw", 33.4, 35, 34, 39)
+_PEEP = ("chicken_cave_1.nw", 33.4, 36, 34, 41)
 _HENPENNY = ("chicken_cave_entrance.nw", 32, 12, 34, 10)
 
 _EGGS = (

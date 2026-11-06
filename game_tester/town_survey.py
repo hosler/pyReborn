@@ -37,11 +37,16 @@ import pygame
 
 from reborn_protocol.coords import segment_at
 from pyreborn import Client
+from pyreborn import tiletypes
 from pyreborn.pygame_game import GameClient
 from game_tester.login import login_client
 
 FPS = 60
 TILE_PX = 16
+# Close-up window around an NPC's anchor, in tiles. A character NPC draws
+# about 3x3 tiles right/below its anchor, so the window leans that way.
+CLOSEUP_LEFT, CLOSEUP_TOP, CLOSEUP_W, CLOSEUP_H = 3, 3, 9, 9
+CLOSEUP_SCALE = 3
 
 DEFAULT_LEVELS = [
     "chicken1.nw", "chicken2.nw", "chicken3.nw", "chicken4.nw",
@@ -125,6 +130,11 @@ class Survey:
                 "local_x": nx % 64, "local_y": ny % 64,
                 "image": npc.get("image") or "",
                 "nickname": npc.get("nickname") or "",
+                "gani": npc.get("gani") or npc.get("animation") or "",
+                "character": bool(npc.get("is_character")),
+                "body": npc.get("bodyimage") or "",
+                "head": npc.get("headimage") or "",
+                "visible": npc.get("visible", True) is not False,
             })
         return rows
 
@@ -154,6 +164,61 @@ class Survey:
         pygame.image.save(pygame.display.get_surface() or self.game.screen, path)
         return path.name
 
+    def ground_types(self, local_x: float, local_y: float) -> List[List[str]]:
+        """Tile-type names for the 4x4 tiles from the NPC anchor, row-major.
+        A character's feet sit around (x+1, y+2.5), so this covers the
+        ground a placement check needs (chair, road, water, wall...)."""
+        board = list(getattr(self.client, "tiles", []) or [])
+        rows = []
+        for ty in range(int(local_y), int(local_y) + 4):
+            row = []
+            for tx in range(int(local_x), int(local_x) + 4):
+                if not (0 <= tx < 64 and 0 <= ty < 64) or len(board) < 4096:
+                    row.append("-")
+                    continue
+                tid = board[ty * 64 + tx]
+                try:
+                    name = tiletypes.TileType(tiletypes.get_tile_type(tid)).name
+                except ValueError:
+                    name = str(tiletypes.get_tile_type(tid))
+                row.append(f"{tid}:{name}")
+            rows.append(row)
+        return rows
+
+    def closeup(self, level_name: str, npc: Dict[str, Any]) -> Optional[str]:
+        """Stand the player well left (or right) of the NPC, render, and crop
+        an unannotated zoomed window around the NPC from the live frame."""
+        lx, ly = npc["local_x"], npc["local_y"]
+        px = lx - 9 if lx >= 12 else lx + 10
+        self.client.warp_to_level(level_name, min(max(px, 1.0), 61.0),
+                                  min(max(ly, 1.0), 61.0))
+        self.pump(int(self.args.closeup_frames))
+        self.game.visual_x, self.game.visual_y = self.client.x, self.client.y
+        self.pump(10)
+        # Re-read: scripts may have moved the NPC after it arrived.
+        live = next((n for n in self.level_npcs(level_name)
+                     if n["id"] == npc["id"]), npc)
+        sx, sy = self.game.camera.world_to_screen(live["x"], live["y"])
+        rect = pygame.Rect(int(sx) - CLOSEUP_LEFT * TILE_PX,
+                           int(sy) - CLOSEUP_TOP * TILE_PX,
+                           CLOSEUP_W * TILE_PX, CLOSEUP_H * TILE_PX)
+        frame = self.game.screen
+        clip = rect.clip(frame.get_rect())
+        if clip.width <= 0 or clip.height <= 0:
+            return None
+        crop = pygame.Surface(rect.size)
+        crop.fill((255, 0, 255))  # off-screen padding, never a real tile
+        crop.blit(frame, (clip.x - rect.x, clip.y - rect.y), clip)
+        crop = pygame.transform.scale(
+            crop, (rect.width * CLOSEUP_SCALE, rect.height * CLOSEUP_SCALE))
+        stem = level_name.replace(".nw", "")
+        name = f"{stem}_npc{npc['id']}_closeup.png"
+        pygame.image.save(crop, self.out / name)
+        npc["closeup"] = name
+        npc["ground"] = self.ground_types(live["local_x"], live["local_y"])
+        npc["gani"] = live.get("gani", npc.get("gani", ""))
+        return name
+
     def visit(self, level_name: str, x: float, y: float) -> None:
         stem = level_name.replace(".nw", "")
         entry: Dict[str, Any] = {"warp_target": [x, y]}
@@ -175,6 +240,12 @@ class Survey:
         entry["view"] = self.capture_view(stem)
         entry["board"] = self.capture_board(level_name, stem)
         self.index["levels"][level_name] = entry
+        if self.args.npc_closeups:
+            for npc in entry["npcs"]:
+                # Nothing to look at: a script-only NPC (trigger, spawner).
+                drawn = npc["visible"] and (npc["character"] or npc["image"])
+                if drawn:
+                    self.closeup(level_name, npc)
 
     # -- driver -----------------------------------------------------------
     def run(self) -> int:
@@ -221,6 +292,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--settle-frames", type=int, default=90,
                         help="frames to pump before capturing each level")
+    parser.add_argument("--npc-closeups", action="store_true",
+                        help="also crop a zoomed render around every NPC and "
+                             "record the tile types under it")
+    parser.add_argument("--closeup-frames", type=int, default=45,
+                        help="frames to pump after each close-up warp")
     parser.add_argument("--levels", nargs="*", default=DEFAULT_LEVELS,
                         help="level names, optionally name.nw@x,y")
     return parser.parse_args(argv)
