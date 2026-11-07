@@ -290,7 +290,7 @@ class LevelObjectsRenderMixin:
         # Sign-code escapes (#K(nn)/#k(n)/#u/#i(...)) render as glyphs on
         # the real client — translate, don't leak raw tokens (same
         # normalization as the A-read dialogue box).
-        from .dialogue import format_sign_text
+        from .dialogue import format_sign_text, layout_dialogue_line, wrap_dialogue
         text = format_sign_text(text)
         if not text:
             return
@@ -302,21 +302,17 @@ class LevelObjectsRenderMixin:
         # with the bundled face and only add wrapping when a decoded line would
         # exceed the available screen width.
         max_text_width = max(1, self.screen_w - 60)
-        lines = []
-        for source_line in text.split('\n'):
-            lines.extend(self.hud._wrap(source_line, font, max_text_width) or [''])
-        line_height = font.get_linesize()
-        max_width = 0
-        rendered_lines = []
-
-        for line in lines:
-            rendered = font.render(line, True, (0, 0, 0))
-            rendered_lines.append(rendered)
-            max_width = max(max_width, rendered.get_width())
+        sprite_mgr = getattr(self, 'sprite_mgr', None)
+        measure = lambda line: text.measure(
+            line, lambda segment: font.size(segment)[0], sprite_mgr)
+        lines = wrap_dialogue(text, measure, max_text_width)
+        rows = [layout_dialogue_line(line, font, (0, 0, 0), text, sprite_mgr)
+                for line in lines]
+        max_width = max((width for _, width, _ in rows), default=0)
 
         # Create background box
         box_width = min(self.screen_w - 40, max_width + 20)
-        box_height = len(rendered_lines) * line_height + 20
+        box_height = sum(height for _, _, height in rows) + 20
         box_x = (self.screen_w - box_width) // 2
         box_y = self.screen_h - box_height - 60  # Above the UI bar
 
@@ -326,7 +322,9 @@ class LevelObjectsRenderMixin:
 
         # Draw text
         y = box_y + 10
-        for rendered in rendered_lines:
-            x = box_x + (box_width - rendered.get_width()) // 2
-            self.screen.blit(rendered, (x, y))
-            y += line_height
+        for runs, width, height in rows:
+            x = box_x + (box_width - width) // 2
+            for surface, advance in runs:
+                self.screen.blit(surface, (x, y))
+                x += advance
+            y += height

@@ -1,7 +1,10 @@
 """Font-aware wrapping and paging for the in-game dialogue box."""
 
+import csv
 import re
-from typing import Callable, List
+from dataclasses import dataclass
+from itertools import chain
+from typing import Callable, List, Optional, Tuple
 
 # Control-function -> bound key display name, matching input.py's
 # _feed_gs1_input mapping (scripting-gs1-functions.md control table):
@@ -21,7 +24,71 @@ _SIGN_SYMBOL_NAMES = {
 }
 
 
-def format_sign_text(text: str) -> str:
+@dataclass(frozen=True)
+class SignImage:
+    name: str
+    part: Optional[Tuple[int, int, int, int]] = None
+
+    def load(self, sprite_mgr):
+        if sprite_mgr is None:
+            return None
+        if self.part is not None:
+            return sprite_mgr.get_sprite(self.name, *self.part)
+        return sprite_mgr.load_sheet(self.name)
+
+    def width(self, surface):
+        if surface is None:
+            return 0
+        return self.part[2] if self.part is not None else surface.get_width()
+
+
+class SignText(str):
+    """A display string with an ordered token-to-image mapping."""
+
+    def __new__(cls, text, images):
+        value = super().__new__(cls, text)
+        value.images = images
+        return value
+
+    def segments(self, line):
+        start = 0
+        for index, char in enumerate(line):
+            if char in self.images:
+                if start < index:
+                    yield line[start:index]
+                yield self.images[char]
+                start = index + 1
+        if start < len(line):
+            yield line[start:]
+
+    def measure(self, line, measure_text, sprite_mgr):
+        return sum(measure_text(segment) if isinstance(segment, str)
+                   else segment.width(segment.load(sprite_mgr))
+                   for segment in self.segments(line))
+
+
+def layout_dialogue_line(line, font, color, sign_text=None, sprite_mgr=None):
+    """Return surfaces with pen advances, total width, and row height."""
+    segments = sign_text.segments(line) if sign_text is not None else [line]
+    runs = []
+    width = 0
+    height = font.get_linesize()
+    for segment in segments:
+        if isinstance(segment, str):
+            surface = font.render(segment, True, color)
+            advance = font.size(segment)[0]
+        else:
+            surface = segment.load(sprite_mgr)
+            advance = segment.width(surface)
+            if surface is not None:
+                height = max(height, surface.get_height())
+        if surface is not None:
+            runs.append((surface, advance))
+        width += advance
+    return runs, width, height
+
+
+def format_sign_text(text: str) -> SignText:
     """Translate decoded sign-code escapes into displayable text.
 
     The wire decoder (packets.decode_sign_text) is a faithful mirror of
@@ -35,8 +102,11 @@ def format_sign_text(text: str) -> str:
     - ``#k(n)`` shows the key bound to control function n -> our binding
       names (see _SIGN_KEY_NAMES).
     - ``#u/#d/#l/#r/#A/...`` button symbols -> readable names.
-    - ``#i(image[,x,y,w,h])`` inline images aren't drawn in the text box ->
-      dropped (a leading empty ``#i()`` line collapses away via the strip).
+    - ``#i(image[,x,y,w,h])`` becomes one private-use character per image,
+      with specs in the returned string's ordered ``images`` mapping, per
+      TPlayer.cpp:4506 parseSignImages. Malformed markers lose only ``#i``.
+      Image tokens occupy pixel width at the pen, per TPlayer.cpp:4434
+      drawStringLine; our rows grow to fit their tallest image.
     - ``#b`` is a line break (same translation packet_codec's parse_say2
       already applies on the wire); done FIRST so a ``#K(35)``-escaped ``#``
       followed by a literal ``b`` can't be misread as a break.
@@ -57,17 +127,61 @@ def format_sign_text(text: str) -> str:
     text = text.replace('#b', '\n')
     text = re.sub(r'#K\((\d+)\)', _chr_escape, text)
     text = re.sub(r'#k\((\d+)\)', _key_escape, text)
-    text = re.sub(r'#i\([^)]*\)', '', text)
     text = re.sub(r'#([udlrABXYh])',
                   lambda m: _SIGN_SYMBOL_NAMES[m.group(1)], text)
-    # Drop lines that became empty after an inline-image strip, but keep
-    # deliberate blank lines (they were whitespace-only on the wire too).
+    images = {}
+    used_chars = set(text)
+    tokens = (chr(code) for code in chain(range(0xE000, 0xF900),
+                                         range(0xF0000, 0xFFFFE),
+                                         range(0x100000, 0x10FFFE))
+              if chr(code) not in used_chars)
+
+    def _image_escape(spec):
+        name = spec
+        part = None
+        if ',' in spec:
+            try:
+                parts = next(csv.reader([spec], skipinitialspace=True))
+            except csv.Error:
+                parts = spec.split(',')
+            name = parts[0].strip()
+            if len(parts) > 4:
+                def _integer(value):
+                    try:
+                        return int(value)
+                    except ValueError:
+                        return 0
+                part = tuple(_integer(value) for value in parts[1:5])
+        token = next(tokens)
+        images[token] = SignImage(name, part)
+        return token
+
+    output = []
+    start = 0
+    while (marker := text.find('#i', start)) >= 0:
+        output.append(text[start:marker])
+        start = marker + 2
+        if text[start:start + 1] != '(':
+            continue
+        depth = 0
+        for end in range(start, len(text)):
+            if text[end] == '(':
+                depth += 1
+            elif text[end] == ')':
+                depth -= 1
+                if depth == 0:
+                    output.append(_image_escape(text[start + 1:end]))
+                    start = end + 1
+                    break
+    output.append(text[start:])
+    text = ''.join(output)
+    # Trim blank boundary lines; image tokens keep image-only lines nonempty.
     lines = text.split('\n')
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
-    return '\n'.join(lines)
+    return SignText('\n'.join(lines), images)
 
 
 def wrap_dialogue(text: str, measure: Callable[[str], int], max_width: int) -> List[str]:

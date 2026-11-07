@@ -293,15 +293,60 @@ class TestFormatSignText:
         assert format_sign_text("#u #u #d #d #l #r #l #r B A") == \
             "Up Up Down Down Left Right Left Right B A"
 
-    def test_inline_images_are_dropped(self):
+    def test_inline_images_emit_tokens_with_part_specs(self):
         got = format_sign_text(
             "#i(eye#K(95)bomber#K(95)poni.png,32,0,32,32)Fire - blast.")
-        assert got == "Fire - blast."
+        token, image = next(iter(got.images.items()))
+        assert got == token + "Fire - blast."
+        assert len(token) == 1 and 0xE000 <= ord(token) <= 0xF8FF
+        assert image.name == "eye_bomber_poni.png"
+        assert image.part == (32, 0, 32, 32)
 
-    def test_leading_empty_image_line_collapses(self):
-        # The v6 piano sign opens with a bare "#i()" line.
-        got = format_sign_text("#i()\n    Piano Playing Instructions\n")
-        assert got == "    Piano Playing Instructions"
+    def test_plain_images_keep_order_and_touching_text(self):
+        got = format_sign_text("left#i(first.png)#i(second.png)right")
+        tokens = list(got.images)
+        assert got == "left" + ''.join(tokens) + "right"
+        assert len(set(tokens)) == 2
+        assert [(image.name, image.part) for image in got.images.values()] == [
+            ("first.png", None), ("second.png", None)]
+
+    def test_image_csv_trims_name_and_invalid_numbers_become_zero(self):
+        got = format_sign_text('#i( "icon,one.png" , bad, -2, 12, nope, extra)')
+        image = next(iter(got.images.values()))
+        assert image.name == "icon,one.png"
+        assert image.part == (0, -2, 12, 0)
+
+    def test_image_csv_without_full_rect_uses_full_image(self):
+        got = format_sign_text("#i( icon.png , 3, 4, 5)")
+        image = next(iter(got.images.values()))
+        assert image.name == "icon.png"
+        assert image.part is None
+
+    def test_malformed_image_markers_drop_only_marker(self):
+        got = format_sign_text("a#ib #i(no close #i")
+        assert got == "ab (no close "
+        assert got.images == {}
+
+    def test_image_only_boundary_lines_survive(self):
+        got = format_sign_text("\n #i()\n    Piano Playing Instructions\n#i(icon.png)\n ")
+        tokens = list(got.images)
+        assert got == " " + tokens[0] + "\n    Piano Playing Instructions\n" + tokens[1]
+        assert got.images[tokens[0]].name == ""
+
+    def test_image_name_with_nested_brackets(self):
+        got = format_sign_text("#i(icon(1).png)end")
+        token, image = next(iter(got.images.items()))
+        assert got == token + "end"
+        assert image.name == "icon(1).png"
+
+    def test_literal_private_use_character_is_not_an_image(self):
+        got = format_sign_text("\ue000#i(icon.png)")
+        token = next(iter(got.images))
+        assert token != '\ue000'
+        assert list(got.segments(got)) == ['\ue000', got.images[token]]
+
+    def test_empty_boundary_lines_are_trimmed(self):
+        assert format_sign_text("\n \nInstructions\n \n") == "Instructions"
 
     def test_interior_blank_lines_survive(self):
         assert format_sign_text("a\n \nb") == "a\n \nb"

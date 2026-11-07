@@ -431,6 +431,8 @@ class HUD:
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):
+        from .dialogue import SignText, layout_dialogue_line
+
         g = self.game
         if not g.dialogue_text:
             return
@@ -440,10 +442,15 @@ class HUD:
         font = g.fonts.classic() if getattr(g, 'dialogue_classic_font', False) \
             else g.font_small
         lines = g.dialogue_pager.visible_lines
-        line_height = font.get_linesize()
-        box_h = max(60, len(lines) * line_height + 20)
+        sign_text = g.dialogue_text if getattr(g, 'dialogue_classic_font', False) \
+            and isinstance(g.dialogue_text, SignText) else None
+        rows = [layout_dialogue_line(line, font, theme.TEXT, sign_text,
+                                     getattr(g, 'sprite_mgr', None))
+                for line in lines]
+        box_h = max(60, sum(height for _, _, height in rows) + 20)
         box_x = (g.screen_w - box_w) // 2
-        box_y = g.screen_h - 150
+        # Image rows can outgrow the text-only box; keep its bottom on screen.
+        box_y = min(g.screen_h - 150, g.screen_h - box_h - 10)
         box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
         bg = theme.OVERLAY_BG
         pygame.draw.rect(box, (*bg[:3], min(bg[3], alpha)), (0, 0, box_w, box_h))
@@ -452,11 +459,12 @@ class HUD:
         surf.blit(box, (box_x, box_y))
 
         text_y = box_y + 10
-        for line in lines:
-            ts = font.render(line, True, theme.TEXT)
-            ts.set_alpha(alpha)
-            surf.blit(ts, (box_x + 10, text_y))
-            text_y += line_height
+        for runs, _, height in rows:
+            text_x = box_x + 10
+            for surface, advance in runs:
+                surf.blit(surface, (text_x, text_y))
+                text_x += advance
+            text_y += height
 
         if g.dialogue_pager.has_more:
             chevron = font.render(">", True, theme.MINT)

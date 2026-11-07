@@ -246,6 +246,9 @@ def wire_client_callbacks(game):
         ext = filename.rsplit('.', 1)[-1]
         if ext in ('png', 'gif', 'bmp', 'mng'):
             game.sprite_mgr.load_bytes(filename, data)
+            rewrap = getattr(game, "_rewrap_sign_dialogue", None)
+            if rewrap is not None:
+                rewrap(filename)
             # A custom tileset image (addtiledef/addtiledef2) just
             # arrived — drop the tile cache so blocks re-render with it
             # instead of the default.

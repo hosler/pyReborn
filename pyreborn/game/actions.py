@@ -807,14 +807,33 @@ class ActionsMixin:
         client renders as glyphs — translate them instead of leaking the raw
         tokens into the box (see dialogue.format_sign_text)."""
         if classic_font:
-            from .dialogue import format_sign_text
-            text = format_sign_text(text)
+            from .dialogue import SignText, format_sign_text
+            if not isinstance(text, SignText):
+                text = format_sign_text(text)
         self.dialogue_text = text
         self.dialogue_classic_font = classic_font
         font = self.fonts.classic() if classic_font else self.font_small
         box_width = min(self.screen_w - 40, 400) - 20
-        self.dialogue_pager.replace(text, lambda value: font.size(value)[0],
-                                    box_width)
+        measure = lambda value: font.size(value)[0]
+        if classic_font:
+            sprite_mgr = getattr(self, 'sprite_mgr', None)
+            for image in text.images.values():
+                if image.load(sprite_mgr) is None and hasattr(self, '_request_asset'):
+                    self._request_asset(image.name)
+            measure = lambda value: text.measure(
+                value, lambda segment: font.size(segment)[0], sprite_mgr)
+        self.dialogue_pager.replace(text, measure, box_width)
+
+    def _rewrap_sign_dialogue(self, filename: str):
+        """Re-wrap an open sign once one of its inline images arrives: it
+        was measured 0 px wide while missing. Keeps the reader's page."""
+        text = self.dialogue_text
+        images = getattr(text, 'images', None) if self.dialogue_classic_font else None
+        if not images or not any(i.name == filename for i in images.values()):
+            return
+        offset = self.dialogue_pager.offset
+        self._show_dialogue(text, classic_font=True)
+        self.dialogue_pager.offset = min(offset, max(0, len(self.dialogue_pager.lines) - 1))
 
     def _dismiss_dialogue(self):
         """Dismiss the current dialogue."""
