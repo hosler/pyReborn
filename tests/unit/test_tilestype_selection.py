@@ -162,9 +162,86 @@ if (playerenters) {
 
 def test_level_state_write_updates_the_active_tilestype():
     from pyreborn.client_state import LevelState
-    tt.register_tiledef("era_", 1)
     state = LevelState()
+    state.tiletypes.register_tiledef("era_", 1)
     state.current_level_name = "era_mainstreet.nw"
-    assert tt.active_tilestype() == 1
+    assert state.tiletypes.active_tilestype() == 1
     state.current_level_name = "somewhere.nw"
-    assert tt.active_tilestype() == 0
+    assert state.tiletypes.active_tilestype() == 0
+
+
+@pytest.mark.parametrize("pair,tile_id,expected,xy", [
+    ("Z2", 1654, 3, (57, 26)), ("Z4", 1656, 3, (58, 26)),
+    ("aG", 1670, 3, (1, 28)), ("aI", 1672, 3, (8, 28)),
+    ("Em", 294, 11, (36, 0)), ("A9", 61, 22, (0, 0)),
+    ("AC", 2, 20, (5, 7)), ("AD", 3, 20, (6, 7)),
+    ("AS", 18, 20, (5, 8)), ("AT", 19, 20, (6, 8)),
+])
+def test_chicken1_classic_tiles(pair, tile_id, expected, xy):
+    # Pinned BOARD character pairs at (x,y) from funtimes/world/chicken1.nw.
+    # Inline fixtures keep this test independent of the sibling world checkout.
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    assert (alphabet.index(pair[0]) << 6) | alphabet.index(pair[1]) == tile_id
+    assert get_tile_type(tile_id, tilestype=0) == expected
+
+
+def test_two_clients_and_standalone_selection_are_independent():
+    from pyreborn import Client
+    from pyreborn.gs1_client import ClientGS1
+    a, b = Client(), Client()
+    a._current_level_name = b._current_level_name = "same.nw"
+    a.tiles = b.tiles = [4] * 4096
+    first, second = ClientGS1(a), ClientGS1(b)
+    first.load_weapon("tiles", "if (playerenters) addtiledef custom.png,,1;")
+    first.trigger_event("playerenters")
+    assert first.tile_type_at(0, 0) == 0
+    assert second.tile_type_at(0, 0) == 22
+    tt.register_tiledef('', 5)
+    assert tt.active_tilestype(a) == 1
+    assert tt.active_tilestype(b) == 0
+    assert tt.active_tilestype() == 5
+    assert tt.get_tile_type(4, client=a) == 0
+    assert tt.get_tile_type(4, client=b) == 22
+    assert tt.get_tile_type(4) == 0
+    assert not tt.is_blocking(4, client=a)
+    assert tt.is_blocking(4, client=b)
+    assert tt.is_water(64, client=a)
+    assert tt.is_swimming_water(64, client=a)
+    assert not tt.is_water(64, client=b)
+    assert not tt.is_swimming_water(64, client=b)
+    for client, table in ((a, tt.TILE_TYPES_NW), (b, tt.TILE_TYPES)):
+        assert tt.is_damaging(64, client=client) == (table[64] in (2, 9, 12))
+    b._current_level_name = "another.nw"
+    assert a.level_state.tiletypes.active_tilestype() == 1
+
+
+def test_game_bot_uses_its_clients_new_world_selection():
+    from game_tester.game_bot import GameBot, _validate_warp_dest
+    from game_tester.server_probe import _probe_position_clear
+    bot = GameBot('tileprobe', 'localhost', 1)
+    c = bot.client
+    c._current_level_name = 'era_street.nw'
+    c.tiles = [4] * 4096  # Classic wall, new-world floor.
+    c.levels[c._current_level_name] = c.tiles
+    c.level_state.tiletypes.register_tiledef('era_', 1)
+    assert tt.get_tile_type(4, client=c) == TileType.NONBLOCK
+    assert not bot._is_position_blocked(10, 5)
+    assert _probe_position_clear(c, 10, 5)
+    assert _validate_warp_dest(c._current_level_name, 10, 5, c.levels.get, c) is None
+    # Destination selection must be used even when the current level is classic.
+    c._current_level_name = 'classic.nw'
+    assert _validate_warp_dest('era_street.nw', 10, 5, c.levels.get, c) is None
+    c._current_level_name = 'era_street.nw'
+    c.tiles[:] = [64] * 4096  # Classic wall, new-world swimming water.
+    assert bot._check_water_at_position(10, 5)
+
+
+def test_reconnect_resets_only_its_own_tiledefs(monkeypatch):
+    from pyreborn import Client
+    a, b = Client(), Client()
+    for client in (a, b):
+        client.level_state.tiletypes.register_tiledef("", 1)
+    monkeypatch.setattr(a._protocol, "connect", lambda: True)
+    assert a.connect()
+    assert a.level_state.tiletypes.active_tilestype() == 0
+    assert b.level_state.tiletypes.active_tilestype() == 1

@@ -257,11 +257,11 @@ def bot_map(bot, radius=14):
                 # player) render as walkable '.', and a playtester reads that
                 # as "phantom collision on open ground" (a real false report
                 # this map produced). B here now means "your feet will stop".
-                if is_blocking(tile):
+                if is_blocking(tile, client=c):
                     ch = 'B'
-                elif is_water(tile):
+                elif is_water(tile, client=c):
                     ch = 'W'
-                elif get_tile_type(tile) == TileType.CHAIR:
+                elif get_tile_type(tile, client=c) == TileType.CHAIR:
                     ch = 'c'
             except Exception:
                 ch = '?'

@@ -139,6 +139,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         # disconnect() (normal usage builds a fresh Client per connection —
         # see example_pygame.py's F8 server-switch loop — so this is
         # defensive, not load-bearing).
+        # TServerList.cpp:333 -> TTiles.cpp:285-287 clears server tiledefs.
+        self.level_state.tiletypes.reset_tiledefs()
         self._authenticated = False
         self._login_appearance_applied = False
         self._reset_file_transfer_state()

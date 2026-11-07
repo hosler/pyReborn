@@ -156,7 +156,6 @@ def test_probe_cast_truncation_and_level_bounds():
 @pytest.mark.parametrize('gmap', [False, True])
 def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
     # TServerLevel.cpp:1624-1641: the arm cells also run putExplosion's probes.
-    monkeypatch.setattr(tiletypes, '_active_tilestype', 0)
     client, board = gmap_client() if gmap else (FakeClient(), None)
     board = client.tiles if board is None else board
     plant(board, 14, 10, BUSH_OBJECTS[0])
@@ -181,7 +180,6 @@ def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
 @pytest.mark.parametrize('gmap', [False, True])
 def test_stone_patch_notifies_board_renderer_without_debris(gmap, monkeypatch):
     # TServerLevel.cpp:1582-1586: stones still change tiles but do not spawn leaps.
-    monkeypatch.setattr(tiletypes, '_active_tilestype', 0)
     client, board = gmap_client() if gmap else (FakeClient(), None)
     board = client.tiles if board is None else board
     client.on_board_modify = Mock()
@@ -213,7 +211,6 @@ class CellGame(EffectsRenderMixin):
 
 def test_callback_wiring_spawns_one_bush_leap_and_invalidates_surface(monkeypatch):
     # TServerLevel.cpp:1558-1561,2850-2867: one patch and one leap per block.
-    monkeypatch.setattr(tiletypes, '_active_tilestype', 0)
     game = CellGame()
     game._request_asset = Mock()
     game._spawn_leaf_particles = Mock()

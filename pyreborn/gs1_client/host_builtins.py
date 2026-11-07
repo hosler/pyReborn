@@ -7,6 +7,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import tokens_count
 
 from ..script_player_props import sync_script_player_stat
+from ..tiletypes import selection_for
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
 from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number, _write_npc_attr
@@ -404,6 +405,10 @@ class BuiltinsMixin:
                 return False
         return True
 
+    @_gs1_builtin(_GS1_BUILTINS, "waterheight", "tiles.waterheight")
+    def _gb_waterheight(self, name, indices, ctx):
+        return selection_for(self.rt.client).waterheight
+
     @_gs1_builtin(_GS1_BUILTINS, "tiles")
     def _gb_tiles(self, name, indices, ctx):
         # tiles[x,y] — the board tile id at (x,y), gmap-aware: world coords
@@ -422,6 +427,9 @@ class BuiltinsMixin:
         return 0.0
 
     def set_builtin(self, name, value, indices, ctx) -> bool:
+        if name in ("waterheight", "tiles.waterheight"):
+            selection_for(self.rt.client).set_waterheight(value)
+            return True
         # era with-scope writes on a host object -- see get_builtin
         this_obj = getattr(ctx, "this_obj", None)
         if getattr(this_obj, "gs1_with_members", False):

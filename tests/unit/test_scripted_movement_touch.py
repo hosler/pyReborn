@@ -226,3 +226,24 @@ def test_reload_preserves_gs2_npc_shapes():
     # solid columns 0,1 / 6,7 / 12,13 anchored at (25,18) block onwall2 again
     assert (25, 18) in gs1._shape_blocks and (26, 18) in gs1._shape_blocks
     assert (27, 18) not in gs1._shape_blocks
+
+
+
+def test_gs2_shape1_stays_a_box_after_level_reload():
+    from types import SimpleNamespace
+    from pyreborn import Client
+    from pyreborn.gs1_client import ClientGS1
+    from pyreborn.game.setup import SetupMixin
+    c = Client()
+    c.npcs[1] = {'x': 10, 'y': 10}
+    gs1 = ClientGS1(c)
+    gs1._shape1_npcs.add(1)
+    gs1._update_shape_blocks(1, c.npcs[1], 1, 1, [22])
+    host = type('Harness', (SetupMixin,), {})()
+    host.client, host.gs1 = c, gs1
+    host.gs2 = SimpleNamespace(vms={'npc': {1: object()}})
+    keep = host._snapshot_gs2_npc_shapes()
+    gs1.clear()
+    host._restore_gs2_npc_shapes(keep)
+    assert gs1.npc_blocks_at(10.5, 10.5)
+    assert gs1.npc_tile_type(10.5, 10.5) == 0

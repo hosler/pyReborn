@@ -24,7 +24,7 @@ import pygame
 
 from reborn_protocol.coords import segment_index, segment_origin
 
-from ..tiletypes import TileType, get_tile_type
+from ..tiletypes import TileType, get_tile_type, selection_for
 from . import theme
 from .assets import render_outlined_text
 from .constants import TILE_SIZE
@@ -227,7 +227,8 @@ class WorldRenderMixin:
         surf = pygame.Surface((64 * TILE_SIZE, 64 * TILE_SIZE))
         surf.fill((0, 0, 0))
         animated: List[Tuple[int, int, int]] = []
-        self._render_single_level(surf, tiles, animated)
+        self._render_single_level(surf, tiles, animated,
+                                  selection_for(c).tilestype_for_level(level_name))
 
         if layers_snapshot:
             for layer_id, raw in layers_snapshot.items():
@@ -321,6 +322,7 @@ class WorldRenderMixin:
         if not tiles or len(tiles) < 4096:
             return
 
+        tilestype = selection_for(c).tilestype_for_level(level_name)
         surf = entry['surface']
         surf_w, surf_h = surf.get_size()
         # Drop every animated-index entry inside the patched rect up front -
@@ -343,7 +345,7 @@ class WorldRenderMixin:
                 tile_id = tiles[ty * 64 + tx]
                 tile = self.tileset_mgr.get_tile_or_color(tile_id)
                 surf.blit(tile, (dest_x, dest_y))
-                if get_tile_type(tile_id) in self._ANIMATED_TILE_TYPES:
+                if get_tile_type(tile_id, tilestype) in self._ANIMATED_TILE_TYPES:
                     animated.append((tx, ty, tile_id))
 
         # _refresh_animated_tiles_cache keys off id(entry['surface']), which
@@ -357,7 +359,7 @@ class WorldRenderMixin:
                             TileType.LAVA, TileType.LAVA_SWAMP)
 
     def _render_single_level(self, surface: pygame.Surface, tiles: List[int],
-                              animated_out: List[Tuple[int, int, int]]):
+                              animated_out: List[Tuple[int, int, int]], tilestype=None):
         """Render one level's 64x64 tiles onto its own (segment-local, always
         0,0-based) surface, indexing water/lava tiles into animated_out using
         segment-local tile coords - the caller adds the segment's grid offset
@@ -373,6 +375,8 @@ class WorldRenderMixin:
         # with no tiledefs (7.7 -> 3.8 ms/segment), and this bake is the frame
         # cost that shows up as a stutter when a level change drops the
         # segment cache and several segments re-bake in one frame.
+        if tilestype is None:
+            tilestype = selection_for(self.client).active_tilestype()
         resolved = {}
         get_tile = self.tileset_mgr.get_tile_or_color
         animated_types = self._ANIMATED_TILE_TYPES
@@ -384,7 +388,7 @@ class WorldRenderMixin:
                 entry = resolved.get(tile_id)
                 if entry is None:
                     entry = (get_tile(tile_id),
-                             get_tile_type(tile_id) in animated_types)
+                             get_tile_type(tile_id, tilestype) in animated_types)
                     resolved[tile_id] = entry
                 blits.append((entry[0], (tx * TILE_SIZE, ty * TILE_SIZE)))
                 # Tier 4a: index water/lava tiles (segment-local coords) for

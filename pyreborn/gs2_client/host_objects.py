@@ -14,6 +14,11 @@ from ..throwing import carry_object
 
 class HostObjectsMixin:
 
+    @_gs2_object("waterheight")
+    def _obj_waterheight(self, name):
+        from ..tiletypes import selection_for
+        return selection_for(self.rt2.client).waterheight
+
     @_gs2_object("carriesnpc", "carriesbush", "carriessign", "carriesvase",
                  "carriesstone", "carriesblackstone")
     def _obj_carry_kind(self, name):

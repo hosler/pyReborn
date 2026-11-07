@@ -32,7 +32,7 @@ from pyreborn.game.constants import (
 )
 from reborn_protocol.coords import in_level_bounds, local_to_world, segment_at
 from pyreborn.tiletypes import (
-    TileType, get_tile_type, is_blocking, is_swimming_water,
+    TileType, get_tile_type, is_blocking, is_swimming_water, selection_for,
 )
 
 from .login import login_client
@@ -148,20 +148,20 @@ class BotAction:
 
 
 def _blocking_tile_in_footprint(board: List[int], x: float,
-                                y: float) -> Optional[int]:
+                                y: float, tilestype=None) -> Optional[int]:
     """Return a blocking tile under the direction-less movement probes."""
     for ox, oy in ((1.5, 2.0), (2.0, 0.5)):
         tx, ty = math.floor(x + ox), math.floor(y + oy)
         if tx < 0 or tx >= 64 or ty < 0 or ty >= 64:
             continue
         tile = board[ty * 64 + tx]
-        if is_blocking(tile):
+        if is_blocking(tile, tilestype):
             return tile
     return None
 
 
 def _validate_warp_dest(level_name: str, x: float, y: float,
-                        board_lookup: Callable[[str], Any]) -> Optional[str]:
+                        board_lookup: Callable[[str], Any], client=None) -> Optional[str]:
     """Best-effort check that warping to local (x, y) on level_name will not
     strand the bot on a blocking tile. Returns an error string if it would,
     None if it looks clear OR the destination level's board is not cached
@@ -170,7 +170,8 @@ def _validate_warp_dest(level_name: str, x: float, y: float,
     board = board_lookup(level_name)
     if not board or len(board) < 4096:
         return None
-    tile = _blocking_tile_in_footprint(board, x, y)
+    tilestype = selection_for(client).tilestype_for_level(level_name)
+    tile = _blocking_tile_in_footprint(board, x, y, tilestype)
     if tile is not None:
         return (f'warp destination ({x},{y}) on {level_name!r} is blocking '
                 f'(tile={tile}); pass force=1 to override')
@@ -1022,7 +1023,9 @@ class GameBot:
                         return True
                 elif not in_level_bounds(check_x, check_y):
                     return True
-                if is_blocking(self._get_tile_at(check_x, check_y)):
+                tilestype = selection_for(c).tilestype_for_level(
+                    self._resolve_level_name(check_x, check_y))
+                if is_blocking(self._get_tile_at(check_x, check_y), tilestype):
                     return True
                 if c.npcs and self._npc_blocks_at(check_x, check_y):
                     return True
@@ -1055,7 +1058,9 @@ class GameBot:
     def _check_water_at_position(self, x: float, y: float) -> bool:
         """Check if the standing point is in deep, swimmable water."""
         tile_id = self._get_tile_at(x, y)
-        return is_swimming_water(tile_id)
+        tilestype = selection_for(self.client).tilestype_for_level(
+            self._resolve_level_name(x, y))
+        return is_swimming_water(tile_id, tilestype)
 
     def _update_swimming_state(self):
         """Update swimming state based on current position.
@@ -1395,7 +1400,7 @@ class GameBot:
                     return self.client.tiles
                 return self.client.levels.get(lvl)
 
-            problem = _validate_warp_dest(level_name, x, y, board_lookup)
+            problem = _validate_warp_dest(level_name, x, y, board_lookup, self.client)
             if problem:
                 self._log_action("warp_to_checked",
                                  {"level": level_name, "x": x, "y": y},

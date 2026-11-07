@@ -24,7 +24,11 @@ from reborn_protocol.gs1.parser import Parser
 from reborn_protocol.gs1.values import to_num, to_str
 
 from ..particles import ParticleEmitter
-from ..tiletypes import TileType, get_tile_type, tilestype_for_level, type_is_blocking
+from ..tiletypes import (
+    TileType, effective_tile_type, get_tile_type, selection_for,
+    tilestype_for_level, type_is_blocking,
+)
+from .board import board_tile_read, board_layer_tile_ids, _board_locate
 from .host import GS1ClientHost
 from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope, _current_baddies
 from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _report_gs1_error
@@ -70,6 +74,8 @@ class ClientGS1:
         # npc_id -> (width, height, flags) recorded when setshape/setshape2 runs.
         # The NPC touch handler reads collision geometry from here.
         self.shapes: dict = {}
+        self._shape_npcs: dict = {}
+        self._shape1_npcs: set = set()
         # shared non-NPC scopes + client-player GS1 flags
         self._shared = {"client": _PlayerFlagScope(self),
                         "server": _ServerFlagScope(self),
@@ -145,10 +151,12 @@ class ClientGS1:
         self.keys_dir: set = set()
         self.keys_raw: set = set()
         self._keys_raw_prev: set = set()  # previous frame, for keydown2 edge
-        self._shape_blocks: set = set()   # (tx,ty) cells blocked via setshape2
-        self._shape_block_owners: dict = {}  # npc_id -> set of (tx,ty) it contributed
-        # (tx,ty) -> tile TYPE published by a setshape2 array (see
-        # _update_shape_blocks / npc_tile_type).
+        # Legacy diagnostic snapshots. Collision and tiletype must use the live
+        # shape queries below; integer world-cell caches cannot represent moved
+        # or fractionally positioned NPCs (TServerNPC.cpp:2021-2024).
+        self._shape_blocks: set = set()
+        self._shape_block_owners: dict = {}
+        # (tx,ty) -> diagnostic tile-type snapshot from _update_shape_blocks.
         self._shape_types: dict = {}
         self._shape_type_owners: dict = {}   # npc_id -> {(tx,ty): type}
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
@@ -392,6 +400,8 @@ class ClientGS1:
         self._progs.clear()
         self._progs.update(weapons)
         self.shapes.clear()
+        self._shape_npcs.clear()
+        self._shape1_npcs.clear()
         self._shape_blocks.clear()
         self._shape_block_owners.clear()
         self._shape_types.clear()
@@ -447,6 +457,8 @@ class ClientGS1:
         if dead_keys:
             self._coros = [c for c in self._coros if c.get("key") not in dead_keys]
         self.shapes.pop(npc_id, None)
+        self._shape_npcs.pop(npc_id, None)
+        self._shape1_npcs.discard(npc_id)
         cells = self._shape_block_owners.pop(npc_id, None)
         if cells:
             self._shape_blocks -= cells
@@ -531,7 +543,7 @@ class ClientGS1:
         return None
 
     def _update_shape_blocks(self, npc_id, npc, w, h, flags):
-        """Translate an NPC's setshape/setshape2 geometry into world-tile state,
+        """Record live shape geometry and refresh legacy diagnostic snapshots,
         anchored at the NPC's current (x, y) — same convention
         npc_handler.NPCHandler uses for touch shapes.
 
@@ -545,12 +557,15 @@ class ClientGS1:
         had a use for) silently discarded every other type: classic Bomber's
         room controller publishes 32 cells of type 3 (CHAIR) over the whole
         64x64 room via `setshape2 64,64,obj`, and dropping them is why the
-        furniture chairs never seated anyone. `npc_tile_type` is the reader.
+        furniture chairs never seated anyone. `npc_tile_type` reads the live
+        shape array and NPC position, not these integer diagnostic snapshots.
 
         Re-derives this NPC's contribution from scratch each call so re-running
         setshape2 (e.g. NPC 161's per-frame falling choc blocks during the
         arena's sudden-death `hurryup`) keeps it in sync, without disturbing
         other NPCs' contributions."""
+        self.shapes[npc_id] = (w, h, flags)
+        self._shape_npcs[npc_id] = npc
         old = self._shape_block_owners.pop(npc_id, None)
         if old:
             self._shape_blocks -= old
@@ -599,15 +614,29 @@ class ClientGS1:
                 if cell in mine:
                     self._shape_types[cell] = ttype
 
-    def npc_tile_type(self, x, y) -> int:
-        """Tile TYPE an NPC's setshape2 array publishes at world tile (x, y),
-        or 0 when no NPC covers it.
+    def _shape_type_at(self, npc_id, npc, x, y):
+        # TServerNPC.cpp:2016-2040 floors the FRACTIONAL offset from the
+        # live NPC world position, then reads the live setshape2 array.
+        w, h, flags = self.shapes[npc_id]
+        ax = to_num(npc.get("world_x", npc.get("x", 0)))
+        ay = to_num(npc.get("world_y", npc.get("y", 0)))
+        col, row = math.floor(x - ax), math.floor(y - ay)
+        if not (0 <= col < w and 0 <= row < h):
+            return 0
+        index = row * w + col
+        return math.floor(to_num(flags[index])) if index < len(flags) else 0
 
-        The client-side half of `TServerLevel::getNPCTileType`
-        (Preagonal/FourPlay/quattroplay/src/TServerLevel.cpp:536-561): the
-        level's NPCs are asked before the board, and the first non-zero answer
-        wins. Callers apply the board fallback for anything <= 1."""
-        return self._shape_types.get((int(math.floor(x)), int(math.floor(y))), 0)
+    def npc_tile_type(self, x, y) -> int:
+        """First nonzero live shape-2 answer (TServerLevel.cpp:199-203)."""
+        npcs = getattr(self.client, "npcs", {}) if self.client else {}
+        for npc_id in self.shapes:
+            if npc_id in self._shape1_npcs:
+                continue
+            npc = npcs.get(npc_id, self._shape_npcs.get(npc_id, {}))
+            ttype = self._shape_type_at(npc_id, npc, x, y)
+            if ttype != 0:
+                return ttype
+        return 0
 
     # -- NPC blocking footprints (image NPCs, characters, shape cells) ------
     #
@@ -658,22 +687,17 @@ class ClientGS1:
         return True
 
     def _shape_cell_blocks(self, x, y, exclude_npc=None) -> bool:
-        """Does a setshape/setshape2 blocking cell cover (x, y), owned by an
-        NPC that is currently solid? The flat _shape_blocks set answers the
-        cheap membership test. The owner walk applies the per-NPC
-        visible/dontblock gate (the flag no longer edits the cell sets, so
-        blockagain can restore them — see _cmd_dontblock)."""
-        cell = (int(math.floor(x)), int(math.floor(y)))
-        if cell not in self._shape_blocks:
-            return False
+        """Live wall geometry, independent of the touch threshold.
+
+        TServerNPC.cpp:2213 uses >=20 for walls; type 4 is ONLY a board wall.
+        """
         npcs = getattr(self.client, "npcs", {}) if self.client else {}
-        for nid, cells in self._shape_block_owners.items():
+        for nid in self.shapes:
             if nid == exclude_npc:
                 continue
-            if cell in cells:
-                npc = npcs.get(nid)
-                if not isinstance(npc, dict) or self._npc_solid(npc):
-                    return True
+            npc = npcs.get(nid, self._shape_npcs.get(nid, {}))
+            if self._npc_solid(npc) and self._shape_type_at(nid, npc, x, y) >= 20:
+                return True
         return False
 
     def npc_image_rect(self, npc):
@@ -785,7 +809,10 @@ class ClientGS1:
             if tile is not None:
                 return None if tile < 0 else tile
             return None
-        ix, iy = int(x), int(y)
+        tile = board_tile_read(self.client, x, y)
+        if tile is not None:
+            return int(tile)
+        ix, iy = math.floor(x), math.floor(y)
         if 0 <= ix < 64 and 0 <= iy < 64:
             tiles = getattr(self.client, "tiles", None) if self.client else None
             if tiles and len(tiles) >= 64 * 64:
@@ -795,14 +822,13 @@ class ClientGS1:
                     pass
         return None
 
-    def _tilestype(self):
-        """The tilestype in force for the client's CURRENT level, so script
-        probes read the same type table (classic vs new-world) the level's
-        tiledefs select — see tiletypes.select_tilestype."""
-        name = ""
-        if self.client is not None:
-            name = getattr(self.client, "_current_level_name", "") or ""
-        return tilestype_for_level(name)
+    def _tilestype(self, x=None, y=None):
+        """Select the probed segment's table from this client's tiledefs."""
+        name = getattr(self.client, "_current_level_name", "") if self.client else ""
+        if x is not None:
+            level, *_ = _board_locate(self.client, x, y)
+            name = level or name
+        return selection_for(self.client).tilestype_for_level(name)
 
     def is_wall(self, x, y, exclude_npc=None):
         """Collision test at world tile (x, y) for onwall(). Checks the level
@@ -818,37 +844,28 @@ class ClientGS1:
         tile = self.tile_at(x, y)
         if tile is not None:
             try:
-                if type_is_blocking(get_tile_type(tile, self._tilestype())):
+                if type_is_blocking(get_tile_type(tile, self._tilestype(x, y))):
                     return True
             except TypeError:
                 pass
         elif self.tile_source is not None:
             # tile_source resolved nothing: off the world (its own -1 case).
             return True
+        if any(type_is_blocking(get_tile_type(tile, self._tilestype(x, y)))
+               for tile in board_layer_tile_ids(self.client, x, y)):
+            return True
         return self.npc_blocks_at(x, y, exclude_npc=exclude_npc)
 
     def is_water_at(self, x, y):
-        """Water test at world tile (x, y) for onwater() — deep or shallow."""
-        tile = self.tile_at(x, y)
-        if tile is None:
-            return False
-        try:
-            return get_tile_type(tile, self._tilestype()) in (
-                TileType.WATER, TileType.NEAR_WATER)
-        except TypeError:
-            return False
+        # Water/lava, or the plane threshold in the isOnWater assembly.
+        return (self.tile_type_at(x, y) in (TileType.WATER, TileType.LAVA)
+                or selection_for(self.client).has_water_plane())
 
     def tile_type_at(self, x, y):
-        """`tiletype(x, y)`: the tile's TYPE code (tiletypes.py, table chosen
-        by the level's tilestype), not its tile id. Zelda's movement engine
-        reads it for chairs (3), beds (4/5) and jumpable ledges (21)."""
-        tile = self.tile_at(x, y)
-        if tile is None:
-            return 0.0
-        try:
-            return float(int(get_tile_type(tile, self._tilestype())))
-        except (TypeError, ValueError):
-            return 0.0
+        """Shared board/shape query (TServerLevel.cpp:688-708)."""
+        return float(effective_tile_type(self.tile_at(x, y),
+                                        self.npc_tile_type(x, y),
+                                        self._tilestype(x, y)))
 
     def mouse_world(self):
         """`mousex`/`mousey`: the mouse cursor in WORLD TILE coords.

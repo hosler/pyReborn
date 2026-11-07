@@ -307,7 +307,7 @@ def _probe_position_clear(client: Any, x: float, y: float) -> bool:
         tile_x, tile_y = math.floor(sample_x), math.floor(sample_y)
         if not (0 <= tile_x < 64 and 0 <= tile_y < 64):
             return False
-        if type_is_blocking(get_tile_type(tiles[tile_y * 64 + tile_x])):
+        if type_is_blocking(get_tile_type(tiles[tile_y * 64 + tile_x], client=client)):
             return False
     return True
 

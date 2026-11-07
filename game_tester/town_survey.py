@@ -178,9 +178,9 @@ class Survey:
                     continue
                 tid = board[ty * 64 + tx]
                 try:
-                    name = tiletypes.TileType(tiletypes.get_tile_type(tid)).name
+                    name = tiletypes.TileType(tiletypes.get_tile_type(tid, client=self.client)).name
                 except ValueError:
-                    name = str(tiletypes.get_tile_type(tid))
+                    name = str(tiletypes.get_tile_type(tid, client=self.client))
                 row.append(f"{tid}:{name}")
             rows.append(row)
         return rows

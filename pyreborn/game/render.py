@@ -15,7 +15,7 @@ from reborn_protocol.coords import (
 from .camera import Camera2D
 from ..liftobjects import match_lift_object
 from ..carrying import standing_carry
-from ..tiletypes import TileType, active_tilestype
+from ..tiletypes import TileType, selection_for
 from .constants import (
     TILE_SIZE,
     PLAYER_STAND_X, PLAYER_STAND_Y,
@@ -715,7 +715,7 @@ class RenderMixin(FrameContextMixin):
             self._draw_text_with_bg(line, 10, ui_y, (140, 220, 140))
             ui_y += 20
 
-        debug_text = (f"DEBUG - tilestype {active_tilestype()} - "
+        debug_text = (f"DEBUG - tilestype {selection_for(self.client).active_tilestype()} - "
                       f"F11 level edit, F12 dev tools")
         # Anchor to the live window width, not the SCREEN_WIDTH constant -
         # this drew centred/right-aligned for a 640px window regardless of the

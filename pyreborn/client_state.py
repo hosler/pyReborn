@@ -117,6 +117,7 @@ class LevelState:
     """The current level and every per-level thing keyed by level name."""
 
     def __init__(self):
+        self.tiletypes = _tiletypes.TileTypeSelection()
         # Level data: 4096 tile IDs (64x64 grid) for current level
         self.tiles: List[int] = []
         self.tiles_level_name = ""     # which level self.tiles currently holds
@@ -167,7 +168,7 @@ class LevelState:
     # Every "the player is now in level X" write in client.py and
     # handlers/level.py flows through this one property (via the
     # _current_level_name alias), so it is THE hook that keeps the
-    # per-level tilestype selection (tiletypes.set_current_level /
+    # per-session tilestype selection (TileTypeSelection.set_current_level /
     # TTiles::GetLevelTiles) in step with the player's level — for the
     # headless client as well as pygame.
     @property
@@ -177,7 +178,7 @@ class LevelState:
     @current_level_name.setter
     def current_level_name(self, value: str) -> None:
         self._current_level_name_value = value
-        _tiletypes.set_current_level(value)
+        self.tiletypes.set_current_level(value)
 
 
 class GmapState:

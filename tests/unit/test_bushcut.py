@@ -12,11 +12,6 @@ from pyreborn.packets import PacketID
 from pyreborn import tiletypes
 
 
-@pytest.fixture(autouse=True)
-def classic_tiles(monkeypatch):
-    monkeypatch.setattr(tiletypes, '_active_tilestype', 0)
-
-
 def plant(board, x=10, y=10, index=0):
     for dx in range(2):
         for dy in range(2):
@@ -272,7 +267,7 @@ def test_server_explosion_cuts_once_and_preserves_outside_bush(index):
 def test_explosions_only_cut_classic_tiles(tiles_type, monkeypatch):
     c = FakeClient()
     plant(c.tiles)
-    monkeypatch.setattr(tiletypes, '_active_tilestype', tiles_type)
+    c.level_state.tiletypes.register_tiledef('', tiles_type)
     handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
     assert c.modifications == c.effects == []
 

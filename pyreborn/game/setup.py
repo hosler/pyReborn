@@ -307,6 +307,8 @@ class SetupMixin:
         keep = {}
         if gs2 is None:
             return keep
+        # Shape-1 boxes block but do not publish tile types (TServerNPC.cpp:2018).
+        self._gs2_shape1_npcs = set(self.gs1._shape1_npcs)
         npc_vms = gs2.vms.get('npc', {})
         for nid, geom in self.gs1.shapes.items():
             if nid in npc_vms or str(nid) in npc_vms:
@@ -333,6 +335,8 @@ class SetupMixin:
             if not isinstance(npc, dict):
                 continue  # despawned between snapshot and restore
             self.gs1.shapes[nid] = geom
+            if nid in getattr(self, '_gs2_shape1_npcs', ()):
+                self.gs1._shape1_npcs.add(nid)
             w, h, flags = geom
             self.gs1._update_shape_blocks(nid, npc, w, h, flags)
 

@@ -209,8 +209,9 @@ class CombatMixin:
         lay_x, lay_y = lx + dx, ly + dy
         if not (0 <= lay_x < 64 and 0 <= lay_y < 64):
             return False
-        from .tiletypes import get_tile_type
-        tile_type = get_tile_type(board[int(lay_x) + int(lay_y) * 64])
+        from .tiletypes import get_tile_type, selection_for
+        tile_type = get_tile_type(board[int(lay_x) + int(lay_y) * 64],
+                                  selection_for(self).tilestype_for_level(level))
         # TServerLevel::walltile (:741) and isOnWater (:925): water is
         # types 11/12 here, rather than the scripting helper's shallow type 8.
         if tile_type > 19 or tile_type == 4:
@@ -256,14 +257,14 @@ class CombatMixin:
 
     def _blast_board_at(self, x: float, y: float):
         """TServerLevel.cpp:1502-1590: board effects on the active level only."""
-        from .tiletypes import active_tilestype
+        from .tiletypes import selection_for
         current = self._bush_board()
         if current is None:
             return set()
         _level, board, ox, oy = current
         origins = set()
         for block in board_blocks_at(lambda tx, ty: board[level_index(tx, ty)],
-                                     active_tilestype(), x - ox, y - oy):
+                                     selection_for(self).tilestype_for_level(_level), x - ox, y - oy):
             tl, bl, tr, br = block.replacement_column_major
             # TServerLevel.cpp:1534,1558,1582: publish the column-major patch.
             tiles = [tl, tr, bl, br]

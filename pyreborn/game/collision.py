@@ -13,8 +13,9 @@ from reborn_protocol.coords import (
 )
 
 from ..tiletypes import (
-    TileType, get_tile_type, type_is_blocking,
+    TileType, get_tile_type, type_is_blocking, selection_for, effective_tile_type,
 )
+from ..gs1_client.board import board_layer_tile_ids, _board_locate
 from .constants import (
     MOVE_STEP, CORNER_ASSIST_MAX,
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
@@ -35,7 +36,7 @@ class CollisionMixin:
         liftable objects, and those are not a tile type at all in the
         reference client - see pyreborn/liftobjects.py.
         """
-        return get_tile_type(tile_id)
+        return get_tile_type(tile_id, selection_for(self.client).active_tilestype())
 
     def _is_tile_blocking(self, tile_id: int) -> bool:
         """Check if tile is blocking.
@@ -62,14 +63,11 @@ class CollisionMixin:
         that array and NOTHING on the board says chair. Reading the board
         alone is why walking onto your own furniture did nothing."""
         gs1 = getattr(self, 'gs1', None)
-        if gs1 is not None:
-            try:
-                ttype = int(gs1.npc_tile_type(x, y))
-            except Exception:
-                ttype = 0
-            if ttype > 1:
-                return ttype
-        return self._tile_type(self._get_tile_at(x, y))
+        npc_type = gs1.npc_tile_type(x, y) if gs1 is not None else 0
+        level, *_ = _board_locate(self.client, x, y)
+        selection = selection_for(self.client)
+        tilestype = selection.tilestype_for_level(level) if level else selection.active_tilestype()
+        return effective_tile_type(self._get_tile_at(x, y), npc_type, tilestype)
     # Ground sampling uses the standing point between the feet. It is distinct
     # from the collision box's centre after the box's half-tile upward shift.
     PLAYER_FEET_DX = PLAYER_STAND_X
@@ -335,7 +333,13 @@ class CollisionMixin:
                 pass
 
         tile_id = self._get_tile_at(x, y)
-        return self._is_tile_blocking(tile_id)
+        level, *_ = _board_locate(self.client, x, y)
+        selection = selection_for(self.client)
+        tilestype = selection.tilestype_for_level(level) if level else selection.active_tilestype()
+        # TServerLevel.cpp:724-745 scans every stored flat board layer.
+        return any(type_is_blocking(get_tile_type(tile, tilestype))
+                   for tile in (tile_id, *board_layer_tile_ids(self.client, x, y)))
+
     def _player_blocks(self, x: float, y: float) -> bool:
         # TServerLevel.cpp:789 skips no-PK, nonblocking, dead and hidden
         # players; remote bounds are [x+.5,x+3) by [y+1,y+3).

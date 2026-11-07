@@ -48,8 +48,9 @@ class FunctionsMixin:
             return layer_image_get(
                 table, int(to_num(args[0])) if args else 0, owner)
         if name == "onwall":
-            x = int(to_num(args[0])) if args else 0
-            y = int(to_num(args[1])) if len(args) > 1 else 0
+            # TServerNPC.cpp:2213 tests shape cells at the original point.
+            x = to_num(args[0]) if args else 0.0
+            y = to_num(args[1]) if len(args) > 1 else 0.0
             return bool(self.rt.is_wall(
                 x, y, exclude_npc=getattr(ctx, "_npc_id", None)))
         if name == "onwall2":
@@ -94,11 +95,12 @@ class FunctionsMixin:
                         if self.rt.is_wall(tx, ty, exclude_npc=_self_id):
                             return True
                 return False
-            return bool(self.rt.is_wall(int(xf), int(yf),
+            return bool(self.rt.is_wall(xf, yf,
                                         exclude_npc=_self_id))
         if name in ("onwater", "onwater2"):
-            x = int(to_num(args[0])) if args else 0
-            y = int(to_num(args[1])) if len(args) > 1 else 0
+            # TServerLevel.cpp:923 and TServerNPC.cpp:2021 keep fractions.
+            x = to_num(args[0]) if args else 0.0
+            y = to_num(args[1]) if len(args) > 1 else 0.0
             return bool(self.rt.is_water_at(x, y))
         if name == "tiletype":
             # tiletype(x, y) — bare, or as `level.tiletype(...)` (the member

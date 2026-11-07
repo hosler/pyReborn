@@ -4,7 +4,7 @@ import time
 
 from reborn_protocol.coords import in_level_bounds, segment_at, segment_origin
 
-from .tiletypes import get_tile_type, type_is_blocking
+from .tiletypes import get_tile_type, type_is_blocking, selection_for
 from .liftobjects import LIFT_NAMES, LIFT_OBJECTS, LIFT_SPRITES
 
 TICK = 0.05
@@ -142,7 +142,7 @@ def advance_throw(game, obj, dt, remote=False):
         if not getattr(client, 'in_gmap_segment', False) and not in_level_bounds(x, y):
             return True
         tile = game._get_tile_at(x, y)
-        tile_type = get_tile_type(tile)
+        tile_type = get_tile_type(tile, selection_for(client).active_tilestype())
         blocking = game._is_tile_blocking(tile)
         runtime = getattr(getattr(client, 'gs1_host', None), 'rt', None)
         if runtime is not None:
@@ -171,8 +171,10 @@ def advance_throw(game, obj, dt, remote=False):
         for npc_id, npc in (getattr(client, 'npcs', {}) or {}).items():
             npc_type = npc.get('tiletype', 0)
             if runtime is not None:
-                npc_type = runtime._shape_type_owners.get(npc_id, {}).get(
-                    (int(x // 1), int(y // 1)), npc_type)
+                if npc_id in runtime.shapes:
+                    # TServerNPC.cpp:2016-2040: live fractional NPC-relative
+                    # lookup, just like tiletype and movement collision.
+                    npc_type = runtime._shape_type_at(npc_id, npc, x, y)
             if npc_type == 20 or not point_hits_npc(client, npc, x, y):
                 continue
             kind = obj.get('type', 'bush')

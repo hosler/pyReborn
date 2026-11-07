@@ -674,13 +674,15 @@ class MainCommandsMixin:
     def _cmd_setshape2(self, name, args, ctx, imgs):
         # Collision shape: record geometry keyed by NPC so the touch handler
         # reads it from here instead of regex-parsing the script. Both forms
-        # store (width, height, per-tile flags) — 22 == solid/touchable.
+        # store (width, height, per-tile types). TServerNPC.cpp:2213:
+        # >=2 touches; >=20 blocks.
         if len(args) < 3:
             return _FALL_THROUGH
         npc_id = getattr(ctx, "_npc_id", 0)
         w, h = int(to_num(args[0])), int(to_num(args[1]))
-        flags = ([int(to_num(f)) for f in args[2]]
-                 if isinstance(args[2], (list, tuple)) else [])
+        # TServerNPC.cpp:2039 reads the array live (also after script mutation).
+        flags = args[2] if isinstance(args[2], (list, tuple)) else []
+        self.rt._shape1_npcs.discard(npc_id)
         self.rt.shapes[npc_id] = (w, h, flags)
         self.rt._update_shape_blocks(npc_id, ctx.this_obj, w, h, flags)
 
@@ -699,6 +701,7 @@ class MainCommandsMixin:
         stype = int(to_num(args[0]))
         w = max(1, (int(to_num(args[1])) + 15) // 16)
         h = max(1, (int(to_num(args[2])) + 15) // 16)
+        self.rt._shape1_npcs.add(npc_id)
         flags = [22] * (w * h) if stype == 1 else []
         self.rt.shapes[npc_id] = (w, h, flags)
         self.rt._update_shape_blocks(npc_id, ctx.this_obj, w, h, flags)

@@ -243,6 +243,28 @@ class TestScriptReload:
 
 
 class TestClientBuiltinsAndFrameEvents:
+    @pytest.mark.parametrize("height", [-1, 0, 1])
+    def test_waterheight_write_reaches_shared_selection_and_live_reads(self, height):
+        from pyreborn import Client
+        client = Client()
+        client._current_level_name = 'room.nw'
+        client.tiles = [0] * 4096
+        client._tiles_level_name = 'room.nw'
+        client.levels['room.nw'] = client.tiles
+        gs1 = ClientGS1(client)
+        rt2 = ClientGS2(client, gs1)
+        strings = []
+        code = (_var(strings, 'waterheight') + _num(height) + _op(Op.OP_ASSIGN)
+                + _this_assign(strings, 'seen', _var(strings, 'waterheight')) + _ret())
+        vm = rt2.load_bytecode('weapon', 'plane', GS2Container(strings=strings, code=code))
+        assert client.level_state.tiletypes.waterheight == height
+        assert vm.this.get('seen') == height
+        assert gs1.is_water_at(0, 0) == (height >= 0.3)
+        assert 'waterheight' not in rt2.globals_store  # No stale dict shadow.
+        client.level_state.tiletypes.set_waterheight(0.5)
+        assert rt2.host.get_object('waterheight') == 0.5
+        assert Client().level_state.tiletypes.waterheight == 0.0
+
     def test_isleader_uses_the_gs1_truth_value(self):
         client = _FakeClient()
         client.level = "room.nw"

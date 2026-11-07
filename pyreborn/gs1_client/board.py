@@ -70,6 +70,34 @@ def _board_list(client, level_name):
     return board if board is not None and len(board) >= 4096 else None
 
 
+def board_layer_tile_ids(client, x, y):
+    """Extra stored layers at a world point (TServerLevel.cpp:724-745).
+
+    PLO_BOARDLAYER stores full little-endian int16 boards for one named level.
+    No layer z is stored; these are the client's flat board layers. Neighbor
+    layers that were not retained by the packet handler cannot be queried.
+    """
+    level, lx, ly, _grid = _board_locate(client, x, y)
+    if level is None or level != getattr(client, "_board_layers_level_name", ""):
+        return
+    index = level_index(lx, ly)
+    for layer, raw in sorted((getattr(client, "board_layers", None) or {}).items()):
+        if layer <= 0:
+            continue
+        if isinstance(raw, (bytes, bytearray)):
+            offset = index * 2
+            if offset + 2 > len(raw):
+                continue
+            tile = int.from_bytes(raw[offset:offset + 2], "little", signed=True)
+        else:
+            if index >= len(raw):
+                continue
+            tile = raw[index]
+        # A missing upper-layer tile is skipped, unlike the base (:735-738).
+        if tile >= 0:
+            yield tile
+
+
 def board_world_dims(client):
     """Return the script-frame board dimensions in tiles.
 
@@ -115,7 +143,9 @@ def board_tile_write(client, x, y, tile_id) -> bool:
     if level is None or _board_list(client, level) is None:
         return False
     info = {"layer": 0, "x": lx, "y": ly, "width": 1, "height": 1,
-            "tiles": [max(0, int(to_num(tile_id))) & 0xFFF]}
+            # TServerLevel.cpp:590-610 stores static_cast<int16_t>(tile),
+            # not a 12-bit tileset index; preserve high bits and signed values.
+            "tiles": [((int(to_num(tile_id)) + 0x8000) & 0xFFFF) - 0x8000]}
     if grid is not None:
         info["map_x"], info["map_y"] = grid
     client._apply_board_modify(level, info)
@@ -126,21 +156,21 @@ def board_tile_write(client, x, y, tile_id) -> bool:
 
 
 def board_update_region(client, x, y, w, h) -> None:
-    """`updateboard x,y,width,height` -- re-blit the rect from current board
-    data. Oracle: GServer-v2 GS1Commands.cpp:3560-3575 (fn_updateboard /
-    fn_updateboard2): exactly this argument order, each value clamped at 0,
-    the rect handed to Level::updateBoard for a region redraw. Updateboard2
-    also saves the level server-side, which has no client-side
-    meaning, so both spellings redraw here. Scripts edit tiles[] first and
-    then call this to publish the change (LTTP's CheckTiles bush slash).
-    board_tile_write already patches the renderer per write, so this is the
-    idempotent region form -- and the only path that repaints edits made
-    behind the callback's back."""
+    """Publish tiles[] edits and repaint the region (TPlayer.cpp:1904-1908).
+
+    PLI_BOARDMODIFY has no level field (GServer-v2/server/src/player/packets/
+    PlayerClientPackets.cpp:122); publish only the sender's segment. Other
+    cached segments still repaint locally until a named-level transport exists.
+
+    Keep signed int16 local IDs (TServerLevel.cpp:600-609). The reference
+    sender caps IDs above 0x6fff (TClient.cpp:1705-1719), and negative IDs
+    cannot round-trip through our unsigned GSHORT codec. Preserve such cells
+    locally and publish only runs of representable IDs, rather than sending
+    a different tile from the one scripts and collision read.
+    """
     if client is None:
         return
     cb = getattr(client, "on_board_modify", None)
-    if cb is None:
-        return
     x0 = max(0, int(math.floor(x)))
     y0 = max(0, int(math.floor(y)))
     ww, wh = board_world_dims(client)
@@ -176,4 +206,26 @@ def board_update_region(client, x, y, w, h) -> None:
                 "width": lx1 - lx0, "height": ly1 - ly0, "tiles": tiles}
         if grid is not None:
             info["map_x"], info["map_y"] = grid
-        cb(info)
+        if cb:
+            cb(info)
+        sender_level = (client.get_current_level_from_position()
+                        if hasattr(client, "get_current_level_from_position")
+                        else getattr(client, "_current_level_name", ""))
+        sender_grid = segment_at(client.x, client.y) if on_gmap else None
+        if level == sender_level and grid == sender_grid:
+            if all(0 <= tile <= 0x6fff for tile in tiles):
+                client.modify_board(lx0, ly0, lx1 - lx0, ly1 - ly0, tiles)
+            else:
+                width = lx1 - lx0
+                for row, ty in enumerate(range(ly0, ly1)):
+                    start = 0
+                    while start < width:
+                        if not 0 <= tiles[row * width + start] <= 0x6fff:
+                            start += 1
+                            continue
+                        end = start + 1
+                        while end < width and 0 <= tiles[row * width + end] <= 0x6fff:
+                            end += 1
+                        client.modify_board(lx0 + start, ty, end - start, 1,
+                                            tiles[row * width + start:row * width + end])
+                        start = end

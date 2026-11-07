@@ -4,7 +4,7 @@ import logging
 
 from reborn_protocol.gs1.values import to_num, to_str
 
-from ..tiletypes import register_tiledef, remove_tiledefs
+from ..tiletypes import selection_for, register_tiledef, remove_tiledefs
 from .board import board_update_region
 from .objects import _pcode, _write_npc_command
 from .registry import _FALL_THROUGH, _GS1_PRE_COMMANDS, _NOOP, _NPC_WRITE, _gs1_command
@@ -97,7 +97,7 @@ class PreCommandsMixin:
             tile_type = int(to_num(args[2])) if len(args) >= 3 else 0
         except (TypeError, ValueError):
             tile_type = 0
-        register_tiledef(levelstart, tile_type)
+        selection_for(rt.client).register_tiledef(levelstart, tile_type)
         if rt.on_tiledef:
             rt.on_tiledef("full", image, levelstart, tile_type)
 
@@ -105,7 +105,7 @@ class PreCommandsMixin:
     def _cmd_removetiledefs(self, name, args, ctx, imgs):
         # revert to the default tileset
         prefix = to_str(args[0]).lower() if args else ""
-        remove_tiledefs(prefix)
+        selection_for(self.rt.client).remove_tiledefs(prefix)
         if self.rt.on_tiledef:
             self.rt.on_tiledef(None, prefix)
 

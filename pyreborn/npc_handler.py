@@ -22,6 +22,7 @@ import math
 import os
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
+from reborn_protocol.gs1.values import to_num
 
 # NPC-touch probe points: the reference client's `touchtestd` table verbatim
 # (TPlayer::touchNPCs probes touchtestd[dir] and touchtestd[dir+4] each
@@ -68,12 +69,16 @@ class NPCShape:
     y: float
     width: int  # In tiles
     height: int  # In tiles
-    solid_flags: List[int] = field(default_factory=list)  # Per-tile flags (22=solid)
+    solid_flags: List[int] = field(default_factory=list)  # Per-tile types (>=2 touches; >=20 blocks)
     # Optional exact point test overriding the rect/flags walk — used for
     # image-footprint shapes, where gs1.npc_footprint_hit refines the rect
     # per-pixel by image transparency (the reference touch test resolves to
     # !isPixelTransparent inside the image rect, TServerNPC::isOnNPC).
     hit_test: Optional[callable] = None
+
+    def __post_init__(self):
+        # Match ClientGS1._shape_type_at, including string-array cells.
+        self.solid_flags = [math.floor(to_num(flag)) for flag in self.solid_flags]
 
     def get_touchable_tiles(self) -> List[Tuple[int, int]]:
         """Get list of touchable (solid) tile offsets."""
@@ -86,7 +91,7 @@ class NPCShape:
         else:
             # Use solid_flags to determine touchable tiles
             for i, flag in enumerate(self.solid_flags):
-                if flag == 22:  # Solid/touchable
+                if flag >= 2:  # TServerNPC.cpp:2213: touch >=2, wall >=20
                     tx = i % self.width
                     ty = i // self.width
                     tiles.append((tx, ty))
@@ -109,7 +114,7 @@ class NPCShape:
         # Check specific tile
         tile_idx = int(ry) * self.width + int(rx)
         if tile_idx < len(self.solid_flags):
-            return self.solid_flags[tile_idx] == 22
+            return self.solid_flags[tile_idx] >= 2  # TServerNPC.cpp:2213
 
         return False
 

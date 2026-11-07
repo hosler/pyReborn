@@ -24,17 +24,15 @@ classic table at 0x540740 (which matches tiletypes1.dat). Sanity check: on
 real era_ levels (a tilestype-1 server) the classic table calls 96% of board
 tiles blocking. The new-world table gives a plausible 57%.
 
-Like the real client's ``TTiles::tilestype``, the active tilestype and the
-registered tiledefs are PROCESS-GLOBAL. Multiple in-process clients (multi-bot
-QA) share them. That is only observable if bots sit on levels with different
-tilestype defs at the same time, which mirrors what a single real client
-process could express anyway.
+Client instances own their selection state; the module-level helpers retain a
+standalone default for callers without a network client. The immutable tables
+are shared, while registrations and level selection are isolated per session.
 """
 
 import logging
 import os
 from enum import IntEnum
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +43,27 @@ class TileType(IntEnum):
     HURT_UNDERGROUND = 2   # Damage tiles underground
     CHAIR = 3              # Sittable objects
     BED_UPPER = 4          # Upper part of bed (blocking)
-    BED_LOWER = 5          # Lower part of bed (blocking)
+    BED_LOWER = 5          # Lower part of bed (passable)
     SWAMP = 6              # Slows movement
-    LAVA_SWAMP = 7         # Damage + slow movement
+    LAVA_SWAMP = 7         # Lava swamp (not a damage type)
     NEAR_WATER = 8         # Shallow water (normal walking)
+    # GServer-v2/server/include/level/LevelTileTypes.h:27-44.
+    NEAR_LAVA = 9
+    DESERT = 10
     WATER = 11             # Deep water (swimming)
     LAVA = 12              # Lava (damage)
     THROW_THROUGH = 20     # Can throw items through but blocks walking
     JUMP_STONE = 21        # Jump tiles (block walking)
     BLOCKING = 22          # Solid walls and obstacles
-    # There are no liftable-object types. A bush, a pot or a sign is a 2x2
-    # TILE-ID PATTERN in the reference client, not a type - see
-    # pyreborn/liftobjects.py. Ids 23-26 used to hold invented BUSH/ROCK/POT/
-    # SIGN types, which only ever existed in a hand-tagged per-install overlay.
+    BLOCKING_FOREGROUND = 23  # New-world foreground wall (LevelTileTypes.h:44)
+    # Liftable objects are tile-ID patterns; see pyreborn/liftobjects.py.
 
 
 _DAT_PATH = os.path.join(os.path.dirname(__file__), "tiletypes1.dat")
 _NW_DAT_PATH = os.path.join(os.path.dirname(__file__), "tiletypesnw.dat")
+
+
+_warned_classic_missing = False
 
 
 def _load_tile_types() -> bytes:
@@ -77,6 +79,11 @@ def _load_tile_types() -> bytes:
             return data[:4096]
     except OSError:
         pass
+    global _warned_classic_missing
+    if not _warned_classic_missing:
+        _warned_classic_missing = True
+        logger.warning("MISSING OR TRUNCATED tiletypes1.dat: collision data unavailable; "
+                       "falling back to an all-walkable classic table")
     return bytes(4096)
 
 
@@ -102,13 +109,55 @@ TILESTYPE_NONE = 5
 
 # --- per-level tilestype selection (TTiles::GetLevelTiles) -----------------
 
-# Registered full-tileset defs, in registration order: (prefix, m_type).
-# addtiledef2 pastes register type 4 in the real client; since type 4 is
-# always skipped by the selection rule they are simply not recorded here.
-_registered_tiledefs: List[Tuple[str, int]] = []
-_current_level = ""
-_active_tilestype = 0
+class TileTypeSelection:
+    """Session-owned tiledefs (TServerList.cpp:333; TTiles.cpp:285-287)."""
+
+    def __init__(self):
+        self.reset_tiledefs()
+
+    def reset_tiledefs(self):
+        self.defs = []
+        self.current_level = ""
+        # TTiles.cpp:18, :46-48: zero default, unrestricted double setter.
+        self.waterheight = 0.0
+
+    def set_waterheight(self, value):
+        from reborn_protocol.gs1.values import to_num
+        self.waterheight = to_num(value)
+
+    def has_water_plane(self):
+        # The isOnWater assembly compares DOUBLE_00402670 (0.3), despite
+        # TServerLevel.cpp:928's inaccurate 0.0 transcription. See asm/
+        # TServerLevel/_ZN12TServerLevel9isOnWaterEdd.s_decomped:12-13 and
+        # Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1242.
+        return self.waterheight >= 0.3
+
+    def register_tiledef(self, levelstart, m_type):
+        prefix = (levelstart or "").lower()
+        self.defs = [entry for entry in self.defs if entry[0] != prefix]
+        self.defs.append((prefix, int(m_type)))
+
+    def remove_tiledefs(self, prefix=""):
+        prefix = (prefix or "").lower()
+        self.defs = [entry for entry in self.defs if not entry[0].startswith(prefix)]
+
+    def set_current_level(self, level_name):
+        self.current_level = _strip_level_name(level_name)
+
+    def tilestype_for_level(self, level_name):
+        return select_tilestype(self.defs, level_name)
+
+    def active_tilestype(self):
+        return self.tilestype_for_level(self.current_level)
+
+
+_default_selection = TileTypeSelection()
 _warned_nw_missing = False
+
+
+def selection_for(client=None):
+    """Use the client's session registry, or the standalone compatibility one."""
+    return getattr(getattr(client, "level_state", None), "tiletypes", _default_selection)
 
 
 def _strip_level_name(level_name: str) -> str:
@@ -142,59 +191,16 @@ def select_tilestype(defs: Iterable[Tuple[str, int]], level_name: str) -> int:
     return result
 
 
-def _recompute_active() -> None:
-    global _active_tilestype
-    _active_tilestype = select_tilestype(_registered_tiledefs, _current_level)
+# Compatibility helpers for standalone table users (no Client instance).
+register_tiledef = _default_selection.register_tiledef
+remove_tiledefs = _default_selection.remove_tiledefs
+reset_tiledefs = _default_selection.reset_tiledefs
+set_current_level = _default_selection.set_current_level
+tilestype_for_level = _default_selection.tilestype_for_level
 
 
-def register_tiledef(levelstart: str, m_type: int) -> None:
-    """Record an addtiledef's (levelstart, type) for tilestype selection.
-
-    Mirrors TilesetManager.set_full_tiledef: a re-register for the same
-    prefix replaces the earlier entry.
-    """
-    prefix = (levelstart or "").lower()
-    global _registered_tiledefs
-    _registered_tiledefs = [
-        entry for entry in _registered_tiledefs if entry[0] != prefix
-    ]
-    _registered_tiledefs.append((prefix, int(m_type)))
-    _recompute_active()
-
-
-def remove_tiledefs(prefix: str = "") -> None:
-    """removetiledefs: drop defs whose stored prefix starts with `prefix`."""
-    prefix = (prefix or "").lower()
-    global _registered_tiledefs
-    _registered_tiledefs = [
-        entry for entry in _registered_tiledefs
-        if not entry[0].startswith(prefix)
-    ]
-    _recompute_active()
-
-
-def reset_tiledefs() -> None:
-    """Forget all registered defs (tests / full client reset)."""
-    global _registered_tiledefs
-    _registered_tiledefs = []
-    _recompute_active()
-
-
-def set_current_level(level_name: str) -> None:
-    """Level change: recompute the active (module-default) tilestype."""
-    global _current_level
-    _current_level = _strip_level_name(level_name)
-    _recompute_active()
-
-
-def active_tilestype() -> int:
-    """The tilestype in force for the current level (TTiles::tilestype)."""
-    return _active_tilestype
-
-
-def tilestype_for_level(level_name: str) -> int:
-    """The tilestype a specific level would select (per-client probes)."""
-    return select_tilestype(_registered_tiledefs, level_name)
+def active_tilestype(client=None):
+    return selection_for(client).active_tilestype()
 
 
 def _table_for(tilestype: int) -> bytes:
@@ -212,37 +218,42 @@ def _table_for(tilestype: int) -> bytes:
     return TILE_TYPES_NW
 
 
-def get_tile_type(tile_id: int, tilestype: Optional[int] = None) -> int:
+def get_tile_type(tile_id: int, tilestype: Optional[int] = None, *, client=None) -> int:
     """
     Get the tile type for a given tile ID.
 
     For tiles 0-4095 (first tileset), uses the lookup table selected by
-    `tilestype` (default: the active per-level selection).
-    For tiles >= 4096 (other tilesets), returns the type of tile_id % 512.
+    `tilestype` (default: the client's selection, or the standalone selection).
+    The reference indexes directly (TServerLevel.cpp:705-708), with no wrap.
+    Its arrays have fixed bounds (:95-96); reads beyond them are undefined C++
+    behavior, not another tileset. Python safely returns NONBLOCK for ids outside
+    the shipped table instead of emulating an arbitrary out-of-bounds byte.
     """
     if tile_id < 0:
         return TileType.BLOCKING
 
     if tilestype is None:
-        tilestype = _active_tilestype
+        tilestype = active_tilestype(client)
     if tilestype == TILESTYPE_NONE:
         # "No tiles": every valid tile reports type 0 (getTileType:698-699).
         return TileType.NONBLOCK
     table = _table_for(tilestype)
 
-    # For additional tilesets, use modulo 512 to map back to base tiles
-    # This is a simplification - actual behavior may vary
-    if tile_id >= 4096:
-        # Tiles beyond first tileset - check if in water/blocking range
-        base_id = tile_id % 512
-        if base_id < len(table):
-            return table[base_id]
-        return TileType.NONBLOCK
-
     if tile_id < len(table):
         return table[tile_id]
 
     return TileType.NONBLOCK
+
+
+def effective_tile_type(tile_id, npc_type=0, tilestype=None):
+    """Shared board/overlay query (TServerLevel.cpp:688-708).
+
+    getNPCTileType stops on the first nonzero answer (:199-203, :536-561),
+    but only an answer above one overrides the board (:694-696).
+    """
+    if npc_type > 1:
+        return npc_type
+    return get_tile_type(tile_id, tilestype) if tile_id is not None else 0
 
 
 def type_is_blocking(tile_type: int) -> bool:
@@ -254,24 +265,26 @@ def type_is_blocking(tile_type: int) -> bool:
             tile_type == TileType.BED_UPPER)
 
 
-def is_blocking(tile_id: int) -> bool:
+def is_blocking(tile_id: int, tilestype=None, *, client=None) -> bool:
     """Check if a tile blocks movement."""
-    return type_is_blocking(get_tile_type(tile_id))
+    return type_is_blocking(get_tile_type(tile_id, tilestype, client=client))
 
 
-def is_water(tile_id: int) -> bool:
+def is_water(tile_id: int, tilestype=None, *, client=None) -> bool:
     """Check if a tile is deep or shallow water."""
-    tile_type = get_tile_type(tile_id)
+    tile_type = get_tile_type(tile_id, tilestype, client=client)
     return tile_type in (TileType.WATER, TileType.NEAR_WATER)
 
 
-def is_swimming_water(tile_id: int) -> bool:
+def is_swimming_water(tile_id: int, tilestype=None, *, client=None) -> bool:
     """Check if a tile is deep enough to trigger swimming."""
-    return get_tile_type(tile_id) == TileType.WATER
+    # TServerLevel.cpp:923-928 includes lava in the swimming water set.
+    return get_tile_type(tile_id, tilestype, client=client) in (TileType.WATER, TileType.LAVA)
 
 
-def is_damaging(tile_id: int) -> bool:
+def is_damaging(tile_id: int, tilestype=None, *, client=None) -> bool:
     """Check if a tile causes damage."""
-    tile_type = get_tile_type(tile_id)
-    return tile_type in (TileType.LAVA, TileType.LAVA_SWAMP, TileType.HURT_UNDERGROUND)
+    tile_type = get_tile_type(tile_id, tilestype, client=client)
+    # TPlayer.cpp:5887 / pyreborn/ground_effects.py:8: lava shore hurts; swamp does not.
+    return tile_type in (TileType.LAVA, TileType.NEAR_LAVA, TileType.HURT_UNDERGROUND)
 

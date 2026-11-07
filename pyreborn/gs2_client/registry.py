@@ -291,7 +291,14 @@ def _set_lighting_enabled(rt2: "ClientGS2", key: str, value: Any) -> bool:
 #: this hook the write would be swallowed by the dict: the engine would never
 #: see it and every later read would answer the swallowed copy instead of live
 #: state. A handler returning True means "consumed, store nothing".
+def _set_waterheight(rt2, key, value):
+    from ..tiletypes import selection_for
+    selection_for(rt2.client).set_waterheight(value)
+    return True
+
+
 _GS2_GLOBAL_SETTERS = {
+    "waterheight": _set_waterheight,
     "selectedweapon": _set_selected_weapon,
     "selectedsword": _set_selected_weapon,
     "isgraalplugin": lambda rt2, key, value: True,

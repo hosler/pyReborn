@@ -314,3 +314,85 @@ def test_gs2_column_multidim_shapes():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@pytest.mark.parametrize("tile_id,stored", [(4096, 4096), (5000, 5000),
+                                         (-1, -1), (65535, -1), (65536, 0)])
+def test_script_tile_writes_use_signed_short_not_12_bit_mask(tile_id, stored):
+    c = _client()
+    assert board_tile_write(c, 0, 0, tile_id)
+    assert board_tile_read(c, 0, 0) == stored
+
+
+def _wire_recorder(c):
+    from unittest.mock import Mock
+    c._protocol = SimpleNamespace(connected=True, send_packet=Mock(return_value=True))
+    return c._protocol.send_packet
+
+
+def test_updateboard_publishes_without_renderer_callback():
+    from pyreborn.packets import PacketID, parse_board_modify
+    c = _client()
+    send = _wire_recorder(c)
+    gs1 = ClientGS1(c)
+    _run_weapon(gs1, "tiles[8,4] = 5000; tiles[9,4] = 294; updateboard 8,4,2,1;")
+    send.assert_called_once()
+    pid, data = send.call_args.args
+    assert pid == PacketID.PLI_BOARDMODIFY
+    assert parse_board_modify(data) == {'layer': 0, 'x': 8, 'y': 4,
+                                       'width': 2, 'height': 1, 'tiles': [5000, 294]}
+
+
+@pytest.mark.parametrize('tile_id', [-1, 28672, 28767, 28768, 32767, 40000, 65535])
+def test_updateboard_keeps_unrepresentable_signed_tiles_local(tile_id):
+    c = _client()
+    send = _wire_recorder(c)
+    assert board_tile_write(c, 8, 4, tile_id)
+    stored = board_tile_read(c, 8, 4)
+    board_update_region(c, 8, 4, 1, 1)
+    send.assert_not_called()
+    assert board_tile_read(c, 8, 4) == stored
+
+
+def test_updateboard_splits_valid_runs_around_local_only_cells():
+    from pyreborn.packets import parse_board_modify
+    c = _client()
+    send = _wire_recorder(c)
+    cells = [5000, -1, 28671, 294, 40000, 7, 28768, -1]
+    for i, tile in enumerate(cells):
+        board_tile_write(c, 8 + i % 4, 4 + i // 4, tile)
+    before = list(c.tiles)
+    board_update_region(c, 8, 4, 4, 2)
+    deltas = [parse_board_modify(call.args[1]) for call in send.call_args_list]
+    assert [(d['x'], d['y'], d['width'], d['height'], d['tiles']) for d in deltas] == [
+        (8, 4, 1, 1, [5000]), (10, 4, 2, 1, [28671, 294]), (9, 5, 1, 1, [7])]
+    assert c.tiles == before
+
+
+def test_updateboard_never_publishes_a_neighbor_as_the_senders_segment():
+    from pyreborn.packets import parse_board_modify
+    c = _gmap_client()
+    send = _wire_recorder(c)
+    c._pending_level_name = 'zb.nw'  # adjacent preload must not redirect edit
+    board_update_region(c, 62, 0, 4, 1)
+    assert send.call_count == 1
+    assert parse_board_modify(send.call_args.args[1])['tiles'] == [1, 1]
+    assert c.levels['zb.nw'][:2] == [2, 2]
+    send.reset_mock()
+    board_update_region(c, 64, 0, 2, 1)
+    send.assert_not_called()
+    # Player moves across seam BEFORE the authoritative level-name update.
+    c.player.x = 65
+    board_update_region(c, 62, 0, 4, 1)
+    assert send.call_count == 1
+    delta = parse_board_modify(send.call_args.args[1])
+    assert (delta['x'], delta['tiles']) == (0, [2, 2])
+
+
+
+def test_updateboard_checks_grid_even_if_gmap_reuses_a_level_name():
+    c = _gmap_client()
+    c.gmap_grid[(1, 0)] = 'za.nw'
+    send = _wire_recorder(c)
+    board_update_region(c, 64, 0, 1, 1)
+    send.assert_not_called()
