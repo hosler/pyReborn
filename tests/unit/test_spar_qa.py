@@ -111,7 +111,10 @@ def test_live_assertions_require_death_rating_delivery_and_no_kills(
         client._current_level_name = client._tiles_level_name = SPAR_LEVEL
         client.tiles = [0] * 4096
         client.npcs[1] = {'_level': SPAR_LEVEL, 'script': 'sparringzone'}
-        client.players[2 - i] = {}
+        # The victim finds its killer by account name in the roster; the
+        # test suffixes the accounts it is given.
+        suffix = '_spar_same' if same_ip else '_spar'
+        client.players[2 - i] = {'account': ('a', 'b')[1 - i] + suffix}
         client.warp_to_level = Mock(return_value=True)
         client.send_hearts = Mock(return_value=True)
         bots.append(SimpleNamespace(client=client, connect=lambda: True,
