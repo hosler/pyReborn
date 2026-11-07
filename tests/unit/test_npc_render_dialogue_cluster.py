@@ -304,3 +304,26 @@ def test_character_marker_image_renders_as_character(game):
     assert 24 in game.npc_anims
     # ...and nothing ever tried to load "#c#" as a sheet
     assert '#c#' not in loads
+
+
+def test_npc_position_write_moves_the_world_pair_the_renderer_reads():
+    # The renderer, touch tests and collision read world_x/world_y first, so
+    # a script `x = 34.5;` that only changed `x` never moved the drawn NPC
+    # (the half-tile seat offsets in classic levels). Segment (1, 1) here:
+    # the world pair carries a +64 offset that the write must keep.
+    client, gs1, _ = _gs1_game()
+    npc = client.npcs[7] = {"x": 34.0, "y": 15.0, "world_x": 98.0, "world_y": 79.0}
+    gs1.load_script(
+        "npc_7", "if (created) { x = 34.5; y = 15.5; }", npc_id=7, x=34, y=15)
+    gs1.trigger_npc_event(7, "created")
+
+    assert (npc["x"], npc["y"]) == (34.5, 15.5)
+    assert (npc["world_x"], npc["world_y"]) == (98.5, 79.5)
+
+
+def test_npc_position_write_without_a_world_pair_leaves_it_absent():
+    client, gs1, _ = _gs1_game()
+    npc = client.npcs[7] = {"x": 5.0, "y": 5.0}
+    gs1.load_script("npc_7", "if (created) { x += 1; }", npc_id=7, x=5, y=5)
+    gs1.trigger_npc_event(7, "created")
+    assert npc["x"] == 6.0 and "world_x" not in npc

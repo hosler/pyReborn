@@ -9,7 +9,7 @@ from reborn_protocol.gs1.host_shared import tokens_count
 from ..script_player_props import sync_script_player_stat
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
-from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number
+from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number, _write_npc_attr
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
 
 
@@ -498,7 +498,7 @@ class BuiltinsMixin:
                 return True
             return False
         if isinstance(npc, dict) and name in NPC_ATTR:
-            npc[NPC_ATTR[name]] = value
+            _write_npc_attr(npc, NPC_ATTR[name], value)
             return True
         player = self._player
         if player is not None and name in PLAYER_ATTR:
