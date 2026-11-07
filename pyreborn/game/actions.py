@@ -162,7 +162,7 @@ class ActionsMixin:
                 'arrows': player.arrows, 'hearts': player.hearts}
 
     def _giveaway_select(self):
-        """S+A: enter / advance the item giveaway (TPlayer::setSelecting)."""
+        """S-held A press: enter / advance selection (TPlayer.cpp:6612-6687)."""
         if getattr(self.client, 'ghost_mode', 0):
             return None
         stats = self._giveaway_stats()
@@ -185,8 +185,7 @@ class ActionsMixin:
         self.sound_mgr.play("item2.wav")
 
     def _giveaway_drop(self) -> bool:
-        """A while the giveaway is up: lay the selected item (loseItem +
-        putExtra + PLI_ITEMADD)."""
+        """Bare A press: loseItem + putExtra + PLI_ITEMADD (TPlayer.cpp:2232-2247)."""
         if getattr(self.client, 'ghost_mode', 0):
             return False
         index = getattr(self, '_giveaway_item', None)

@@ -8,6 +8,8 @@ import pygame
 
 from reborn_protocol.coords import segment_origin
 
+from .. import ground_items
+from ..classic_sprites import draw_sprite
 from .constants import TILE_SIZE, PLAYER_STAND_X, PLAYER_STAND_Y
 
 
@@ -25,32 +27,6 @@ _ITEM_COLORS = {
     'spinattack': (200, 80, 220),
 }
 _DEFAULT_ITEM_COLOR = (220, 220, 100)
-
-# item_type -> (sheet, x, y, w, h) tile-authentic pics1.png source rect for
-# LevelItem ground-item icons. Deliberately empty: a research pass (2026-07)
-# for the real crop table came up dry across every reference we're allowed to
-# use --
-#   - the C# client checkout (Preagonal) never ships pixel positions, only
-#     name<->index tables (getitemindex asm) plus per-item *default GS1
-#     scripts* returned by TGUIScriptLoader::getDefaultItemScript, which are
-#     zlib-compressed data blobs baked into the decompiled binary (not
-#     recoverable as text from the .s dumps we have)
-#   - GServer-v2's server/include/level/LevelItem.h and
-#     server/src/level/LevelItem.cpp only map LevelItemType <-> name/effect;
-#     the server never sends or knows a sprite rect (that's purely a client
-#     art concern)
-#   - pyReborn's own tools/chest_picker.py precedent (chests) and the
-#     funtimes GS1 level corpus have nothing for items either
-#   - eyeballing pyreborn/assets/dustynewpics1.png directly (dumped as a
-#     gridded contact sheet during this pass) shows a terrain/dungeon
-#     tileset with no distinct icon strip to identify rupees/hearts/bombs/
-#     swords/shields against, so guessing tile coordinates from that image
-#     would be exactly the "invent it blind" mistake to avoid
-# so every item currently falls through to the vector icon in
-# _get_item_sprite(). Add verified (sheet, x, y, w, h) entries here once a
-# real source turns up (e.g. a live-server capture, like chest_picker.py did
-# for chests) -- _get_item_sprite() already knows how to use them.
-_ITEM_SPRITE_TABLE = {}
 
 # TPlayer.cpp:2812-2814 putExtra(..., 0x18): 24 ticks at 20 Hz, no rise or fade.
 _CHEST_REVEAL_DURATION_MS = 24 * 50
@@ -79,42 +55,24 @@ class LevelObjectsRenderMixin:
         return origin_x, origin_y
 
     def _get_item_sprite(self, item_type: str) -> pygame.Surface:
-        """Build (and cache) a ground-item icon.
+        """Return native item art, or a cached vector fallback without the sheet."""
+        # PLO_ITEMADD carries an item index: TClient.cpp:5474-5487,3685-3690.
+        # putExtra resolves it through giveitems (the overhead icon's table):
+        # Preagonal/FourPlay/quattroplay/src/TServerLevel.cpp:1341-1347;
+        # Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1197-1217.
+        index = ground_items.item_index(item_type)
+        if index is not None:
+            sprite = draw_sprite(self.sprite_mgr, ground_items.GIVE_SPRITES[index])
+            if sprite is not None:
+                return sprite
 
-        Looks up `item_type` in _ITEM_SPRITE_TABLE and, if present, crops the
-        tile-authentic pics1.png rect via sprite_mgr.get_sprite() (same path
-        _get_chest_sprite uses for the tileset). _ITEM_SPRITE_TABLE is
-        currently empty - see its module-level comment for the research that
-        came up dry - so every item falls through to the vector icon below,
-        matching the style already used for the HUD's rupee/bomb/arrow
-        counters (game/hud.py StatsPanel._stat_icon). Type-correct and pop on
-        pickup either way; the vector path just isn't pixel-authentic Reborn
-        art."""
+        # Retry the real art before consulting this fallback cache: sprites.png
+        # may arrive from the server after the first item has already appeared.
         cache = getattr(self, "_item_sprite_cache", None)
         if cache is None:
             cache = self._item_sprite_cache = {}
         if item_type in cache:
             return cache[item_type]
-
-        rect = _ITEM_SPRITE_TABLE.get(item_type)
-        if rect is not None:
-            sheet, sx, sy, sw, sh = rect
-            cropped = self.sprite_mgr.get_sprite(sheet, sx, sy, sw, sh)
-            if cropped is not None:
-                if cropped.get_size() != (TILE_SIZE, TILE_SIZE):
-                    cropped = pygame.transform.scale(cropped, (TILE_SIZE, TILE_SIZE))
-                cache[item_type] = cropped
-                return cropped
-            # Table entry exists but the sheet/crop isn't available (e.g. a
-            # headless test with no asset search paths) - fall back to the
-            # vector icon, and only warn about it once per item type instead
-            # of every frame it's on the ground.
-            logged = getattr(self, "_item_sprite_miss_logged", None)
-            if logged is None:
-                logged = self._item_sprite_miss_logged = set()
-            if item_type not in logged:
-                logged.add(item_type)
-                print(f"Item sprite miss for '{item_type}': {sheet} unavailable, using vector fallback")
 
         surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
         color = _ITEM_COLORS.get(item_type, _DEFAULT_ITEM_COLOR)
@@ -231,6 +189,10 @@ class LevelObjectsRenderMixin:
             sx, sy = self._world_to_screen(cx + origin_x + 0.5,
                                            cy + origin_y - 1.0 - rise)
             sprite = self._get_item_sprite(reveal["item_type"])
+            # Keep the existing one-tile chest reveal footprint; ground items
+            # use the native dimensions returned by _get_item_sprite.
+            if sprite.get_size() != (TILE_SIZE, TILE_SIZE):
+                sprite = pygame.transform.scale(sprite, (TILE_SIZE, TILE_SIZE))
             if alpha < 255:
                 sprite = sprite.copy()
                 sprite.set_alpha(alpha)

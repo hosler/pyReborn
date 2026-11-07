@@ -12,7 +12,7 @@ import pygame
 from reborn_protocol.coords import in_level_bounds
 
 from ..gani import AnimationState
-from ..classic_sprites import draw_sprite
+from ..classic_sprites import draw_sprite, sprite_rect
 from ..explosions import (
     EXPLOSION_TICKS, bomb_crosses, cross_cells, explosion_sound,
     explosion_sprite, order_point_y,
@@ -877,13 +877,11 @@ class EffectsRenderMixin(FrameContextMixin):
     LEAP_FRAME_TIME = TICK
     MAX_LEAP_BURSTS = 64
 
-    _LEAP_SPRITE_RECTS = {  # sprite index -> (x, y, w, h) on sprites.png
-        24: (34, 8, 10, 8), 25: (44, 0, 16, 16), 26: (60, 0, 16, 16),
-        96: (40, 82, 16, 16), 97: (24, 98, 16, 16), 98: (40, 98, 16, 16),
-        99: (56, 82, 16, 14), 100: (72, 82, 16, 14), 101: (56, 96, 16, 14),
-        102: (72, 96, 16, 14), 103: (104, 96, 16, 22),
-        132: (12, 116, 12, 14), 133: (0, 130, 12, 14), 134: (12, 130, 12, 14),
-        135: (0, 144, 16, 32), 326: (54, 114, 30, 30), 327: (90, 196, 16, 20),
+    _LEAP_SPRITE_RECTS = {
+        sprite: sprite_rect(sprite)
+        for frames in LEAP_FRAMES
+        for frame in frames
+        for sprite, _dx, _dy in frame
     }
 
     _LEAP_FRAMES = LEAP_FRAMES

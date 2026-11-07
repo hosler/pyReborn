@@ -1,8 +1,10 @@
 """Flying-object geometry, TServerFlying.cpp:135-205, :367-423."""
 
-# TInitStatics.cpp:1045 spritespos[107:111], pixels divided by 16.
-ARROW_SIZES = ((1.875, 0.625), (0.625, 1.875),
-               (1.875, 0.625), (2.0, 1.0))
+from .classic_sprites import sprite_rect
+
+# TServerFlying.cpp:23,366-367: spritespos[107:111], pixels divided by 16.
+ARROW_SIZES = tuple(tuple(size / 16.0 for size in sprite_rect(index)[2:])
+                    for index in range(107, 111))
 
 
 def overlaps_player(x, y, direction, px, py):

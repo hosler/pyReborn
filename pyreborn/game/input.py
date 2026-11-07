@@ -696,17 +696,25 @@ class InputMixin:
         if not a_held:
             self._clear_grab_state()
 
-        # Item giveaway (actionMode 9) ends on any movement/weapon/sword key;
-        # while it is up, a bare A drops the selected item instead of grabbing.
+        # Mode 9 handles presses, never releases: TPlayer.cpp:2218-2253.
+        # The decompile falls through to NONE even after cycling (:2251);
+        # real-client play keeps selection up between S-held A taps.
         if getattr(self, '_giveaway_item', None) is not None:
-            if (any(keys[k] for k in (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE))
-                    or (s_held and not a_held)):
+            self.is_moving = False
+            self._clear_push_hold()
+            if self.key_just_pressed.get(K_a, False):
+                if s_held:
+                    self._giveaway_select()
+                else:
+                    self._giveaway_drop()
+                    # A leaves mode 9 even when loseItem fails (:2232-2251).
+                    self._giveaway_item = None
+                    self.client.player.action_mode = 0
+            elif any(self.key_just_pressed.get(k, False) for k in
+                     (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE, K_s)):
                 self._giveaway_item = None
                 self.client.player.action_mode = 0
-            elif a_held and not s_held:
-                if self.key_just_pressed.get(K_a, False):
-                    self._giveaway_drop()
-                return
+            return
 
         # S + D = Cycle weapons (TPlayer.cpp:2297)
         if s_held and keys[K_d] and not a_held:
@@ -717,13 +725,12 @@ class InputMixin:
                     self.last_action_time = current_time
             return
 
-        # S + A = item giveaway: pick / cycle the item to lay (TPlayer.cpp:2272)
+        # A press while S is held enters selection (TPlayer.cpp:2272-2281).
         if s_held and a_held:
             self._clear_push_hold()
-            if self.key_just_pressed.get(K_a, False) or self.key_just_pressed.get(K_s, False):
-                if current_time - self.last_action_time > self.action_delay:
-                    self._giveaway_select()
-                    self.last_action_time = current_time
+            if self.key_just_pressed.get(K_a, False):
+                self._giveaway_select()
+                self.last_action_time = current_time
             return
 
         # Sword swing (S or Space, but not with A). Uses its own short cooldown

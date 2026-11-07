@@ -9,14 +9,32 @@ pics1.png) are TPlayer.cpp:5315-5360 / TInitStatics.cpp:4810-4811.
 
 Entries are ``(x, y, w, h)`` in pixels.
 
-The listing in the oracle holds 355 initialisers for a 356-slot array: the
-decompile dropped one entry somewhere at or before index 149. The swamp pairs
-pin the shift down against the sheet itself (green/blue/red swamp art sits at
-(0,274) (0,290) (0,306) (0,322) and (32,274) (32,290) (32,306) (32,322), which
-the code addresses as 22/23, 150/151, 352/353, 354/355 -
-TServerPlayer.cpp:1272-1278), so slot 149 is a zero placeholder and everything
-after it is shifted by one from the raw listing. Indices 104-148 are exactly as
-listed and unverified.
+The listing holds 355 initialisers for 356 slots. Insert a zero placeholder
+at 95, immediately before the first stone fragment, shifting raw entries
+95-148 up one slot. Independent anchors against the sheet are:
+
+* TServerLeap.cpp:34-54 addresses stone fragments as 96-99, bush fragments as
+  100-103, and stone chips as 132-135. These are the four-piece blocks at
+  (24,82), (56,82), and (0,116), respectively.
+* TServerFlying.cpp:23-24 addresses arrows as 107-110 (up/left/down/right:
+  (10,422,10,30), (0,412,30,10), (0,422,10,30), (0,402,30,10)) and the
+  projectile at 131 as (64,144,16,26).
+* TInitStatics.cpp:1197-1201 giveitems pins 136/137/138 to the green/blue/red
+  rupees at (0,144)/(16,144)/(32,144), 139 to the heart at (42,176), and
+  145 to the glove at (28,212). Bombs 67 at (70,216) and the ground shadow
+  42 at (24,0) are already aligned (TServerExtra.cpp:63).
+* The swamp pairs 22/23, 150/151, 352/353, 354/355 remain aligned with the
+  sheet (TServerPlayer.cpp:1271-1278), as do sword 314, shield 350, bow 351
+  and liftsprites/carrysprites (TInitStatics.cpp:1137-1140).
+
+Residual uncertainty: these anchors bracket the original drop to 68-95;
+95 is the latest possible boundary, not a recovered original initializer.
+The 26 explicit zero entries at raw 69-94 are genuine empty rectangles in
+this listing, not discarded art. With this placeholder they form 69-95;
+inserting anywhere within 69-95 produces the same table. A drop at 68 would
+instead move its unanchored (32,244,24,24) rectangle to 69. No intact numeric
+sprite-position table was found in the C# client; its sprites.png independently
+confirms the fragment, arrow and item geometry above.
 """
 
 SPRITES_SHEET = "sprites.png"
@@ -45,21 +63,21 @@ SPRITE_RECTS = (
     (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
     (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
     (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
-    (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (24, 82, 16, 16),
-    (40, 82, 16, 16), (24, 98, 16, 16), (40, 98, 16, 16), (56, 82, 16, 14),
-    (72, 82, 16, 14), (56, 96, 16, 14), (72, 96, 16, 14), (104, 96, 16, 22),
-    (120, 96, 8, 20), (96, 96, 8, 20), (10, 422, 10, 30), (0, 412, 30, 10),
-    (0, 422, 10, 30), (0, 402, 30, 10), (0, 0, 32, 16), (0, 32, 16, 32),
-    (0, 16, 32, 16), (16, 32, 16, 32), (96, 82, 32, 24), (96, 106, 32, 24),
-    (0, 0, 32, 32), (32, 0, 32, 32), (64, 0, 32, 32), (96, 0, 32, 32),
-    (0, 32, 32, 32), (32, 32, 32, 30), (64, 32, 32, 32), (96, 32, 32, 30),
-    (32, 62, 32, 32), (64, 64, 32, 32), (96, 62, 32, 32), (32, 94, 32, 30),
-    (0, 64, 32, 32), (96, 94, 32, 30), (64, 144, 16, 26), (0, 116, 12, 14),
-    (12, 116, 12, 14), (0, 130, 12, 14), (12, 130, 12, 14), (0, 144, 16, 32),
-    (16, 144, 16, 32), (32, 144, 16, 32), (42, 176, 16, 16), (80, 448, 14, 14),
-    (80, 462, 14, 14), (114, 494, 14, 14), (84, 138, 16, 32), (100, 138, 24, 32),
-    (28, 212, 28, 32), (96, 834, 32, 56), (64, 866, 32, 46), (32, 866, 32, 46),
-    (0, 882, 32, 32), (0, 0, 0, 0), (0, 306, 32, 16), (0, 322, 32, 16),
+    (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
+    (24, 82, 16, 16), (40, 82, 16, 16), (24, 98, 16, 16), (40, 98, 16, 16),
+    (56, 82, 16, 14), (72, 82, 16, 14), (56, 96, 16, 14), (72, 96, 16, 14),
+    (104, 96, 16, 22), (120, 96, 8, 20), (96, 96, 8, 20), (10, 422, 10, 30),
+    (0, 412, 30, 10), (0, 422, 10, 30), (0, 402, 30, 10), (0, 0, 32, 16),
+    (0, 32, 16, 32), (0, 16, 32, 16), (16, 32, 16, 32), (96, 82, 32, 24),
+    (96, 106, 32, 24), (0, 0, 32, 32), (32, 0, 32, 32), (64, 0, 32, 32),
+    (96, 0, 32, 32), (0, 32, 32, 32), (32, 32, 32, 30), (64, 32, 32, 32),
+    (96, 32, 32, 30), (32, 62, 32, 32), (64, 64, 32, 32), (96, 62, 32, 32),
+    (32, 94, 32, 30), (0, 64, 32, 32), (96, 94, 32, 30), (64, 144, 16, 26),
+    (0, 116, 12, 14), (12, 116, 12, 14), (0, 130, 12, 14), (12, 130, 12, 14),
+    (0, 144, 16, 32), (16, 144, 16, 32), (32, 144, 16, 32), (42, 176, 16, 16),
+    (80, 448, 14, 14), (80, 462, 14, 14), (114, 494, 14, 14), (84, 138, 16, 32),
+    (100, 138, 24, 32), (28, 212, 28, 32), (96, 834, 32, 56), (64, 866, 32, 46),
+    (32, 866, 32, 46), (0, 882, 32, 32), (0, 306, 32, 16), (0, 322, 32, 16),
     (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
     (0, 672, 32, 48), (32, 672, 48, 32), (0, 930, 96, 48), (96, 930, 32, 44),
     (32, 608, 32, 32), (32, 640, 32, 32), (96, 608, 32, 32), (96, 640, 32, 32),

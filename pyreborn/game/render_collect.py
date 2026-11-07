@@ -5,9 +5,12 @@ from __future__ import annotations
 import time
 from typing import List, Optional, Tuple
 
+import pygame
+
 from reborn_protocol.coords import local_to_world, segment_origin
 
 from .. import ground_items
+from ..classic_sprites import draw_sprite
 from ..npc_handler import CHARACTER_IMAGE
 from .constants import TILE_SIZE
 from .frame_context import FrameContext
@@ -239,6 +242,7 @@ class EntityCollectMixin:
             return
         surf_w, surf_h = frame.screen_size
         ages = ground_items.item_ages(self, level_name, items, time.monotonic())
+        shadow = draw_sprite(self.sprite_mgr, 0x2a)
         # Item keys are level-local while the camera and every depth key use
         # world coordinates. Folding only the blit reproduces the live failure
         # where an item draws beside the player but sorts as if in segment zero.
@@ -250,14 +254,29 @@ class EntityCollectMixin:
                 continue
             sprite = self._get_item_sprite(item_type)
             world_x, world_y = ix + origin_x, iy + origin_y
-            sx, sy = self._world_to_screen(world_x, world_y)
-            sy -= (ground_items.item_bob_tiles(age) * TILE_SIZE
-                   * getattr(self.camera, 'zoom', 1.0))
-            if sx < -TILE_SIZE or sx > surf_w or \
-               sy < -TILE_SIZE or sy > surf_h:
+            # Item stores carry no Z, so yBase = world_y + 1. Native sprite
+            # dimensions set both offsets; the shadow stays on the ground:
+            # Preagonal/FourPlay/quattroplay/src/TServerExtra.cpp:41-74.
+            width, height = sprite.get_size()
+            half_height = height / (2 * TILE_SIZE)
+            y_base = world_y + 1.0
+            sx, sy = self._world_to_screen(
+                world_x + 1.0 - width / (2 * TILE_SIZE),
+                y_base - half_height - ground_items.item_bob_tiles(age))
+            shadow_x, shadow_y = self._world_to_screen(
+                world_x + 0.5, y_base + half_height - 0.5)
+            zoom = getattr(self.camera, 'zoom', 1.0)
+            bounds = [(sx, sy, width * zoom, height * zoom)]
+            if shadow is not None:
+                bounds.append((shadow_x, shadow_y,
+                               shadow.get_width() * zoom, shadow.get_height() * zoom))
+            if not any(x + w >= 0 and x <= surf_w and y + h >= 0 and y <= surf_h
+                       for x, y, w, h in bounds):
                 continue
+            # The order point is ground y+2, independent of bob/sprite size:
+            # Preagonal/FourPlay/quattroplay/src/TServerExtra.cpp:20-28.
             out.append(_Entity('item', self._depth_sort_key(
-                world_y, sprite.get_height() / TILE_SIZE), sx, sy, sprite))
+                world_y, 2.0), sx, sy, (sprite, shadow, shadow_x, shadow_y)))
 
     def _collect_local_player(self, out: List["_Entity"],
                               frame: FrameContext) -> None:
@@ -413,7 +432,18 @@ class EntityCollectMixin:
         self.screen.blit(ent.data, (int(ent.x), int(ent.y)))
 
     def _draw_item_entity(self, ent: "_Entity", frame: FrameContext) -> None:
-        self.screen.blit(ent.data, (int(ent.x), int(ent.y)))
+        sprite, shadow, shadow_x, shadow_y = ent.data
+        zoom = getattr(self.camera, 'zoom', 1.0)
+        # Shadow first, then item: TServerExtra.cpp:63-74.
+        for surface, x, y in ((shadow, shadow_x, shadow_y),
+                              (sprite, ent.x, ent.y)):
+            if surface is None:
+                continue
+            if zoom != 1.0:
+                surface = pygame.transform.scale(surface, (
+                    max(1, round(surface.get_width() * zoom)),
+                    max(1, round(surface.get_height() * zoom))))
+            self.screen.blit(surface, (int(x), int(y)))
 
     def _draw_player_entity(self, ent: "_Entity", frame: FrameContext) -> None:
         self._render_player(ent.x, ent.y, ent.data, self.player_anim, frame)

@@ -1,6 +1,7 @@
 """Lifecycle tests for the client-side chest item reveal."""
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -30,6 +31,7 @@ class _Harness(LevelObjectsRenderMixin):
         self.screen = pygame.Surface((320, 240), pygame.SRCALPHA)
         self.positions = []
         self.sound_mgr = Mock()
+        self.sprite_mgr = SimpleNamespace(get_sprite=lambda *args: None)
 
     def _world_to_screen(self, x, y):
         self.positions.append((x, y))

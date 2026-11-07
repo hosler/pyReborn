@@ -17,6 +17,7 @@ helper.
 
 import os
 import sys
+from types import SimpleNamespace
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -76,6 +77,7 @@ class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
     def __init__(self, client):
         self.client = client
         self.camera = self
+        self.sprite_mgr = SimpleNamespace(get_sprite=lambda *args: None)
         self.screen = pygame.Surface((800, 600))
         self.world_to_screen_calls = []
 
@@ -122,10 +124,12 @@ class TestRenderChestsSegmentOrigin:
 
 
 class TestRenderItemsSegmentOrigin:
-    def test_item_blit_and_depth_use_world_frame(self):
+    def test_item_blit_and_depth_use_world_frame(self, monkeypatch):
         c = _client_with_grid()
         c.items = {"chicken1.nw": {(5.0, 5.0): "greenrupee"}}
         h = _ChestRenderHarness(c)
+        h._item_first_seen = {('chicken1.nw', (5.0, 5.0)): 100.0}
+        monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 102.0)
         entities = []
         frame = h._frame_context()
         frame.screen_size = h.screen.get_size()
@@ -135,9 +139,10 @@ class TestRenderItemsSegmentOrigin:
         # The live failure drew at local (5, 5), and a partial fix could fold
         # the blit while still sorting at local Y. Both must describe world
         # (69, 69), placing the item beside actors in this segment.
-        assert h.world_to_screen_calls == [(69.0, 69.0)]
+        # TServerExtra.cpp:59-74: sprite centred at (x+1,y+1), shadow below.
+        assert h.world_to_screen_calls == [(69.5, 69.5), (69.5, 70.0)]
         assert len(entities) == 1
-        assert entities[0].depth == h._depth_sort_key(69.0, 1.0)
+        assert entities[0].depth == h._depth_sort_key(69.0, 2.0)
 
 
 class TestRenderBaddiesSegmentOrigin:

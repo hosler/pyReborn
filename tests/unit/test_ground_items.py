@@ -20,11 +20,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
 
 import pygame
+import pytest
 
 pygame.init()
 pygame.display.set_mode((64, 64))
 
-from pygame.locals import K_a, K_d, K_s
+from pygame.locals import K_a, K_d, K_s, K_SPACE, K_UP, K_DOWN, K_LEFT, K_RIGHT
 
 from pyreborn import ground_items as gi
 from pyreborn.game.actions import ActionsMixin
@@ -310,13 +311,88 @@ def test_s_plus_a_is_the_item_giveaway_not_weapon_cycle():
     assert h.calls == ['auto_pickup', 'giveaway']
 
 
-def test_bare_a_drops_while_giveaway_is_up_and_movement_ends_it():
+def test_bare_a_drops_while_giveaway_is_up():
     h = _ChordHarness()
     h._giveaway_item = 2
     _press(h, {K_a}, {K_a})
     assert h.calls == ['auto_pickup', 'drop']
-    assert h._giveaway_item == 2
-    h.client.player.action_mode = 9
-    _press(h, {K_d}, set())
     assert h._giveaway_item is None
     assert h.client.player.action_mode == 0
+
+
+class _GiveawayInputHarness(_ChordHarness, ActionsMixin):
+    _giveaway_select = ActionsMixin._giveaway_select
+    _giveaway_drop = ActionsMixin._giveaway_drop
+
+    def __init__(self):
+        super().__init__()
+        from pyreborn.player import Player
+        self.client.player = Player(rupees=40, bombs=5, arrows=5)
+        self.client.items = {}
+        self.client._send_appearance_prop = Mock()
+        self.client.send_item_add = Mock(return_value=True)
+        self.client.get_current_level_from_position = lambda: 'a.nw'
+        self.sound_mgr = Mock()
+        self._play_action_animation = Mock()
+
+
+def test_hold_s_and_tap_a_cycles_between_releases_without_cooldown():
+    h = _GiveawayInputHarness()
+    # TPlayer.cpp:2220-2230: A presses cycle; held/released keys do nothing.
+    for tap, item in enumerate((0, 1, 2, 3, 4, 5, 0)):
+        now = 100.0 + tap * 0.02
+        _press(h, {K_s, K_a}, {K_a}, now)
+        assert h._giveaway_item == item
+        assert h.client.player.action_mode == 9
+        _press(h, {K_s, K_a}, set(), now + 0.005)
+        _press(h, {K_s}, set(), now + 0.01)
+        assert h._giveaway_item == item
+        assert h.client.player.action_mode == 9
+    assert h.sound_mgr.play.call_count == 7
+    assert all(call.args == ('item2.wav',) for call in h.sound_mgr.play.call_args_list)
+
+
+def test_releasing_s_or_a_preserves_selection_then_bare_a_lays_it():
+    h = _GiveawayInputHarness()
+    _press(h, {K_s, K_a}, {K_a})
+    _press(h, {K_a}, set())  # Releasing S while A remains held cannot drop.
+    _press(h, set(), set())
+    assert h._giveaway_item == 0
+    assert h.client.player.action_mode == 9
+    assert not h.client.send_item_add.called
+    _press(h, {K_a}, {K_a})
+    assert h._giveaway_item is None
+    assert h.client.player.action_mode == 0
+    assert h.client.player.rupees == 39
+    h.client.send_item_add.assert_called_once()
+    h.sound_mgr.play.assert_called_with('item.wav')
+
+
+@pytest.mark.parametrize('key', [K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE, K_s])
+def test_only_fresh_other_gameplay_presses_end_selection(key):
+    h = _GiveawayInputHarness()
+    _press(h, {K_s, K_a}, {K_a})
+    _press(h, {key}, set())
+    assert h._giveaway_item == 0
+    assert h.client.player.action_mode == 9
+    _press(h, {key}, {key})
+    assert h._giveaway_item is None
+    assert h.client.player.action_mode == 0
+    assert set(h.calls) == {'auto_pickup'}
+    assert not h.client.send_item_add.called
+
+
+def test_pressing_s_while_a_is_held_does_not_enter_selection():
+    h = _ChordHarness()
+    _press(h, {K_s, K_a}, {K_s})
+    assert h.calls == ['auto_pickup']
+
+
+def test_bare_a_ends_selection_even_if_selected_item_is_no_longer_available():
+    h = _GiveawayInputHarness()
+    _press(h, {K_s, K_a}, {K_a})
+    h.client.player.rupees = 0
+    _press(h, {K_a}, {K_a})
+    assert h._giveaway_item is None
+    assert h.client.player.action_mode == 0
+    assert not h.client.send_item_add.called

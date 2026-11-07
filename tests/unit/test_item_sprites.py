@@ -1,159 +1,149 @@
-"""Tests for the ground-item sprite lookup in game/render_objects.py.
+"""Ground-item sprite lookup, fallback, shadow and reference placement."""
 
-_ITEM_SPRITE_TABLE maps LevelItemType names to a verified pics1.png
-(sheet, x, y, w, h) rect. _get_item_sprite() crops+caches it via
-sprite_mgr.get_sprite() and falls back to the pre-existing vector icon when a
-table entry is missing or its sheet/crop cannot be loaded (headless tests,
-missing assets). As of this pass the table is empty -- see its module-level
-comment in render_objects.py for the research that came up dry -- so these
-tests mainly guard: (1) every LevelItemType name still gets *some* surface
-back, and (2) the table-hit/table-miss code paths behave correctly whenever
-entries do get added.
-"""
-
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pygame
 import pytest
 
-from pyreborn.game import render_objects
+from pyreborn import ground_items as gi
+from pyreborn.classic_sprites import SPRITE_RECTS
 from pyreborn.game.constants import TILE_SIZE
-from pyreborn.game.render_objects import LevelObjectsRenderMixin, _ITEM_SPRITE_TABLE
+from pyreborn.game.frame_context import FrameContext
+from pyreborn.game.render_collect import EntityCollectMixin
+from pyreborn.game.render_objects import LevelObjectsRenderMixin
 from pyreborn.sprites import SpriteManager
-
-pygame.init()
-# convert_alpha() (used by SpriteManager.load_sheet) needs a display surface,
-# even the dummy SDL driver's 1x1 one, or it raises "Parameter 'surface' is
-# invalid" -- only test_table_hit_crops_and_caches_the_real_sheet below
-# actually loads a real sheet, but this is harmless for the others.
-pygame.display.set_mode((1, 1))
-
-# Matches the 25 LevelItemType names in reborn_protocol.constants.LevelItemType
-# (and GServer-v2's server/include/level/LevelItem.h ItemNames table).
-ALL_ITEM_NAMES = [
-    'greenrupee', 'bluerupee', 'redrupee', 'bombs', 'darts',
-    'heart', 'glove1', 'bow', 'bomb', 'shield',
-    'sword', 'fullheart', 'superbomb', 'battleaxe', 'goldensword',
-    'mirrorshield', 'glove2', 'lizardshield', 'lizardsword', 'goldrupee',
-    'fireball', 'fireblast', 'nukeshot', 'joltbomb', 'spinattack',
-]
 
 
 class _ItemRenderHarness(LevelObjectsRenderMixin):
-    """Minimal GameClient stand-in: just needs a sprite_mgr for
-    _get_item_sprite() to crop from."""
-
     def __init__(self, sprite_mgr):
         self.sprite_mgr = sprite_mgr
 
 
-def _headless_harness():
-    """A harness whose SpriteManager has no search paths, so every sheet
-    lookup misses -- simulates both the offline test environment and a
-    genuinely-missing asset."""
-    return _ItemRenderHarness(SpriteManager(search_paths=[]))
+@pytest.mark.parametrize('item_type', gi.ITEM_NAMES)
+def test_missing_sheet_returns_cached_vector_icon(item_type):
+    h = _ItemRenderHarness(SimpleNamespace(get_sprite=Mock(return_value=None)))
+    sprite = h._get_item_sprite(item_type)
+    assert isinstance(sprite, pygame.Surface)
+    assert sprite.get_size() == (TILE_SIZE, TILE_SIZE)
+    assert h._get_item_sprite(item_type) is sprite
 
 
-class TestItemSpriteTableShape:
-    def test_table_covers_a_subset_of_the_known_item_names(self):
-        """Every table entry must be for a real LevelItemType name (typos
-        would silently never match anything in _get_item_sprite)."""
-        assert set(_ITEM_SPRITE_TABLE.keys()) <= set(ALL_ITEM_NAMES)
-
-    def test_table_rects_are_well_formed_and_non_overlapping_per_sheet(self):
-        """Guards any future (sheet, x, y, w, h) entries: positive size, and
-        no two items sharing the same sheet crop overlapping pixels (a sure
-        sign one of them was mis-copied)."""
-        by_sheet = {}
-        for name, (sheet, x, y, w, h) in _ITEM_SPRITE_TABLE.items():
-            assert w > 0 and h > 0, name
-            assert x >= 0 and y >= 0, name
-            by_sheet.setdefault(sheet, []).append((name, x, y, w, h))
-
-        for sheet, rects in by_sheet.items():
-            for i, (name_a, xa, ya, wa, ha) in enumerate(rects):
-                for name_b, xb, yb, wb, hb in rects[i + 1:]:
-                    overlap_x = xa < xb + wb and xb < xa + wa
-                    overlap_y = ya < yb + hb and yb < ya + ha
-                    assert not (overlap_x and overlap_y), (
-                        f"{name_a} and {name_b} overlap in {sheet}")
+def test_unknown_item_type_falls_back_without_sprite_lookup():
+    h = _ItemRenderHarness(SimpleNamespace(get_sprite=Mock()))
+    assert h._get_item_sprite('some_future_item_type').get_size() == (16, 16)
+    h.sprite_mgr.get_sprite.assert_not_called()
 
 
-class TestItemSpriteFallback:
-    """With no table entries reachable (either because _ITEM_SPRITE_TABLE is
-    empty, or because the sheet cannot be loaded), every item name must still
-    resolve to a usable, correctly-sized vector-icon surface."""
-
-    @pytest.mark.parametrize("item_type", ALL_ITEM_NAMES)
-    def test_every_known_item_name_returns_a_tile_sized_surface(self, item_type):
-        h = _headless_harness()
-        sprite = h._get_item_sprite(item_type)
-        assert isinstance(sprite, pygame.Surface)
-        assert sprite.get_size() == (TILE_SIZE, TILE_SIZE)
-
-    def test_unknown_item_type_falls_back_to_the_default_vector_icon(self):
-        h = _headless_harness()
-        sprite = h._get_item_sprite("some_future_item_type")
-        assert isinstance(sprite, pygame.Surface)
-        assert sprite.get_size() == (TILE_SIZE, TILE_SIZE)
-
-    def test_fallback_sprites_are_cached_by_identity(self):
-        h = _headless_harness()
-        first = h._get_item_sprite("sword")
-        second = h._get_item_sprite("sword")
-        assert first is second
+@pytest.mark.parametrize('index,item_type', list(enumerate(gi.ITEM_NAMES)))
+def test_every_item_uses_the_overhead_sprite_crop_at_native_size(tmp_path, index, item_type):
+    # putExtra maps itemIndex to giveitems: TServerLevel.cpp:1341-1347.
+    # Both tables: Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:1197-1217.
+    rect = SPRITE_RECTS[gi.GIVE_SPRITES[index]]
+    sheet = pygame.Surface((128, 1024), pygame.SRCALPHA)
+    sheet.fill((10, 20, 30, 255), rect)
+    pygame.image.save(sheet, str(tmp_path / 'sprites.png'))
+    h = _ItemRenderHarness(SpriteManager(search_paths=[tmp_path]))
+    sprite = h._get_item_sprite(item_type)
+    assert sprite.get_size() == rect[2:]
+    assert sprite.get_at((0, 0)) == (10, 20, 30, 255)
+    assert h._get_item_sprite(item_type) is sprite
 
 
-class TestItemSpriteTableHitAndMiss(object):
-    """Exercises the sheet-crop path directly by monkeypatching a temporary
-    table entry onto a real (tiny, synthetic) sheet, since the shipped table
-    is currently empty."""
-
-    def _fake_sheet_dir(self, tmp_path):
-        sheet = pygame.Surface((32, 16), pygame.SRCALPHA)
-        sheet.fill((10, 20, 30, 255), (0, 0, 16, 16))
-        sheet.fill((40, 50, 60, 255), (16, 0, 16, 16))
-        path = tmp_path / "fake_items.png"
-        pygame.image.save(sheet, str(path))
-        return tmp_path
-
-    def test_table_hit_crops_and_caches_the_real_sheet(self, tmp_path, monkeypatch):
-        search_dir = self._fake_sheet_dir(tmp_path)
-        h = _ItemRenderHarness(SpriteManager(search_paths=[search_dir]))
-        monkeypatch.setitem(render_objects._ITEM_SPRITE_TABLE,
-                             "greenrupee", ("fake_items.png", 0, 0, 16, 16))
-
-        sprite = h._get_item_sprite("greenrupee")
-        assert isinstance(sprite, pygame.Surface)
-        assert sprite.get_size() == (TILE_SIZE, TILE_SIZE)
-        # Cropped from the first (dark blue-ish) tile, not the vector
-        # fallback's colour for greenrupee (60, 220, 90).
-        assert sprite.get_at((1, 1))[:3] == (10, 20, 30)
-
-        again = h._get_item_sprite("greenrupee")
-        assert again is sprite
-
-    def test_table_entry_with_unloadable_sheet_falls_back_and_logs_once(self, monkeypatch, capsys):
-        h = _headless_harness()
-        monkeypatch.setitem(render_objects._ITEM_SPRITE_TABLE,
-                             "bluerupee", ("does_not_exist.png", 0, 0, 16, 16))
-
-        first = h._get_item_sprite("bluerupee")
-        second = h._get_item_sprite("bluerupee")
-        assert isinstance(first, pygame.Surface)
-        assert first.get_size() == (TILE_SIZE, TILE_SIZE)
-        assert first is second  # falls into the same vector-icon cache path
-
-        out = capsys.readouterr().out
-        assert out.count("bluerupee") == 1  # logged once, not per-frame
+def test_sheet_arriving_after_fallback_replaces_the_vector_icon():
+    h = _ItemRenderHarness(SimpleNamespace(get_sprite=Mock(return_value=None)))
+    fallback = h._get_item_sprite('greenrupee')
+    real = pygame.Surface((16, 32), pygame.SRCALPHA)
+    h.sprite_mgr.get_sprite.return_value = real
+    assert h._get_item_sprite('greenrupee') is real
+    assert real is not fallback
+    h.sprite_mgr.get_sprite.assert_called_with('sprites.png', 0, 144, 16, 32)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+class _ItemScene(LevelObjectsRenderMixin, EntityCollectMixin):
+    def __init__(self, item_type, time_left, zoom=1.0):
+        self.client = SimpleNamespace(items_in_level=lambda _: {(10.0, 20.0): item_type})
+        self._current_segment_info = lambda: ('a.nw', 64, 64)
+        # Half a tick avoids floating point boundaries in item_time().
+        self._item_first_seen = {
+            ('a.nw', (10.0, 20.0)): 100.0 - (164 - time_left + 0.5) * gi.TICK}
+        self.camera = SimpleNamespace(zoom=zoom)
+        self.screen = Mock()
+        self.sprite_mgr = SimpleNamespace(get_sprite=Mock(side_effect=self._crop))
+        self.sprites = {}
+
+    def _crop(self, sheet, x, y, w, h):
+        self.sprites[(x, y, w, h)] = pygame.Surface((w, h), pygame.SRCALPHA)
+        return self.sprites[(x, y, w, h)]
+
+    def _world_to_screen(self, x, y):
+        return x * TILE_SIZE * self.camera.zoom, y * TILE_SIZE * self.camera.zoom
+
+    def collect(self):
+        out = []
+        self._collect_items(out, FrameContext(screen_size=(3000, 3000)))
+        return out
+
+
+@pytest.mark.parametrize('item_type,size', [('greenrupee', (16, 32)),
+                                           ('bombs', (28, 32)),
+                                           ('heart', (16, 16))])
+def test_reference_sprite_and_shadow_positions_and_order(monkeypatch, item_type, size):
+    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+    h = _ItemScene(item_type, time_left=100)
+    ent, = h.collect()
+    # World item anchor (74,84), yBase=85, native dimensions in pixels:
+    # Preagonal/FourPlay/quattroplay/src/TServerExtra.cpp:41-74.
+    assert (ent.x, ent.y) == (75 * 16 - size[0] / 2, 85 * 16 - size[1] / 2)
+    assert ent.depth == 86  # TServerExtra.cpp:20-28, independent of dimensions.
+    h._draw_item_entity(ent, FrameContext())
+    shadow, icon = h.screen.blit.call_args_list
+    assert shadow.args[0].get_size() == (16, 8)
+    assert shadow.args[1] == (1192, int(85 * 16 + size[1] / 2 - 8))
+    assert icon.args[0].get_size() == size
+    assert icon.args[1] == (int(ent.x), int(ent.y))
+    assert h.sprite_mgr.get_sprite.call_args_list[0].args == ('sprites.png', 24, 0, 16, 8)
+
+
+def test_bob_moves_only_item_and_keeps_shadow_and_depth_fixed(monkeypatch):
+    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+    fresh = _ItemScene('greenrupee', time_left=164)
+    settled = _ItemScene('greenrupee', time_left=100)
+    a, = fresh.collect()
+    b, = settled.collect()
+    assert a.y < b.y
+    assert a.x == b.x
+    assert a.depth == b.depth == 86
+    assert a.data[2:] == b.data[2:]
+
+
+@pytest.mark.parametrize('time_left,visible', [(35, False), (34, True), (-1, False)])
+def test_blink_and_expiry_hide_both_sprite_and_shadow(monkeypatch, time_left, visible):
+    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+    h = _ItemScene('greenrupee', time_left)
+    entities = h.collect()
+    for ent in entities:
+        h._draw_item_entity(ent, FrameContext())
+    assert h.screen.blit.call_count == (2 if visible else 0)
+
+
+def test_item_and_shadow_scale_with_camera_zoom(monkeypatch):
+    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+    h = _ItemScene('greenrupee', time_left=100, zoom=2.0)
+    ent, = h.collect()
+    h._draw_item_entity(ent, FrameContext())
+    shadow, icon = h.screen.blit.call_args_list
+    assert shadow.args[0].get_size() == (32, 16)
+    assert icon.args[0].get_size() == (32, 64)
+    assert shadow.args[1] == (2384, 2736)
+    assert icon.args[1] == (2384, 2688)
+
+
+def test_shadow_stays_visible_when_bobbing_icon_is_off_screen(monkeypatch):
+    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+    h = _ItemScene('greenrupee', time_left=164)
+    # Put the item entirely above the viewport but keep its shadow visible.
+    h._world_to_screen = lambda x, y: (50, -100 if y < 85 else 10)
+    ent, = h.collect()
+    h._draw_item_entity(ent, FrameContext())
+    assert h.screen.blit.call_count == 2
