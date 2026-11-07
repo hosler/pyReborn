@@ -205,10 +205,6 @@ class ClientGS1:
         # bombs in placement order -- that order is the script-visible
         # bombs[] index. Headless fallback: client.bombs placement order.
         self.bombs_source = None
-        # attachplayertoobj state: {'npc_id', 'last_x', 'last_y'} or None.
-        # last_* is the NPC's position when we last propagated its movement
-        # to the player (see the delta step in process_timeouts).
-        self._player_attach = None
 
     def board_ready(self) -> bool:
         """Is the CURRENT level's board in hand?
@@ -913,35 +909,27 @@ class ClientGS1:
         self._keys_raw_prev = set(self.keys_raw)
 
     def process_attachment(self):
-        """Propagate an attached-to NPC's movement to the local player
-        (attachplayertoobj). The reference slaves the player to the NPC by
-        propagating every NPC position write to its attached children with
-        the child's offset preserved, while the player's OWN writes just
-        re-derive the offset (TServerPlayer::setlocalx/setlocaly,
-        Preagonal/FourPlay/quattroplay/src/TServerPlayer.cpp:1491-1552).
-        Applying the NPC's per-frame movement DELTA to the player is the same
-        math: script movement of the player between frames implicitly updates
-        the offset. Detaches itself when the NPC disappears (level change
-        clears client.npcs. The reference equally cannot stay attached to a
-        despawned NPC)."""
-        att = self._player_attach
-        cl = self.client
-        if att is None or cl is None:
-            return
-        npc = getattr(cl, "npcs", {}).get(att["npc_id"])
-        if not isinstance(npc, dict):
-            self._player_attach = None
-            return
-        nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
-        dx, dy = nx - att["last_x"], ny - att["last_y"]
-        if dx or dy:
-            att["last_x"], att["last_y"] = nx, ny
-            try:
-                cl.player.x += dx
-                cl.player.y += dy
-                cl.send_position()
-            except Exception:
-                pass
+        """Advance attachments even when no script timeout is pending."""
+        from ..attachments import update_attachments
+        if self.client is not None:
+            before = ((self.client.player.x, self.client.player.y)
+                      if self._player_attach is not None else None)
+            update_attachments(self.client)
+            if before is not None and before != (self.client.player.x, self.client.player.y):
+                self.client.send_position()
+
+    @property
+    def _player_attach(self):
+        return vars(self.client.player).get('_attachment') if self.client is not None else None
+
+    @_player_attach.setter
+    def _player_attach(self, value):
+        if self.client is not None:
+            if value is None:
+                from ..attachments import detach
+                detach(self.client, self.client.player)
+            else:
+                vars(self.client.player)['_attachment'] = value
 
     def sign_text_by_index(self, index) -> "str | None":
         """Text of the CURRENT level's sign `index` (0-based, in the order the

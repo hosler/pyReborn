@@ -475,40 +475,20 @@ class MainCommandsMixin:
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "attachplayertoobj")
     def _cmd_attachplayertoobj(self, name, args, ctx, imgs):
-        # attachplayertoobj objecttype,id - slave the local player to an
-        # NPC. The reference only accepts objecttype 0 (NPC) and looks the
-        # id up in the universe NPC list (scriptfun_gsfunctionsclient_
-        # attachplayertoobj, TInitStatics.cpp:3185-3205). While attached,
-        # NPC movement propagates to the player with the attach-time offset
-        # preserved, and the player's own position writes stay relative to
-        # the NPC (TServerPlayer::attachToNPC / setlocalx,
-        # TServerPlayer.cpp:530-581, 1491-1521) - our per-frame delta model
-        # in process_timeouts is equivalent. Re-attaching to the same NPC is
-        # a no-op, like the reference's `npc != attachedTo` check.
-        rt = self.rt
-        if len(args) < 2 or rt.client is None:
+        # TInitStatics.cpp:3185-3211: only local players and NPC type 0.
+        if len(args) < 2 or self.rt.client is None:
             return _FALL_THROUGH
-        if int(to_num(args[0])) != 0:
-            return
-        npc_id = int(to_num(args[1]))
-        npcs = getattr(rt.client, "npcs", {})
-        if npc_id not in npcs:
-            return
-        att = rt._player_attach
-        if att is not None and att.get("npc_id") == npc_id:
-            return
-        npc = npcs[npc_id]
-        rt._player_attach = {
-            "npc_id": npc_id,
-            "last_x": to_num(npc.get("x", 0)),
-            "last_y": to_num(npc.get("y", 0)),
-        }
+        if int(to_num(args[0])) == 0:
+            from ..attachments import attach
+            attach(self.rt.client, self.rt.client.player, int(to_num(args[1])), send=True)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "detachplayer")
     def _cmd_detachplayer(self, name, args, ctx, imgs):
-        # scriptfun_gsfunctionsclient_detachplayer (TInitStatics.cpp:
-        # 3207-3211) -> TServerPlayer::detach.
-        self.rt._player_attach = None
+        from ..attachments import detach, sync_attachment
+        client = self.rt.client
+        if client is not None:
+            sync_attachment(client, client.player)
+            detach(client, client.player, send=True)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "play", "play2", "playlooped", "setmusic")
     def _cmd_play(self, name, args, ctx, imgs):

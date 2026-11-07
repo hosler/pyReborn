@@ -452,6 +452,15 @@ class ClientGS2:
                 if incoming != cached and (
                         cached or to_num(item.get("isloggedin")) == 0.0):
                     self._forget_prior_occupant(item, player_id)
+        from ..attachments import sync_attachment
+        npc = sync_attachment(self.client, record) if isinstance(record, dict) else None
+        npc_id = get('attached_npc_id', 0) if npc is not None else 0
+        item.set('attachid', npc_id)
+        item.set('attachtype', 0.0)
+        item.set('attached', float(npc is not None and
+                 self._gs1_ctx(self._executing_vm)._npc_id == npc_id))
+        npc_vm = self.vms.get('npc', {}).get(npc_id)
+        item.set('attachedtoobject', getattr(npc_vm, 'this', 0.0))
         item.set("id", player_id)
         for member, key, default in self._SCRIPT_PLAYER_MEMBERS:
             value = get(key, default)

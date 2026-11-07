@@ -35,6 +35,7 @@ class FrameContext:
     # level name -> gmap grid cell, and the current segment's world origin.
     level_to_grid: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     segment_offset: Tuple[float, float] = (0.0, 0.0)
+    npc_positions: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     # (rect,) nameplates already placed, in placement order.
     nameplate_rects: List[Any] = field(default_factory=list)
     # (eraser_mask, screen_x, screen_y) drawaslight footprints the ambient

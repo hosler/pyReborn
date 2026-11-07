@@ -377,6 +377,10 @@ class WarpMixin:
                 lvl = npc.get('_level')
                 if lvl:
                     self._npc_cache.setdefault(lvl, {})[nid] = npc.copy()
+        from .attachments import detach
+        detach(self, self.player)
+        for other in self.players.values():
+            detach(self, other)
         self.npcs.clear()
 
     def _mark_npc_pos_snap(self, npc: dict) -> None:

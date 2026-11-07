@@ -23,6 +23,8 @@ from ..packets import (
     parse_rc_del_player,
 )
 from .registry import STOP, handles
+from ..attachments import (apply_attachment_props, update_attachments,
+                           delete_npc_attachments)
 
 # NPC delete packet ID not in PacketID class yet
 PLO_NPCDEL = 29
@@ -143,7 +145,8 @@ def handle_player_props(client, data):
     # Only a level that is an actual GMAP segment gets the grid offset;
     # standalone interior levels reached via a door (houses, caves) are
     # not in the grid even though a gmap is loaded, so they stay local.
-    if 'x' in props or 'y' in props:
+    attached = apply_attachment_props(client, client.player, props)
+    if not attached and ('x' in props or 'y' in props):
         grid = None
         if client.gmap_width > 0:
             grid = next((cell for cell, name in client.gmap_grid.items()
@@ -341,6 +344,7 @@ def handle_npc_props(client, data):
             # in from wherever a stale same-id visual entry sits.
             client._mark_npc_pos_snap(props)
             client.npcs[npc_id] = props
+        update_attachments(client)
         if 'gani' in props:
             host = getattr(client, 'gs2_host', None)
             if host is not None:
@@ -372,6 +376,7 @@ def handle_npc_del(client, data):
         from ..packets import PacketReader
         reader = PacketReader(data)
         npc_id = reader.read_gint3()
+        delete_npc_attachments(client, npc_id)
         npc = client.npcs.pop(npc_id, None)
         if npc is not None:
             level = npc.get('_level')
@@ -392,6 +397,7 @@ def handle_npc_del2(client, data):
     info = parse_npcdel2(data)
     npc_id = info['npc_id']
     level = info['level']
+    delete_npc_attachments(client, npc_id)
     if npc_id in client.npcs:
         del client.npcs[npc_id]
         if client.on_npc_del:
@@ -471,20 +477,23 @@ def handle_other_player_props(client, data):
         # world_x/world_y - we no longer know it's still correct -
         # rather than let a stale world coordinate silently survive
         # a merge alongside a now-different local one.
-        if 'x' in props:
-            raw_x = props['x']
-            if raw_x >= LEVEL_SIZE or raw_x < 0:
-                props['world_x'] = raw_x
-                props['x'] = local_coord(raw_x)
-            else:
-                props['world_x'] = None
-        if 'y' in props:
-            raw_y = props['y']
-            if raw_y >= LEVEL_SIZE or raw_y < 0:
-                props['world_y'] = raw_y
-                props['y'] = local_coord(raw_y)
-            else:
-                props['world_y'] = None
+        existing = client.players.setdefault(player_id, {})
+        attached = apply_attachment_props(client, existing, props)
+        if not attached:
+            if 'x' in props:
+                raw_x = props['x']
+                if raw_x >= LEVEL_SIZE or raw_x < 0:
+                    props['world_x'] = raw_x
+                    props['x'] = local_coord(raw_x)
+                else:
+                    props['world_x'] = None
+            if 'y' in props:
+                raw_y = props['y']
+                if raw_y >= LEVEL_SIZE or raw_y < 0:
+                    props['world_y'] = raw_y
+                    props['y'] = local_coord(raw_y)
+                else:
+                    props['world_y'] = None
         if player_id in client.players:
             # Merge props (None marks a value to DROP, not store -
             # see the world_x/world_y invalidation above).
@@ -517,8 +526,10 @@ def handle_move2(client, data):
     info = parse_move2(data)
     npc = client.npcs.get(info['npc_id'])
     if npc is not None:
-        npc['x'] = info['x']
-        npc['y'] = info['y']
+        from ..gs1_client.objects import _write_npc_attr
+        _write_npc_attr(npc, 'x', info['x'])
+        _write_npc_attr(npc, 'y', info['y'])
+        update_attachments(client)
     client.npc_moves[info['npc_id']] = info
     if client.on_npc_move:
         client.on_npc_move(info)
@@ -534,8 +545,10 @@ def handle_move(client, data):
     info = parse_move(data)
     npc = client.npcs.get(info['npc_id'])
     if npc is not None:
-        npc['x'] = info['x']
-        npc['y'] = info['y']
+        from ..gs1_client.objects import _write_npc_attr
+        _write_npc_attr(npc, 'x', info['x'])
+        _write_npc_attr(npc, 'y', info['y'])
+        update_attachments(client)
     client.npc_moves[info['npc_id']] = info
     if client.on_npc_move:
         client.on_npc_move(info)

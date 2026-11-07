@@ -10,6 +10,7 @@ import pygame
 from reborn_protocol.coords import local_to_world, segment_origin
 
 from .. import ground_items
+from ..attachments import sync_attachment, npc_position, attachment_z
 from ..classic_sprites import draw_sprite
 from ..npc_handler import CHARACTER_IMAGE
 from .constants import TILE_SIZE
@@ -123,7 +124,8 @@ class EntityCollectMixin:
 
         # Every key is the image's bottom edge in the same world-tile frame.
         # The sort is stable, so equal keys keep _ENTITY_PASSES order.
-        entities.sort(key=lambda e: (e.band, e.depth))
+        # TLevelObject.cpp:64; unsorted.cpp:2248: equal ground depth sorts by z.
+        entities.sort(key=lambda e: (e.band, e.depth, e.z))
 
         renderers = self._ENTITY_RENDERERS
         for ent in entities:
@@ -196,6 +198,8 @@ class EntityCollectMixin:
         leftover entry for a since-removed npc_id is harmless: client.py's
         epoch counter only increases and is never reused, so it can never
         collide with a future npc_id's real epoch and suppress a snap."""
+        if npc_id in frame.npc_positions:
+            return frame.npc_positions[npc_id]
         epoch_seen = getattr(self, '_npc_visual_epoch', None)
         if epoch_seen is None:
             epoch_seen = self._npc_visual_epoch = {}
@@ -208,6 +212,7 @@ class EntityCollectMixin:
         epoch_seen[npc_id] = epoch
         if len(epoch_seen) > 2000:
             epoch_seen.clear()
+        frame.npc_positions[npc_id] = position
         return position
 
     # -- entity pass: collect ----------------------------------------------
@@ -290,24 +295,45 @@ class EntityCollectMixin:
             return
         # Depth-sort key must be in the SAME frame as every other entity
         # (world tiles). visual_y is already world-frame.
-        px, py = self.camera.world_to_screen(*self._player_render_pos)
-        out.append(_Entity('player', self._depth_sort_key(self.visual_y, 3.0),
-                           px, py, self.client.player))
+        npc = sync_attachment(self.client, self.client.player)
+        if npc is not None:
+            vx, vy = self._attached_visual(self.client.player, npc, frame)
+            px, py = self.camera.world_to_screen(vx, vy - attachment_z(self.client, self.client.player))
+            depth = vy
+        else:
+            px, py = self.camera.world_to_screen(*self._player_render_pos)
+            depth = self.visual_y
+        out.append(_Entity('player', self._depth_sort_key(depth, 3.0),
+                           px, py, self.client.player,
+                           z=attachment_z(self.client, self.client.player)))
+
+    def _attached_visual(self, player, npc, frame):
+        data = player if isinstance(player, dict) else vars(player)
+        npc_id = data['_attachment']['npc_id']
+        nx, ny = npc_position(npc)
+        vx, vy = self._interpolate_npc(npc_id, npc, nx, ny, frame)
+        return vx + data['x'] - nx, vy + data['y'] - ny
 
     def _collect_other_players(self, out: List["_Entity"],
                                frame: FrameContext) -> None:
         for pid, pdata in self.client.players.items():
-            ox = pdata.get('x')
-            oy = pdata.get('y')
+            npc = sync_attachment(self.client, pdata)
+            ox, oy = pdata.get('x'), pdata.get('y')
             if ox is None or oy is None:
                 continue
-            world_x, world_y = self._world_pos_for_level(
-                ox, oy, pdata.get('level', ''), frame)
-            vx, vy = self._interpolate_other_player(pid, world_x, world_y, frame)
-            sx, sy = self.camera.world_to_screen(vx, vy)
+            if npc is not None:
+                vx, vy = self._attached_visual(pdata, npc, frame)
+                self.other_player_visual[pid] = (vx, vy)
+            else:
+                world_x, world_y = self._world_pos_for_level(
+                    ox, oy, pdata.get('level', ''), frame)
+                vx, vy = self._interpolate_other_player(pid, world_x, world_y, frame)
+            z = attachment_z(self.client, pdata)
+            # TGaniObject.cpp:2270: all attached gani parts use the raised base.
+            sx, sy = self.camera.world_to_screen(vx, vy - z)
             if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
                 out.append(_Entity('other', self._depth_sort_key(vy, 3.0),
-                                   sx, sy, pdata, pid))
+                                   sx, sy, pdata, pid, z=z))
 
     def _collect_npcs(self, out: List["_Entity"],
                       frame: FrameContext) -> None:
@@ -328,7 +354,7 @@ class EntityCollectMixin:
                                       screen_size=frame.screen_size):
                 out.append(_Entity('npc', self._depth_sort_key(
                     vy, self._npc_height_tiles(npc)), sx, sy, npc, npc_id,
-                    _npc_draw_band(npc.get('draw_layer'))))
+                    _npc_draw_band(npc.get('draw_layer')), npc.get('z', 0)))
                 continue
             # A culled NPC's own sprite is skipped but its showimg layers are
             # not: one layer can be far bigger than the sprite and still cover

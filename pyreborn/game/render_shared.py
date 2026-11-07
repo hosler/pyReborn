@@ -24,6 +24,7 @@ class _Entity(NamedTuple):
     data: Any
     key: Any = None
     band: int = 1
+    z: float = 0.0
 
 
 def _c255(v: float) -> int:

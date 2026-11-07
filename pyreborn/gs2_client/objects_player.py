@@ -434,12 +434,18 @@ class _PlayerObject(GS2Object):
             if key == "reading":
                 game = getattr(self._rt2, "game_shell", None)
                 return 1.0 if getattr(game, "dialogue_text", None) is not None else 0.0
-            if key == "attached":
-                return 0.0
+            if key in ("attached", "attachid", "attachtype"):
+                from ..attachments import sync_attachment
+                npc = sync_attachment(cl, p)
+                if key == "attached":
+                    vm = self._rt2._executing_vm
+                    return float(npc is not None and self._rt2._gs1_ctx(vm)._npc_id
+                                 == getattr(p, "attached_npc_id", 0))
+                return float(getattr(p, "attached_npc_id", 0)) if key == "attachid" else 0.0
             if key == "attachedtoobject":
                 npc_id = int(getattr(p, "attached_npc_id", 0) or 0)
                 npc_vm = self._rt2.vms.get("npc", {}).get(npc_id)
-                return getattr(npc_vm, "this_object", 0.0) if npc_vm else 0.0
+                return getattr(npc_vm, "this", 0.0) if npc_vm else 0.0
             if key == "headset":
                 text = to_str(getattr(p, "head_image", ""))
                 stem = text.rsplit("/", 1)[-1].lower()

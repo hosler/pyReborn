@@ -5,6 +5,7 @@ Simple dataclass for player state.
 
 from dataclasses import dataclass, field
 import time
+import math
 
 from .hurt import HurtState
 
@@ -98,6 +99,10 @@ class Player:
                 or self.animation in ('swim', 'lava', 'dead'))
 
     def __setattr__(self, name, value):
+        att = self.__dict__.get('_attachment')
+        if name in ('x', 'y') and att and not att.get('pending'):
+            base = att['last_' + name]
+            value = base + math.floor((value - base) * 16 + .5) / 16
         # TPlayer.cpp:6567: getNoHurt gates hurtPlayer. Keep this guard for
         # the script host's second damage write after respond_to_hurt;
         # property assignments and healing use set_hearts instead.

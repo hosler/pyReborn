@@ -43,6 +43,9 @@ class MovementMixin:
         if self.frozen:
             return False
 
+        from .attachments import sends_attachment, stored_position, sync_attachment
+        sync_attachment(self, self.player)
+
         # Calculate new position using step size
         new_x = self.player.x + dx * step
         new_y = self.player.y + dy * step
@@ -77,8 +80,10 @@ class MovementMixin:
                     crossing_boundary = True
 
         # Build and send movement packet
-        # Always send LOCAL coordinates (0-63) - server tracks level separately
-        local_x, local_y = world_to_local(new_x, new_y)
+        # Attached axes are NPC-relative; other axes are level-local.
+        local_x, local_y = (stored_position(self, new_x, new_y)
+                            if sends_attachment(self)
+                            else world_to_local(new_x, new_y))
         # v2.30+/v6 clients report position via the high-precision X2/Y2
         # props (78/79); classic servers only understand X/Y (15/16).
         data = build_movement(local_x, local_y, direction,
@@ -92,7 +97,7 @@ class MovementMixin:
 
             # If crossing GMAP boundary, send a level warp to notify server
             if crossing_boundary and new_level_name:
-                self.enter_gmap_segment(new_level_name, local_x, local_y)
+                self.enter_gmap_segment(new_level_name, *world_to_local(new_x, new_y))
 
             return True
 
@@ -139,7 +144,11 @@ class MovementMixin:
         """
         if not self.connected or not self._authenticated:
             return False
-        local_x, local_y = world_to_local(self.player.x, self.player.y)
+        from .attachments import sends_attachment, stored_position, sync_attachment
+        sync_attachment(self, self.player)
+        local_x, local_y = (stored_position(self, self.player.x, self.player.y)
+                            if sends_attachment(self)
+                            else world_to_local(self.player.x, self.player.y))
         data = build_movement(local_x, local_y, self.player.direction,
                               use_new_format=self._use_pixel_props)
         if not self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data):

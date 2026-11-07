@@ -59,6 +59,7 @@ _OTHER_PROP_HANDLERS = {
     18: _set('status'),
     19: _set_carry,
     20: _set('level'),
+    24: _set('carry_npc'),
     26: _set('mp'),
     32: _set('ap'),
     34: _set('account'),

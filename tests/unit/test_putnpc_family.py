@@ -185,6 +185,7 @@ def test_leap_frame_tables_are_consistent():
 
 def _attach_setup(npc_x=10.0, npc_y=5.0, player_x=12.0, player_y=6.0):
     client = _fake_connected_client()
+    client._use_pixel_props = True  # a v6 session: ATTACHNPC + X2/Y2 go on the wire
     client.player.x, client.player.y = player_x, player_y
     gs1 = _npc_gs1(client, 9, "if (playerenters) { attachplayertoobj 0,9; }",
                    x=npc_x, y=npc_y)

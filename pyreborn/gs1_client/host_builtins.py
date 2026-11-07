@@ -80,6 +80,16 @@ class BuiltinsMixin:
             return self._compu_array_attr(name.split(".", 1)[1], indices)
         return UNSET
 
+    @_gs1_builtin(_GS1_PLAYER_BUILTINS, "attached", "player.attached",
+                  "attachid", "player.attachid", "attachtype", "player.attachtype")
+    def _pb_attachment(self, name, indices, ctx):
+        from ..attachments import sync_attachment
+        player = self._player
+        parent = sync_attachment(self.rt.client, player)
+        if name.endswith("attached"):
+            return parent is not None and getattr(ctx, "_npc_id", None) == player.attached_npc_id
+        return player.attached_npc_id if name.endswith("attachid") else 0
+
     def _npc_ids(self):
         """Return level NPC IDs in `npcs[]` index order.
 

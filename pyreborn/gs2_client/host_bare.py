@@ -16,6 +16,18 @@ from .registry import GS2GuiManager, TIMER_RESOLUTION, _GS1_PURE, _GS2_BARE, _GS
 
 class HostBareMixin:
 
+    @_gs2_builtin(_GS2_BARE, "attachplayertoobj", "detachplayer")
+    def _bi_player_attachment(self, vm, name, args, obj):
+        from ..attachments import attach, detach, sync_attachment
+        client = self.rt2.client
+        if client is not None:
+            if name == "detachplayer":
+                sync_attachment(client, client.player)
+                detach(client, client.player, send=True)
+            elif len(args) >= 2 and int(to_num(args[0])) == 0:
+                attach(client, client.player, int(to_num(args[1])), send=True)
+        return 0.0
+
     _KEY_TEXT = tuple((',,,,,,,,Backspace,Tab,,,,Enter,,,Shift,Ctrl,Menu,Pause,Capslock,,,,,,,Escape,,,,,Space,'
         'PageUp,PageDown,End,Home,Left,Up,Right,Down,,Print,,,Insert,Delete,Help,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,'
         '"Left Windows","Right Windows",Apps,,,Numpad0,Numpad1,Numpad2,Numpad3,Numpad4,Numpad5,Numpad6,Numpad7,Numpad8,Numpad9,'
