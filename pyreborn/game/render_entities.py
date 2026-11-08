@@ -226,8 +226,10 @@ class EntityRenderMixin(
         is re-sampled only after a move of 0.5 tile or more, so it lingers
         briefly after leaving the tile (TServerPlayer.cpp:1239-1262); the
         sprite's top-left is player + (0.5, 2.0) tiles (:1317-1320). The
-        oracle draws it inside `if (getIsHurt() && ...)`; that reads as a
-        decompile inversion, so it is drawn whenever a slot is set."""
+        draw assembly joins both hurt and normal-body paths at +0x2aa,
+        testing only the sprite index before drawing; see
+        asm/TServerPlayer/_ZN13TServerPlayer4drawEP7TPlayer.s_decomped:126-168.
+        The C++ adds an unsupported hurt condition."""
         if getattr(self.client, 'ghost_mode', 0):
             return
         pos = (self.client.x, self.client.y)
