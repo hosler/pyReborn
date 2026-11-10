@@ -61,7 +61,7 @@ class FileTransferMixin:
 
     def request_weapon_bytecode(self, weapon_name: str) -> bool:
         """Request a weapon's GS2 bytecode (PLI_UPDATESCRIPT). Reply arrives
-        as PLO_NPCWEAPONSCRIPT -> client.gs2_bytecode['weapon'][name]."""
+        as PLO_WEAPONBYTECODE2 -> client.gs2_bytecode['weapon'][name]."""
         if not self.connected or not self._authenticated:
             return False
         data = build_update_script(weapon_name)

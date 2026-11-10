@@ -142,6 +142,28 @@ class _GS1ObjectRef:
             setattr(self.target, attr, value)
         return True
 
+# carryobject names and their sprites, in table order
+# (TInitStatics.cpp:1138-1140 carrysprites, :1179 carrynames). "none" is the
+# last entry, sprite -1.
+_CARRY_NAMES = ("bush", "sign", "vase", "stone", "blackstone", "bomb",
+                "hotbomb", "superbomb", "joltbomb", "hotjoltbomb", "none")
+_CARRY_SPRITES = (0x105, 0x10b, 0x109, 0x107, 0xef, 0x41, 0x42, 0x141,
+                  0x15b, 0x15c, -1)
+
+
+def _carry_code_for_name(value):
+    """(found, decoded carry-sprite code) for a carryobject name; the code is
+    what Player.carry_sprite holds (-1 = nothing carried)."""
+    name = to_str(value).strip().lower()
+    if name not in _CARRY_NAMES:
+        return False, -1
+    sprite = _CARRY_SPRITES[_CARRY_NAMES.index(name)]
+    if sprite < 0:
+        return True, -1
+    from ..throwing import carry_code
+    return True, carry_code(sprite)
+
+
 # Classic baddy ("compus") tables for putcomp/putnewcomp, from GServer-v2:
 # names + spider->octopus alias, LevelBaddy.h:26-47 (BaddyType/BaddyNames);
 # per-type default image and power (half-hearts), LevelBaddy.cpp:29-40

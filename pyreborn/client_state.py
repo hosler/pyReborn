@@ -87,10 +87,11 @@ class SessionState:
 
         # Server-control state (tier 3).
         self.frozen = False              # PLO_FREEZEPLAYER2 / PLO_UNFREEZEPLAYER
-        self.classic_mode_disabled = False  # PLO_DISABLECLASSICMODE
-        self.input_frozen = False           # packets 176 / 177
+        self.classic_mode_disabled = False  # packet 176 (reborn-protocol: DISABLECLASSICMODE)
+        self.server_mode = ''            # 'kingdoms' (176) / 'newworld' (177) marker
+        self.input_frozen = False        # only a legacy lock now; no packet sets it
         self.npcs_hidden = False         # PLO_HIDENPCS
-        self.login_complete = False      # PLO_UNKNOWN168 (blank "you're logged in" marker)
+        self.login_complete = False      # PLO_ONLINEMODE (blank "you're logged in" marker)
         self.server_warp_info: Optional[dict] = None  # last PLO_SERVERWARP target
         self.profiles: Dict[str, dict] = {}  # account -> profile (PLO_PROFILE)
         self.npcserver_addr: Optional[dict] = None  # PLO_NPCSERVERADDR
@@ -550,7 +551,7 @@ class Callbacks:
         self.on_profile: Optional[Callable[[dict], None]] = None
         # NPCs hidden by server: handler() (PLO_HIDENPCS).
         self.on_hide_npcs: Optional[Callable[[], None]] = None
-        # Login-complete notification: handler() (PLO_UNKNOWN168, blank -
+        # Login-complete notification: handler() (PLO_ONLINEMODE, blank -
         # see Player.cpp:709 "This seems to inform the client that they
         # have logged in.").
         self.on_login_complete: Optional[Callable[[], None]] = None

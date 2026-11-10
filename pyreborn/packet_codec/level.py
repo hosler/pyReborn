@@ -1,14 +1,16 @@
 from .common import *
 
-def parse_npc_showimgs(data: bytes) -> dict:
+def parse_npc_showimgs(data: bytes, id_bytes: int = 3) -> dict:
     """Parse PLO_SHOWIMGNPC (166) into NPC showimg layer updates."""
     def read_gchar(position):
         if position >= len(data):
             return None, len(data)
         return data[position] - 32, position + 1
 
-    npc_id, pos = _read_gbyte(data, 0, 3)
+    npc_id, pos = _read_gbyte(data, 0, id_bytes)
     result = {'npc_id': npc_id, 'clear': False, 'records': {}}
+    if id_bytes == 2:
+        result['player_images'] = True
     current = None
     while pos < len(data):
         selector = data[pos] - 32
@@ -24,9 +26,10 @@ def parse_npc_showimgs(data: bytes) -> dict:
         if current is None:
             break
         if selector == 0:
+            empty = pos < len(data) and data[pos] == 32
             value, pos = _read_string(data, pos)
-            if value is not None:
-                current['image'] = value
+            if value is not None or empty:
+                current['image'] = value or ''
         elif selector in (1, 2, 3, 6, 8):
             value, pos = read_gchar(pos)
             if value is None:
@@ -53,7 +56,7 @@ def parse_npc_showimgs(data: bytes) -> dict:
                 values.append(value)
             if None in values:
                 break
-            current['colors'] = tuple(value / 200.0 for value in values)
+            current['colors'] = tuple(value / (255.0 if id_bytes == 2 else 200.0) for value in values)
         elif selector == 7:
             value, pos = read_gchar(pos)
             if value is None:
@@ -258,17 +261,44 @@ _NPC_TEXT_KEYS = {0: 'image', 1: 'script', 12: 'gani', 15: 'message',
 _NPC_STREAM = StreamPolicy(
     table=NPC_PROPS, max_prop_id=77, require_ascending=True,
     check_alignment=True, require_full_consume=True,
-    handle_empty=frozenset(_NPC_TEXT_KEYS))
+    handle_empty=frozenset(_NPC_TEXT_KEYS) | frozenset(
+        [36, 37, 38, 39, 40, 44, 45, 46, 47, *range(53, 74)]))
 
 
 def _set_text(key):
     return lambda props, value: props.__setitem__(key, value or '')
 
 
+def _set_npc_visflags(props, flags):
+    # FourPlay/quattroplay/src/TServerNPC.cpp:1098-1113.
+    props.update(visflags=flags, visible=bool(flags & 1))
+    if flags & 4:
+        props['draw_layer'] = 'under'
+    elif flags & 2:
+        props['draw_layer'] = 'over'
+    elif flags & 0x26 == 0:
+        props['draw_layer'] = None
+
+
+def _set_npc_equipment(kind):
+    def handler(props, value):
+        power, image = value
+        props[kind + '_power'] = power
+        image = image if image is not None else ''
+        # TServerNPC.cpp:70-74,1034-1080 appendExtensionIfMissing(".png"): a
+        # name with no extension at all gets one.
+        if image and '.' not in image.rsplit('/', 1)[-1]:
+            image += '.png'
+        props[kind + '_image'] = image
+    return handler
+
+
 _NPC_PROP_HANDLERS = {
     2: _set('x'),
     3: _set('y'),
-    13: _set('visflags'),
+    10: _set_npc_equipment('sword'),
+    11: _set_npc_equipment('shield'),
+    13: _set_npc_visflags,
     # NPCBlockFlags: bit 0 = NOBLOCK (dontblock/blockagain). Surfaced as the
     # same 'dontblock' key the local GS1 runtime's collision gate reads.
     14: lambda props, value: props.update(
@@ -287,10 +317,14 @@ _NPC_PROP_HANDLERS = {
     # attribution the client gets - see client.py's PLO_NPCPROPS handler.
     41: _set('gmaplevelx'),
     42: _set('gmaplevely'),
+    43: lambda props, value: props.update(z=value) if value <= 170 else None,
     50: _set_text('name'),
+    # FourPlay/quattroplay/src/TServerNPC.cpp:1260-1339.
+    **{pid: _set_text(f'gattrib{idx}') for idx, pid in enumerate(
+        [36, 37, 38, 39, 40, 44, 45, 46, 47, *range(53, 74)], 1)},
     75: _set('x'),
     76: _set('y'),
-    77: _set('z'),
+    77: _set_z2,
     **{pid: _set_text(key) for pid, key in _NPC_TEXT_KEYS.items()},
     # A bare "-" image means "no image", not a filename: both GServer-v2
     # (loader/LevelLoader.cpp:832) and the C# client

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from reborn_protocol.coords import local_to_world
 from reborn_protocol.gs1.runtime import Host, UNSET
@@ -35,6 +36,29 @@ class GS1ClientHost(
 
     def __init__(self, runtime: "ClientGS1"):
         self.rt = runtime
+        # Level-mates' players[] records, built once per script slice (see
+        # begin_slice/end_slice). Packets only arrive between frames, so the
+        # roster cannot change under a running slice; the local player is
+        # rebuilt on every read because a script can write to it mid-slice.
+        self._remote_records = None
+        self._slice_depth = 0
+
+    @property
+    def _slice_active(self):
+        return self._slice_depth > 0
+
+    def begin_slice(self):
+        """A script slice starts: remote players[] records may be cached.
+        Slices nest (callnpc runs another script synchronously) and share
+        one cache."""
+        if self._slice_depth == 0:
+            self._remote_records = None
+        self._slice_depth += 1
+
+    def end_slice(self):
+        self._slice_depth = max(0, self._slice_depth - 1)
+        if self._slice_depth == 0:
+            self._remote_records = None
 
     @staticmethod
     def host_surface():
@@ -46,26 +70,123 @@ class GS1ClientHost(
     def _player(self):
         return getattr(self.rt.client, "player", None) if self.rt.client else None
 
+    # players[i].<member> -> the record keys below (scripting-gs1-variables.md
+    # "Players"). Aliases share one stored value.
+    _PLAYER_MEMBER_ALIASES = {
+        "nick": "nickname", "darts": "arrows", "gralats": "rupees",
+        "hp": "hearts", "maxhp": "fullhearts",
+    }
+
+    _HEAD_SET = re.compile(r"head0*(\d+)\.(?:png|gif)")
+
+    @classmethod
+    def _head_set(cls, image):
+        """players[].headset: the N of head<N>.png, else 0."""
+        match = cls._HEAD_SET.fullmatch(str(image or "").lower())
+        return float(match.group(1)) if match else 0.0
+
+    def _local_player_record(self, cl, p, x, y):
+        record = {
+            "x": x, "y": y,
+            "account": getattr(p, "account", ""),
+            "nickname": getattr(p, "nickname", ""),
+            "chat": getattr(p, "chat", ""),
+        }
+        if p is None:
+            return record
+        record.update({
+            "id": float(getattr(p, "id", 0) or 0),
+            "hearts": float(getattr(p, "hearts", 0) or 0),
+            "fullhearts": float(getattr(p, "max_hearts", 0) or 0),
+            "ap": float(getattr(p, "ap", 0) or 0),
+            "mp": float(getattr(p, "mp", 0) or 0),
+            "dir": float(int(getattr(p, "direction", 2) or 0) & 3),
+            "rupees": float(getattr(p, "rupees", 0) or 0),
+            "arrows": float(getattr(p, "arrows", 0) or 0),
+            "bombs": float(getattr(p, "bombs", 0) or 0),
+            "bombpower": float(getattr(p, "bomb_power", 0) or 0),
+            "glovepower": float(getattr(p, "glove_power", 0) or 0),
+            "swordpower": float(getattr(p, "sword_power", 0) or 0),
+            "shieldpower": float(getattr(p, "shield_power", 0) or 0),
+            "sprite": float(getattr(p, "sprite", 0) or 0),
+            "headset": self._head_set(getattr(p, "head_image", "")),
+            "carrysprite": float(getattr(p, "carry_sprite", -1)),
+            "kills": float(getattr(p, "kills", 0) or 0),
+            "deaths": float(getattr(p, "deaths", 0) or 0),
+            "rating": float(getattr(p, "rating", 0) or 0),
+            "ratingd": float(getattr(p, "rating_deviation", 0) or 0),
+            "attachid": float(getattr(p, "attached_npc_id", 0) or 0),
+            "attachtype": float(getattr(p, "attached_npc_type", 0) or 0),
+            "z": float(getattr(p, "z", 0) or 0),
+        })
+        return record
+
+    @classmethod
+    def _remote_player_record(cls, op, x, y):
+        """A level-mate's record from what PLO_OTHERPLPROPS carries. Members
+        the wire never sends for other players (hearts, rupees, bombs, ...)
+        read 0, like an unset property."""
+        def num(key, default=0):
+            try:
+                return float(op.get(key, default) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        direction = op.get("direction", op.get("dir", 2))
+        return {
+            "x": x, "y": y,
+            "account": op.get("account", ""),
+            "nickname": op.get("nickname", op.get("nick", "")),
+            "chat": op.get("chat", ""),
+            "id": num("id"),
+            "hearts": num("hearts"), "fullhearts": num("max_hearts"),
+            "ap": num("ap"), "mp": num("mp"),
+            "dir": float(int(direction or 0) & 3),
+            "rupees": num("rupees"), "arrows": num("arrows"),
+            "bombs": num("bombs"), "bombpower": num("bomb_power"),
+            "glovepower": num("glove_power"),
+            "swordpower": num("sword_power"),
+            "shieldpower": num("shield_power"),
+            "sprite": num("sprite"),
+            "headset": cls._head_set(op.get("head_image", "")),
+            "carrysprite": num("carry_sprite", -1),
+            "kills": num("kills"), "deaths": num("deaths"),
+            "rating": num("rating"), "ratingd": num("rating_deviation"),
+            "attachid": num("attach_npc"),
+            "z": num("z"),
+        }
+
     def _player_list(self):
         """Return all players that the client knows.
 
         Index 0 is the local player. The other players follow it. NPC scripts
         use this list for proximity checks and the room-join state machine.
-        Examples are players[i].x, #a(i), and playerscount.
+        Examples are players[i].x, #a(i), and playerscount. Each record holds
+        the members scripting-gs1-variables.md lists for `players[]` (x, y,
+        id, hearts, fullhearts, ap, mp, dir, rupees, arrows, bombs,
+        glovepower, swordpower, shieldpower, ...; aliases in
+        _PLAYER_MEMBER_ALIASES). The positions are world coordinates on a gmap.
         """
         cl = self.rt.client
         if cl is None:
             return []
         p = getattr(cl, "player", None)
-        out = [{"x": float(getattr(cl, "x", 0)), "y": float(getattr(cl, "y", 0)),
-                "account": getattr(p, "account", ""),
-                "nickname": getattr(p, "nickname", ""),
-                "chat": getattr(p, "chat", "")}]
+        out = [self._local_player_record(
+            cl, p, float(getattr(cl, "x", 0)), float(getattr(cl, "y", 0)))]
+        remotes = self._remote_records if self._slice_active else None
+        if remotes is None:
+            remotes = self._build_remote_records(cl)
+            if self._slice_active:
+                self._remote_records = remotes
+        out.extend(remotes)
+        return out
+
+    def _build_remote_records(self, cl):
         # World frame, like playerx/playery in host_builtins.py::_pb_position.
         # Reference: GServer-v2/server/include/object/Character.h:getTilePosition (map*64 + local).
         segments = {name: cell for cell, name in (getattr(cl, "gmap_grid", {}) or {}).items()}
         current_segment = segments.get(getattr(cl, "_current_level_name", ""), (0, 0))
-        for op in getattr(cl, "players", {}).values():
+        out = []
+        for pid, op in getattr(cl, "players", {}).items():
             if isinstance(op, dict):
                 x, y = local_to_world(float(op.get("x", 0) or 0),
                                       float(op.get("y", 0) or 0),
@@ -75,10 +196,10 @@ class GS1ClientHost(
                         x = float(op["world_x"])
                     if op.get("world_y") is not None:
                         y = float(op["world_y"])
-                out.append({"x": x, "y": y,
-                            "account": op.get("account", ""),
-                            "nickname": op.get("nickname", ""),
-                            "chat": op.get("chat", "")})
+                record = self._remote_player_record(op, x, y)
+                if not record["id"]:
+                    record["id"] = float(pid)
+                out.append(record)
         return out
 
     # -- era with-scope host-object members --------------------------------

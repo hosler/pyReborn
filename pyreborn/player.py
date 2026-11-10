@@ -21,6 +21,7 @@ class Player:
     # Position
     x: float = 0.0
     y: float = 0.0
+    z: float = 0.0
     level: str = ""
     direction: int = 2  # 0=up, 1=left, 2=down, 3=right
 
@@ -136,6 +137,8 @@ class Player:
             self.x = props['x']
         if 'y' in props:
             self.y = props['y']
+        if 'z' in props:
+            self.z = props['z']
         if 'level' in props:
             self.level = props['level']
         if 'direction' in props:

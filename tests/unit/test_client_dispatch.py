@@ -44,18 +44,18 @@ HANDLED_IDS_BEFORE_REGISTRY = [
     "PLO_HIDENPCS", "PLO_SERVERWARP", "PLO_TRIGGERACTION",
     "PLO_DISABLECLASSICMODE", "PLO_FULLSTOP2", "PLO_PROFILE",
     "PLO_NPCSERVERADDR", "PLO_SETNETCOOKIE", "PLO_NPCBYTECODE",
-    "PLO_GANISCRIPT", "PLO_NPCWEAPONSCRIPT", "PLO_LOADGANI",
+    "PLO_GANISCRIPT", "PLO_WEAPONBYTECODE2", "PLO_LOADGANI",
     "PLO_LOADSCRIPT", "PLO_NPCWEAPONDEL", "PLO_LEVELMODTIME",
     "PLO_STARTMESSAGE", "PLO_DEFAULTWEAPON", "PLO_STAFFGUILDS",
-    "PLO_SERVERTEXT", "PLO_SETACTIVELEVEL", "PLO_UNKNOWN168",
-    "PLO_GHOSTICON", "PLO_RPGWINDOW", "PLO_STATUSLIST", "PLO_UNKNOWN190",
-    "PLO_CLEARWEAPONS", "PLO_HASNPCSERVER",
+    "PLO_SERVERTEXT", "PLO_SETACTIVELEVEL", "PLO_ONLINEMODE",
+    "PLO_GHOSTICON", "PLO_RPGWINDOW", "PLO_STATUSLIST", "PLO_SERVERLISTCONNECTED",
+    "PLO_RESETCLIENT", "PLO_HASNPCSERVER",
 ]
 
-# A packet id nothing has ever handled: PLO_NPCACTION and PLO_GHOSTTEXT are
+# A packet id nothing has ever handled: PLO_NPCSETSCRIPT and PLO_GHOSTTEXT are
 # already asserted unhandled by test_npc_move_del2_login.py, so use one of
 # them rather than inventing a number that could later gain a handler.
-UNHANDLED_PACKET_ID = int(PacketID.PLO_NPCACTION)
+UNHANDLED_PACKET_ID = int(PacketID.PLO_NPCSETSCRIPT)
 
 # Moved attributes that code outside client.py reads or writes on a Client.
 FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
@@ -104,6 +104,7 @@ FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
 # is not a ceiling, and a genuinely new handler is not a regression. Adding an
 # id here is a deliberate act; forgetting to is what the assertion below catches.
 HANDLED_IDS_ADDED_SINCE_REGISTRY = [
+    132, 133, 193,
     # PLO_UPDATEPACKAGEISUPDATED (187). GServer-v2 (server/src/Server.cpp)
     # pushes this to every client that has seen a file when that file changes
     # on disk. Handled now so the on-disk asset cache drops its stale copy and

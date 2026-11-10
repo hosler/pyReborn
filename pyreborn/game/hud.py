@@ -428,6 +428,9 @@ class HUD:
             # Draws nothing while closed; it is last so RC tools sit over
             # every other overlay, matching their input priority.
             rc_ui.draw(surf)
+        # Topmost, like its input priority: nothing may cover the consent prompt.
+        if getattr(self.game, 'server_warp_prompt', None) is not None:
+            self._draw_server_warp_prompt(surf)
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):
@@ -651,6 +654,34 @@ class HUD:
         else:
             footer = "Up/Down select · Enter to PM · F7/Esc close"
         self._draw_list_overlay(surf, "Players", rows, sel, footer)
+
+    def _draw_server_warp_prompt(self, surf):
+        """Modal consent prompt for a server's PLO_SERVERWARP request."""
+        import textwrap
+        prompt = self.game.server_warp_prompt
+        address = f"{prompt['host']}:{prompt['port']}"
+        listed = ("Matches an entry in the fetched server list."
+                  if prompt.get('in_list')
+                  else "NOT in the fetched server list.")
+        lines = textwrap.wrap(
+            f"This server wants to move you to {prompt['name']} ({address}). "
+            "Connect?", 44)
+        lines += [listed, "", "You would log in there with this account name",
+                  "and password."]
+        g = self.game
+        pad, line_h, w = 14, 20, 380
+        h = pad * 2 + 30 + line_h * len(lines) + 28
+        x = (g.screen_w - w) // 2
+        y = (g.screen_h - h) // 2
+        theme.draw_panel(surf, pygame.Rect(x, y, w, h))
+        surf.blit(g.font.render("Server move request", True, theme.MINT_PALE),
+                  (x + pad, y + pad))
+        ty = y + pad + 30
+        for line in lines:
+            surf.blit(g.font_small.render(line, True, theme.TEXT), (x + pad, ty))
+            ty += line_h
+        surf.blit(g.font_small.render("Y = connect   N / Esc / Enter = stay here",
+                                      True, theme.TEXT_DIM), (x + pad, ty + 6))
 
     def _draw_server_list(self, surf):
         g = self.game

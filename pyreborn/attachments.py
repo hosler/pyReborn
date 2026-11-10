@@ -5,6 +5,8 @@ import math
 from reborn_protocol.coords import local_coord, segment_origin
 from reborn_protocol.props import PLAYER_PROPS, encode_value
 
+from .packet_codec.common import Z_MIN_TILES, Z_MAX_TILES
+
 
 def _data(player):
     return player if isinstance(player, dict) else getattr(player, '__dict__', {})
@@ -133,7 +135,12 @@ def delete_npc_attachments(client, npc_id):
 def attachment_z(client, player):
     # TLevelObject.cpp:113-118: attachment inherits z without replacing own z.
     npc = sync_attachment(client, player)
-    return npc.get('z', 0) if npc is not None else 0
+    if npc is None:
+        return 0
+    z = npc.get('z', 0)
+    # Parsing already drops the server's unset marker; this guards values
+    # that reached the NPC dict by another route.
+    return z if Z_MIN_TILES <= z <= Z_MAX_TILES else 0
 
 
 def stored_position(client, x, y):

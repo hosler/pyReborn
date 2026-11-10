@@ -92,6 +92,10 @@ class MainCommandsMixin:
         text = to_str(args[0]) if args else ""
         if isinstance(npc, dict):
             npc["message"] = text
+            if name == "message":
+                # scriptfun_servernpc_message also clears the timershow
+                # display (TServerNPCProperties.cpp:551-555)
+                npc.pop("timershow", None)
         if rt.on_say:
             rt.on_say(getattr(ctx, "_npc_id", 0), text)
 
@@ -472,6 +476,100 @@ class MainCommandsMixin:
             return
         if rt.on_putleaps:
             rt.on_putleaps(leap_type, to_num(args[1]), to_num(args[2]))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "takeplayercarry")
+    def _cmd_takeplayercarry(self, name, args, ctx, imgs):
+        # takeplayercarry: whatever the local player carries is deleted, not
+        # thrown (scriptfun_gsfunctionsclient_takeplayercarry,
+        # Preagonal/FourPlay/quattroplay/src/TInitStatics.cpp:3855-3872). A
+        # hiding player (mode 14) leaves that mode, the carried-object and
+        # carried-bomb state clear, the carry sprite is published as -1 and
+        # the player goes back to idle.
+        cl = self.rt.client
+        player = self._player
+        if cl is None or player is None:
+            return _FALL_THROUGH
+        from ..hiding import HIDDEN_ACTION_MODE
+        hiding = player.action_mode == HIDDEN_ACTION_MODE
+        bomb = getattr(player, "carried_bomb", None)
+        carrying = (getattr(player, "carry_sprite", -1) != -1
+                    or player.is_carrying() or bomb is not None)
+        if not (carrying or hiding):
+            # nothing to take: no state change, and nothing goes on the wire
+            # (a script loop would otherwise flood PLI_PLAYERPROPS)
+            return None
+        if hiding:
+            player.action_mode = 0
+        if bomb is not None:
+            bomb["discarded"] = True
+            bomb["carried_by"] = None
+        player.throw_object()
+        if carrying:
+            try:
+                from ..carrying import publish_carry
+                publish_carry(cl, -1)
+            except Exception:
+                pass
+        if player.animation != "idle":
+            try:
+                cl.set_animation("idle")
+            except Exception:
+                pass
+            if self.rt.on_setani:
+                self.rt.on_setani("idle")
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "takeplayerhorse")
+    def _cmd_takeplayerhorse(self, name, args, ctx, imgs):
+        # takeplayerhorse: the local player loses their horse. The reference
+        # client's TPlayer::leaveHorse is an empty stub (its asm is a bare
+        # `ret`), so the behaviour here follows the documented command
+        # (scripting-gs1-commands.md "takeplayerhorse") and the server's
+        # fn_takeplayerhorse (GS1Commands.cpp:3527), which clears the
+        # player's horse image: dismount and tell the server.
+        cl = self.rt.client
+        player = self._player
+        if cl is None or player is None or not getattr(player, "horse_image", ""):
+            return None
+        player.horse_image = ""
+        try:
+            cl._send_appearance_prop(21, "")
+        except Exception:
+            pass
+        return None
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "setletters")
+    def _cmd_setletters(self, name, args, ctx, imgs):
+        # setletters <image>: choose the bitmap sheet sign text is drawn from
+        # (16x32 cells, 16 per row; TPlayer::drawLetter, TPlayer.cpp:3669).
+        # The reference stores the name on the local player
+        # (TInitStatics.cpp:3717-3721) and ignores the call for a player
+        # without a gani object. An empty name is kept: drawSignBack /
+        # drawStringLine draw nothing when it is empty (TPlayer.cpp:3687,4436).
+        if not args or self._player is None:
+            return _FALL_THROUGH
+        self.rt.letters_image = to_str(args[0]).strip()
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "toinventory")
+    def _cmd_toinventory(self, name, args, ctx, imgs):
+        # toinventory <flag>: set the flag and file the calling NPC in the
+        # side-screen inventory until the flag is unset
+        # (scripting-gs1-commands.md "toinventory"; the TilesEditor GS1
+        # converter maps it to `set`). The panel itself is not drawn; the NPC
+        # records the flag it is filed under as `inventory_flag`.
+        from reborn_protocol.gs1.runtime import NAMESPACES, UNSET
+        if not args:
+            return _FALL_THROUGH
+        flag = to_str(args[0]).strip()
+        if not flag:
+            return None
+        head, dot, rest = flag.partition(".")
+        scope = NAMESPACES.get(head) if dot else None
+        key = rest if scope is not None else flag
+        if ctx.vars.get(scope, key) is UNSET:   # `set` only marks presence
+            ctx.vars.set(scope, key, True)
+        if isinstance(ctx.this_obj, dict):
+            ctx.this_obj["inventory_flag"] = flag
+        return None
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "attachplayertoobj")
     def _cmd_attachplayertoobj(self, name, args, ctx, imgs):

@@ -303,6 +303,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         finally:
             self._in_update = False
 
+        from .npc_movement import tick_moves
+        tick_moves(self)
         self._tick_sword_attack()
         self._tick_arrow_sims()
         self._tick_bomb_sims()
@@ -506,6 +508,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'frozen': ('session', 'frozen'),
     'input_frozen': ('session', 'input_frozen'),
     'classic_mode_disabled': ('session', 'classic_mode_disabled'),
+    'server_mode': ('session', 'server_mode'),
     'npcs_hidden': ('session', 'npcs_hidden'),
     'login_complete': ('session', 'login_complete'),
     'server_warp_info': ('session', 'server_warp_info'),

@@ -10,6 +10,8 @@ from ..packets import (
     parse_start_message,
 )
 from .registry import handles
+from .entities import apply_showimgs
+from ..packet_codec.level import parse_npc_showimgs
 
 
 @handles(PacketID.PLO_TOALL)
@@ -30,11 +32,11 @@ def handle_toall(client, data):
 
 @handles(PacketID.PLO_SHOWIMG)
 def handle_showimg(client, data):
-    # PLO_SHOWIMG (32) - also carries level chat messages
-    # Same format as PLO_TOALL for chat: gshort(player_id) + message
-    player_id, message = parse_chat(data)
-    if message and client.on_chat:
-        client.on_chat(player_id, message)
+    # FourPlay/quattroplay/src/TClient.cpp:5270-5281.
+    info = parse_npc_showimgs(data, id_bytes=2)
+    player = client.players.get(info['npc_id'])
+    if player is not None:
+        apply_showimgs(player, info, client)
 
 
 @handles(PacketID.PLO_PRIVATEMESSAGE)

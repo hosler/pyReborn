@@ -276,7 +276,7 @@ def parse_setnetcookie(data: bytes) -> str:
 #   weapon: PLO_NPCWEAPONADD announces name/image/classes, PLO_LOADSCRIPT(197)
 #           announces the script header ("weapon,<name>,1,<desKey>,<crc>");
 #           the client requests the blob with PLI_UPDATESCRIPT(158) and gets
-#           PLO_NPCWEAPONSCRIPT(140) = {GSHORT hdr_len}{hdr CSV}{bytecode}.
+#           PLO_WEAPONBYTECODE2(140) = {GSHORT hdr_len}{hdr CSV}{bytecode}.
 #   npc:    PLO_NPCBYTECODE(131) = {GINT3 npc_id}{bytecode}, streamed inside
 #           PLO_RAWDATA automatically for clients >= 4.0211 (Level.cpp
 #           sendNPCsToPlayer).
@@ -313,8 +313,48 @@ def _parse_script_header(header: str) -> dict:
             'des_key': parts[3], 'crc': parts[4]}
 
 
+def _parse_named_bytecode_v4(data: bytes, kind: str) -> dict:
+    reader = PacketReader(data)
+    info = _parse_script_header('')
+    info.update(type=kind, name=reader.read_gstring(), header='',
+                bytecode=reader.remaining())
+    return info
+
+
+def parse_weapon_bytecode_v4(data: bytes) -> dict:
+    """Parse 132: gchar name length, name, remaining bytecode.
+
+    Reference origin/beta4 server/src/object/Weapon.cpp:214.
+    """
+    return _parse_named_bytecode_v4(data, 'weapon')
+
+
+def parse_class_bytecode_v4(data: bytes) -> dict:
+    """Parse 133: gchar name length, name, remaining bytecode.
+
+    Reference origin/beta4 server/src/scripting/ScriptClass.cpp:77;
+    server/src/player/packets/PlayerClientPackets.cpp:1542 sends only the
+    name for an unknown class.
+    """
+    return _parse_named_bytecode_v4(data, 'class')
+
+
+def parse_weapon_hash_v4(data: bytes) -> dict:
+    """Parse 193: gint5 CRC, remaining weapon name.
+
+    Reference origin/beta4 server/src/object/Weapon.cpp:199.
+    """
+    reader = PacketReader(data)
+    # Keep the encoded CRC string, as in a packet 197 CSV header.
+    crc = reader.read_string(5)
+    info = _parse_script_header('')
+    info.update(type='weapon', name=reader.remaining().decode('latin-1'),
+                crc=crc, header='', bytecode=b'')
+    return info
+
+
 def parse_npcweaponscript(data: bytes) -> dict:
-    """Parse PLO_NPCWEAPONSCRIPT (140): {GSHORT header_len}{header CSV}{bytecode}
+    """Parse PLO_WEAPONBYTECODE2 (140): {GSHORT header_len}{header CSV}{bytecode}
     (Weapon.cpp sendByteCodeToPlayer). The bytecode may be empty (the server
     answers unknown class requests with a header-only packet)."""
     reader = PacketReader(data)

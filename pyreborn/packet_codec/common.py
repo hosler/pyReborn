@@ -85,6 +85,22 @@ def _set(key):
     return lambda props, value: props.__setitem__(key, value)
 
 
+# GServer-v2 Character.h:75-79: the server's valid Z range is -50..170 tiles
+# and its "Z unset" marker is InvalidZTiles = -51 (serialised as -816 px by
+# PropertySerializers.cpp:436-441; NPC.cpp:140 forces Z2 into every NPC
+# all-props packet). The reference client's own marker is -0x660 px = -102
+# tiles (TServerPlayer.cpp:1877-1904). Both lie outside the valid range, and
+# the reference client leaves z untouched for an out-of-range value, so a
+# sentinel keeps whatever z the entity already had.
+Z_MIN_TILES = -50.0
+Z_MAX_TILES = 170.0
+
+
+def _set_z2(props, value):
+    if value is not None and Z_MIN_TILES <= value <= Z_MAX_TILES:
+        props['z'] = value
+
+
 # TServerPlayer.cpp:38-40,1754-1755: carry byte 0x1f must decode to -1.
 _CARRY_PLAYER_PROPS = dict(PLAYER_PROPS)
 _CARRY_PLAYER_PROPS[19] = replace(PLAYER_PROPS[19], wire=Wire.RAW)
@@ -253,6 +269,9 @@ _SELF_PROP_HANDLERS = {
     35: _set('body_image'),
     36: _set('rating'),
     42: _set('attach_npc'),
+    # FourPlay/quattroplay/src/TServerPlayer.cpp:1877-1904.
+    45: lambda props, value: props.update(z=value) if value <= 170 else None,
+    80: _set_z2,
     78: _set('x'),
     79: _set('y'),
     **_gattrib_handlers(),

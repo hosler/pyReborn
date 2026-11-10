@@ -164,3 +164,57 @@ def test_reset_account_chests_strips_only_loot_lines(tmp_path, monkeypatch):
 
     assert reset_account_chests("testbot2") is True
     assert account.read_text() == "GRACC001\nX 5\n"
+
+
+# --------------------------------------------------------------------------
+# movement_all_directions must not depend on where the last session ended
+# --------------------------------------------------------------------------
+
+class _PocketBot:
+    """Stand-in for GameBot: stuck in a wall pocket until it is warped out."""
+
+    def __init__(self, level, x, y):
+        self.level, self.x, self.y = level, x, y
+        self.issues = []
+        self.warps = []
+
+    @property
+    def client(self):
+        return self  # BugDetector reads client.x / client.y
+
+    def warp_to(self, level, x, y):
+        self.warps.append((level, x, y))
+        self.level, self.x, self.y = level, x, y
+        return True
+
+    def move(self, dx, dy):
+        if (self.x, self.y) == (15.5, 32.5):
+            return False  # walled in: every direction blocked, no packet sent
+        return True  # open ground: the real bot moves one step
+
+
+def test_movement_scenario_leaves_a_wall_pocket_before_moving():
+    # The server persists the last logout position; the previous run's PvP
+    # test ends the account at (15.5, 32.5), where all four moves are blocked.
+    bot = _PocketBot(test_scenarios.QA_FIXTURE_LEVEL, 15.5, 32.5)
+
+    result = test_scenarios.TestScenarios.test_movement_all_directions(bot)
+
+    assert bot.warps == [(test_scenarios.QA_FIXTURE_LEVEL, 30.0, 30.0)]
+    assert result.passed, result.details
+
+
+def test_movement_scenario_leaves_other_levels_alone():
+    bot = _PocketBot("somewhere_else.nw", 15.5, 32.5)
+
+    test_scenarios.TestScenarios.test_movement_all_directions(bot)
+
+    assert bot.warps == []
+
+
+def test_movement_scenario_does_not_warp_when_already_on_the_spawn():
+    bot = _PocketBot(test_scenarios.QA_FIXTURE_LEVEL, *test_scenarios.QA_FIXTURE_SPAWN)
+
+    test_scenarios.TestScenarios.test_movement_all_directions(bot)
+
+    assert bot.warps == []

@@ -186,7 +186,8 @@ class GaniRenderMixin:
             if entry[0] == 'shadow':
                 _, ox, oy = entry
                 screen_x = x + base_offset_x + ox
-                screen_y = y + base_offset_y + oy
+                screen_y = y + base_offset_y + oy + equipment.get('_shadow_offset_y', 0)
+                # FourPlay/quattroplay/src/TGaniObject.cpp:2246-2273.
                 self.screen.blit(self.shadow_sprite, (screen_x, screen_y))
                 continue
 

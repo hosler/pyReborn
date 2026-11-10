@@ -499,6 +499,8 @@ class EffectsRenderMixin(FrameContextMixin):
     # a wooden arrow when the asset hasn't downloaded).
     _PROJECTILE_FALLBACK_COLORS = {
         'firespy': ((255, 120, 30), (200, 70, 10)),
+        'fireblast': ((255, 150, 40), (220, 60, 10)),
+        'nukeshot': ((235, 235, 120), (255, 255, 255)),
     }
     _DEFAULT_PROJECTILE_COLORS = ((139, 69, 19), (80, 40, 10))  # brown arrow
 

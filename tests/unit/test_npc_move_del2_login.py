@@ -8,10 +8,10 @@ GServer-v2 IEnums.h sweep:
 - PLO_NPCDEL2 (150): NPC delete scoped to an explicit level name, sent
   instead of PLO_NPCDEL when the target player is not currently on the NPC's
   level (server/src/Server.cpp:1950-1954, object/NPC.cpp:857-870).
-- PLO_UNKNOWN168 (168): blank "you are logged in" marker
+- PLO_ONLINEMODE (168): blank "you are logged in" marker
   (server/src/player/Player.cpp:700-709).
 
-PLO_NPCACTION (26) and PLO_GHOSTTEXT (173) are deliberately NOT covered here:
+PLO_NPCSETSCRIPT (26) and PLO_GHOSTTEXT (173) are deliberately NOT covered here:
 GServer-v2 never actually sends either (they only appear in Player.cpp's
 FOR_OUTPUT_PACKETS enum-name table, with no sendPacket call anywhere in
 server/src) - a test locks in that they stay out of HANDLED_PLO_IDS.
@@ -86,9 +86,11 @@ class TestClientHandlesMove:
 
         data = _move_packet(npc_id=7, pos_x8=20, pos_y8=24,
                              dx_units=0, dy_units=0,
-                             time_increments=10, options=0)
+                             time_increments=10, options=1)
         client._handle_packet(PacketID.PLO_MOVE, data)
 
+        # A non-zero options byte keeps the wire position (reference client
+        # addNPCMove); a zero byte moves relative to the NPC's own position.
         assert client.npcs[7]['x'] == 20 * 8 / 16.0
         assert client.npcs[7]['y'] == 24 * 8 / 16.0
         assert 7 in client.npc_moves
@@ -166,7 +168,7 @@ class TestClientHandlesNpcDel2:
 
 
 # =============================================================================
-# PLO_UNKNOWN168 (168) - blank login-complete marker
+# PLO_ONLINEMODE (168) - blank login-complete marker
 # =============================================================================
 
 class TestClientHandlesLoginComplete:
@@ -176,31 +178,33 @@ class TestClientHandlesLoginComplete:
         fired = []
         client.on_login_complete = lambda: fired.append(True)
 
-        client._handle_packet(PacketID.PLO_UNKNOWN168, b"")
+        client._handle_packet(PacketID.PLO_ONLINEMODE, b"")
 
         assert client.login_complete is True
         assert fired == [True]
 
     def test_missing_callback_does_not_raise(self):
         client = Client("localhost", 14900)
-        client._handle_packet(PacketID.PLO_UNKNOWN168, b"")
+        client._handle_packet(PacketID.PLO_ONLINEMODE, b"")
         assert client.login_complete is True
 
 
 # =============================================================================
-# PLO_NPCACTION (26) / PLO_GHOSTTEXT (173) - never sent by GServer-v2, stay
+# PLO_NPCSETSCRIPT (26) / PLO_GHOSTTEXT (173) - never sent by GServer-v2, stay
 # unhandled (verified: no sendPacket call for either exists in server/src;
 # they only appear in Player.cpp's packet-name enum table).
 # =============================================================================
 
 def test_npcaction_and_ghosttext_intentionally_unhandled():
-    assert int(PacketID.PLO_NPCACTION) not in HANDLED_PLO_IDS
+    assert int(PacketID.PLO_NPCSETSCRIPT) not in HANDLED_PLO_IDS
     assert int(PacketID.PLO_GHOSTTEXT) not in HANDLED_PLO_IDS
 
 
-def test_unknown190_is_a_harmless_noop_and_stays_unregistered_sender_side():
-    # GServer-v2 never sends packet 190 either (no sendPacket call anywhere
-    # in server/src), but the client still no-ops safely if some other
-    # server implementation does.
+def test_serverlist_connected_190_is_a_registered_noop():
+    # GServer-v2/server/src/player/PlayerClient.cpp:489 and ServerList.cpp:368
+    # send this blank packet (PLO_SERVERLISTCONNECTED, id 190, so the client may
+    # log into IRC); we have no IRC login, so the registered handler is a no-op.
+    assert int(PacketID.PLO_SERVERLISTCONNECTED) == 190
+    assert 190 in HANDLED_PLO_IDS
     client = Client("localhost", 14900)
-    client._handle_packet(PacketID.PLO_UNKNOWN190, b"")  # must not raise
+    client._handle_packet(PacketID.PLO_SERVERLISTCONNECTED, b"")  # must not raise

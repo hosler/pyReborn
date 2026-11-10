@@ -1,5 +1,5 @@
 from .common import *
-from .common import _CARRY_PLAYER_PROPS, _set_carry
+from .common import _CARRY_PLAYER_PROPS, _set_carry, _set_z2
 
 def parse_rawdata(data: bytes) -> int:
     """
@@ -66,6 +66,9 @@ _OTHER_PROP_HANDLERS = {
     35: _set('body_image'),
     36: _set('rating'),
     42: _set('attach_npc'),
+    # FourPlay/quattroplay/src/TServerPlayer.cpp:1877-1904.
+    45: lambda props, value: props.update(z=value) if value <= 170 else None,
+    80: _set_z2,
     # The server's level-leave notification IS this prop with value 0 (pygserver
     # build_player_left; GServer-v2 sends the same shape). Without capturing it,
     # departed players linger forever in the level roster as ghosts.
@@ -81,6 +84,11 @@ _OTHER_PROP_HANDLERS = {
     # kept and the waiting-PM `message` surface is fed from
     # PLO_PRIVATEMESSAGE instead (gs2_client.pm_received).
     53: _set('playerlist_status'),
+    # The player's own gmap segment. Show-image origins are per segment
+    # (TServerPlayer.cpp:826-860 adds mapX << 6), and the level name another
+    # player reports is the .gmap file, which names no segment.
+    43: _set('gmaplevelx'),
+    44: _set('gmaplevely'),
     75: _set('os_type'),
     76: _set('codepage'),
     78: _set('x'),

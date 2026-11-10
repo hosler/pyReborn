@@ -11,6 +11,7 @@ from ..alignment import alignment_color
 from ..classic_sprites import draw_sprite, swamp_index, swamp_sprite
 from ..gani import AnimationState
 from ..ground_items import GIVE_SPRITES, giveaway_icon_offset
+from ..npc_script_display import take_display, timer_text
 from ..hurt import TICK_SECONDS
 from ..carrying import BOMB_CODES, carry_position, carry_tiles
 from ..npc_handler import CHARACTER_IMAGE
@@ -25,9 +26,8 @@ from .constants import (
 )
 
 
-# ATTRn sprite-layer slots a character gani can address (ATTR1..ATTR5, fed by
-# PLPROP_GATTRIB1..5 / #P1..#P5).
-ATTR_SLOTS = 5
+# ATTRn sprite-layer slots shared by player and NPC ganis.
+ATTR_SLOTS = 30
 
 
 # Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
@@ -254,6 +254,8 @@ class EntityRenderMixin(
         if getattr(self.client, 'ghost_mode', 0) == 2:
             return
         frame = self._frame_context() if frame is None else frame
+        z_offset = 0 if getattr(player, '_attachment', None) else getattr(player, 'z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        y -= z_offset
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
         base_alpha = 115 if getattr(self.client, 'ghost_mode', 0) == 1 else 255
         alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
@@ -267,6 +269,8 @@ class EntityRenderMixin(
             # get_sprite_recolored() (sprites.py).
             'colors': player.colors,
         }
+        if z_offset:
+            equip['_shadow_offset_y'] = z_offset
         equip.update(self._attr_equipment(player.gattribs))
         self._render_animated_entity(x, y, anim, equip, alpha=alpha)
 
@@ -415,6 +419,11 @@ class EntityRenderMixin(
                              frame: Optional[FrameContext] = None):
         """Render another player."""
         frame = self._frame_context() if frame is None else frame
+        z_offset = 0 if pdata.get('_attachment') else pdata.get('z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        y -= z_offset
+        imgs = pdata.get('imgs')
+        if imgs:
+            self._render_npc_layers(imgs, over=False)
         # Get animation name - could be 'ani' or 'animation'. Tier 2d: a
         # `setani ani,param1,param2` server prop keeps its params comma-joined
         # onto the gani name here; split them off so param images can drive
@@ -453,8 +462,10 @@ class EntityRenderMixin(
             # Tier 2a: PLPROP_COLORS (prop 13), populated by parse_other_player.
             'colors': pdata.get('colors'),
         }
+        if z_offset:
+            equip['_shadow_offset_y'] = z_offset
         equip.update(self._attr_equipment(
-            {i: pdata.get(f'gattrib{i}') for i in range(1, 6)}))
+            {i: pdata.get(f'gattrib{i}') for i in range(1, ATTR_SLOTS + 1)}))
         for i, p in enumerate(gani_params[:5], start=1):
             if p:
                 equip[f'attr{i}_image'] = p
@@ -493,6 +504,9 @@ class EntityRenderMixin(
             name_x, name_y = self._place_nameplate(name_x, name_y,
                                                    name_surf.get_size(), frame)
             self.screen.blit(name_surf, (name_x, name_y))
+        if imgs:
+            self._render_npc_layers(imgs, over=True)
+
     def _request_asset(self, filename: str):
         """Request a missing image/file from the server exactly once."""
         if (not filename or filename in self._requested_assets or
@@ -674,6 +688,8 @@ class EntityRenderMixin(
         if npc.get('visible') is False:
             return
 
+        z_offset = npc.get('z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        y -= z_offset
         frame = self._frame_context() if frame is None else frame
         nick_anchor = None  # set below when the NPC actually draws a body/sprite
 
@@ -769,10 +785,19 @@ class EntityRenderMixin(
                         # only ever sets a raw 'colors' list.
                         'colors': self._npc_character_colors(npc),
                     }
+                # FourPlay/quattroplay/src/TServerNPC.cpp:1034-1087,1260-1339.
+                equip.update(self._attr_equipment(
+                    {i: npc.get(f'gattrib{i}') for i in range(1, 31)}))
+                if z_offset:
+                    equip['_shadow_offset_y'] = z_offset
                 for i, p in enumerate(gani_params[:5], start=1):
                     if p:
                         equip[f'attr{i}_image'] = p
                 self._render_animated_entity(x, y, anim, equip)
+                if is_character and npc.get('carry_sprite', -1) != -1:
+                    # carryobject: a character NPC holds its object like a player
+                    self._draw_carried_object(x, y, npc['carry_sprite'],
+                                              npc.get('direction', 2))
                 # Gani canvas anchors at raw (x, y); for a typical 2-tile NPC
                 # sprite: body centre = x + TILE_SIZE, feet row = y + 48
                 # (the 48px gani canvas).
@@ -857,11 +882,34 @@ class EntityRenderMixin(
                                                    name_surf.get_size(), frame)
             self.screen.blit(name_surf, (name_x, name_y))
 
+        self._render_npc_script_overlays(npc, x, y, nick_anchor)
+
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
             text, chat_time = self.npc_chat_texts[npc_id]
             if time.time() - chat_time < self.chat_bubble_duration:
                 self._render_speech_bubble(x, y, text)
+
+    def _render_npc_script_overlays(self, npc, x, y, nick_anchor):
+        """timershow countdown and the `take` pickup icon, one tile above the
+        NPC (TServerNPC.cpp:1880-1913); state in npc_script_display."""
+        taken = take_display(npc)
+        text = None if taken else timer_text(npc)
+        if taken is None and text is None:
+            return
+        centre_x = nick_anchor[0] if nick_anchor else x + TILE_SIZE
+        if taken is not None:
+            sprite_index, value = taken
+            icon = draw_sprite(self.sprite_mgr, sprite_index)
+            if icon is not None:
+                self.screen.blit(icon, (centre_x - icon.get_width() // 2,
+                                        y - TILE_SIZE - icon.get_height()))
+            text = value
+        if text:
+            surf = self._render_text_outlined_cached(
+                self.font_small, text, (255, 255, 255))
+            self.screen.blit(surf, (centre_x - surf.get_width() // 2,
+                                    y - TILE_SIZE - surf.get_height()))
 
     def _render_movie(self, x: float, y: float, anim: AnimationState):
         """Render the visible cast of a movie gani around its owning NPC."""

@@ -9,8 +9,6 @@ from ..packets import (
     parse_default_weapon,
     parse_flag_del,
     parse_flag_set,
-    parse_fullstop,
-    parse_fullstop2,
     parse_ghost_icon,
     parse_newworldtime,
     parse_npcserveraddr,
@@ -117,8 +115,7 @@ def handle_hide_npcs(client, data):
 
 @handles(PacketID.PLO_SERVERWARP)
 def handle_server_warp(client, data):
-    # Server warp target (packet 178) - do NOT auto-connect; just record
-    # the destination and notify the app.
+    # GServer-v2/server/src/ServerList.cpp:974-982.
     client.server_warp_info = parse_server_warp(data)
     if client.on_server_warp:
         client.on_server_warp(client.server_warp_info)
@@ -126,19 +123,19 @@ def handle_server_warp(client, data):
 
 @handles(PacketID.PLO_DISABLECLASSICMODE)
 def handle_disable_classic_mode(client, data):
-    # Disable classic mode (packet 176) - fully-scripted server marker.
+    # Packet 176 is PLO_KINGDOMSMODE in the current reference enum
+    # (gs2lib IEnums.h, sent at GServer-v2 Player.cpp:750). An older enum
+    # called it FULLSTOP, which is why this once froze input and hid the HUD;
+    # nothing in the reference server sends a stop packet at 176/177.
     client.classic_mode_disabled = True
-    client.input_frozen = parse_fullstop(data)
-    if client.on_fullstop:
-        client.on_fullstop(client.input_frozen)
+    client.server_mode = 'kingdoms'
 
 
 @handles(PacketID.PLO_FULLSTOP2)
 def handle_fullstop2(client, data):
-    # Alternate blank input-stop command (packet 177).
-    client.input_frozen = parse_fullstop2(data)
-    if client.on_fullstop:
-        client.on_fullstop(client.input_frozen)
+    # Packet 177 is PLO_NEWWORLDMODE (Player.cpp:752): a mode marker, never
+    # an input lock.
+    client.server_mode = 'newworld'
 
 
 @handles(PacketID.PLO_PROFILE)
@@ -186,7 +183,7 @@ def handle_staff_guilds(client, data):
     client.staff_guilds = parse_staff_guilds(data)
 
 
-@handles(PacketID.PLO_UNKNOWN168)
+@handles(PacketID.PLO_ONLINEMODE)
 def handle_login_complete(client, data):
     # Login-complete marker, blank (packet 168). GServer-v2 sends this
     # once per connection, right after PLO_HASNPCSERVER, purely to signal
@@ -210,14 +207,12 @@ def handle_status_list(client, data):
     client.status_list = parse_status_list(data)
 
 
-@handles(PacketID.PLO_UNKNOWN190)
-def handle_unknown190(client, data):
-    # Blank marker before weapon list (packet 190) - no-op. NOTE:
-    # GServer-v2 (this workspace's ground truth) never actually sends
-    # this packet - dependencies/gs2lib/include/IEnums.h:306 and
-    # server/src/player/Player.cpp only list it in the packet-name enum
-    # table, with no sendPacket call anywhere in server/src. Kept as a
-    # defensive no-op in case another server implementation emits it.
+@handles(PacketID.PLO_SERVERLISTCONNECTED)
+def handle_serverlist_connected(client, data):
+    # PLO_SERVERLISTCONNECTED (190), blank: the server tells the client its
+    # listserver link is up, so the client may log into IRC
+    # (GServer-v2/server/src/player/PlayerClient.cpp:489, ServerList.cpp:368).
+    # Our client has no IRC login, so there is nothing to do.
     pass
 
 

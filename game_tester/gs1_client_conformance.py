@@ -625,14 +625,18 @@ def _chk_lay(env):
 
 def _chk_canbecarried(env):
     _expect(env.npc_this().get("ran") == 1.0, "fixture script must have run")
-    _expect(env.npc().get("canbecarried") is None,
-            "pinned: no canbecarried handler — flag when the carry mechanic lands")
+    from pyreborn import npc_flags
+    _expect(npc_flags.can_be_carried(env.npc()),
+            f"canbecarried sets the BLOCKFLAGS carry bit (got blockflags="
+            f"{env.npc().get('blockflags')!r})")
 
 
 def _chk_canbepushed(env):
     _expect(env.npc_this().get("ran") == 1.0, "fixture script must have run")
-    _expect(env.npc().get("canbepushed") is None,
-            "pinned: no canbepushed handler — flag when the push mechanic lands")
+    from pyreborn import npc_flags
+    _expect(npc_flags.can_be_pushed(env.npc()),
+            f"canbepushed sets the BLOCKFLAGS push bit (got blockflags="
+            f"{env.npc().get('blockflags')!r})")
 
 
 def _chk_setzoomeffect(env):
@@ -1075,21 +1079,17 @@ CASES: List[ClientCase] = [
     ClientCase(
         "canbecarried_flag", "canbecarried marks NPC carryable",
         "FP TServerNPCProperties.cpp:373 (scriptfun_servernpc_canbecarried "
-        "sets a carryable flag on the NPC)",
+        "sets a carryable flag on the NPC; nothing in the reference client "
+        "reads it back)",
         _chk_canbecarried,
-        script="if (playerenters) { canbecarried; this.ran = 1; }",
-        divergence="gs1_client has no canbecarried handler and NPC carrying "
-        "is unmodelled — grab/lift only consults tile liftability "
-        "(game/actions.py _is_tile_liftable), never an NPC flag"),
+        script="if (playerenters) { canbecarried; this.ran = 1; }"),
     ClientCase(
         "canbepushed_flag", "canbepushed marks NPC pushable",
         "FP TServerNPCProperties.cpp:375 (scriptfun_servernpc_canbepushed "
-        "sets a pushable flag on the NPC)",
+        "sets a pushable flag on the NPC; nothing in the reference client "
+        "reads it back)",
         _chk_canbepushed,
-        script="if (playerenters) { canbepushed; this.ran = 1; }",
-        divergence="gs1_client has no canbepushed handler and NPC pushing is "
-        "unmodelled — the push gani is a blocked-movement animation only "
-        "(game/actions.py _update_push_hold), NPCs never displace"),
+        script="if (playerenters) { canbepushed; this.ran = 1; }"),
     ClientCase(
         "setzoomeffect_npc", "setzoomeffect zoom stores npc['zoom_effect'] for the renderer",
         "FP TServerNPCProperties.cpp:674-681 (scriptfun_servernpc_setzoomeffect "

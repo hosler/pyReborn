@@ -33,20 +33,23 @@ def test_player_hidden_status_bit():
     assert not player.is_hidden
 
 
-def test_fullstop_packets_set_and_connection_reset_clears_state():
+def test_mode_packets_preserve_input_and_connection_reset_clears_legacy_lock():
     client = Client()
     changes = []
     client.on_fullstop = changes.append
 
     client._handle_packet(PacketID.PLO_DISABLECLASSICMODE, b"")
-    assert client.input_frozen
+    assert client.classic_mode_disabled
+    assert not client.input_frozen
     client._handle_packet(PacketID.PLO_FULLSTOP2, b"")
-    assert client.input_frozen
+    assert not client.input_frozen
+    assert changes == []
 
+    client.input_frozen = True
     client._protocol.connect = lambda: True
     assert client.connect()
     assert not client.input_frozen
-    assert changes == [True, True, False]
+    assert changes == [False]
 
 
 def test_ghost_icon_and_mode_packets_have_independent_state():

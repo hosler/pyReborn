@@ -61,6 +61,7 @@ class BuiltinsMixin:
             attr = name.split(".", 1)[1]
             pl = self._player_list()
             i = int(indices[0]) if indices else 0
+            attr = self._PLAYER_MEMBER_ALIASES.get(attr, attr)
             return _num_or_str(pl[i].get(attr, 0)) if 0 <= i < len(pl) else 0.0
         # npcs[i].x / npcs[i].save[j] / ... -> the i-th NPC in the level.
         if name.startswith("npcs."):
@@ -494,6 +495,10 @@ class BuiltinsMixin:
             t = to_num(value)
             if isinstance(npc, dict):
                 npc["_timeout"] = None if t <= _TIMEOUT_CANCEL else t
+                if t <= _TIMEOUT_CANCEL:
+                    # TScriptSpace::setTimeout also drops the timershow
+                    # display (TScriptSpace.cpp:121-125)
+                    npc.pop("timershow", None)
                 return True
             # weapon context (no NPC): re-arm the weapon's timeout event so its
             # per-frame gameplay loop keeps running (arenaGUI/arenaSYS do this).

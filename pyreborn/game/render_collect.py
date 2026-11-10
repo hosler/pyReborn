@@ -331,7 +331,8 @@ class EntityCollectMixin:
             z = attachment_z(self.client, pdata)
             # TGaniObject.cpp:2270: all attached gani parts use the raised base.
             sx, sy = self.camera.world_to_screen(vx, vy - z)
-            if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
+            draw_y = sy if npc is not None else sy - pdata.get('z', 0) * self.camera.scale
+            if self._entity_on_screen(sx, draw_y, screen_size=frame.screen_size):
                 out.append(_Entity('other', self._depth_sort_key(vy, 3.0),
                                    sx, sy, pdata, pid, z=z))
 
@@ -350,7 +351,8 @@ class EntityCollectMixin:
             vx, vy = self._interpolate_npc(npc_id, npc, nx, ny, frame)
             sx, sy = self.camera.world_to_screen(vx, vy)
             draw_w, draw_h = self._npc_draw_size(npc)
-            if self._entity_on_screen(sx, sy, width=draw_w, height=draw_h,
+            draw_y = sy - npc.get('z', 0) * self.camera.scale
+            if self._entity_on_screen(sx, draw_y, width=draw_w, height=draw_h,
                                       screen_size=frame.screen_size):
                 out.append(_Entity('npc', self._depth_sort_key(
                     vy, self._npc_height_tiles(npc)), sx, sy, npc, npc_id,
@@ -431,6 +433,9 @@ class EntityCollectMixin:
             imgs = npc.get('imgs')
             if imgs and npc.get('visible') is not False:
                 stores.append(imgs)
+        for player in self.client.players.values():
+            if player.get('imgs') and player.get('level', self.client.level) == self.client.level:
+                stores.append(player['imgs'])
         weapon_imgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
         if weapon_imgs:
             stores.extend(list(weapon_imgs.values()))

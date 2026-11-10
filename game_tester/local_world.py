@@ -203,10 +203,17 @@ class LocalWorld:
     def _seed_account(self, name):
         # Use the server's own defaults/serializer, including inventory fields.
         from pygserver.account import Account
+        from reborn_protocol.constants import PLPERM
         self._safe_name(name)
         account = Account(account_name=name, level_name=self.start_level,
                           x=self.start_xy[0], y=self.start_xy[1],
                           is_staff=name in self.accounts)
+        if name in self.accounts:
+            # Staff membership grants no rights and RC/NC also needs an
+            # admin-IP match (GServer-v2 Player.cpp:685-694), so the staff
+            # accounts carry stored rights and a loopback range.
+            account.admin_rights = sum(int(right) for right in PLPERM)
+            account.admin_ip = self.host
         account.set_password("testpass")
         (self.server_dir / "accounts" / f"{name}.json").write_text(
             json.dumps(account.to_dict(), indent=2) + "\n")

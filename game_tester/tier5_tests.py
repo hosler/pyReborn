@@ -2,7 +2,7 @@
 tier5_tests - GS2 bytecode transport tests (parse and store only, no VM).
 
 Exercises the pyReborn Tier 5 additions against server fixtures:
-  - PLI_UPDATESCRIPT -> PLO_NPCWEAPONSCRIPT (weapon `qa_gs2weapon`)
+  - PLI_UPDATESCRIPT -> PLO_WEAPONBYTECODE2 (weapon `qa_gs2weapon`)
   - PLI_UPDATECLASS  -> PLO_LOADSCRIPT bytecode form (class `qa_gs2class`)
   - PLI_UPDATEGANI   -> PLO_GANISCRIPT + PLO_LOADGANI (gani `qa_script`)
   - PLO_NPCBYTECODE synthetic parse. No server-side GS2 NPC fixture exists.
@@ -44,7 +44,7 @@ def _pump(bot: GameBot, seconds: float, until=None):
 def test_weapon_bytecode(bot: GameBot) -> TestResult:
     """Request qa_gs2weapon's bytecode and assert the blob parses as a valid
     GS2 container (not just non-empty: GS2 bytecode contains raw 0x0a bytes,
-    so a server sending PLO_NPCWEAPONSCRIPT without PLO_RAWDATA framing
+    so a server sending PLO_WEAPONBYTECODE2 without PLO_RAWDATA framing
     delivers a truncated blob that only container validation catches --
     fixed in the local GServer-v2 Weapon.cpp, upstream still affected)."""
     start = time.time()
@@ -69,7 +69,7 @@ def test_weapon_bytecode(bot: GameBot) -> TestResult:
             ok = False
             issues.append(_issue("HIGH", "gs2",
                                  f"weapon bytecode is not a valid GS2 container "
-                                 f"(truncated PLO_NPCWEAPONSCRIPT? unframed-RAWDATA server bug): {e}"))
+                                 f"(truncated PLO_WEAPONBYTECODE2? unframed-RAWDATA server bug): {e}"))
     return TestResult("gs2_weapon_bytecode", ok, time.time() - start,
                       f"blob={len(blob) if blob else 0}B header_type={header.get('type')} funcs={funcs}", issues)
 

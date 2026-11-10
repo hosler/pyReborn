@@ -6,6 +6,12 @@ import time
 from ...sprites import strip_tiledef_image
 from .client_callbacks import route_gs2_source
 
+# A script loop can spawn thrown objects, bombs and flying objects faster
+# than they expire (`timeout = 0.05` re-arming throwcarry), so each live list
+# refuses new entries at this size instead of growing without bound.
+MAX_SCRIPT_OBJECTS = 256
+
+
 def wire_gs1_callbacks(game):
     # action string -> last-sent time, to throttle repeated triggeractions.
     game._triggeraction_sent = {}
@@ -189,6 +195,77 @@ def wire_gs1_callbacks(game):
     # putleaps type,x,y -> debris burst (render_effects owns frames+sound)
     game.gs1.on_putleaps = (lambda leap_type, x, y:
                             game._spawn_leaps(leap_type, x, y))
+
+    # throwcarry on a character NPC (gs1_client._cmd_throwcarry): launch what it
+    # carried one tile ahead of itself with the player's throw arc, one tick
+    # short (TServerPlayer::throwObject(1), TServerPlayer.cpp:1054-1092:
+    # start offset flyd[dir] * 1, range 9 - 1 ticks).
+    def on_throwcarry(npc, code):
+        from ...carrying import BOMB_CODES
+        from ...throwing import carry_code, carry_object, make_throw, THROW_TICKS
+        if code in BOMB_CODES:
+            carried = ('bomb', ())
+        else:
+            carried = carry_object(code)
+        if carried is None:
+            return
+        x = float(npc.get('world_x', npc.get('x', 0)) or 0)
+        y = float(npc.get('world_y', npc.get('y', 0)) or 0)
+        try:
+            direction = int(npc.get('direction', 2)) & 3
+        except (TypeError, ValueError):
+            direction = 2
+        # TInitStatics.cpp flyd: (x, sprite y, ground y) per facing
+        flyd = ((0.0, -0.8, -1.0), (-1.0, 0.2, 0.0),
+                (0.0, 1.2, 1.0), (1.0, 0.2, 0.0))[direction]
+        kind, tiles = carried
+        if kind == 'bomb':
+            # a thrown bomb keeps ticking and lands as a level bomb (a script
+            # `putbomb`-style bomb: the NPC's bag is not the player's)
+            # TServerNPCProperties.cpp:985-1017: sprites 0x41/0x42 give power 1,
+            # 0x141 (superbomb) 2, 0x15b/0x15c (jolt bombs) 3. `code` is the
+            # DECODED carry value, so the sprite ids go through carry_code too.
+            power = {carry_code(0x141): 2, carry_code(0x15b): 3,
+                     carry_code(0x15c): 3}.get(code, 1)
+            if len(game.active_bombs) >= MAX_SCRIPT_OBJECTS:
+                return
+            bomb = {'x': x, 'y': y, 'time': time.time(), 'fuse_time': 3.0,
+                    'fuse_remaining': 3.0, 'power': power, 'exploded': False,
+                    'source': 'script', 'in_flight': True}
+            obj = make_throw(x, y, direction, 'bomb', ())
+            obj['bomb'] = bomb
+            target = game.thrown_objects
+        else:
+            obj = make_throw(x, y, direction, kind, tiles, owner_id=0)
+            target = game.other_thrown_objects
+        if len(target) >= MAX_SCRIPT_OBJECTS:
+            return
+        obj['x'] += flyd[0]
+        obj['y'] += flyd[2]
+        obj['landing_tick'] = THROW_TICKS - 1
+        if kind == 'bomb':
+            game.active_bombs.append(obj['bomb'])
+        target.append(obj)
+
+    game.gs1.on_throwcarry = on_throwcarry
+
+    # shootfireblast / shootnuke: a flying object that travels one tile per
+    # 20 Hz tick, like an arrow (putFlyingObject speed 1.0,
+    # TServerNPCProperties.cpp:112-150). Drawn as a projectile; it does not
+    # yet hit players, NPCs or baddies.
+    def on_flying(x, y, direction, power):
+        if len(game.active_projectiles) >= MAX_SCRIPT_OBJECTS:
+            return
+        step = game.client._ARROW_SPEED
+        dx, dy = ((0, -step), (-step, 0), (0, step), (step, 0))[direction]
+        game.active_projectiles.append({
+            'x': x, 'y': y, 'dx': dx, 'dy': dy, 'time': time.time(),
+            'direction': direction, 'gani': {2: 'fireblast', 3: 'nukeshot'}[power],
+            'max_distance': game.client._ARROW_MAX_DISTANCE,
+            'start_x': x, 'start_y': y, 'source': 'script',
+        })
+
+    game.gs1.on_flying = on_flying
 
     # -- scripted combat family (GS1 putbomb/explosions/setbackpal) ----
     # putbomb -> the same active_bombs registry local/remote bombs use

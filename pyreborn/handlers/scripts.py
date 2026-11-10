@@ -7,6 +7,7 @@ the attached GS1 and GS2 hosts.
 
 from ..packets import (
     PacketID,
+    parse_class_bytecode_v4,
     parse_gani_script,
     parse_loadgani,
     parse_loadscript,
@@ -15,6 +16,8 @@ from ..packets import (
     parse_npcweaponscript,
     parse_triggeraction_in,
     parse_weapon_add,
+    parse_weapon_bytecode_v4,
+    parse_weapon_hash_v4,
 )
 from .registry import handles
 
@@ -75,10 +78,27 @@ def handle_gani_script(client, data):
         client.on_gs2_bytecode('gani', info['gani'], info['bytecode'])
 
 
-@handles(PacketID.PLO_NPCWEAPONSCRIPT)
+@handles(PacketID.PLO_WEAPONBYTECODE2)
 def handle_npc_weapon_script(client, data):
     # Weapon (or unknown-class stub) bytecode (packet 140).
-    info = parse_npcweaponscript(data)
+    _store_script_bytecode(client, parse_npcweaponscript(data))
+
+
+@handles(PacketID.PLO_WEAPONBYTECODE)
+def handle_weapon_bytecode_v4(client, data):
+    _store_script_bytecode(client, parse_weapon_bytecode_v4(data))
+
+
+@handles(PacketID.PLO_CLASSBYTECODE)
+def handle_class_bytecode_v4(client, data):
+    info = parse_class_bytecode_v4(data)
+    if info['bytecode']:
+        _receive_script_header(client, info)
+    else:
+        _store_script_bytecode(client, info)
+
+
+def _store_script_bytecode(client, info):
     kind = info['type'] if info['type'] in client.gs2_bytecode else 'weapon'
     if info['name']:
         client.gs2_bytecode[kind][info['name']] = info['bytecode']
@@ -98,7 +118,15 @@ def handle_load_gani(client, data):
 @handles(PacketID.PLO_LOADSCRIPT)
 def handle_load_script(client, data):
     # Script header announcement / class bytecode (packet 197).
-    info = parse_loadscript(data)
+    _receive_script_header(client, parse_loadscript(data))
+
+
+@handles(PacketID.PLO_WEAPONHASH)
+def handle_weapon_hash_v4(client, data):
+    _receive_script_header(client, parse_weapon_hash_v4(data))
+
+
+def _receive_script_header(client, info):
     if info['name']:
         client.gs2_script_headers[info['name']] = info
         if info['bytecode']:
@@ -133,7 +161,7 @@ def handle_npc_weapon_del(client, data):
     client.weapons.pop(name, None)
 
 
-@handles(PacketID.PLO_CLEARWEAPONS)
+@handles(PacketID.PLO_RESETCLIENT)
 def handle_clear_weapons(client, data):
     # Clear all weapons before the server resends the list (packet 194).
     client.weapons.clear()

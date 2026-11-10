@@ -189,6 +189,16 @@ class ClientGS1:
         self.on_tiledef = None
         self.on_seteffect = None
         self.on_putleaps = None
+        # on_throwcarry(npc, code) -- a character NPC's `throwcarry` launches
+        # its carried object (code is the decoded carry-sprite value)
+        self.on_throwcarry = None
+        # on_flying(x, y, direction, power) -- an NPC's shootfireblast (power
+        # 2) / shootnuke (3) launches a flying object at world (x, y)
+        self.on_flying = None
+        # setletters: the sign bitmap-font sheet (TPlayer ctor default,
+        # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:792,1552); read by
+        # the `letters` property and by whatever draws sign text.
+        self.letters_image = "letters.png"
         # scripted-combat family (putbomb/putexplosion/setbackpal wave):
         # on_putbomb(power, x, y, fuse_s)   -- spawn a level bomb visual
         # on_removebomb(bomb, explode)      -- drop bombs[i]; explode=True is
@@ -965,6 +975,107 @@ class ClientGS1:
             return None
         return list(signs.values())[idx]
 
+    # TServerNPC::takeItem's counter effects, keyed by item index
+    # (TServerNPC.cpp:515-609): (npc key, amount added). Rupee items show the
+    # gralat total, so the blue/red/gold rupees display as item 0 (the
+    # `unknown12 = 0` lines). The decompiled takeItem credits item 3 (bombs)
+    # to arrows and item 4 (darts) to bombs; the item names, their sprites and
+    # the player-side loseItem (TPlayer.cpp:6928-6941) all say the reverse, so
+    # the counters follow the item identity.
+    _TAKE_COUNTERS = {0: ("rupees", 1), 1: ("rupees", 5), 2: ("rupees", 30),
+                      3: ("bombs", 5), 4: ("arrows", 5),
+                      19: ("rupees", 100)}
+    # item index -> (npc key, minimum level it raises the key to)
+    _TAKE_LEVELS = {6: ("glove_power", 1), 16: ("glove_power", 2),
+                    9: ("shield_power", 1), 15: ("shield_power", 2),
+                    17: ("shield_power", 3), 10: ("sword_power", 1),
+                    13: ("sword_power", 2), 18: ("sword_power", 3),
+                    14: ("sword_power", 4), 8: ("bomb_level", 1),
+                    12: ("bomb_level", 2), 23: ("bomb_level", 3)}
+    _TAKE_DISPLAY_SECONDS = 20 * 0.05
+
+    def npc_take_item(self, npc, item_name) -> bool:
+        """The GS1 `take` command: `npc` absorbs one ground item of the named
+        kind within reach, the server is told to drop it, and the NPC's
+        counters/display update (scriptfun_servernpc_take,
+        Preagonal/FourPlay/quattroplay/src/TServerNPCProperties.cpp:872-910;
+        TServerNPC::takeItem, TServerNPC.cpp:515-609).
+
+        Reach is 10 tiles plus half the diagonal of the NPC's size, from the
+        NPC's centre. The first matching item in level order within reach is
+        taken. PLI_ITEMDEL (not PLI_ITEMTAKE) goes out, so the player gains
+        nothing."""
+        from ..ground_items import ITEM_NAMES
+        cl = self.client
+        name = to_str(item_name).strip().lower()
+        if cl is None or not isinstance(npc, dict) or name not in ITEM_NAMES:
+            return False
+        index = ITEM_NAMES.index(name)
+        level = getattr(cl, "_current_level_name", "") or ""
+        items = cl.items_in_level(level)
+        rect = self.npc_image_rect(npc)
+        width, height = (rect[2], rect[3]) if rect else (0.0, 0.0)
+        # Both ends in WORLD tiles, like the reference's `+ (mapX << 6)`: the
+        # NPC's world position, each item shifted by the origin of the
+        # segment the item list belongs to (the player's, on a gmap).
+        cx = to_num(npc.get("world_x", npc.get("x", 0))) + width / 2.0
+        cy = to_num(npc.get("world_y", npc.get("y", 0))) + height / 2.0
+        reach = math.hypot(width, height) * 0.5 + 10.0
+        ox = oy = 0.0
+        if getattr(cl, "in_gmap_segment", False):
+            from reborn_protocol.coords import segment_at, segment_origin
+            ox, oy = segment_origin(*segment_at(
+                getattr(cl, "x", 0), getattr(cl, "y", 0)))
+        for (ix, iy), kind in list(items.items()):
+            if str(kind).lower() != name:
+                continue
+            if math.hypot(ix + ox - cx, iy + oy - cy) > reach:
+                continue
+            items.pop((ix, iy), None)
+            try:
+                cl.send_item_del(ix, iy)
+            except Exception:
+                pass
+            cb = getattr(cl, "on_item", None)
+            if cb:
+                try:
+                    cb(ix, iy, kind, False)
+                except Exception:
+                    pass
+            self._npc_take_effect(npc, index)
+            return True
+        return False
+
+    def _npc_take_effect(self, npc, index):
+        import time as _t
+        npc["take_item"] = index
+        npc["take_until"] = _t.monotonic() + self._TAKE_DISPLAY_SECONDS
+        npc.pop("take_value", None)
+        counter = self._TAKE_COUNTERS.get(index)
+        if counter is not None:
+            key, amount = counter
+            npc[key] = to_num(npc.get(key, 0)) + amount
+            npc["take_value"] = npc[key]
+            if index in (1, 2, 19):
+                npc["take_item"] = 0           # shown as the green rupee
+        elif index == 5:
+            npc["hearts"] = to_num(npc.get("hearts", 0)) + 1.0
+            if self._npc_is_character_dict(npc):
+                npc.pop("take_until", None)    # a character shows no pickup
+            else:
+                npc["take_value"] = npc["hearts"]
+        else:
+            level = self._TAKE_LEVELS.get(index)
+            if level is not None:
+                key, minimum = level
+                if to_num(npc.get(key, 0)) < minimum:
+                    npc[key] = minimum
+
+    @staticmethod
+    def _npc_is_character_dict(npc):
+        from ..npc_handler import _is_character_npc
+        return _is_character_npc(npc)
+
     def process_timeouts(self, dt):
         """Count down each NPC's pending `timeout` and fire its `timeout` event
         when it elapses (the event handler typically re-arms it). This is what
@@ -981,6 +1092,7 @@ class ClientGS1:
             t -= dt
             if t <= 0:
                 npc["_timeout"] = None      # event handler may re-arm it
+                npc.pop("timershow", None)  # TScriptSpace.cpp:1042-1045
                 self.trigger_npc_event(npc_id, "timeout")
             else:
                 npc["_timeout"] = t
@@ -1114,6 +1226,16 @@ class ClientGS1:
         gen = interp.iter_event(entry["prog"], event)
         self._drive(gen, ctx, key, entry, event)
 
+    def _pump(self, gen):
+        """Advance one script slice. players[] records of level-mates are
+        cached for the slice's duration (GS1ClientHost.begin_slice)."""
+        host = self._host
+        host.begin_slice()
+        try:
+            return next(gen)
+        finally:
+            host.end_slice()
+
     def _drive(self, gen, ctx, key, entry, event):
         """Pump one script slice, parking sleep and preemption continuations.
 
@@ -1122,7 +1244,7 @@ class ClientGS1:
         boundary that removes the measured 430-ms playerenters stall."""
         ctx.steps = 0
         try:
-            delay = next(gen)
+            delay = self._pump(gen)
         except StopIteration:
             if key is not None:
                 self._active_coro_keys.discard(key)
@@ -1169,7 +1291,7 @@ class ClientGS1:
             if not c["preempted"]:
                 c["ctx"].steps = 0
             try:
-                delay = next(c["gen"])
+                delay = self._pump(c["gen"])
                 c["remaining"] = (0.0 if delay is PREEMPTED
                                   else float(delay))
                 c["preempted"] = delay is PREEMPTED

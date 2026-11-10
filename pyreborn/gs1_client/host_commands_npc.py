@@ -4,6 +4,8 @@ import logging
 
 from reborn_protocol.gs1.values import to_num, to_str
 
+from .. import npc_flags
+from .objects import _carry_code_for_name
 from .registry import _CHARPROP_NPC, _FALL_THROUGH, _GS1_NPC_COMMANDS, _GS1_NPC_TAIL_COMMANDS, _gs1_command
 
 
@@ -90,6 +92,121 @@ class NpcCommandsMixin:
         if npc_id > 0 and self.rt.client is not None:
             self.rt.client.delete_npc(npc_id)
 
+
+    # canbe*/cannotbe*: one bit each of the NPC's BLOCKFLAGS byte
+    # (TServerNPCProperties.cpp:373-378; bit layout in npc_flags.py).
+    _BLOCKFLAG_COMMANDS = {
+        "canbecarried": (npc_flags.CAN_BE_CARRIED, True),
+        "cannotbecarried": (npc_flags.CAN_BE_CARRIED, False),
+        "canbepushed": (npc_flags.CAN_BE_PUSHED, True),
+        "cannotbepushed": (npc_flags.CAN_BE_PUSHED, False),
+        "canbepulled": (npc_flags.CAN_BE_PULLED, True),
+        "cannotbepulled": (npc_flags.CAN_BE_PULLED, False),
+    }
+
+    @_gs1_command(_GS1_NPC_COMMANDS, *sorted(_BLOCKFLAG_COMMANDS))
+    def _cmd_blockflag(self, name, args, ctx, imgs):
+        bit, on = self._BLOCKFLAG_COMMANDS[name]
+        npc_flags.set_flag(ctx.this_obj, bit, on)
+
+    # The ganis a carrying character plays: curanis[10..13] = lift,
+    # carrystill, hiddenstill, carry (TInitStatics.cpp:1468-1474).
+    _CARRY_GANIS = frozenset({"lift", "carrystill", "hiddenstill", "carry"})
+
+    @staticmethod
+    def _npc_is_character(npc):
+        from ..npc_handler import _is_character_npc
+        return _is_character_npc(npc)
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "carryobject")
+    def _cmd_carryobject(self, name, args, ctx, imgs):
+        # carryobject <name>: a CHARACTER NPC picks up a classic carry object
+        # (TServerNPCProperties.cpp:380-393). An unknown name or a plain image
+        # NPC does nothing; a known one sets the carry sprite and starts the
+        # carrystill gani.
+        npc = ctx.this_obj
+        if not args or not self._npc_is_character(npc):
+            return None
+        found, code = _carry_code_for_name(to_str(args[0]))
+        if not found:
+            return None
+        npc["carry_sprite"] = code
+        npc["gani"] = "carrystill,"
+        return None
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "throwcarry")
+    def _cmd_throwcarry(self, name, args, ctx, imgs):
+        # throwcarry: a character NPC in a lift/carry gani throws what it
+        # carries (TServerNPCProperties.cpp:977-1018). The thrown object is
+        # launched by the shell (on_throwcarry); the NPC drops to idle.
+        npc = ctx.this_obj
+        if not self._npc_is_character(npc):
+            return None
+        if str(npc.get("gani") or "").split(",")[0].strip().lower() not in self._CARRY_GANIS:
+            return None
+        code = npc.get("carry_sprite", -1)
+        if code is None or code == -1:
+            # TServerPlayer::throwObject only launches when a sprite is held
+            return None
+        npc["carry_sprite"] = -1
+        npc["gani"] = "idle,"
+        cb = self.rt.on_throwcarry
+        if cb:
+            cb(npc, code)
+        return None
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "timershow")
+    def _cmd_timershow(self, name, args, ctx, imgs):
+        # timershow: draw the NPC's remaining `timeout` above its head. Cleared
+        # by message, by timeout <= 0.0001 and when the timeout fires
+        # (setShowTimer on the script variable, TScriptSpace.cpp:121-126,1042-1046).
+        ctx.this_obj["timershow"] = True
+
+    # shootfireblast / shootnuke: a flying object (arrow family) fired from the
+    # NPC, power 2 / 3 (TServerNPCProperties.cpp:747-755 ->
+    # servernpc_shoot_flying_object, :112-150).
+    _FLYING_POWER = {"shootfireblast": 2, "shootnuke": 3}
+
+    @_gs1_command(_GS1_NPC_COMMANDS, *sorted(_FLYING_POWER))
+    def _cmd_shoot_flying(self, name, args, ctx, imgs):
+        rt = self.rt
+        if not args or not rt.on_flying:
+            return _FALL_THROUGH
+        text = to_str(args[0]).strip().lower()
+        direction = {"up": 0, "left": 1, "down": 2, "right": 3}.get(text)
+        if direction is None:
+            direction = int(to_num(text))
+            if direction < 0:
+                direction = 4 - (-direction & 3)
+            direction &= 3
+        npc = ctx.this_obj
+        x = to_num(npc.get("world_x", npc.get("x", 0)))
+        y = to_num(npc.get("world_y", npc.get("y", 0)))
+        if direction in (1, 3):
+            x, y = x - 0.9375, y - 0.3125
+        else:
+            x, y = x - 0.3125, y - 0.9375
+        rect = rt.npc_image_rect(npc)
+        width, height = (rect[2], rect[3]) if rect else (0.0, 0.0)
+        if direction == 2:
+            x, y = x + width * 0.5, y + height
+        else:
+            if direction == 3:
+                x += width
+            elif direction != 1:
+                x += width * 0.5
+            y += height * 0.5
+        rt.on_flying(x, y, direction, self._FLYING_POWER[name])
+
+    @_gs1_command(_GS1_NPC_COMMANDS, "take")
+    def _cmd_take(self, name, args, ctx, imgs):
+        # take <item>: the NPC absorbs one matching ground item within reach
+        # (TServerNPCProperties.cpp:872-910). Reach = 10 tiles + half the
+        # diagonal of the NPC's size, measured from the NPC's centre.
+        if not args:
+            return None
+        self.rt.npc_take_item(ctx.this_obj, to_str(args[0]))
+        return None
 
     # -- _GS1_NPC_TAIL_COMMANDS (gate: an NPC dict; last stage) -------------
 

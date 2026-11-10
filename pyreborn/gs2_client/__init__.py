@@ -1,7 +1,7 @@
 """The client runs GS2 bytecode for pyReborn.
 
 Runs GS2 scripts (weapons/NPCs/classes/ganis) received as compiled bytecode
-(PLO_NPCWEAPONSCRIPT / PLO_NPCBYTECODE / PLO_LOADSCRIPT / PLO_GANISCRIPT)
+(PLO_WEAPONBYTECODE2 / PLO_NPCBYTECODE / PLO_LOADSCRIPT / PLO_GANISCRIPT)
 with the shared VM from ``reborn_protocol.gs2``.
 
 Builtins route through the SAME client host surface the GS1 engine uses

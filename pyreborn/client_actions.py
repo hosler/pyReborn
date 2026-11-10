@@ -63,6 +63,18 @@ class ActionsMixin:
         data = build_item_take(x, y)
         return self._protocol.send_packet(PacketID.PLI_ITEMTAKE, data)
 
+    def send_item_del(self, x: float, y: float) -> bool:
+        """Remove a level item without taking it (PLI_ITEMDEL).
+
+        The server drops the item and tells the rest of the level, but gives
+        the sender nothing (PLI_ITEMTAKE is the one that grants). A GS1 `take`
+        NPC absorbs the item this way: TClient::sendRemoveExtra, Preagonal/
+        FourPlay/quattroplay/src/TClient.cpp:1189. Coordinates are level-local
+        half-tiles, the same shape as PLI_ITEMTAKE."""
+        if not self.connected or not self._authenticated:
+            return False
+        return self._protocol.send_packet(PacketID.PLI_ITEMDEL, build_item_take(x, y))
+
     def set_animation(self, gani_name: str) -> bool:
         """
         Set player animation (gani).
@@ -292,6 +304,23 @@ class ActionsMixin:
 
         data = build_triggeraction(x, y, action, npc_id)
         return self._protocol.send_packet(PacketID.PLI_TRIGGERACTION, data)
+
+    def accept_server_warp(self, info: Optional[dict] = None) -> Optional[dict]:
+        """Consent to a PLO_SERVERWARP offer; return its validated target.
+
+        The game server names the target, so the library never connects there
+        on its own (the reference client only raises a script event:
+        TServerList.cpp:131-160). The embedding app calls this after asking
+        its user, then opens a new connection to the returned {'name', 'host',
+        'port'} itself. Returns None, leaving the offer in place, when there is
+        no offer or its host/port are not usable.
+        """
+        from .packet_codec.gameplay import validate_server_warp_target
+        offer = info if info is not None else self.server_warp_info
+        target = validate_server_warp_target(offer)
+        if target is not None and offer is self.server_warp_info:
+            self.server_warp_info = None
+        return target
 
     def send_server_text(self, request: bool, text: str) -> bool:
         """Send a gtokenized server-list text request or command."""

@@ -462,6 +462,27 @@ def wire_client_callbacks(game):
     def on_say2(text):
         game._show_dialogue(text, classic_font=True)
 
+    def on_server_warp(info):
+        # FourPlay/quattroplay/src/TServerList.cpp:131-160: the reference
+        # client only raises a script event and never connects by itself. The
+        # target is named by the game server, so following it would hand this
+        # session's account name and password to whatever host it says;
+        # the player is asked first (GameClient.offer_server_warp).
+        from ...packet_codec.gameplay import validate_server_warp_target
+        target = validate_server_warp_target(info)
+        if target is None:
+            return
+        gs2 = getattr(game, 'gs2', None)
+        if gs2 is not None:
+            gs2.trigger_weapon_event(
+                'StartScript_Connector', 'onServerWarp',
+                target['name'], target['host'], target['port'])
+        game.offer_server_warp(info)
+
+    game.client.on_server_warp = on_server_warp
+    pending = getattr(game.client, 'server_warp_info', None)
+    if isinstance(pending, dict):
+        on_server_warp(pending)
     game.client.on_chat = on_chat
     game.client.on_say2 = on_say2
     game.client.on_pm = on_pm

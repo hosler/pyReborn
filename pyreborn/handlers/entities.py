@@ -4,7 +4,7 @@ These packets contain local player properties, other-player rosters, NPCs,
 baddies, and ground items.
 """
 
-from reborn_protocol.coords import LEVEL_SIZE, local_coord, segment_origin
+from reborn_protocol.coords import LEVEL_SIZE, local_coord, segment_at, segment_origin
 
 from ..packets import (
     PacketID,
@@ -336,6 +336,8 @@ def handle_npc_props(client, data):
             if 'y' in props:
                 props['world_y'] = props['y']
         if npc_id in client.npcs:
+            if 'x' in props or 'y' in props:
+                client.npcs[npc_id].pop('_move_queue', None)
             client.npcs[npc_id].update(props)
         else:
             # First sighting of this NPC (not an in-play movement
@@ -359,14 +361,53 @@ def handle_npc_showimgs(client, data):
     npc_id = info.get('npc_id')
     if npc_id is not None:
         npc = client.npcs.setdefault(npc_id, {})
-        imgs = npc.setdefault('imgs', {})
-        if info['clear']:
-            imgs.clear()
-        for index, changes in info['records'].items():
-            rec = imgs.setdefault(index, {})
-            rec.update(changes)
-            rec.setdefault('screen', False)
-            rec.setdefault('vis', 4)
+        apply_showimgs(npc, info)
+
+
+def _showimg_origin(client, owner):
+    """World origin of the segment a player's show-images are placed in.
+
+    The reference adds the owner's own segment (mapX << 6,
+    TServerPlayer.cpp:826-860). In order of preference: the owner's
+    gmaplevelx/gmaplevely props; the segment holding its world position;
+    the segment whose .nw name is its level. Real servers report another
+    player's level as the .gmap file, which names no segment, so the level
+    name is the last resort. A level outside any gmap has origin (0, 0).
+    """
+    gx, gy = owner.get('gmaplevelx'), owner.get('gmaplevely')
+    if gx is not None and gy is not None:
+        return segment_origin(gx, gy)
+    wx, wy = owner.get('world_x'), owner.get('world_y')
+    if wx is not None and wy is not None and getattr(client, 'is_gmap', False):
+        return segment_origin(*segment_at(wx, wy))
+    cell = next((cell for cell, name in client.gmap_grid.items()
+                 if name == owner.get('level')), None)
+    return segment_origin(*cell) if cell else (0, 0)
+
+
+def apply_showimgs(owner, info, client=None):
+    imgs = owner.setdefault('imgs', {})
+    if info['clear']:
+        imgs.clear()
+    for index, changes in info['records'].items():
+        if changes.get('image') == '':
+            imgs.pop(index, None)
+            continue
+        rec = imgs.setdefault(index, {})
+        rec.update(changes)
+        rec.setdefault('screen', False)
+        rec.setdefault('vis', 1 if info.get('player_images') else 4)
+        if info.get('player_images'):
+            # FourPlay/quattroplay/src/TServerPlayer.cpp:826-860.
+            for axis in ('x', 'y'):
+                if axis in changes:
+                    rec['_wire_' + axis] = changes[axis]
+            gui = rec['vis'] >= 11
+            rec['vis_set'] = gui
+            origin = _showimg_origin(client, owner)
+            for axis, offset in zip(('x', 'y'), origin):
+                value = rec.get('_wire_' + axis, 0)
+                rec[axis] = value * 4 if gui else value + offset
 
 
 @handles(PLO_NPCDEL)
@@ -512,43 +553,63 @@ def handle_other_player_props(client, data):
                 host.note_gani(("player", player_id), props['ani'], force=True)
 
 
+def _canonical_level_name(client, name):
+    """Level name as the reference resolves it: case-insensitively.
+
+    setnpcremoved looks the level up through getLevel, which lower-cases the
+    name (unsorted.cpp:2435-2447, TFiles::lowerCaseFilename). This client
+    keys levels by the spelling the server first used, so a name matching a
+    known level in any case takes that spelling and an unknown one is
+    lower-cased, keeping later level-name comparisons consistent.
+    """
+    if not name:
+        return name
+    lowered = name.lower()
+    known = (client._current_level_name, client._pending_level_name,
+             *client.gmap_grid.values(), *client.levels)
+    for candidate in known:
+        if isinstance(candidate, str) and candidate.lower() == lowered:
+            return candidate
+    return lowered
+
+
 @handles(PacketID.PLO_NPCMOVED)
 def handle_npc_moved(client, data):
-    # NPC warped to a different level (packet 24).
+    # FourPlay/quattroplay/src/TClient.cpp:2958-2981.
     info = parse_npcmoved(data)
+    info['new_level'] = _canonical_level_name(client, info['new_level'])
+    npc = client.npcs.get(info['npc_id'])
+    if npc is not None:
+        level = info['new_level']
+        npc['_level'] = level
+        npc['visible'] = bool(level) and bool(npc.get('visflags', 1) & 1)
+        if level:
+            npc['x'], npc['y'] = info['x'], info['y']
+        cell = next((cell for cell, name in client.gmap_grid.items()
+                     if name == level), None)
+        ox, oy = segment_origin(*cell) if cell else (0, 0)
+        if level:
+            npc['world_x'], npc['world_y'] = info['x'] + ox, info['y'] + oy
+        npc.pop('_move_queue', None)
+        client._mark_npc_pos_snap(npc)
+        update_attachments(client)
     if client.on_npc_moved:
         client.on_npc_moved(info)
 
 
-@handles(PacketID.PLO_MOVE2)
-def handle_move2(client, data):
-    # NPC move-queue update, modern clients (packet 189).
-    info = parse_move2(data)
-    npc = client.npcs.get(info['npc_id'])
-    if npc is not None:
-        from ..gs1_client.objects import _write_npc_attr
-        _write_npc_attr(npc, 'x', info['x'])
-        _write_npc_attr(npc, 'y', info['y'])
-        update_attachments(client)
+def _handle_moves(client, info):
+    from ..npc_movement import queue_moves
+    queue_moves(client, info)
     client.npc_moves[info['npc_id']] = info
     if client.on_npc_move:
         client.on_npc_move(info)
+
+
+@handles(PacketID.PLO_MOVE2)
+def handle_move2(client, data):
+    _handle_moves(client, parse_move2(data))
 
 
 @handles(PacketID.PLO_MOVE)
 def handle_move(client, data):
-    # NPC move-queue update, legacy pre-CLVER_2_3 clients (packet 165) -
-    # the GCHAR-precision counterpart to PLO_MOVE2 above. GServer-v2 sends
-    # exactly one of MOVE/MOVE2 per move-queue update depending on the
-    # recipient's negotiated version (NPC.cpp:472-475), so mirror MOVE2's
-    # handling rather than treating this as a separate stream.
-    info = parse_move(data)
-    npc = client.npcs.get(info['npc_id'])
-    if npc is not None:
-        from ..gs1_client.objects import _write_npc_attr
-        _write_npc_attr(npc, 'x', info['x'])
-        _write_npc_attr(npc, 'y', info['y'])
-        update_attachments(client)
-    client.npc_moves[info['npc_id']] = info
-    if client.on_npc_move:
-        client.on_npc_move(info)
+    _handle_moves(client, parse_move(data))

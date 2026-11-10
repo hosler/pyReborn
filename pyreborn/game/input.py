@@ -12,6 +12,7 @@ from pygame.locals import (
     K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
     K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE, K_TAB,
     K_F1, K_F2, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12, K_PAGEUP, K_PAGEDOWN,
+    K_y,
 )
 
 from ..hiding import HIDDEN_SPEED, is_hidden
@@ -23,6 +24,50 @@ from .constants import (
 
 class InputMixin:
     """Mixin providing the above methods for GameClient."""
+
+    # A pending PLO_SERVERWARP offer awaiting the player's answer (see
+    # offer_server_warp). Class-level default so a GameClient built without
+    # going through __init__ paths still reads None.
+    server_warp_prompt = None
+
+    # -- PLO_SERVERWARP consent ------------------------------------------
+    def offer_server_warp(self, info) -> bool:
+        """Ask the player whether to follow a server's move-to-another-server
+        request. The target is chosen by the game server, so it is never
+        followed without a Yes: a hostile server could otherwise collect the
+        account name and password this client logs in with. Unusable targets
+        are dropped without a prompt, and while one prompt is open further
+        offers are ignored so the answer cannot be swapped underneath the
+        player. Returns True when a prompt is now open."""
+        from ..packet_codec.gameplay import validate_server_warp_target
+        target = validate_server_warp_target(info)
+        if target is None or self.server_warp_prompt is not None:
+            return False
+        host = target['host'].lower()
+        target['in_list'] = any(
+            str(getattr(entry, 'ip', '')).lower() == host
+            and getattr(entry, 'port', None) == target['port']
+            for entry in getattr(self, 'servers', ()))
+        self.server_warp_prompt = target
+        self.show_player_list = False
+        self.show_server_list = False
+        self.pm_target_id = None
+        self.typing = False
+        self._ensure_settings_ui().close()
+        return True
+
+    def _handle_server_warp_key(self, event):
+        # Default is No: only an explicit Y follows the server's request.
+        if event.key == K_y:
+            from ..listserver import ServerEntry
+            target, self.server_warp_prompt = self.server_warp_prompt, None
+            self.switch_server = ServerEntry(
+                name=target['name'], type_prefix='', language='', description='',
+                url='', version='', player_count=0,
+                ip=target['host'], port=target['port'])
+            self.running = False
+        elif event.key in (K_n, K_ESCAPE, K_RETURN):
+            self.server_warp_prompt = None
 
     def _update_death_state(self, current_time):
         player = self.client.player
@@ -201,6 +246,13 @@ class InputMixin:
             elif (getattr(self.client, '_local_level_transition', '')
                   or getattr(self, '_level_transition_input_frozen', False)):
                 pass
+
+            # The server-warp consent prompt outranks everything, GS2 GUI
+            # included: it must not be answerable or dismissable by a script.
+            elif self.server_warp_prompt is not None and event.type in (
+                    KEYDOWN, MOUSEBUTTONDOWN):
+                if event.type == KEYDOWN:
+                    self._handle_server_warp_key(event)
 
             # GS2 GUI controls are topmost: a consumed event (click inside a
             # control, keystroke into a focused text edit, Esc on a window)
@@ -621,6 +673,7 @@ class InputMixin:
         if (self.typing or self.dialogue_text is not None
                 or self.inventory_ui.visible or self.show_player_list
                 or self.show_server_list or self.pm_target_id is not None
+                or self.server_warp_prompt is not None
                 or getattr(self, 'big_map_visible', False)
                 or self._ensure_settings_ui().visible
                 or getattr(self.client, 'input_frozen', False)

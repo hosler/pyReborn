@@ -227,6 +227,26 @@ def single_bot_scenarios() -> List[Callable]:
     return [fn for _, fn in sorted(_SINGLE_BOT_REGISTRY, key=lambda e: e[0])]
 
 
+#: The QA fixture level and the open-ground spawn point inside it.
+QA_FIXTURE_LEVEL = "onlinestartlocal.nw"
+QA_FIXTURE_SPAWN = (30.0, 30.0)
+
+
+def _stand_on_fixture_spawn(bot: GameBot) -> bool:
+    """Put `bot` on the fixture spawn if it is on the fixture level elsewhere.
+
+    A no-op on any other level, so scenarios that also run against arbitrary
+    servers (server_probe) are left where the server put them. Returns True
+    when the bot ends up on the spawn point.
+    """
+    if bot.level != QA_FIXTURE_LEVEL:
+        return False
+    x, y = QA_FIXTURE_SPAWN
+    if abs(bot.x - x) > 0.01 or abs(bot.y - y) > 0.01:
+        bot.warp_to(QA_FIXTURE_LEVEL, x, y)
+    return abs(bot.x - x) <= 0.01 and abs(bot.y - y) <= 0.01
+
+
 class TestScenarios:
     """
     Collection of automated test scenarios.
@@ -289,6 +309,13 @@ class TestScenarios:
         issues = []
         directions = [(1, 0, "right"), (-1, 0, "left"), (0, 1, "down"), (0, -1, "up")]
         succeeded = 0
+
+        # The server persists each account's last position, so this session
+        # starts wherever the previous run's last session (the multi-bot PvP
+        # walk next to the chest bot, ~(15.5, 32.5)) logged out - inside a
+        # wall pocket that blocks all four directions. Stand on the known open
+        # spawn first, as collision_detection does.
+        _stand_on_fixture_spawn(bot)
 
         for dx, dy, name in directions:
             old_x, old_y = bot.x, bot.y

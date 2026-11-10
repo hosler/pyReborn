@@ -201,8 +201,14 @@ def test_weapon_compilation_caches_stay_in_temp_directory(server_source, tmp_pat
         # Force the copied cache to be stale, without touching the source.
         import os
         os.utime(cache, (1, 1))
-        manager = gs2.GS2ScriptManager(SimpleNamespace(
-            config=ServerConfig.from_server_dir(str(local.server_dir))), str(local.server_dir))
+        # The LocalWorld runs classic script mode (serverside = false), where the
+        # reference compiles nothing and sends weapon source text
+        # (Script::compileScript returns without an NPC server, Script.cpp:
+        # 485-492). Bytecode caching only happens on a serverside server, so
+        # this manager is configured as one to exercise the cache directory.
+        config = ServerConfig.from_server_dir(str(local.server_dir))
+        config.serverside = True
+        manager = gs2.GS2ScriptManager(SimpleNamespace(config=config), str(local.server_dir))
         manager.load()
         assert manager.get_weapon("Demo").bytecode == b"compiled"
         assert cache.read_bytes() == b"compiled"
@@ -314,7 +320,8 @@ def test_config_and_account_seeding(world):
     for name in world.accounts:
         data = json.loads((world.server_dir / "accounts" / f"{name}.json").read_text())
         expected = Account(account_name=name, level_name="spawn.nw", x=12,
-                           y=18.5, is_staff=True)
+                           y=18.5, is_staff=True, admin_rights=0xfffff,
+                           admin_ip="127.0.0.1")
         expected.set_password("testpass")
         assert data == expected.to_dict()
         assert data["hearts"] == data["max_hearts"] == 3

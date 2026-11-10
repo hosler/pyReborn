@@ -1187,9 +1187,7 @@ def parse_push_away(data: bytes) -> dict:
 
 def parse_npcmoved(data: bytes) -> dict:
     """
-    Parse PLO_NPCMOVED (24) - fired when an NPC's CURLEVEL prop changes
-    (server/src/object/NPC.cpp setProp CURLEVEL case): the NPC's *old*
-    position (in the level it's leaving) plus the new level name.
+    Parse PLO_NPCMOVED (24), carrying the destination coordinates and level.
     Format: {GINT3 npc_id}{GCHAR x/8}{GCHAR y/8}{new_level, raw string to end}
     """
     reader = PacketReader(data)
@@ -1200,69 +1198,36 @@ def parse_npcmoved(data: bytes) -> dict:
     return {'npc_id': npc_id, 'x': x8 * 8 / 16.0, 'y': y8 * 8 / 16.0, 'new_level': new_level}
 
 
-def parse_move2(data: bytes) -> dict:
-    """
-    Parse PLO_MOVE2 (189) - NPC move-queue update for clients >= CLVER_2_3
-    (server/src/object/NPC.cpp getMoveQueuePacketData / sendMoveQueueToLevel).
-    Format:
-        {GINT3 npc_id}
-        {GSHORT posX}{GSHORT posY}     - PropertyPixelCoordinate, local pixels
-        {GSHORT dx}{GSHORT dy}         - PropertyPixelCoordinate, pixel delta to target
-        {GSHORT time_50ms_increments}
-        {GCHAR options}
-    PropertyPixelCoordinate encodes raw pixels (not /16 tiles) as
-    ((abs(v)<<1)|sign, gshort) - see PropertySerializers.cpp.
-    """
-    def _read_pixel_coord(reader: 'PacketReader') -> int:
-        raw = reader.read_gshort()
-        v = raw >> 1
-        return -v if (raw & 1) else v
-
+def _parse_moves(data: bytes, modern: bool) -> dict:
+    # GServer-v2/server/src/object/NPC.cpp:481-522.
     reader = PacketReader(data)
     npc_id = reader.read_gint3()
-    pos_x = _read_pixel_coord(reader)
-    pos_y = _read_pixel_coord(reader)
-    dx = _read_pixel_coord(reader)
-    dy = _read_pixel_coord(reader)
-    time_increments = reader.read_gshort()
-    options = reader.read_gchar()
-    return {
-        'npc_id': npc_id, 'x': pos_x / 16.0, 'y': pos_y / 16.0,
-        'dx': dx / 16.0, 'dy': dy / 16.0,
-        'duration_ms': time_increments * 50, 'options': options,
-    }
+    records = []
+    width = 11 if modern else 7
+    while reader.pos + width <= len(data):
+        if modern:
+            values = []
+            for _ in range(4):
+                raw = reader.read_gshort()
+                values.append((-(raw >> 1) if raw & 1 else raw >> 1) / 16.0)
+        else:
+            values = [reader.read_gchar() / 2.0, reader.read_gchar() / 2.0,
+                      (reader.read_gchar() - 100) / 2.0,
+                      (reader.read_gchar() - 100) / 2.0]
+        records.append(dict(zip(('x', 'y', 'dx', 'dy'), values),
+                            duration_ms=reader.read_gshort() * 50,
+                            options=reader.read_gchar()))
+    return {'npc_id': npc_id, **(records[0] if records else {}), 'records': records}
+
+
+def parse_move2(data: bytes) -> dict:
+    """Parse all eleven-byte NPC movement records."""
+    return _parse_moves(data, True)
 
 
 def parse_move(data: bytes) -> dict:
-    """
-    Parse PLO_MOVE (165) - NPC move-queue update for legacy clients (version
-    < CLVER_2_3); the GCHAR-precision counterpart to PLO_MOVE2 (189)
-    (server/src/object/NPC.cpp getMoveQueuePacketData, 'result.first' branch,
-    lines 447-457; sent from sendMoveQueueToPlayer/sendMoveQueueToLevel,
-    NPC.cpp:473/496).
-    Format:
-        {GINT3 npc_id}
-        {GCHAR posX/8}{GCHAR posY/8}      - local pixel position, 1/8 precision
-        {GCHAR (dx/8)+100}{GCHAR (dy/8)+100} - pixel delta to target, offset so
-                                                small negative deltas stay positive
-        {GSHORT time_50ms_increments}
-        {GCHAR options}
-    Same fields as parse_move2, coarser precision (matches the 1/8-tile scale
-    PLO_NPCMOVED also uses for its GCHAR position).
-    """
-    reader = PacketReader(data)
-    npc_id = reader.read_gint3()
-    pos_x8 = reader.read_gchar()
-    pos_y8 = reader.read_gchar()
-    dx_units = reader.read_gchar() - 100
-    dy_units = reader.read_gchar() - 100
-    time_increments = reader.read_gshort()
-    options = reader.read_gchar()
-    return {
-        'npc_id': npc_id, 'x': pos_x8 * 8 / 16.0, 'y': pos_y8 * 8 / 16.0,
-        'dx': dx_units * 8 / 16.0, 'dy': dy_units * 8 / 16.0,
-        'duration_ms': time_increments * 50, 'options': options,
-    }
+    """Parse all seven-byte classic NPC movement records."""
+    return _parse_moves(data, False)
 
 
 def parse_npcdel2(data: bytes) -> dict:
@@ -1323,6 +1288,34 @@ def parse_server_warp(data: bytes) -> dict:
         port = 0
     return {'raw': raw, 'name': tokens[0], 'display_name': tokens[1],
             'host': tokens[2], 'port': port}
+
+
+def _clean_server_text(value, limit: int = 64) -> str:
+    """Display text from a server: control characters dropped, length capped."""
+    text = ''.join(ch for ch in str(value or '') if ch.isprintable())
+    return text[:limit]
+
+
+def validate_server_warp_target(info) -> Optional[dict]:
+    """Return {'name', 'host', 'port'} for a usable PLO_SERVERWARP offer.
+
+    A game server names the target, so nothing about it is trusted: the host
+    must be non-empty with no whitespace or control characters, and the port
+    must lie in 1-65535. Returns None for anything else. The name is only for
+    display and has control characters stripped.
+    """
+    if not isinstance(info, dict):
+        return None
+    host = info.get('host')
+    port = info.get('port')
+    if not isinstance(host, str) or not host or len(host) > 253:
+        return None
+    if any(ch.isspace() or not ch.isprintable() for ch in host):
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port <= 65535:
+        return None
+    name = _clean_server_text(info.get('display_name') or info.get('name') or host)
+    return {'name': name or host, 'host': host, 'port': port}
 
 
 def parse_triggeraction_in(data: bytes) -> dict:
