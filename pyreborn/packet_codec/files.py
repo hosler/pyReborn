@@ -71,7 +71,7 @@ def parse_file(data: bytes, no_modtime: bool = False) -> dict:
 
 def parse_filesendfailed(data: bytes) -> str:
     """
-    Parse PLO_FILESENDFAILED (packet 104) - File send failed.
+    Parse PLO_FILESENDFAILED (packet 30) - File send failed.
     Format: filename
     """
     return data.decode('latin-1', errors='replace')

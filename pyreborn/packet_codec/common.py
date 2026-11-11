@@ -41,12 +41,10 @@ class PacketID:
 
 # Populate PacketID.<PREFIX><NAME> from the authoritative enums.
 for _enum, _prefix in ((PLO, "PLO_"), (PLI, "PLI_")):
-    for _member in _enum:
-        setattr(PacketID, _prefix + _member.name, int(_member))
-del _enum, _prefix, _member
-
-# Not present in the shared beta4 enum; used by the GS1 server showimg stream.
-PacketID.PLO_SHOWIMGNPC = 166
+    # __members__ includes alias names; plain iteration would skip them.
+    for _name, _member in _enum.__members__.items():
+        setattr(PacketID, _prefix + _name, int(_member))
+del _enum, _prefix, _name, _member
 
 
 # =============================================================================

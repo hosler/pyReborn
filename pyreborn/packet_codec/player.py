@@ -329,7 +329,7 @@ def _parse_weapon_add_structured(data: bytes):
 
 
 def parse_shoot(data: bytes, v2: bool) -> dict:
-    """Parse a relayed projectile (PLO_SHOOT=40 v1 / PLO_SHOOT2=48 v2).
+    """Parse a relayed projectile (PLO_SHOOT=175 v1 / PLO_SHOOT2=191 v2).
 
     Wire format mirrors GServer-v2 ShootPacketWrapper::constructShootV1/V2,
     prefixed by the shooter id (gshort). We only need the gani + the GS1 shoot
@@ -337,10 +337,12 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
     via #p(n) in an actionprojectile2 handler.
 
     x/y are normalized to tiles for both variants: v1 writes (pixels%1024)/8
-    (half-tile units, Player.cpp:224-225) while v2 writes raw pixel gshorts
-    (Player.cpp:240-241) — dividing by 2 vs 16 respectively puts both in tiles.
+    (half-tile units, Player.cpp:243-244) while v2 writes raw pixel gshorts
+    (Player.cpp:259-260) — dividing by 2 vs 16 respectively puts both in tiles.
 
-    Returns {shooter, gani, params, x, y} (params is the raw CSV string).
+    Returns {shooter, gani, params, x, y, sangle, sanglez, power}. params is
+    the raw CSV string; sangle/sanglez/power are the raw wire bytes (sangle
+    0..220 = 0..2*pi with pi/2 up, sanglez 110 = flat, power 1/44 tile per frame).
     """
     try:
         r = PacketReader(data)
@@ -348,21 +350,23 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
         if v2:
             x = r.read_gshort(); y = r.read_gshort(); _z = r.read_gshort()
             r.read_byte(); r.read_byte()                 # offsetx/offsety (+32)
-            r.read_gchar(); r.read_gchar()               # sangle, sanglez
-            r.read_gchar(); r.read_gchar()               # power, gravity
+            sangle = r.read_gchar(); sanglez = r.read_gchar()
+            power = r.read_gchar(); _gravity = r.read_gchar()
             gani = r.read_gstring_short()                # gshort len + gani
             x /= 16.0
             y /= 16.0
         else:
             r.read_gint3()                               # GInt source
             x = r.read_gchar(); y = r.read_gchar(); r.read_gchar()  # x,y,z
-            r.read_gchar(); r.read_gchar(); r.read_gchar()          # sangle,sanglez,power
+            sangle = r.read_gchar(); sanglez = r.read_gchar()
+            power = r.read_gchar()
             gani = r.read_gstring()                      # gchar len + gani
             x /= 2.0
             y /= 2.0
         params = r.read_gstring()                        # gchar len + params (CSV)
         return {'shooter': shooter, 'gani': gani, 'params': params,
-                'x': x, 'y': y}
+                'x': x, 'y': y,
+                'sangle': sangle, 'sanglez': sanglez, 'power': power}
     except Exception:
         return {}
 

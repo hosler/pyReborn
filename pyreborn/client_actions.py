@@ -255,7 +255,7 @@ class ActionsMixin:
 
         Args:
             direction: 0=up, 1=left, 2=down, 3=right (default: player direction)
-            speed: Projectile speed (1-127, default 3)
+            speed: Projectile power, 1/44 tile per 0.05 s (0-220, default 3)
             gani: Projectile animation name (default "arrow")
             gravity: Gravity effect (0 for flat shot, 8 for arc)
             params: Projectile param string (GS1 shoot params. The receiver reads
@@ -273,11 +273,12 @@ class ActionsMixin:
             direction = self.player.direction
 
         # Convert direction to angle (radians)
-        # 0=up (-pi/2), 1=left (pi), 2=down (pi/2), 3=right (0)
+        # 0=up (pi/2), 1=left (pi), 2=down (-pi/2), 3=right (0). The server
+        # moves y -= sin(angle) (LevelShoot.h move()), so +pi/2 flies up.
         angles = {
-            0: -math.pi / 2,  # up
+            0: math.pi / 2,   # up
             1: math.pi,       # left
-            2: math.pi / 2,   # down
+            2: -math.pi / 2,  # down
             3: 0              # right
         }
         angle = angles.get(direction, 0)

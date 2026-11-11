@@ -336,51 +336,73 @@ def build_attack_player(victim_id: int, hurt_dx: int, hurt_dy: int,
     return bytes(packet)
 
 
+def _shoot_angle_byte(angle: float) -> int:
+    """Radians -> the server's 0..220 = 0..2*pi scale (Level.cpp:2618).
+
+    Wraps modulo 220, so negative angles land on the right side of the circle.
+    The server moves x += cos(a), y -= sin(a), so pi/2 is UP on screen.
+    """
+    import math
+    return int(round(angle / (2 * math.pi) * 220)) % 220
+
+
+def _shoot_zangle_byte(zangle: float) -> int:
+    """Radians (-pi/2..pi/2) -> the server's 0..220 scale; 110 is flat (Level.cpp:2618)."""
+    import math
+    half_pi = math.pi / 2
+    return max(0, min(220, 110 + int(round(110 * zangle / half_pi))))
+
+
 def build_shoot_v1(x: float, y: float, z: float, angle: float, power: int,
-                   gani: str = "blank", params: str = "") -> bytes:
+                   gani: str = "blank", params: str = "",
+                   zangle: float = 0.0) -> bytes:
     """Build the old PLI_SHOOT (packet 40) - shoot a projectile.
 
     Classic servers (v2.22, e.g. Bomber Arena) only handle this form; they
     ignore PLI_SHOOT2 (48), so the room-system projectiles never relay if you
-    send v2. Format mirrors GServer-v2 msgPLI_SHOOT:
+    send v2. Format mirrors GServer-v2 msgPLI_SHOOT
+    (PlayerClientPackets.cpp:1329):
         gint(unused=0), gchar x, gchar y, gchar z, gchar sangle, gchar sanglez,
         gchar power, gchar ganilen + gani, gchar paramslen + params.
     Position is in 1/8-pixel units (gchar = tile*2); z is +50 biased.
+    angle is radians with pi/2 = up; zangle 0 (flat) goes out as byte 110.
+    power is 1/44 tile per 0.05 s frame, 0..220.
     """
-    import math
     def gc(v):
         return bytes([(int(v) % 224) + 32])
-    sangle = int((angle / (2 * math.pi)) * 220) % 224
+    power = min(max(int(power), 0), 220)
     p = bytearray()
     p += bytes([32, 32, 32])                         # gint(0): unused shoot id
     p += gc(int(x * 2)) + gc(int(y * 2)) + gc(int(z * 16 / 16) + 50)
-    p += gc(sangle) + gc(0) + gc(power)              # sangle, sanglez, power
+    p += gc(_shoot_angle_byte(angle)) + gc(_shoot_zangle_byte(zangle)) + gc(power)
     gb = gani.encode('latin-1'); pb = params.encode('latin-1')
     p += gc(len(gb)) + gb
     p += gc(len(pb)) + pb
     return bytes(p)
 
 
-def build_shoot(x: float, y: float, z: float, angle: float, speed: int,
-                gani: str = "arrow", params: str = "", gravity: int = 8) -> bytes:
+def build_shoot(x: float, y: float, z: float, angle: float, power: int,
+                gani: str = "arrow", params: str = "", gravity: int = 8,
+                zangle: float = 0.0) -> bytes:
     """
     Build PLI_SHOOT2 (packet 48) - shoot a projectile.
+
+    Layout mirrors GServer-v2 msgPLI_SHOOT2 (PlayerClientPackets.cpp:1379).
 
     Args:
         x: X position in tiles
         y: Y position in tiles
         z: Z height (0 for ground level)
-        angle: Angle in radians (0 = right, pi/2 = up)
-        speed: Speed in pixels per 0.05 seconds (1 = 44 pixels in gscript)
+        angle: Angle in radians (0 = right, pi/2 = up); sent as 0..220 = 0..2*pi
+        power: Speed in 1/44 tile per 0.05 s frame (44 = 1 tile/frame), 0..220
         gani: Projectile animation name (default "arrow")
-        gravity: Gravity effect (default 8)
+        gravity: Gravity on the wire (the server stores gravity*16)
         params: Additional shoot parameters
+        zangle: Vertical angle in radians (0 = flat, sent as byte 110)
 
     Returns:
         Packet data for PLI_SHOOT2
     """
-    import math
-
     packet = bytearray()
 
     # Convert tile position to pixels
@@ -402,20 +424,14 @@ def build_shoot(x: float, y: float, z: float, angle: float, speed: int,
     packet.append(0 + 32)  # offset_x
     packet.append(0 + 32)  # offset_y
 
-    # Angle: convert radians to 0-220 range. Server decodes sangle as
-    # 0..2*pi -> 0..220 (GServer-v2 PlayerClientPackets.cpp:1348,1381), so
-    # this must match build_shoot_v1's 2*pi divisor, not pi (that was 2x).
-    angle_byte = int((angle / (2 * math.pi)) * 220) & 0xFF
-    packet.append(angle_byte + 32)
+    packet.append(_shoot_angle_byte(angle) + 32)
+    packet.append(_shoot_zangle_byte(zangle) + 32)
 
-    # Z-angle (usually 0 for flat shots)
-    packet.append(0 + 32)
-
-    # Speed
-    packet.append(min(speed, 127) + 32)
+    # Power: GUChar up to 220 (the value+32 byte stays below 256)
+    packet.append(min(max(int(power), 0), 220) + 32)
 
     # Gravity
-    packet.append(min(gravity, 127) + 32)
+    packet.append(min(max(int(gravity), 0), 127) + 32)
 
     # Gani name (gushort length + string)
     gani_bytes = gani.encode('latin-1')
