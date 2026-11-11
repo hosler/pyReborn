@@ -22,6 +22,8 @@ from ..packets import (
     parse_rc_add_player,
     parse_rc_del_player,
 )
+from reborn_protocol.props import COLORS_CLASSIC, COLORS_NEWWORLD
+
 from .registry import STOP, handles
 from ..attachments import (apply_attachment_props, update_attachments,
                            delete_npc_attachments)
@@ -37,6 +39,34 @@ PLO_NPCDEL = 29
 #: here).
 _ROSTER_CHANGE_KEYS = frozenset(
     ('nickname', 'account', 'playerlist_flags', 'communityname'))
+
+
+def colors_width_policy(client):
+    """-> (colors_len, colors_len_known) for this session's COLORS props.
+
+    The width is the server's mode, not our version (GServer-v2
+    PropertySerializers.h:793-796). Only an explicit announcement is
+    "known": PLO_NEWWORLDMODE (177), which the reference sends before the
+    first props packet (Player.cpp:751-752, ahead of PlayerClient.cpp:547).
+    Its absence proves nothing - pygserver writes 8-byte COLORS and never
+    sends 177 - so everything else stays on the parser's evidence path.
+    PLO_KINGDOMSMODE (176, Player.cpp:749-750) implies 5 on the reference
+    (kingdoms is not new-world), but 176 was FULLSTOP in the older enum, so it
+    only moves the tie-break preference and never disables self-correction;
+    the parser's evidence stays attached to absolute widths across mode changes.
+    """
+    mode = getattr(client, 'server_mode', '')
+    if mode == 'newworld':
+        return COLORS_NEWWORLD, True
+    if mode == 'kingdoms':
+        return COLORS_CLASSIC, False
+    return client._colors_len, False
+
+
+def _parse_colors_stream(parser, client, data):
+    colors_len, known = colors_width_policy(client)
+    return parser(data, colors_len, client.prop_parse_diagnostics,
+                  colors_len_known=known)
 
 
 def _same_gmap_world(client, other_level):
@@ -120,8 +150,10 @@ def _update_global_roster(client, player_id, props):
 @handles(PacketID.PLO_PLAYERPROPS)
 def handle_player_props(client, data):
     # Player properties (our player data)
-    props = parse_player_props(
-        data, client._colors_len, client.prop_parse_diagnostics)
+    props = _parse_colors_stream(parse_player_props, client, data)
+    # client._handle_packet reads the login look from THIS parse, so the
+    # look-ahead can never pick a different COLORS width for the packet.
+    client._last_self_props = dict(props)
 
     # Silent warp rejection (gs2emu): msgPLI_LEVELWARP with an
     # unloadable level sends NO PLO_WARPFAILED - it "resolves" by
@@ -273,8 +305,7 @@ def handle_baddy_props(client, data):
 @handles(PacketID.PLO_NPCPROPS)
 def handle_npc_props(client, data):
     # NPC properties
-    props = parse_npc_props(
-        data, client._colors_len, client.prop_parse_diagnostics)
+    props = _parse_colors_stream(parse_npc_props, client, data)
     if props and 'id' in props:
         npc_id = props['id']
         # Associate the NPC with a level. Preference order:
@@ -451,8 +482,7 @@ def handle_npc_del2(client, data):
 @handles(PacketID.PLO_OTHERPLPROPS)
 def handle_other_player_props(client, data):
     # Other player properties
-    props = parse_other_player(
-        data, client._colors_len, client.prop_parse_diagnostics)
+    props = _parse_colors_stream(parse_other_player, client, data)
     if props and 'id' in props:
         player_id = props['id']
         # Session-global roster + universe events first: the level-roster

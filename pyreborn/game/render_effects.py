@@ -21,6 +21,7 @@ from ..prefs import Prefs
 from ..throwing import LEAP_FRAMES, TICK, advance_throw, landing_type
 from ..tiletypes import TileType
 from .constants import TILE_SIZE, EXPLOSION_DURATION
+from .flying import FlyingObjectsMixin
 from .frame_context import FrameContext, FrameContextMixin
 
 
@@ -68,7 +69,7 @@ def day_night_tint(minute_of_day):
     return None
 
 
-class EffectsRenderMixin(FrameContextMixin):
+class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _render_world_object(self, frame: Optional[FrameContext],
@@ -541,6 +542,14 @@ class EffectsRenderMixin(FrameContextMixin):
                     active_projectiles.append(proj)
                 continue
 
+            if proj.get('flying'):
+                # Script-fired fireblast/nuke: 20 Hz hit rules (flying.py).
+                if not self._advance_flying(proj, dt):
+                    continue
+                self._keep_or_expire_projectile(proj, current_time, frame,
+                                                active_projectiles)
+                continue
+
             old_x, old_y = proj['x'], proj['y']
             proj['x'] += proj['dx'] * dt
             proj['y'] += proj['dy'] * dt
@@ -561,26 +570,31 @@ class EffectsRenderMixin(FrameContextMixin):
                 active_projectiles.append(proj)
                 continue
 
-            # Check if projectile exceeded max distance
-            dist_x = proj['x'] - proj['start_x']
-            dist_y = proj['y'] - proj['start_y']
-            distance = (dist_x ** 2 + dist_y ** 2) ** 0.5
-
-            if distance < proj['max_distance']:
-                # Convert world position to screen position
-                screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
-
-                self._render_world_object(
-                    frame, proj['y'],
-                    lambda proj=proj, screen_x=screen_x, screen_y=screen_y,
-                    current_time=current_time: self._render_projectile_marker(
-                        proj.get('gani', 'arrow'), screen_x, screen_y,
-                        proj['direction'],
-                        current_time - proj.get('time', current_time)))
-
-                active_projectiles.append(proj)
+            self._keep_or_expire_projectile(proj, current_time, frame,
+                                            active_projectiles)
 
         self.active_projectiles = active_projectiles
+
+    def _keep_or_expire_projectile(self, proj: dict, current_time: float,
+                                   frame: Optional[FrameContext],
+                                   active_projectiles: list) -> None:
+        """Draw `proj` and keep it, unless it has flown its maximum distance."""
+        dist_x = proj['x'] - proj['start_x']
+        dist_y = proj['y'] - proj['start_y']
+        distance = (dist_x ** 2 + dist_y ** 2) ** 0.5
+
+        if distance < proj['max_distance']:
+            screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
+
+            self._render_world_object(
+                frame, proj['y'],
+                lambda proj=proj, screen_x=screen_x, screen_y=screen_y,
+                current_time=current_time: self._render_projectile_marker(
+                    proj.get('gani', 'arrow'), screen_x, screen_y,
+                    proj['direction'],
+                    current_time - proj.get('time', current_time)))
+
+            active_projectiles.append(proj)
 
     def _render_arrow_hit_spark(self, proj: dict, now: float):
         screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])

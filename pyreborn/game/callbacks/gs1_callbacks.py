@@ -3,6 +3,7 @@
 import os
 import time
 
+from ...flyingobjects import NOT_BOUNCING
 from ...sprites import strip_tiledef_image
 from .client_callbacks import route_gs2_source
 
@@ -251,8 +252,13 @@ def wire_gs1_callbacks(game):
 
     # shootfireblast / shootnuke: a flying object that travels one tile per
     # 20 Hz tick, like an arrow (putFlyingObject speed 1.0,
-    # TServerNPCProperties.cpp:112-150). Drawn as a projectile; it does not
-    # yet hit players, NPCs or baddies.
+    # TServerNPCProperties.cpp:112-150). game/flying.py applies the official
+    # hit rules each tick: the local player (level NPCs' shots only), the NPC
+    # under it (`wasshot`), and walls plus an explosion for power > 1.
+    # 'from_player' is the reference's from == 1, a weapon script's shot that
+    # never hurts its own player (TServerNPCProperties.cpp:155-163,
+    # TServerFlying.cpp:127). The GS1 engine runs `shootfireblast` only for a
+    # script that has an NPC dict, so every queued shot is a level NPC's.
     def on_flying(x, y, direction, power):
         if len(game.active_projectiles) >= MAX_SCRIPT_OBJECTS:
             return
@@ -263,6 +269,8 @@ def wire_gs1_callbacks(game):
             'direction': direction, 'gani': {2: 'fireblast', 3: 'nukeshot'}[power],
             'max_distance': game.client._ARROW_MAX_DISTANCE,
             'start_x': x, 'start_y': y, 'source': 'script',
+            'flying': True, 'power': power, 'from_player': False,
+            'lx': x, 'ly': y, 'tick_acc': 0.0, 'bounce': NOT_BOUNCING,
         })
 
     game.gs1.on_flying = on_flying

@@ -296,6 +296,7 @@ def test_server_applies_damage_and_counts_hits_on_the_firing_player(tmp_path, ki
         elif kind == "npc":
             target = server.npc_manager.create_npc(level=server.level, x=22, y=19)
             target.body_image = "body.png"
+            target.image = "#c#"  # a character NPC (showcharacter) has the 32x32 box
             health = target.hearts
         else:
             target = server.add_player(2, "target", 22, 19)
@@ -440,6 +441,7 @@ def test_server_resolves_collision_rectangles_with_at_most_five_probes(
             target = server.npc_manager.create_npc(
                 level=server.level, x=target_xy[0], y=target_xy[1])
             target.body_image = "body.png"
+            target.image = "#c#"  # a character NPC (showcharacter) has the 32x32 box
         await GameServer.handle_trigger_action(
             server, server.player, 30, 30,
             f"serverside,ArcaneBolt,hit,{kind},999,30,30")
@@ -487,6 +489,7 @@ def test_server_resolves_npc_by_position_instead_of_reported_index(tmp_path):
         decoy = server.npc_manager.create_npc(level=server.level, x=45, y=45)
         target = server.npc_manager.create_npc(level=server.level, x=22, y=19)
         decoy.body_image = target.body_image = "body.png"
+        decoy.image = target.image = "#c#"  # character NPCs carry the collision box
         await GameServer.handle_trigger_action(
             server, server.player, 22, 20,
             "serverside,ArcaneBolt,hit,npc,0,22,20")

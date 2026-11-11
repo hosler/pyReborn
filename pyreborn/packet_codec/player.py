@@ -38,7 +38,7 @@ def parse_rawdata(data: bytes) -> int:
 _OTHER_STREAM = StreamPolicy(
     table=_CARRY_PLAYER_PROPS, max_prop_id=83, require_ascending=True,
     ascending_exempt=frozenset({34, 50}), check_alignment=True,
-    handle_empty=frozenset({12, 51}))
+    require_full_consume=True, handle_empty=frozenset({12, 51}))
 
 # Props another player's PLO_OTHERPLPROPS surfaces. Deliberately not the same
 # set or the same keys as _SELF_PROP_HANDLERS below: this describes somebody
@@ -103,7 +103,8 @@ _OTHER_PROP_HANDLERS = {
 
 
 def parse_other_player(data: bytes, colors_len: int = COLORS_CLASSIC,
-                       diagnostics: Optional[Dict[str, int]] = None) -> dict:
+                       diagnostics: Optional[Dict[str, int]] = None,
+                       colors_len_known: bool = False) -> dict:
     """
     Parse PLO_OTHERPLPROPS (8).
     Format: gshort(player_id) + props...
@@ -112,6 +113,8 @@ def parse_other_player(data: bytes, colors_len: int = COLORS_CLASSIC,
     extended) to try first. Wrong value misaligns every prop after COLORS,
     so if this guess doesn't let the rest of the packet parse cleanly, the
     other known width is tried instead (see _parse_with_colors_retry).
+    colors_len_known: colors_len is the session's announced width; skip the
+    retry.
     """
     if len(data) < 2:
         return {}
@@ -128,7 +131,8 @@ def parse_other_player(data: bytes, colors_len: int = COLORS_CLASSIC,
             out={'id': player_id})
         return props, clean
 
-    return _parse_with_colors_retry(_run, colors_len, diagnostics)
+    return _parse_with_colors_retry(_run, colors_len, diagnostics,
+                                    colors_len_known)
 
 
 # LevelItemType id -> name (from GServer-v2 LevelItem.h enum order).

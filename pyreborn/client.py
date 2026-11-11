@@ -39,10 +39,7 @@ from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
     SessionState,
     WarpState,
 )
-from .packets import (
-    PacketID,
-    parse_player_props,
-)
+from .packets import PacketID
 # Importing the package registers every @handles handler; PACKET_HANDLERS is
 # the complete inbound-packet dispatch table (see _handle_packet).
 from .handlers import PACKET_HANDLERS, STOP
@@ -126,6 +123,7 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 
         self.player = Player()
         self._login_appearance_applied = False
+        self._last_self_props = None
 
     # =========================================================================
     # Connection
@@ -144,6 +142,15 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self._authenticated = False
         self._login_appearance_applied = False
         self._reset_file_transfer_state()
+        # Server mode and COLORS-width evidence describe ONE server session
+        # (the mode is read once at server start, GServer-v2 Server.cpp:
+        # 188-193); a reused Client must not carry them to the next one.
+        self.server_mode = ''
+        self.classic_mode_disabled = False
+        self._last_self_props = None
+        self.prop_parse_diagnostics.clear()
+        self.prop_parse_diagnostics.update(
+            warnings=0, errors=0, width_fallbacks=0)
         if self.gs2_host is not None:
             self.gs2_host.reset_session()
         if self.input_frozen:
@@ -319,17 +326,21 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         A handler returning handlers.STOP consumes the packet outright and
         suppresses that hook.
         """
-        login_appearance = None
-        if packet_id == PacketID.PLO_PLAYERPROPS and not self._authenticated:
-            # The handler performs the authoritative parse and records any
-            # width fallback/error diagnostics; this look-ahead is only for
-            # deciding which appearance fields the server supplied.
-            login_appearance = parse_player_props(data, self._colors_len)
+        # The first self-props packet decides which appearance fields the
+        # server supplied. Read them from the handler's own parse
+        # (handlers/entities.py handle_player_props) rather than parsing
+        # again: a second parse could settle an ambiguous COLORS width
+        # differently and would double-count the width evidence.
+        login_pending = (packet_id == PacketID.PLO_PLAYERPROPS
+                         and not self._authenticated)
+        if login_pending:
+            self._last_self_props = None
         handler = PACKET_HANDLERS.get(packet_id)
         if handler is not None and handler(self, data) is STOP:
             return
-        if login_appearance is not None and self._authenticated:
-            self._apply_login_appearance(login_appearance)
+        if (login_pending and self._authenticated
+                and self._last_self_props is not None):
+            self._apply_login_appearance(self._last_self_props)
 
         # Custom handler
         if packet_id in self.on_packet:

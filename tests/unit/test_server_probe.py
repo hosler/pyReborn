@@ -653,6 +653,7 @@ def test_client_counts_player_prop_width_fallbacks_and_parse_errors():
     client._handle_packet(PacketID.PLO_PLAYERPROPS, classic_props)
     assert client.prop_parse_diagnostics == {
         "warnings": 1, "errors": 0, "width_fallbacks": 1,
+        "colors_seen_5": 1,
     }
     assert (client.player.x, client.player.y) == (10.0, 11.0)
 

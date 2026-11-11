@@ -830,6 +830,23 @@ class CombatMixin:
             # damage_type 2 = ARROW, matching pygserver's DamageType.ARROW.
             self.on_hurt(owner_id, damage, pending.get('damage_type', 2), pending['dx'], pending['dy'])
 
+    def hurt_local_by_flying(self, power: int, dx: float, dy: float) -> bool:
+        """The local-player half of handleFlyingPlayerCollision
+        (TServerFlying.cpp:211-229): a script-fired flying object with no
+        known shooter hurts the local player for arrow_damage(power), pushed
+        along its speed vector. Returns True when the hit landed.
+        (dx, dy) is the object's unit direction of travel."""
+        if not self.can_receive_local_hit(0, pvp=False):
+            return False
+        damage = arrow_damage(power)
+        if not self.respond_to_hurt(damage, self.hurt_animation,
+                                    knockback=(dx, dy)):
+            return False
+        if self.on_hurt:
+            # damage_type 2 = ARROW (the reference tags it "arrow", :221).
+            self.on_hurt(0, damage, 2, dx, dy)
+        return True
+
     def _tick_arrow_sims(self, now: Optional[float] = None):
         """Advance every tracked victim-side arrow simulation, queue
         self-damage for any that connect with our own collision box this

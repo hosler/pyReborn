@@ -225,6 +225,24 @@ class NPCHandler:
                         hit_test=(lambda px, py, _n=npc_data, _h=hit:
                                   _h(_n, px, py)))
 
+    # TServerNPC::getTileType answer that marks an NPC wall cell
+    # (TServerFlying.cpp:249).
+    _NPC_WALL_TYPE = 20
+
+    def npc_at_point(self, x: float, y: float) -> Optional[int]:
+        """The NPC a flying object's centre is over: TServerLevel::isOnNPC
+        (the touch-style probe, TServerFlying.cpp:248), refused when that
+        NPC's own tile type there is the wall type 20 (:249). Returns an NPC
+        id or None. Rebuilds the shape snapshot first."""
+        self.update_npcs()
+        for npc_id, shape in self.npc_shapes.items():
+            if not shape.is_point_inside(x, y):
+                continue
+            tile_type = (self.gs1.npc_shape_type_at(npc_id, x, y)
+                         if self.gs1 is not None else 0)
+            return None if tile_type == self._NPC_WALL_TYPE else npc_id
+        return None
+
     def check_touch(self, player_x: float, player_y: float, player_dir: int) -> List[int]:
         """Check for NPC touches and return list of touched NPC IDs.
 

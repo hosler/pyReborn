@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional
 from reborn_protocol import PLI, PLO
 from reborn_protocol.props import (
     COLORS_CLASSIC,
+    COLORS_NEWWORLD,
     PLAYER_PROPS,
     StreamPolicy,
     Wire,
@@ -175,7 +176,8 @@ def _read_gbyte(data: bytes, pos: int, count: int):
 
 
 def _parse_with_colors_retry(run_once, colors_len: int,
-                             diagnostics: Optional[Dict[str, int]] = None):
+                             diagnostics: Optional[Dict[str, int]] = None,
+                             colors_len_known: bool = False):
     """Try `colors_len`, then fall back to the other known PLPROP_COLORS
     width, keeping whichever cleanly parses the whole props stream.
 
@@ -194,27 +196,65 @@ def _parse_with_colors_retry(run_once, colors_len: int,
     width desyncs the rest of the stream - it either hits an out-of-range
     prop id (parse stops early, "not clean") or leaves trailing bytes
     unconsumed. Whether a given width lets the parse consume the *entire*
-    packet without hitting that failure mode is therefore a reliable,
-    self-correcting signal for which width the server actually used.
+    packet without hitting that failure mode is therefore a strong signal
+    for which width the server actually used - but not a proof (below).
 
-    `run_once(cl)` must return (props_dict, clean_bool).
+    `run_once(cl)` must return (props_dict, clean_bool), and its handlers must
+    store a decoded COLORS prop under the 'colors' key (all three callers do).
+
+    Clean is NOT proof of the right width. A 5-byte COLORS followed by props
+    totalling exactly 3 bytes (PLPROP_ID, an NPC's 1-char NICKNAME, ...) also
+    parses cleanly at 8: the extra "colors" swallow that prop and the stream
+    re-aligns on the next id. Symmetrically, the last three of 8 colors can
+    read as a valid prop at 5. The bytes alone cannot settle it, so:
+
+    - `colors_len_known=True` means the caller knows the session's width (the
+      reference server announces new-world mode with PLO_NEWWORLDMODE before
+      the first props packet: GServer-v2 Player.cpp:751-752, sent from
+      Player::sendLogin before PlayerClient.cpp:547's PLO_PLAYERPROPS). A
+      clean parse at that width is taken as-is, ambiguous or not. Only a
+      packet that does not parse at the known width at all may still fall
+      back ('known_width_contradicted'): 177 was FULLSTOP2 in the older enum,
+      and a wrong announcement should not turn into garbage props.
+    - Otherwise both widths are tried whenever COLORS is present. Exactly one
+      clean width is evidence about the server's (session-constant) mode and
+      is counted in `diagnostics` as 'colors_seen_5' or 'colors_seen_8'. The
+      probe counters 'width_fallbacks' and 'colors_confirmed' still count wins
+      against and for the preference. When BOTH are clean the packet is
+      ambiguous ('colors_ambiguous'); it goes to whichever absolute width the
+      session's unambiguous packets have favoured, and to `colors_len` on a tie.
+      Without a diagnostics dict there is no session memory and `colors_len`
+      wins every tie.
     """
-    candidates = [colors_len] + [c for c in (5, 8) if c != colors_len]
-    fallback = None
-    failed_attempts = 0
-    for cl in candidates:
-        props, clean = run_once(cl)
-        if clean:
-            if diagnostics is not None and failed_attempts:
-                diagnostics['warnings'] = diagnostics.get('warnings', 0) + 1
-                diagnostics['width_fallbacks'] = diagnostics.get('width_fallbacks', 0) + 1
-            return props
-        failed_attempts += 1
-        if fallback is None:
-            fallback = props
-    if diagnostics is not None:
-        diagnostics['errors'] = diagnostics.get('errors', 0) + 1
-    return fallback if fallback is not None else {}
+    def bump(key):
+        if diagnostics is not None:
+            diagnostics[key] = diagnostics.get(key, 0) + 1
+
+    other = COLORS_NEWWORLD if colors_len == COLORS_CLASSIC else COLORS_CLASSIC
+    props, clean = run_once(colors_len)
+    if clean and ('colors' not in props or colors_len_known):
+        return props            # no COLORS on the wire, or the width is known
+    alt_props, alt_clean = run_once(other)
+    if colors_len_known and alt_clean:
+        bump('known_width_contradicted')
+
+    if clean and not alt_clean:
+        bump(f'colors_seen_{colors_len}')
+        bump('colors_confirmed')
+        return props
+    if alt_clean and not clean:
+        bump(f'colors_seen_{other}')
+        bump('warnings')
+        bump('width_fallbacks')
+        return alt_props
+    if not clean:
+        bump('errors')
+        return props
+    bump('colors_ambiguous')
+    if diagnostics is not None and (diagnostics.get(f'colors_seen_{other}', 0)
+                                    > diagnostics.get(f'colors_seen_{colors_len}', 0)):
+        return alt_props
+    return props
 
 
 # =============================================================================
@@ -223,7 +263,8 @@ def _parse_with_colors_retry(run_once, colors_len: int,
 
 _PLAYER_STREAM = StreamPolicy(
     table=_CARRY_PLAYER_PROPS, max_prop_id=83, require_ascending=True,
-    ascending_exempt=frozenset({50}), check_alignment=True)
+    ascending_exempt=frozenset({50}), check_alignment=True,
+    require_full_consume=True)
 LEVEL_ITEM_NAMES = {
     0: 'greenrupee', 1: 'bluerupee', 2: 'redrupee', 3: 'bombs', 4: 'darts',
     5: 'heart', 6: 'glove1', 7: 'bow', 8: 'bomb', 9: 'shield', 10: 'sword',
@@ -279,7 +320,8 @@ _SELF_PROP_HANDLERS = {
 
 
 def parse_player_props(data: bytes, colors_len: int = COLORS_CLASSIC,
-                       diagnostics: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+                       diagnostics: Optional[Dict[str, int]] = None,
+                       colors_len_known: bool = False) -> Dict[str, Any]:
     """
     Parse PLO_PLAYERPROPS (packet 9) - returns dict of properties.
 
@@ -287,6 +329,8 @@ def parse_player_props(data: bytes, colors_len: int = COLORS_CLASSIC,
     extended) to try first. Wrong value misaligns everything after COLORS,
     so if this guess doesn't let the rest of the packet parse cleanly, the
     other known width is tried instead (see _parse_with_colors_retry).
+    colors_len_known: colors_len is the session's announced width; skip the
+    retry.
     """
     def _run(width):
         props, clean, _ = parse_prop_stream(
@@ -295,7 +339,8 @@ def parse_player_props(data: bytes, colors_len: int = COLORS_CLASSIC,
             _SELF_PROP_HANDLERS)
         return props, clean
 
-    return _parse_with_colors_retry(_run, colors_len, diagnostics)
+    return _parse_with_colors_retry(_run, colors_len, diagnostics,
+                                    colors_len_known)
 def _round_position(value: float, units_per_tile: int) -> int:
     """Quantize a tile coordinate to the wire's sub-tile unit the way the real
     client does: ROUND to nearest, not truncate.

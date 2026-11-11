@@ -38,7 +38,7 @@ SERVER = "Login"
 def _buggy_compare():
     """The pre-fix gs2_compare has no object-vs-non-object identity guard."""
     from reborn_protocol.gs2.values import (
-        GS2Object, _casecmp, _numcmp, to_num)
+        GS2Object, casecmp, _numcmp, to_num)
 
     def compare(a, b):
         if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
@@ -56,12 +56,12 @@ def _buggy_compare():
                 return -1 if id(a) < id(b) else 1
             obj, other = (a, b) if isinstance(a, GS2Object) else (b, a)
             if isinstance(other, str):
-                c = _casecmp(obj.name or "", other)
+                c = casecmp(obj.name or "", other)
                 return c if obj is a else -c
             # THE BUG: falls through, and to_num() is 0.0 for both an object
             # and null, so `findweapon(...) == null` is true when found.
         if isinstance(a, str) and isinstance(b, str):
-            return _casecmp(a, b)
+            return casecmp(a, b)
         return _numcmp(to_num(a), to_num(b))
 
     return compare

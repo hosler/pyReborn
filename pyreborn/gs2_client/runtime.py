@@ -1587,7 +1587,7 @@ class ClientGS2:
         previous = self._shot_attribution
         self._shot_attribution = "player" if by_player else "baddy"
         try:
-            return self.trigger_npc_event(npc_id, "wasshot", *args)
+            return self.trigger_npc_event(npc_id, "onWasShot", *args)
         finally:
             self._shot_attribution = previous
 

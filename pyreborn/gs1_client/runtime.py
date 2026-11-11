@@ -195,6 +195,9 @@ class ClientGS1:
         # on_flying(x, y, direction, power) -- an NPC's shootfireblast (power
         # 2) / shootnuke (3) launches a flying object at world (x, y)
         self.on_flying = None
+        # Who fired the shot an NPC's wasshot callback is answering: "player",
+        # "baddy" or None outside one.
+        self.shot_attribution = None
         # setletters: the sign bitmap-font sheet (TPlayer ctor default,
         # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:792,1552); read by
         # the `letters` property and by whatever draws sign text.
@@ -476,6 +479,25 @@ class ClientGS1:
             entry = self._progs.get(n)
             if entry and entry["prog"] is not None:
                 self._run(entry, event)
+
+    def trigger_npc_wasshot(self, npc_id, by_player: bool):
+        """Run an NPC's `wasshot` event with the shooter recorded for the
+        duration of the callback, so `shotbyplayer` / `shotbybaddy` read
+        true only inside it (TInitStatics.cpp:2685-2695)."""
+        previous = self.shot_attribution
+        self.shot_attribution = "player" if by_player else "baddy"
+        try:
+            self.trigger_npc_event(npc_id, "wasshot")
+        finally:
+            self.shot_attribution = previous
+
+    def npc_shape_type_at(self, npc_id, x, y) -> int:
+        """The NPC's own shape tile type at world (x, y), 0 without a shape."""
+        if npc_id not in self.shapes:
+            return 0
+        npc = getattr(self.client, "npcs", {}).get(
+            npc_id, self._shape_npcs.get(npc_id, {}))
+        return self._shape_type_at(npc_id, npc, x, y)
 
     def trigger_npc_event(self, npc_id, event):
         # An NPC event may run `toweapons`, which adds a weapon program.

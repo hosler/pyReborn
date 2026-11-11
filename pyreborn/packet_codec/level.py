@@ -280,6 +280,19 @@ def _set_npc_visflags(props, flags):
         props['draw_layer'] = None
 
 
+def _set_npc_hurt_dxdy(props, raw):
+    # NPCProp::HURTDXDY: two bytes, each the signed push plus MidPoint 32,
+    # written as gchars (another +32): GServer-v2 PropertySerializers.h:636-645
+    # (PropertyHurtDxDy<MidPoint = 32>). The reference client reads each raw
+    # byte as (byte - 0x40) * 0.0625 into the NPC's hurtdx/hurtdy
+    # (Preagonal/FourPlay/quattroplay/src/TServerNPC.cpp:1137-1144;
+    # DOUBLE_00402550 = 0.0625 at TInitStatics.cpp:1245). The C# client divides
+    # by 32 instead (its Levels/NPC.cs:648-650); the decompiled client is the
+    # oracle here. Nothing in this client reads hurt_dx/hurt_dy yet.
+    props['hurt_dx'] = (raw[0] - 0x40) * 0.0625
+    props['hurt_dy'] = (raw[1] - 0x40) * 0.0625
+
+
 def _set_npc_equipment(kind):
     def handler(props, value):
         power, image = value
@@ -303,6 +316,7 @@ _NPC_PROP_HANDLERS = {
     # same 'dontblock' key the local GS1 runtime's collision gate reads.
     14: lambda props, value: props.update(
         blockflags=int(value), dontblock=bool(int(value) & 1)),
+    16: _set_npc_hurt_dxdy,
     18: _set_sprite,
     19: _set('colors'),
     # A preset head id is meaningful to the renderer here (unlike the player
@@ -356,11 +370,13 @@ def _parse_npc_props_once(data: bytes, colors_len: int) -> tuple:
 
 
 def parse_npc_props(data: bytes, colors_len: int = 5,
-                    diagnostics: Optional[Dict[str, int]] = None) -> dict:
-    """Parse an NPC property stream, retrying the alternate color width."""
+                    diagnostics: Optional[Dict[str, int]] = None,
+                    colors_len_known: bool = False) -> dict:
+    """Parse an NPC property stream, retrying the alternate color width
+    unless `colors_len_known` (see _parse_with_colors_retry)."""
     return _parse_with_colors_retry(
         lambda width: _parse_npc_props_once(data, width),
-        colors_len, diagnostics)
+        colors_len, diagnostics, colors_len_known)
 
 
 def parse_chat(data: bytes) -> tuple:

@@ -285,6 +285,15 @@ class BuiltinsMixin:
             return True
         return UNSET
 
+    @_gs1_builtin(_GS1_BUILTINS, "shotbyplayer", "shotbybaddy")
+    def _gb_shot_attribution(self, name, indices, ctx):
+        # True only while a wasshot callback runs (TInitStatics.cpp:2685-2695);
+        # otherwise the name is an ordinary script flag.
+        attribution = self.rt.shot_attribution
+        if attribution is None:
+            return UNSET
+        return attribution == ("player" if name == "shotbyplayer" else "baddy")
+
     @_gs1_builtin(_GS1_BUILTINS, "weaponscount")
     def _gb_weaponscount(self, name, indices, ctx):
         return float(len(getattr(self.rt.client, "weapons", {}) or {}))
