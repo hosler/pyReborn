@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from reborn_protocol.coords import segment_at, world_to_local
+from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 
 from .packets import PacketID, build_level_warp, build_movement
 
@@ -67,12 +67,22 @@ class MovementMixin:
         # Check if we're crossing into a different GMAP level BEFORE sending packet
         crossing_boundary = False
         new_level_name = None
+        home_grid = None
         if self.is_gmap:
             # Calculate which grid cell the new position is in
             new_grid = segment_at(new_x, new_y)
 
-            # If we're changing grid cells, we need to notify the server
-            if new_grid != segment_at(self.player.x, self.player.y):
+            # If we're changing grid cells, we need to notify the server.
+            # Compare against the segment the server homes us in (our level),
+            # not the one our position falls in: a server-set local just past
+            # the edge (70.25) puts us beyond our own segment without moving
+            # us to the next one.
+            home_grid = next((cell for cell, name in self.gmap_grid.items()
+                              if name == self._current_level_name), None)
+            old_grid = home_grid
+            if old_grid is None:
+                old_grid = segment_at(self.player.x, self.player.y)
+            if new_grid != old_grid:
                 # Look up the new level name from the GMAP grid
                 new_level = self.gmap_grid.get(new_grid)
                 if new_level:
@@ -81,9 +91,19 @@ class MovementMixin:
 
         # Build and send movement packet
         # Attached axes are NPC-relative; other axes are level-local.
-        local_x, local_y = (stored_position(self, new_x, new_y)
-                            if sends_attachment(self)
-                            else world_to_local(new_x, new_y))
+        if sends_attachment(self):
+            local_x, local_y = stored_position(self, new_x, new_y)
+        elif home_grid is not None:
+            # Local to the segment the server still homes us in, unwrapped,
+            # like the reference client's getlocalx() (world - (mapX << 6)).
+            # The step that crosses a seam is sent as e.g. 64.0 or -0.5 on
+            # the old segment, and the PLI_LEVELWARP below re-homes us.
+            # Wrapping it to 0.0 on the OLD segment showed us a whole
+            # segment back to everyone else until that warp landed.
+            origin_x, origin_y = segment_origin(*home_grid)
+            local_x, local_y = new_x - origin_x, new_y - origin_y
+        else:
+            local_x, local_y = world_to_local(new_x, new_y)
         # v2.30+/v6 clients report position via the high-precision X2/Y2
         # props (78/79); classic servers only understand X/Y (15/16).
         data = build_movement(local_x, local_y, direction,

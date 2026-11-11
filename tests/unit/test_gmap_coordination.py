@@ -1,11 +1,11 @@
 """Regression tests for the 2026-07-18 gmap coordinate/attribution playtest
 findings (chicken.gmap, segment (1,1) = chicken1.nw):
 
-1. players_visible frame poisoning - PLO_OTHERPLPROPS classic X/Y (15/16,
-   always LEVEL-LOCAL) and high-precision X2/Y2 (78/79, WORLD pixels on a
-   gmap for some server paths) both write into the same props['x']/['y']
-   keys, so which prop arrived LAST silently flipped the frame stored per
-   player. Sword hits at a normal 1.5-tile gap missed forever while
+1. players_visible frame poisoning - PLO_OTHERPLPROPS classic X/Y (15/16)
+   and high-precision X2/Y2 (78/79) both write into the same props['x']/['y']
+   keys. Both are LEVEL-LOCAL; the world values once seen in X2/Y2 were this
+   client's own respond_to_hurt echoing world coordinates, and the frame
+   stored per player flipped with whichever prop arrived LAST. Sword hits at a normal 1.5-tile gap missed forever while
    poisoned (fixed hits reproduced as hit->miss->miss).
 3. gmap board flip-flop - a GMAP adjacent-segment preload (streamed via
    PLO_LEVELNAME + PLO_BOARDPACKET for a neighbour, no PLO_PLAYERWARP2)
@@ -113,8 +113,14 @@ def _board(fill_tile: int) -> bytes:
 # =============================================================================
 
 class TestOtherPlPropsFrameNormalization:
-    """Classic X/Y (local) and X2/Y2 (world on a gmap) must not silently
-    flip the frame players[pid]['x'/'y'] is stored in."""
+    """Classic X/Y and X2/Y2 are BOTH level-local (the reference stores and
+    relays X2/Y2 as localPixelX/Y, GServer-v2 beta4 PlayerProps.cpp), so
+    whichever arrived last must not flip the frame players[pid]['x'/'y'] is
+    stored in. World positions come from the player's own GMAPLEVELX/Y.
+
+    The 2026-07-18 premise that X2/Y2 can carry WORLD values came from this
+    client's own respond_to_hurt sending world coordinates through X2/Y2
+    (fixed in that same commit, 2501c88); no server writes world into them."""
 
     def test_local_update_leaves_no_world_coords(self):
         c = _fake_connected_client()
@@ -125,44 +131,46 @@ class TestOtherPlPropsFrameNormalization:
         assert c.players[5].get('world_x') is None
         assert c.players[5].get('world_y') is None
 
-    def test_world_update_wraps_to_local_and_keeps_world(self):
+    def test_x2_update_is_local_and_world_comes_from_segment(self):
         c = _fake_connected_client()
-        # World (97.25, 97.25) = grid (1,1) local (33.25, 33.25).
-        data = _other_player_props(5, _pixel_pos(78, 97.25), _pixel_pos(79, 97.25))
+        # Grid (1,1) local (33.25, 33.25) = world (97.25, 97.25).
+        data = _other_player_props(5, _gmap_level_prop(43, 1), _gmap_level_prop(44, 1),
+                                   _pixel_pos(78, 33.25), _pixel_pos(79, 33.25))
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, data)
         assert c.players[5]['x'] == 33.25
         assert c.players[5]['y'] == 33.25
         assert c.players[5]['world_x'] == 97.25
         assert c.players[5]['world_y'] == 97.25
 
-    def test_local_then_world_does_not_poison_local_frame(self):
-        """The live repro: classic X/Y arrives first (e.g. plain movement
-        relay), then X2/Y2 with a world value (e.g. a hurt response
-        round-tripped through the server) - 'x'/'y' must stay canonically
-        local across both."""
+    def test_local_then_x2_does_not_poison_local_frame(self):
+        """Classic X/Y arrives first (plain movement relay), then X2/Y2 (a
+        hurt response round-tripped through the server): 'x'/'y' stay local
+        across both and the world position follows the segment."""
         c = _fake_connected_client()
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
-            5, _classic_pos(15, 33.5), _classic_pos(16, 33.5)))
+            5, _gmap_level_prop(43, 1), _gmap_level_prop(44, 1),
+            _classic_pos(15, 33.5), _classic_pos(16, 33.5)))
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
-            5, _pixel_pos(78, 97.25), _pixel_pos(79, 97.25)))
+            5, _pixel_pos(78, 33.25), _pixel_pos(79, 33.25)))
         assert c.players[5]['x'] == 33.25
         assert c.players[5]['y'] == 33.25
         assert c.players[5]['world_x'] == 97.25
 
-    def test_world_then_local_invalidates_stale_world_coords(self):
-        """A later LOCAL-only update (the player moved) must drop the
-        previous world_x/world_y rather than let it silently survive next
-        to a now-different local position."""
+    def test_later_local_update_recomputes_world_not_stale(self):
+        """A later LOCAL-only update (the player moved) must move
+        world_x/world_y with it rather than let the old one survive next to
+        a now-different local position."""
         c = _fake_connected_client()
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
-            5, _pixel_pos(78, 97.25), _pixel_pos(79, 97.25)))
+            5, _gmap_level_prop(43, 1), _gmap_level_prop(44, 1),
+            _pixel_pos(78, 33.25), _pixel_pos(79, 33.25)))
         assert c.players[5]['world_x'] == 97.25
 
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
             5, _classic_pos(15, 40.0), _classic_pos(16, 40.0)))
         assert c.players[5]['x'] == 40.0
-        assert 'world_x' not in c.players[5]
-        assert 'world_y' not in c.players[5]
+        assert c.players[5]['world_x'] == 104.0
+        assert c.players[5]['world_y'] == 104.0
 
 
 class TestSwordHitAfterNormalization:
@@ -179,9 +187,11 @@ class TestSwordHitAfterNormalization:
 
     def test_hits_with_world_coords_from_x2y2(self):
         c = self._attacker()
-        # Victim at world (71.5, 70.0): 1.5 tiles to the right.
+        # Victim at world (71.5, 70.0): 1.5 tiles to the right; on the wire
+        # that is grid (1,1) local (7.5, 6.0).
         c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
-            9, _pixel_pos(78, 71.5), _pixel_pos(79, 70.0)))
+            9, _gmap_level_prop(43, 1), _gmap_level_prop(44, 1),
+            _pixel_pos(78, 7.5), _pixel_pos(79, 6.0)))
         assert c.sword_attack(direction=3) is True
         assert (int(PacketID.PLI_HURTPLAYER) in [pid for pid, _ in c._protocol.sent])
 
@@ -195,7 +205,7 @@ class TestSwordHitAfterNormalization:
 
     def test_repeated_hit_miss_miss_cycle_now_hits_every_swing(self):
         """Simulates 3 consecutive swings, each preceded by the victim's
-        hurt-response round-trip (X2/Y2 world) then a plain movement relay
+        hurt-response round-trip (X2/Y2, local) then a plain movement relay
         (classic X/Y local) - the exact interleave that used to flip the
         stored frame and make every other swing miss."""
         c = self._attacker()
@@ -206,9 +216,10 @@ class TestSwordHitAfterNormalization:
             # swings, TPlayer.cpp:5444 skips victims still in action mode 3).
             c._sword_hit_until = {}
             c._sword_state = None
-            # Hurt-response relay: world coords via X2/Y2.
+            # Hurt-response relay: local coords via X2/Y2 plus the segment.
             c._handle_packet(PacketID.PLO_OTHERPLPROPS, _other_player_props(
-                9, _pixel_pos(78, 71.5), _pixel_pos(79, 70.0)))
+                9, _gmap_level_prop(43, 1), _gmap_level_prop(44, 1),
+                _pixel_pos(78, 7.5), _pixel_pos(79, 6.0)))
             assert c.sword_attack(direction=3) is True
             hits = [pid for pid, _ in c._protocol.sent if pid == int(PacketID.PLI_HURTPLAYER)]
             assert hits, f"swing {i} missed"

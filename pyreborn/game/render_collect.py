@@ -325,8 +325,12 @@ class EntityCollectMixin:
                 vx, vy = self._attached_visual(pdata, npc, frame)
                 self.other_player_visual[pid] = (vx, vy)
             else:
-                world_x, world_y = self._world_pos_for_level(
-                    ox, oy, pdata.get('level', ''), frame)
+                # world_x/world_y: local + that player's own segment, set
+                # by the PLO_OTHERPLPROPS handler once the segment is known.
+                world_x, world_y = pdata.get('world_x'), pdata.get('world_y')
+                if world_x is None or world_y is None:
+                    world_x, world_y = self._world_pos_for_level(
+                        ox, oy, pdata.get('level', ''), frame)
                 vx, vy = self._interpolate_other_player(pid, world_x, world_y, frame)
             z = attachment_z(self.client, pdata)
             # TGaniObject.cpp:2270: all attached gani parts use the raised base.

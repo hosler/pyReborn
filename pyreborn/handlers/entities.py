@@ -4,7 +4,8 @@ These packets contain local player properties, other-player rosters, NPCs,
 baddies, and ground items.
 """
 
-from reborn_protocol.coords import LEVEL_SIZE, local_coord, segment_at, segment_origin
+from reborn_protocol.coords import (LEVEL_SIZE, local_to_world,
+                                    segment_at, segment_origin)
 
 from ..packets import (
     PacketID,
@@ -163,18 +164,15 @@ def handle_player_props(client, data):
             grid = next((cell for cell, name in client.gmap_grid.items()
                          if name == client._current_level_name), None)
         if grid:
-            # Rebuild world coords: world = local + segment origin. Localizing
-            # first makes this correct whether the server sent local or world.
+            # world = local + segment origin (the reference client's
+            # local + (mapX << 6)). The wire value is level-local even
+            # outside 0-63: a local just past the edge (70.25, -1.5) is
+            # legitimate, so it is not wrapped.
             seg_ox, seg_oy = segment_origin(*grid)
             if 'x' in props:
-                props['x'] = local_coord(props['x']) + seg_ox
+                props['x'] = props['x'] + seg_ox
             if 'y' in props:
-                props['y'] = local_coord(props['y']) + seg_oy
-        else:
-            if 'x' in props:
-                props['x'] = local_coord(props['x'])
-            if 'y' in props:
-                props['y'] = local_coord(props['y'])
+                props['y'] = props['y'] + seg_oy
 
     client.player.update_from_props(props)
     if client.player.hearts > 0:
@@ -531,62 +529,69 @@ def handle_other_player_props(client, data):
         chat = props.get('chat')
         if chat and client.on_chat:
             client.on_chat(player_id, chat)
-        # Normalize the X/Y coordinate FRAME before merging. Classic
-        # props 15/16 (X/Y) are always LEVEL-LOCAL (0-63), while
-        # high-precision props 78/79 (X2/Y2) legitimately carry WORLD
-        # pixels on a gmap - but parse_other_player writes both into
-        # the same 'x'/'y' keys, and different server paths favor
-        # different props for the SAME player (e.g. pygserver relays
-        # plain movement via classic X/Y-derived local coords but
-        # respond_to_hurt's PLI_PLAYERPROPS round-trips the client's
-        # own WORLD x/y through X2/Y2 verbatim). Without normalizing,
-        # players[pid]['x'/'y'] silently flips frame depending on
-        # which prop arrived LAST: seen live as another player's y
-        # reported as 97.25 instead of 33.25 (a whole segment high),
-        # which made every sword-hit test against them miss forever
-        # until they moved or warped. Store LEVEL-LOCAL canonically
-        # in 'x'/'y' (wrap any world value via %64) and ALSO stash
-        # 'world_x'/'world_y' whenever the wire value told us the
-        # true world position (>=64, only possible from X2/Y2) so
-        # consumers that need world coords (cross-segment hit tests)
-        # can prefer that over re-deriving it from our own segment.
-        # A fresh LOCAL-only update invalidates any previously known
-        # world_x/world_y - we no longer know it's still correct -
-        # rather than let a stale world coordinate silently survive
-        # a merge alongside a now-different local one.
+        # X/Y (15/16) and X2/Y2 (78/79) are both LEVEL-LOCAL: the reference
+        # server stores the received pixel value unchanged and relays it
+        # verbatim (GServer-v2 beta4 PlayerProps.cpp X2/Y2 setters store
+        # localPixelX/Y), and the player's gmap segment travels separately
+        # in GMAPLEVELX/Y (43/44). A local just past a segment edge (70.25,
+        # -1.5) is legitimate, so the frame comes from the prop, never from
+        # the value's magnitude. 'x'/'y' keep the wire value unwrapped;
+        # 'world_x'/'world_y' are derived only once that player's own
+        # segment is known (see _resolve_player_world).
         existing = client.players.setdefault(player_id, {})
         attached = apply_attachment_props(client, existing, props)
-        if not attached:
-            if 'x' in props:
-                raw_x = props['x']
-                if raw_x >= LEVEL_SIZE or raw_x < 0:
-                    props['world_x'] = raw_x
-                    props['x'] = local_coord(raw_x)
-                else:
-                    props['world_x'] = None
-            if 'y' in props:
-                raw_y = props['y']
-                if raw_y >= LEVEL_SIZE or raw_y < 0:
-                    props['world_y'] = raw_y
-                    props['y'] = local_coord(raw_y)
-                else:
-                    props['world_y'] = None
-        if player_id in client.players:
-            # Merge props (None marks a value to DROP, not store -
-            # see the world_x/world_y invalidation above).
-            existing = client.players[player_id]
-            for key, value in props.items():
-                if value is None:
-                    existing.pop(key, None)
-                else:
-                    existing[key] = value
-        else:
-            client.players[player_id] = {k: v for k, v in props.items()
-                                        if v is not None}
+        for key, value in props.items():
+            if value is None:
+                existing.pop(key, None)     # None marks a value to drop
+            else:
+                existing[key] = value
+        if not attached and _FRAME_KEYS.intersection(props):
+            _resolve_player_world(client, existing)
         if 'ani' in props:
             host = getattr(client, 'gs2_host', None)
             if host is not None:
                 host.note_gani(("player", player_id), props['ani'], force=True)
+
+
+#: Props that move another player's world position: its local position, or
+#: the segment that local position is measured from.
+_FRAME_KEYS = frozenset(('x', 'y', 'gmaplevelx', 'gmaplevely', 'level'))
+
+
+def _player_segment(client, record):
+    """The gmap segment another player's local position is measured from.
+
+    Its own GMAPLEVELX/Y props first (the reference's mapX/mapY), else the
+    segment its level name names. Reference servers and pygserver report the
+    .gmap file as the level, which names no segment, so the grid props are
+    the normal source. None when neither is known yet.
+    """
+    gx, gy = record.get('gmaplevelx'), record.get('gmaplevely')
+    if gx is not None and gy is not None:
+        return gx, gy
+    level = record.get('level')
+    if level:
+        return next((cell for cell, name in client.gmap_grid.items()
+                     if name == level), None)
+    return None
+
+
+def _resolve_player_world(client, record):
+    """Set or clear `record`'s world_x/world_y from its local x/y.
+
+    world = local + that player's own segment origin, the reference client's
+    local + (mapX << 6). The props can arrive in any order across packets
+    (X2/Y2 before or without the grid props), so an unknown segment clears
+    the world position instead of guessing one; consumers then fall back to
+    their own segment, which is right for a same-segment player.
+    """
+    segment = _player_segment(client, record)
+    if segment is None or 'x' not in record or 'y' not in record:
+        record.pop('world_x', None)
+        record.pop('world_y', None)
+        return
+    record['world_x'], record['world_y'] = local_to_world(
+        record['x'], record['y'], *segment)
 
 
 def _canonical_level_name(client, name):

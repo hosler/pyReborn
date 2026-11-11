@@ -519,22 +519,13 @@ class CombatMixin:
         if not dir_vec:
             return
         fx, fy = dir_vec
-        # self.players['x'/'y'] are now always LEVEL-LOCAL (0-63) - the
-        # PLO_OTHERPLPROPS handler normalizes both classic X/Y and
-        # high-precision X2/Y2 into that one frame at merge time - while
-        # self.player.x/y are WORLD coords on a GMAP, so folding in an
-        # offset is still required to compare them. 'world_x'/'world_y' are
-        # set on that same merge whenever the wire told us the true world
-        # position (a value >= 64, only possible via X2/Y2); prefer those
-        # when known instead of assuming the attacker's own segment. When
-        # they're not known (pygserver never sends per-player GMAPLEVELX/Y
-        # (43/44) for OTHERPLPROPS, so a player on a DIFFERENT segment from
-        # ours has no way to report its true segment), fall back to folding
-        # in the ATTACKER's own segment offset - correct for same-segment
-        # targets, but a target one segment over (e.g. attacker on
-        # chicken1 at world (64, 95.5), target on chicken2 at local
-        # (63.5, 94), a 1.6-tile world gap) still won't connect. Documented
-        # limitation, not fixable client-side without server support.
+        # self.players['x'/'y'] are LEVEL-LOCAL (classic X/Y and X2/Y2 alike,
+        # possibly just outside 0-63 near a seam) while self.player.x/y are
+        # WORLD coords on a GMAP. 'world_x'/'world_y' are set by the
+        # PLO_OTHERPLPROPS handler from that player's own segment
+        # (GMAPLEVELX/Y); prefer them. When that segment is not known yet,
+        # fold in the ATTACKER's own segment offset, which is right for a
+        # same-segment target.
         seg_ox, seg_oy = segment_origin(
             *segment_at(self.player.x, self.player.y))
         # Half a heart per sword power level, matching the classic client.
