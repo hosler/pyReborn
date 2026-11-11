@@ -5,7 +5,11 @@ giveaway rules are unit-testable. Citations are in the read-only oracle
 Preagonal/FourPlay/quattroplay/src/:
 
 * TServerLevel.cpp  putExtra (1341) / animateExtras (1400): lifetime and
-  walk-over collection
+  walk-over collection. A level item reaching the client (scriptfun_client_
+  addextra, TClient.cpp:3685) gets a FRESH 164-tick timer on receipt, whether
+  it was dropped just now or already lay there when the level was entered;
+  the client itself deletes it when the timer runs out (1469), because the
+  server's own expiry sends nothing (GServer-v2 Level.cpp:711-716)
 * TServerExtra.cpp  draw (33): bob and blink
 * TPlayer.cpp       itemAvailable (6690), loseItem (6898), nextGiveItem
                     (6612), addNPCWeapon (1231), key chords (2272-2297)
@@ -132,6 +136,26 @@ def walkover_takes(player_x: float, player_y: float,
     return out
 
 
+def walkover_absorbs(player_x: float, player_y: float,
+                     items: Dict[Tuple[float, float], str],
+                     ages: Dict[Tuple[float, float], float]):
+    """Item keys a walk-over removes locally WITHOUT telling the server.
+
+    animateExtras deletes every extra the player touches, but only the
+    itemsgiveaway kinds go out as PLI_ITEMTAKE (TServerLevel.cpp:1453-1457;
+    TClient::sendTakeExtra returns early for the rest, TClient.cpp:988-990).
+    """
+    out = []
+    for key, item_type in items.items():
+        idx = item_index(item_type)
+        if idx is None or idx in ITEMS_GIVEAWAY:
+            continue
+        if pickup_ready(ages.get(key, 0.0)) and within_pickup_range(
+                player_x, player_y, key[0], key[1]):
+            out.append(key)
+    return out
+
+
 # --- S+A giveaway (actionMode 9) --------------------------------------------
 # Only the plain stat items are modelled; the glove/shield/sword downgrade
 # cases depend on the custom-image bookkeeping of the original and are left
@@ -209,6 +233,37 @@ def drop_position(local_x: float, local_y: float, direction: int
     return math.floor(x * 2) / 2.0, math.floor(y * 2) / 2.0
 
 
+def expire_items(client, now: float):
+    """Prune expired items from `client.items`; return [(level, x, y, type)].
+
+    The clock per item starts when it reached the client (`client.item_stamps`,
+    set by PLO_ITEMADD; an item with no stamp starts at `now`). Fires the
+    client's `on_item(x, y, type, False)` for each one removed. Stamps of items
+    that are gone are forgotten here too.
+    """
+    stamps = client.item_stamps
+    live = set()
+    expired = []
+    for level_name, bucket in list(client.items.items()):
+        if not isinstance(bucket, dict):
+            continue
+        for key, item_type in list(bucket.items()):
+            stamp = stamps.setdefault((level_name, key), now)
+            if item_expired(now - stamp):
+                del bucket[key]
+                stamps.pop((level_name, key), None)
+                expired.append((level_name, key[0], key[1], item_type))
+            else:
+                live.add((level_name, key))
+    for stale in [k for k in stamps if k not in live]:
+        del stamps[stale]
+    callback = getattr(client, 'on_item', None)
+    if callback:
+        for _level, x, y, item_type in expired:
+            callback(x, y, item_type, False)
+    return expired
+
+
 # --- per-client bookkeeping -------------------------------------------------
 
 def item_ages(owner, level_name: str, items: Dict[Tuple[float, float], str],
@@ -220,6 +275,9 @@ def item_ages(owner, level_name: str, items: Dict[Tuple[float, float], str],
     take-sent set is pruned the same way, which is what lets a re-dropped item
     at the same spot be taken again.
     """
+    # The client's own stamps (set when the item arrived) win: the library
+    # prunes by them, so the drawn age and the removal moment agree.
+    stamps = getattr(getattr(owner, 'client', None), 'item_stamps', None)
     seen = owner.__dict__.setdefault('_item_first_seen', {})
     sent = owner.__dict__.setdefault('_item_take_sent', set())
     live = {(level_name, key) for key in items}
@@ -228,5 +286,7 @@ def item_ages(owner, level_name: str, items: Dict[Tuple[float, float], str],
     sent.difference_update([k for k in sent if k[0] == level_name and k not in live])
     ages = {}
     for key in items:
-        ages[key] = now - seen.setdefault((level_name, key), now)
+        stamp = stamps.get((level_name, key)) if isinstance(stamps, dict) else None
+        ages[key] = now - (stamp if stamp is not None
+                           else seen.setdefault((level_name, key), now))
     return ages

@@ -7,9 +7,11 @@ PLO_LARGEFILEEND.
 
 import logging
 
+from .. import update_packages
 from ..asset_paths import normalize_asset_name
 from ..packets import (
     PacketID,
+    gupd_name_reserved,
     parse_file,
     parse_file_uptodate,
     parse_filesendfailed,
@@ -30,6 +32,9 @@ _MAX_FILE_ATTEMPTS = 3
 # can create; evicting the oldest lets current traffic recover instead of
 # making every later LARGEFILESTART fail behind abandoned transactions.
 MAX_CONCURRENT_LARGE_FILE_TRANSFERS = 16
+
+# Longest file name accepted in a server update notice (PLO 187).
+_MAX_NOTICE_NAME = 255
 
 
 def _gmap_segments(text: str):
@@ -107,6 +112,7 @@ def handle_file(client, data):
         filename = file_info['filename']
         file_data = file_info['data']
         mod_time = file_info['mod_time']
+        update_packages.file_chunk(client, filename, len(file_data))
 
         # Files over 32000 bytes arrive as repeated PLO_FILE chunks
         # bracketed by PLO_LARGEFILESTART/...END (each chunk resends
@@ -144,6 +150,8 @@ def handle_file(client, data):
             # A downloaded .gmap file is the world grid - parse it.
             if filename.endswith('.gmap'):
                 adopt_gmap(client, filename, file_data)
+            if filename.lower().endswith('.gupd'):
+                update_packages.gupd_arrived(client, filename, file_data)
             if client.on_file:
                 client.on_file(filename, file_data)
 
@@ -171,6 +179,8 @@ def handle_file_send_failed(client, data):
                 filename, attempts, _MAX_FILE_ATTEMPTS)
         if client.on_file_send_failed:
             client.on_file_send_failed(filename)
+        if filename.lower().endswith('.gupd'):
+            update_packages.gupd_failed(client, filename)
 
 
 @handles(PacketID.PLO_LARGEFILESTART)
@@ -237,6 +247,8 @@ def handle_large_file_end(client, data):
     client._file_attempts.pop(filename, None)
     if filename.endswith('.gmap'):
         adopt_gmap(client, filename, file_data)
+    if filename.lower().endswith('.gupd'):
+        update_packages.gupd_arrived(client, filename, file_data)
     if client.on_file:
         client.on_file(filename, file_data)
 
@@ -261,9 +273,30 @@ def handle_file_uptodate(client, data):
             client.on_file_uptodate(filename)
 
 
+@handles(PacketID.PLO_UPDATEPACKAGESIZE)
+def handle_update_package_size(client, data):
+    # {GCHAR nameLen}{name}{GINT5 bytesNeeded}: a package we asked for starts.
+    update_packages.handle_package_size(client, data)
+
+
+@handles(PacketID.PLO_UPDATEPACKAGEDONE)
+def handle_update_package_done(client, data):
+    # {name}: every file of the package has been sent.
+    update_packages.handle_package_done(client, data)
+
+
 @handles(PacketID.PLO_UPDATEPACKAGEISUPDATED)
 def handle_update_package_is_updated(client, data):
-    """Invalidate a file named by a server-side update notification."""
+    """A file changed on the server (GServer-v2 beta4 Server.Init.cpp:483, sent
+    only to clients that already fetched it). Drop our copy and, like the
+    reference client (FourPlay TClient.cpp:2407-2436), fetch it again only if
+    this session had asked for it."""
+    if len(data) > _MAX_NOTICE_NAME:
+        return
     filename = data.decode('latin-1', errors='replace')
-    if filename:
+    if not filename or gupd_name_reserved(normalize_asset_name(filename)):
+        return   # e.g. the cache's own index.json: never ours to drop
+    if client._is_cache_entry(filename):
         client._invalidate_cached_file(filename)
+    if update_packages.was_requested(client, filename):
+        client.request_file(filename)

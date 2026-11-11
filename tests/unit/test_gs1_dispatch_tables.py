@@ -31,7 +31,7 @@ from pyreborn.game.setup import SetupMixin
 from pyreborn.packets import PacketBuilder, PacketID
 from reborn_protocol.gs1.runtime import UNSET
 from pyreborn.gs1_client import (
-    NPC_ATTR, PLAYER_ATTR, ClientGS1, _GS1_BUILTINS, _GS1_LAYER_COMMANDS,
+    NPC_ATTR, PLAYER_ATTR, ClientGS1, _GS1_BUILTINS, _GS1_LAYER_COMMANDS, _NOOP,
     _GS1_MAIN_COMMANDS, _GS1_NPC_BUILTINS, _GS1_NPC_COMMANDS,
     _GS1_NPC_TAIL_COMMANDS, _GS1_PLAYER_BUILTINS, _GS1_PRE_COMMANDS,
 )
@@ -219,10 +219,14 @@ def test_noop_commands_are_swallowed(rt):
     # `callweapon` used to be in this set, which is what silently discarded
     # classic Bomber's tailor event; it is a real command now (see
     # test_gs1_tailor_callweapon.py).
+    # `serverwarp` left this set on 2026-11-11: it is a real request to the
+    # server list (TServerList.cpp:115-119, :180), now handled in the main
+    # command stage (tests/unit/test_gs2_gaps_1111.py covers it).
     npc = {}
-    for name in ("serverwarp", "sleep", "setcursor"):
+    for name in ("sleep", "setcursor"):
         assert rt._host._dispatch(name, ["x"], _npc_ctx(npc)) is None
     assert npc == {}
+    assert "serverwarp" not in _NOOP
 
 
 def test_hide_show_move_are_the_last_stage(rt):

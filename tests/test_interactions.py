@@ -18,6 +18,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT
 
 # Standalone script against a hand-started server on a hardcoded host:port
@@ -214,7 +215,7 @@ class InteractionTests:
         """Test that screenshot capture works."""
         self.game.screen.fill((34, 139, 34))
         self.game._render_world()
-        img = take_screenshot(self.game.screen, "/tmp/test_interaction_screenshot.png")
+        img = take_screenshot(self.game.screen, scratch_path("test_interaction_screenshot.png"))
         return img is not None and img.size == (SCREEN_WIDTH, SCREEN_HEIGHT)
 
 

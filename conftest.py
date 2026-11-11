@@ -36,6 +36,13 @@ RUN_SERVER = PYGSERVER_DIR / "run_server.py"
 # rather than the shared funtimes/ world so the fixture is self-contained.
 FIXTURE_LEVELS = ["onlinestartlocal.nw", "qa_testlevel.nw", "qa_tier3.nw"]
 
+@pytest.fixture(autouse=True)
+def _private_qa_state(tmp_path, monkeypatch):
+    """Fixture ownership markers and backups live in the QA state directory;
+    keep every test out of the user's real one."""
+    monkeypatch.setenv("PYREBORN_QA_SERVERS_DIR", str(tmp_path / "qa-state"))
+
+
 # Keep the public fixture handle name and its connection/log attributes.
 PygserverHandle = LocalWorld
 

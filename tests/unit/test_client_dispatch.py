@@ -42,7 +42,7 @@ HANDLED_IDS_BEFORE_REGISTRY = [
     "PLO_THROWCARRIED", "PLO_PUSHAWAY", "PLO_NPCMOVED", "PLO_MOVE2",
     "PLO_MOVE", "PLO_FREEZEPLAYER2", "PLO_UNFREEZEPLAYER", "PLO_SAY2",
     "PLO_HIDENPCS", "PLO_SERVERWARP", "PLO_TRIGGERACTION",
-    "PLO_DISABLECLASSICMODE", "PLO_FULLSTOP2", "PLO_PROFILE",
+    "PLO_KINGDOMSMODE", "PLO_NEWWORLDMODE", "PLO_PROFILE",
     "PLO_NPCSERVERADDR", "PLO_SETNETCOOKIE", "PLO_NPCBYTECODE",
     "PLO_GANISCRIPT", "PLO_WEAPONBYTECODE2", "PLO_LOADGANI",
     "PLO_LOADSCRIPT", "PLO_NPCWEAPONDEL", "PLO_LEVELMODTIME",
@@ -65,7 +65,7 @@ FLAT_ATTRIBUTES_USED_OUTSIDE_CLIENT = [
     "_adjacent_level_requests", "active_level", "links", "chests", "chest_items",
     "signs", "board_layers", "is_leader",
     # gmap
-    "gmap_grid", "gmap_width", "gmap_height", "gmap_name", "bigmap_info",
+    "gmap_grid", "gmap_width", "gmap_height", "gmap_name", "bigmap_info", "minimap_info",
     "_gmap_offset_x", "_gmap_offset_y",
     # warp / transition
     "_awaiting_warp_confirm", "_warp_fallback", "_local_level_transition",
@@ -110,6 +110,9 @@ HANDLED_IDS_ADDED_SINCE_REGISTRY = [
     # on disk. Handled now so the on-disk asset cache drops its stale copy and
     # re-fetches; before, mid-session content updates were never picked up.
     187,
+    # PLO_UPDATEPACKAGESIZE / PLO_UPDATEPACKAGEDONE (105, 106): update-package
+    # progress (update_packages.py).
+    105, 106,
 ]
 
 

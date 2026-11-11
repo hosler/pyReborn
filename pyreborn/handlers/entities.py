@@ -22,9 +22,10 @@ from ..packets import (
     parse_rc_add_player,
     parse_rc_del_player,
 )
-from reborn_protocol.props import COLORS_CLASSIC, COLORS_NEWWORLD
+from reborn_protocol import PLPROP, PLSTATUS
 
 from .registry import STOP, handles
+from ..colors_width import colors_width_policy
 from ..attachments import (apply_attachment_props, update_attachments,
                            delete_npc_attachments)
 
@@ -39,28 +40,6 @@ PLO_NPCDEL = 29
 #: here).
 _ROSTER_CHANGE_KEYS = frozenset(
     ('nickname', 'account', 'playerlist_flags', 'communityname'))
-
-
-def colors_width_policy(client):
-    """-> (colors_len, colors_len_known) for this session's COLORS props.
-
-    The width is the server's mode, not our version (GServer-v2
-    PropertySerializers.h:793-796). Only an explicit announcement is
-    "known": PLO_NEWWORLDMODE (177), which the reference sends before the
-    first props packet (Player.cpp:751-752, ahead of PlayerClient.cpp:547).
-    Its absence proves nothing - pygserver writes 8-byte COLORS and never
-    sends 177 - so everything else stays on the parser's evidence path.
-    PLO_KINGDOMSMODE (176, Player.cpp:749-750) implies 5 on the reference
-    (kingdoms is not new-world), but 176 was FULLSTOP in the older enum, so it
-    only moves the tie-break preference and never disables self-correction;
-    the parser's evidence stays attached to absolute widths across mode changes.
-    """
-    mode = getattr(client, 'server_mode', '')
-    if mode == 'newworld':
-        return COLORS_NEWWORLD, True
-    if mode == 'kingdoms':
-        return COLORS_CLASSIC, False
-    return client._colors_len, False
 
 
 def _parse_colors_stream(parser, client, data):
@@ -220,6 +199,15 @@ def handle_player_props(client, data):
                     if client.request_weapon_bytecode(wname):
                         client._gs2_requested.add(req_key)
 
+    # The reference server keeps a player's status across sessions, so a
+    # disconnect in the middle of hideplayer() can come back as a permanent
+    # hide. Only a pending local hide may carry the bit: clear it and tell
+    # the server once.
+    if ('status' in props and not client.hide_player_until
+            and int(client.player.status) & PLSTATUS.HIDDEN):
+        client.player.status = int(client.player.status) & ~PLSTATUS.HIDDEN
+        client._send_appearance_prop(PLPROP.STATUS, client.player.status)
+
 
 @handles(PacketID.PLO_ITEMADD)
 def handle_item_add(client, data):
@@ -233,6 +221,9 @@ def handle_item_add(client, data):
         # preloads are routed separately and cannot poison this attribution.
         level_name = client._pending_level_name or client._current_level_name
         client.items.setdefault(level_name, {})[(x, y)] = item_type
+        # The reference starts a fresh lifetime on receipt (putExtra 0xa4,
+        # TClient.cpp:3685), including for items already lying there on entry.
+        client.item_stamps[(level_name, (x, y))] = client.item_clock()
         if client.on_item:
             client.on_item(x, y, item_type, True)
 
@@ -247,9 +238,10 @@ def handle_item_del(client, data):
         # Use the same transfer owner as additions so matching local positions
         # in different levels remain independent.
         level_name = client._pending_level_name or client._current_level_name
-        item_type = client.items.setdefault(level_name, {}).pop((x, y), '')
-        if client.on_item:
-            client.on_item(x, y, item_type, False)
+        # The reference server relays a take to the OTHER players only; the
+        # taker already removed its copy when it sent PLI_ITEMTAKE, and an
+        # item that expired locally is gone too, so an unknown spot is a no-op.
+        client.remove_item_local(level_name, x, y)
 
 
 @handles(PacketID.PLO_ADDPLAYER)
@@ -378,10 +370,14 @@ def handle_npc_props(client, data):
             client._mark_npc_pos_snap(props)
             client.npcs[npc_id] = props
         update_attachments(client)
-        if 'gani' in props:
-            host = getattr(client, 'gs2_host', None)
-            if host is not None:
-                host.note_gani(("npc", npc_id), props['gani'], force=True)
+        host = getattr(client, 'gs2_host', None)
+        if 'gani' in props and host is not None:
+            host.note_gani(("npc", npc_id), props['gani'], force=True)
+        if 'classes' in props and host is not None:
+            # Modern servers send SCRIPT empty and list the joined classes
+            # here; the client pulls each one (PLI_UPDATECLASS). A present but
+            # empty list replaces the old one; an absent prop changes nothing.
+            host.npc_classes(npc_id, props['classes'])
 
 
 @handles(PacketID.PLO_SHOWIMGNPC)
@@ -441,6 +437,14 @@ def apply_showimgs(owner, info, client=None):
                 rec[axis] = value * 4 if gui else value + offset
 
 
+def _drop_npc_bytecode(client, npc_id):
+    """A deleted NPC's stored GS2 blob must not outlive it: the GS2 host
+    replays every stored blob when it is installed, so a host installed after
+    the delete, or a reused id that now carries a text script, would
+    resurrect the old bytecode. Class, weapon and gani blobs are untouched."""
+    client.gs2_bytecode['npc'].pop(npc_id, None)
+
+
 @handles(PLO_NPCDEL)
 def handle_npc_del(client, data):
     # NPC deleted
@@ -449,6 +453,7 @@ def handle_npc_del(client, data):
         reader = PacketReader(data)
         npc_id = reader.read_gint3()
         delete_npc_attachments(client, npc_id)
+        _drop_npc_bytecode(client, npc_id)
         npc = client.npcs.pop(npc_id, None)
         if npc is not None:
             level = npc.get('_level')
@@ -470,6 +475,7 @@ def handle_npc_del2(client, data):
     npc_id = info['npc_id']
     level = info['level']
     delete_npc_attachments(client, npc_id)
+    _drop_npc_bytecode(client, npc_id)
     if npc_id in client.npcs:
         del client.npcs[npc_id]
         if client.on_npc_del:

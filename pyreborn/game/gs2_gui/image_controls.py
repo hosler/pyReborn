@@ -269,7 +269,8 @@ class GuiBitmapButtonCtrl(GuiButtonCtrl):
             prof = self.resolve_profile()
             font = _font(fonts, prof)
             width = font.size(self.text)[0]
-            _draw_label(surf, font, self.text, prof.fg,
+            fg = self.label_color(prof)
+            _draw_label(surf, font, self.text, fg,
                         (r.centerx - width // 2,
                          r.centery - font.get_height() // 2),
                         prof.text_shadow)

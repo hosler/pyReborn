@@ -90,7 +90,6 @@ _NOOP = frozenset({
     "noplayerkilling",
     "setcursor", "sleep",
     "savelog2",
-    "serverwarp",
     "deletestring", "insertstring", "replacestring",
 })
 

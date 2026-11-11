@@ -196,25 +196,59 @@ def parse_hit_objects(data: bytes) -> dict:
     }
 
 
+_MAP_IMAGE_EXTENSIONS = ('.png', '.gif', '.bmp', '.jpg', '.jpeg', '.mng')
+
+
+def _map_number(value: str) -> float:
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def _parse_map_option(parts, positional_fallback: bool = True):
+    """Shared body of PLO_BIGMAP / PLO_MINIMAP: four comma tokens, the first
+    two being an image and a level-list file in EITHER order.
+
+    The server forwards the option verbatim (GServer-v2 origin/beta4
+    PlayerClient.cpp:499-512), and the order in use differs: shipped
+    serveroptions say `maptext,image,x,y`, real GS1 setmap calls pass
+    `image,levelsfile,x,y`. So the image is whichever of the first two tokens
+    ends in an image extension, the level list the other one. With no image
+    extension among them, the non-.txt token is the image (image-first when
+    neither is .txt), when `positional_fallback` allows.
+    Returns None when nothing usable is there.
+    """
+    parts = [p.strip() for p in parts]
+    parts += [''] * (4 - len(parts))
+    first_two = parts[:2]
+    image_at = next(
+        (i for i, tok in enumerate(first_two)
+         if tok.lower().endswith(_MAP_IMAGE_EXTENSIONS)), None)
+    if image_at is None:
+        if not positional_fallback:
+            return None
+        image_at = 1 if (first_two[0].lower().endswith('.txt')
+                         and not first_two[1].lower().endswith('.txt')) else 0
+    return {'image': first_two[image_at],
+            'levels_file': first_two[1 - image_at],
+            'x': _map_number(parts[2]), 'y': _map_number(parts[3])}
+
+
 def parse_minimap(data: bytes) -> dict:
     """Parse PLO_MINIMAP (172) map-image configuration or legacy raw data."""
     text = data.decode('latin-1', errors='replace')
     parts = text.split(',')
     first = parts[0].strip()
     basename = first.replace('\\', '/').rsplit('/', 1)[-1]
-    if ',' in text and (
-            '.' in basename and not basename.startswith('.')
-            and not basename.endswith('.')):
-        parts += [''] * (4 - len(parts))
-
-        def _num(v):
-            try:
-                return float(v)
-            except ValueError:
-                return 0.0
-
-        return {'image': first, 'levels_file': parts[1].strip(),
-                'x': _num(parts[2]), 'y': _num(parts[3])}
+    if ',' in text:
+        parsed = _parse_map_option(parts, positional_fallback=False)
+        if parsed is None and (
+                '.' in basename and not basename.startswith('.')
+                and not basename.endswith('.')):
+            parsed = _parse_map_option(parts)
+        if parsed is not None:
+            return parsed
 
     # Preserve raw bytes for servers that use a different minimap payload.
     return {'data': data, 'type': data[0] - 32 if data else 0}
@@ -306,7 +340,40 @@ def _set_npc_equipment(kind):
     return handler
 
 
+#: Joined-class names kept from one NPC's CLASS prop, and the longest name.
+NPC_CLASS_LIST_MAX = 64
+NPC_CLASS_NAME_MAX = 128
+
+
+def clean_class_list(value) -> list:
+    """Comma list from NPC prop CLASS (74) -> usable class names.
+
+    The list is server-supplied and each name becomes a PLI_UPDATECLASS
+    request, so names with path separators or control bytes are dropped, as
+    are over-long names and everything past NPC_CLASS_LIST_MAX. Order is kept
+    and repeats removed.
+    """
+    names = []
+    for raw in (value or '').split(','):
+        name = raw.strip()
+        if (not name or len(name) > NPC_CLASS_NAME_MAX or name in names
+                or '/' in name or '\\' in name
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)):
+            continue
+        names.append(name)
+        if len(names) >= NPC_CLASS_LIST_MAX:
+            break
+    return names
+
+
+def _set_npc_classes(props, value):
+    # GServer-v2 origin/beta4 PropertySerializers.cpp:84-88 (CLASS is a
+    # GSHORT-length comma list; modern servers only, NPC.cpp:74-75).
+    props['classes'] = clean_class_list(value)
+
+
 _NPC_PROP_HANDLERS = {
+    74: _set_npc_classes,
     2: _set('x'),
     3: _set('y'),
     10: _set_npc_equipment('sword'),
@@ -540,19 +607,15 @@ def parse_level_board(data: bytes) -> list:
 
 
 def parse_bigmap(data: bytes) -> dict:
-    """PLO_BIGMAP (171): "<imgfile>,<levelsfile>,<x>,<y>" minimap/bigmap config.
+    """PLO_BIGMAP (171): four comma tokens, image and level list in either
+    order (see _parse_map_option), then x,y of the off-map head position.
 
-    Sent on entering a gmap/bigmap world (and via the GS1 setmap command).
+    Sent right after PLO_RESETCLIENT at login when the server has the
+    `bigmap` option (GServer-v2 origin/beta4 PlayerClient.cpp:500) and by the
+    GS1 setmap command.
     """
-    parts = data.decode('latin-1', errors='replace').split(',')
-    parts += [''] * (4 - len(parts))
-    def _num(v):
-        try:
-            return float(v)
-        except ValueError:
-            return 0.0
-    return {'image': parts[0].strip(), 'levels_file': parts[1].strip(),
-            'x': _num(parts[2]), 'y': _num(parts[3])}
+    return _parse_map_option(
+        data.decode('latin-1', errors='replace').split(','))
 
 
 # =============================================================================

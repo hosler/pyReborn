@@ -43,7 +43,8 @@ def parse_rc_server_flags(data: bytes) -> dict:
     return {'flags': flags}
 
 
-def parse_rc_player_props(data: bytes) -> dict:
+def parse_rc_player_props(data: bytes, colors_len: int = COLORS_CLASSIC,
+                          diagnostics=None, colors_len_known: bool = False) -> dict:
     """
     Parse PLO_RC_PLAYERPROPSGET (packet 72) - Player properties (RC format).
 
@@ -53,7 +54,8 @@ def parse_rc_player_props(data: bytes) -> dict:
       gstring(props_blob) gshort(flag_count)[gstring(flag)]*
       gshort(chest_count)[gchar(len) gchar(x) gchar(y) str(level)]*
       gchar(weapon_count)[gstring(weapon)]*
-    The embedded props_blob is a standard player-props packet.
+    The embedded props_blob is a standard player-props packet, so its COLORS
+    width follows the connection's rule (see pyreborn.colors_width).
     """
     if len(data) < 2:
         return {}
@@ -64,7 +66,9 @@ def parse_rc_player_props(data: bytes) -> dict:
     world = reader.read_gstring()
 
     props_blob = reader.read_gstring()  # gchar-length-prefixed props packet
-    props = parse_player_props(props_blob.encode('latin-1')) if props_blob else {}
+    props = (parse_player_props(props_blob.encode('latin-1'), colors_len,
+                                diagnostics, colors_len_known)
+             if props_blob else {})
 
     flags = []
     if reader.has_data():

@@ -598,7 +598,19 @@ class GuiTextEditCtrl(GuiTextCtrl):
         font = _font(fonts, prof)
         shown = "*" * len(self.text) if self.is_password() else self.text
         label = font.render(shown, True, prof.fg)
-        surf.blit(label, (r.x + 4, r.centery - label.get_height() // 2))
+        ty = r.centery - label.get_height() // 2
+        surf.blit(label, (r.x + 4, ty))
+        # GuiTextEditCtrl::draw hands drawText the highlight text colour
+        # (fontcolorhl) and highlight fill (fillcolorhl) for the selected
+        # span (gui/GuiTextEditCtrl.cpp:419).
+        start, end = self.selection
+        if self.focused and 0 <= start < end <= len(shown):
+            sx = r.x + 4 + font.size(shown[:start])[0]
+            chosen = shown[start:end]
+            box = pygame.Rect(sx, ty, font.size(chosen)[0], label.get_height())
+            _fill_rect(surf, prof.title_bg, box)
+            surf.blit(font.render(chosen, True, prof.fg_hl or prof.fg),
+                      (sx, ty))
         if self.focused and (pygame.time.get_ticks() // 500) % 2 == 0:
             cx = r.x + 4 + font.size(shown)[0]
             pygame.draw.line(surf, prof.fg, (cx, r.y + 3), (cx, r.bottom - 3), 1)

@@ -257,7 +257,11 @@ class EntityRenderMixin(
         z_offset = 0 if getattr(player, '_attachment', None) else getattr(player, 'z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
         y -= z_offset
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
-        base_alpha = 115 if getattr(self.client, 'ghost_mode', 0) == 1 else 255
+        # A hideplayer() hide (STATUS bit 2) draws like other players' hidden
+        # status does: translucent (see _render_other_player).
+        base_alpha = 115 if (
+            getattr(self.client, 'ghost_mode', 0) == 1
+            or int(getattr(player, 'status', 0) or 0) & 0x02) else 255
         alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
         equip = {
             'body_image': player.body_image or 'body.png',

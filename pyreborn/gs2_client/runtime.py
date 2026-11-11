@@ -187,6 +187,13 @@ class ClientGS2:
         # schedule_event/_process_scheduled_events
         self._scheduled: List[dict] = []
         self._pending_joins: Dict[str, List[GS2VM]] = {}
+        # NPC id -> class names its CLASS prop listed (see npc_classes), and
+        # the class names this session already pulled that way (bounded).
+        self._npc_class_lists: Dict[object, List[str]] = {}
+        self._class_pulled: set = set()
+        # (id(vm), class) -> (vm, deadline) for joins begun from an NPC CLASS
+        # prop; they have no coroutine to time them out (_expire_listed_joins).
+        self._listed_join_deadlines: Dict[tuple, tuple] = {}
         self._join_timeout_warned: set = set()
         self._prev_bytecode_cb = None
         self._prev_server_text_cb = None
@@ -248,8 +255,14 @@ class ClientGS2:
             or self._coroutine_wake_pending
         )
 
-    def save_lines(self, filename: str, lines: list) -> bool:
-        """Persist script lines beneath a server-scoped client cache directory."""
+    def save_lines(self, filename: str, lines: list, append: bool = False) -> bool:
+        """Persist script lines beneath a server-scoped client cache directory.
+
+        `append` adds to the file's existing text (the reference's write mode
+        1; the reference client's variable-object source, saveLines and
+        saveVars, then its stream/stringlist save routines) instead of
+        replacing it; the cache-size cap covers the combined result either
+        way."""
         from ..prefs import config_dir
         import hashlib
         server = to_str(getattr(self.client, "server_name", "") or
@@ -272,10 +285,66 @@ class ClientGS2:
                 path.stat().st_size for path in cache_dir.rglob("*") if path.is_file()
             ) if cache_dir.exists() else 0
             old_size = target.stat().st_size if target.is_file() else 0
+            if append and old_size:
+                if old_size > SAVE_LINES_CACHE_MAX_BYTES:
+                    return False
+                existing = target.read_text(encoding="utf-8")
+                joiner = "" if existing.endswith("\n") else "\n"
+                payload = existing + joiner + payload
+                payload_bytes = len(payload.encode("utf-8"))
             if current_size - old_size + payload_bytes > SAVE_LINES_CACHE_MAX_BYTES:
                 return False
             cache_dir.mkdir(parents=True, exist_ok=True)
             target.write_text(payload, encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def save_text(self, filename: str, text: str, mode: int = 0) -> bool:
+        """The ``savestring`` write: `text` verbatim into the same server-
+        scoped cache `save_lines` uses, under the same leaf-name confinement
+        and caps.
+
+        The reference builds a stream from the variable's string and saves
+        it with the script's write mode (variable-object source saveString,
+        which calls TStream::SaveToFile): mode 1 appends the raw bytes (no
+        separator is inserted between writes), any other mode replaces the
+        file, and an EMPTY value with mode 0 deletes the file instead of
+        writing it (an empty value with any other mode does nothing)."""
+        from ..prefs import config_dir
+        import hashlib
+        server = to_str(getattr(self.client, "server_name", "") or
+                        getattr(self.client, "host", "") or "default")
+        scope = hashlib.sha256(server.encode("utf-8")).hexdigest()[:16]
+        leaf = Path(filename.replace("\\", "/")).name
+        if not leaf or leaf in (".", "..") or "\x00" in leaf:
+            return False
+        text = to_str(text)
+        parts = text.split("\n")
+        if (len(parts) > SAVE_LINES_MAX_LINES
+                or any(len(part) > SAVE_LINES_MAX_CHARS_PER_LINE
+                       for part in parts)):
+            return False
+        cache_dir = config_dir() / "client-cache" / scope
+        target = cache_dir / leaf
+        try:
+            if not text:
+                if mode == 0 and target.is_file():
+                    target.unlink()
+                return True
+            payload = text.encode("utf-8")
+            current_size = sum(
+                path.stat().st_size for path in cache_dir.rglob("*") if path.is_file()
+            ) if cache_dir.exists() else 0
+            old_size = target.stat().st_size if target.is_file() else 0
+            if mode == 1 and old_size > SAVE_LINES_CACHE_MAX_BYTES:
+                return False
+            new_size = old_size + len(payload) if mode == 1 else len(payload)
+            if current_size - old_size + new_size > SAVE_LINES_CACHE_MAX_BYTES:
+                return False
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with open(target, "ab" if mode == 1 else "wb") as handle:
+                handle.write(payload)
         except (OSError, ValueError):
             return False
         return True
@@ -1033,6 +1102,25 @@ class ClientGS2:
             # offline bytecode feed arrives.
             if waiting:
                 self.process_coroutines(0.0)
+            # A class that arrives after its listed join expired still belongs
+            # to every live NPC whose CLASS prop named it. No request, and no
+            # event flush: those events already ran at expiry.
+            for npc_id, names in list(self._npc_class_lists.items()):
+                if norm_key not in (n.lower() for n in names):
+                    continue
+                npc_vm = (self.vms["npc"].get(npc_id)
+                          or self.vms["npc"].get(str(npc_id)))
+                if npc_vm is None or any(
+                        getattr(j, "_gs2_key", None) == norm_key
+                        for j in npc_vm.joined):
+                    continue
+                self._attach_class(npc_vm, norm_key, vm)
+
+        if kind == "npc":
+            listed = (self._npc_class_lists.get(key)
+                      or self._npc_class_lists.get(str(key)))
+            if listed:
+                self._join_listed_classes(vm, listed)
 
         if kind in ("weapon", "npc"):
             # Toplevel runs on every load so its join() calls attach classes.
@@ -1126,10 +1214,90 @@ class ClientGS2:
         except Exception:
             return False
 
-    def join_class(self, vm: GS2VM, classname: str):
+    #: Distinct class names pulled through NPC CLASS props per session.
+    MAX_PULLED_CLASSES = 512
+    #: NPC class lists remembered while their bytecode may still be in flight.
+    MAX_NPC_CLASS_LISTS = 4096
+
+    def npc_classes(self, npc_id, names) -> None:
+        """NPC prop CLASS (74): the classes this NPC joins.
+
+        Modern servers send the NPC's script as bytecode (PLO_NPCBYTECODE)
+        with SCRIPT empty and list the joined classes here instead; the
+        client pulls each one with PLI_UPDATECLASS (GServer-v2 origin/beta4
+        PlayerClientPackets.cpp:1508-1520). The list is kept for the NPC's VM
+        in case its bytecode has not arrived yet.
+        """
+        lists = self._npc_class_lists
+        lists.pop(npc_id, None)
+        if not names:
+            return
+        while len(lists) >= self.MAX_NPC_CLASS_LISTS:
+            lists.pop(next(iter(lists)))
+        lists[npc_id] = list(names)
+        for name in names:
+            self._pull_class(name)
+        vm = self.vms["npc"].get(npc_id) or self.vms["npc"].get(str(npc_id))
+        if vm is not None:
+            self._join_listed_classes(vm, lists[npc_id])
+
+    def _pull_class(self, name: str) -> bool:
+        """Request a listed class (PLI_UPDATECLASS) unless it is loaded or
+        this session already asked; the server answers only a missing or
+        stale copy and the client keeps no per-class state of its own.
+        False when the class is neither loaded nor requested (the cap was
+        hit), i.e. nothing will ever deliver it."""
+        cname = name.lower()
+        if cname in self.vms["class"] or self.is_class_loaded(name):
+            return True
+        if cname in self._class_pulled:
+            return True
+        if len(self._class_pulled) >= self.MAX_PULLED_CLASSES:
+            return False
+        self._class_pulled.add(cname)
+        if self.client is not None:
+            try:
+                self.client.request_class_bytecode(name)
+            except Exception:
+                pass
+        return True
+
+    def _join_listed_classes(self, vm: GS2VM, names) -> None:
+        """join() each listed class. A class still in flight leaves the join
+        pending for CLASS_JOIN_WAIT_SECONDS (_expire_listed_joins); one that
+        was never requested (cap) is not joined at all, which is the same as
+        expiring it at once."""
+        for name in names:
+            if not self._pull_class(name):
+                continue
+            cname = name.lower()
+            self.join_class(vm, name, request=False)
+            owner = self.owner_vm(vm)
+            if owner in self._pending_joins.get(cname, ()):
+                self._listed_join_deadlines.setdefault(
+                    (id(owner), cname),
+                    (owner, time.monotonic() + CLASS_JOIN_WAIT_SECONDS))
+
+    def _expire_listed_joins(self) -> None:
+        """Give up on NPC-listed class joins whose class never arrived, so the
+        NPC's gated events run (the join() path does this via _ClassJoinWait)."""
+        if not self._listed_join_deadlines:
+            return
+        now = time.monotonic()
+        for key, (vm, deadline) in list(self._listed_join_deadlines.items()):
+            cname = key[1]
+            if vm in self._pending_joins.get(cname, ()):
+                if now < deadline:
+                    continue
+                logger.warning("GS2 %s: listed class %r did not arrive; "
+                               "join timed out", vm.name, cname)
+                self._expire_join(vm, cname)
+            self._listed_join_deadlines.pop(key, None)
+
+    def join_class(self, vm: GS2VM, classname: str, request: bool = True):
         """join("classname"): merge the class's functions into the joining
-        VM. If the class bytecode is not here yet, request it (PLI_UPDATECLASS)
-        and finish the join when it arrives."""
+        VM. If the class bytecode is not here yet, request it (PLI_UPDATECLASS,
+        unless `request` is False) and finish the join when it arrives."""
         cname = classname.lower()
         vm = self.owner_vm(vm)
         for j in vm.joined:
@@ -1146,7 +1314,7 @@ class ClientGS2:
         waiting = self._pending_joins.setdefault(cname, [])
         if vm not in waiting:
             waiting.append(vm)
-        if self.client is not None:
+        if self.client is not None and request:
             try:
                 self.client.request_class_bytecode(classname)
             except Exception:
@@ -1409,6 +1577,8 @@ class ClientGS2:
 
     def reset_session(self) -> None:
         """Discard execution frames and class waits owned by the session."""
+        from ..game.gs2_gui.profiles import reset_font_resolution
+        reset_font_resolution()
         self._coros.clear()
         self._event_waiters.clear()
         self._wait_time = 0.0
@@ -1416,6 +1586,9 @@ class ClientGS2:
         self._pending_events.clear()
         self._join_gated_events.clear()
         self._pending_joins.clear()
+        self._npc_class_lists.clear()
+        self._class_pulled.clear()
+        self._listed_join_deadlines.clear()
         self._pending_bytecode.clear()
         self._join_timeout_warned.clear()
         self._processing_coroutines = False
@@ -1679,11 +1852,25 @@ class ClientGS2:
         (so a reused npc-id inherits its this-state and skips onCreated),
         its pending settimer keeps firing onTimeout against a vanished NPC,
         and any parked coroutine keeps running."""
+        self._npc_class_lists.pop(npc_id, None)
         for key in (npc_id, str(npc_id)):
+            # Events queued behind a class join belong to the dead NPC; a
+            # reused id must not inherit them.
+            self._join_gated_events.pop(("npc", key), None)
             vm = self.vms["npc"].pop(key, None)
             if vm is None:
                 continue
             self._entered_vms.discard(id(vm))
+            for cname in list(self._pending_joins):
+                left = [j for j in self._pending_joins[cname]
+                        if self.owner_vm(j) is not vm]
+                if left:
+                    self._pending_joins[cname] = left
+                else:
+                    del self._pending_joins[cname]
+            for dkey in [k for k, v in self._listed_join_deadlines.items()
+                         if v[0] is vm]:
+                del self._listed_join_deadlines[dkey]
             tkey = ("npc", key)
             self._timeouts.pop(tkey, None)
             self._scheduled = [item for item in self._scheduled
@@ -1761,6 +1948,7 @@ class ClientGS2:
         definition. OnTimeout may still be defined on a joined class. Call()
         finds it there via has_function()'s joined-VM fallback."""
         self.pump_pending()
+        self._expire_listed_joins()
         self.sync_gani_wearers()
         self.pump_level_events()
         for kind in ("weapon", "npc", "gani"):

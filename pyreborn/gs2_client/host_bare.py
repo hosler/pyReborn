@@ -626,6 +626,19 @@ class HostBareMixin:
             rt2.client.triggeraction(action, x=to_num(args[0]), y=to_num(args[1]))
         return 0.0
 
+    @_gs2_builtin(_GS2_BARE, "serverwarp")
+    def _bi_serverwarp(self, vm, name, args, obj):
+        # serverwarp(name): ask the server list to move the session to the
+        # named server (TServerList.cpp:115-119, :180 -> TClient::sendServerWarp
+        # TClient.cpp:358-381). A request only: the listserver's answer comes
+        # back as PLO_SERVERWARP and reaches the embedder through
+        # Client.on_server_warp (a callback for headless clients, the consent
+        # prompt in the pygame client). Nothing here connects anywhere.
+        client = self.rt2.client
+        if client is not None and args:
+            client.send_server_warp(to_str(args[0]))
+        return 0.0
+
     @_gs2_builtin(_GS2_BARE, "triggerserver")
     def _bi_triggerserver(self, vm, name, args, obj):
         # triggerserver("gui"/"npc", target, params...): the first arg
@@ -745,14 +758,22 @@ class HostBareMixin:
         # server-scoped cache dir (and caps) save_lines enforces.
         if args and vm is not None:
             this = getattr(vm, "this", None)
-            members = getattr(this, "_members", {}) or {}
-            lines = [f"{key}={to_str(value)}"
-                     for key, value in members.items()
-                     if not str(key).startswith("_")
-                     and not callable(value)
-                     and isinstance(value, (str, int, float, bool))]
-            self.rt2.save_lines(to_str(args[0]), lines)
+            self.rt2.save_lines(to_str(args[0]), self._vars_lines(this))
         return 0.0
+
+    @staticmethod
+    def _vars_lines(target, skip=()) -> list:
+        """`name=value` lines for an object's plain members, sorted by name
+        as the reference's saveVars writes them (FourPlay quattroplay/src,
+        the variable-object saveVars: collect, Sort, write). `skip`
+        names members that are the object's identity, not saved variables."""
+        members = getattr(target, "_members", {}) or {}
+        return sorted(
+            f"{key}={to_str(value)}" for key, value in members.items()
+            if not str(key).startswith("_")
+            and key not in skip
+            and not callable(value)
+            and isinstance(value, (str, int, float, bool)))
 
     @_gs2_builtin(_GS2_BARE, "lowercase", "uppercase")
     def _bi_case(self, vm, name, args, obj):

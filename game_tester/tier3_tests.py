@@ -9,7 +9,7 @@ Exercises the pyReborn Tier 3 additions:
     (requires `sendplayertriggers = true`, the default)
   - PLO_SERVERWARP via PLI_SERVERWARP round-trip through the live listserver
   - synthetic byte-exact parse checks for the packets the local server cannot
-    be made to emit (PROFILE, NPCSERVERADDR, SETNETCOOKIE, DISABLECLASSICMODE,
+    be made to emit (PROFILE, NPCSERVERADDR, SETNETCOOKIE, KINGDOMSMODE,
     HIDENPCS) using payloads encoded exactly as the C++ writers do
 
 Run: python -m game_tester --tier3

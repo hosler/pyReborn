@@ -808,12 +808,16 @@ class GuiTextListCtrl(GuiControl):
             if to_num(self._row_member(row, "flickering", 0.0)) \
                     and (pygame.time.get_ticks() // 500) % 2:
                 continue
-            fg = prof.fg
+            # GuiTextListCtrl::onRenderCell (gui/GuiTextListCtrl.cpp:396-433):
+            # an ordinary active row's text is the profile's fontcolorhl, a
+            # selected row's is fontcolorsel. Each applies only when the
+            # script set it; otherwise the fontcolor-derived defaults stay.
+            fg = prof.fg_hl or prof.fg
             if active is not None and not to_num(active):
                 fg = _shade(fg, 0.55)
             if index in self.selected_rows:   # every selected cell, not [0]
                 _fill_rect(surf, prof.title_bg, rr)
-                fg = _readable_on(prof.title_bg, prof.bg, prof.fg)
+                fg = prof.fg_sel or _readable_on(prof.title_bg, prof.bg, prof.fg)
             _draw_label(surf, font, text, fg,
                         (rr.x + 4, rr.centery - font.get_height() // 2),
                         prof.text_shadow and index != self.selected_index)

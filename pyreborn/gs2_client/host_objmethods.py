@@ -121,6 +121,39 @@ class HostObjmethodsMixin:
             self.rt2.save_lines(to_str(args[0]), obj)
         return 0.0
 
+    @_gs2_builtin(_GS2_OBJ_METHODS, "savevars")
+    def _obj_savevars(self, vm, name, args, obj):
+        # obj.savevars(filename, mode): the object-target spelling of the
+        # bare savevars -- the reference client's variable-object property
+        # table binds it on every object. Writes the OBJECT's plain members as sorted name=value
+        # lines (-Playerlist's options, Notepad's checked-state), under the
+        # same server-scoped, size-capped cache save_lines enforces. Mode 1
+        # appends, anything else replaces.
+        if args and isinstance(obj, GS2Object):
+            append = len(args) > 1 and int(to_num(args[1])) == 1
+            self.rt2.save_lines(to_str(args[0]), self._vars_lines(obj, skip=("name",)),
+                                append=append)
+        return 0.0
+
+    @_gs2_builtin(_GS2_OBJ_METHODS, "savestring")
+    @_gs2_builtin(_GS2_STR_METHODS, "savestring")
+    def _obj_savestring(self, vm, name, args, obj):
+        # value.savestring(filename, mode): write the variable's string
+        # value to a file. The reference saves it verbatim with the script's
+        # write mode (FourPlay quattroplay/src: the variable-object saveString,
+        # then TStream::SaveToFile in TStream.cpp:281-327): mode 1 appends the
+        # raw bytes, anything else replaces, and an empty value with mode 0
+        # deletes the file -- see ClientGS2.save_text, which also applies the
+        # server-scoped cache confinement and caps savelines uses. A
+        # script-object or array receiver has no string value of its own, so
+        # only scalars are written. The receiver is a string literal or, for
+        # `temp.s.savestring(...)`, a GS2VarString holding the variable's own
+        # value (the VM tags it; see reborn_protocol gs2/vm.py).
+        if args and isinstance(obj, (str, int, float, bool)):
+            mode = int(to_num(args[1])) if len(args) > 1 else 0
+            self.rt2.save_text(to_str(args[0]), to_str(obj), mode)
+        return 0.0
+
     @_gs2_builtin(_GS2_OBJ_METHODS, "loadvars")
     def _obj_loadvars(self, vm, name, args, obj):
         # obj.loadvars(filename): populate the OBJECT's members from

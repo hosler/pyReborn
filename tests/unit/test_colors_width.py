@@ -150,13 +150,18 @@ def test_other_player_classic_colors_then_id_with_session_evidence():
 
 def test_mode_preference_change_keeps_absolute_width_evidence(monkeypatch):
     client = Client(version='6.037')
+    client._colors_len = 8   # prior preferring 8, so a 5-byte stream exercises the fallback
     monkeypatch.setattr(client, '_apply_login_appearance', lambda props: None)
     for _ in range(3):
         client._handle_packet(PacketID.PLO_PLAYERPROPS, b'-!"#$%')
-    assert client.prop_parse_diagnostics['width_fallbacks'] == 3
+    # The first packet falls back; once it is on record the evidence itself
+    # sets the preference (colors_width.colors_width_policy), so the next two
+    # are confirmed at 5 instead of falling back again.
+    assert client.prop_parse_diagnostics['width_fallbacks'] == 1
+    assert client.prop_parse_diagnostics['colors_confirmed'] == 2
     assert client.prop_parse_diagnostics['colors_seen_5'] == 3
 
-    client._handle_packet(PacketID.PLO_DISABLECLASSICMODE, b'')
+    client._handle_packet(PacketID.PLO_KINGDOMSMODE, b'')
     assert client.server_mode == 'kingdoms'
     client._handle_packet(PacketID.PLO_NPCPROPS, b"  '3!\"#$%4!a")
     assert client.npcs[7]['colors'] == CLASSIC_COLORS

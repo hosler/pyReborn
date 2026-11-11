@@ -18,6 +18,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE
 from pyreborn.tiletypes import get_tile_type, TileType
 
@@ -125,7 +126,7 @@ class TestRunner:
     def test_npc_rendering(self) -> bool:
         """Verify that the client renders NPCs on the screen."""
         render_frame(self.game, self.client)
-        screenshot = take_screenshot(self.game.screen, "/tmp/test_npc_render.png")
+        screenshot = take_screenshot(self.game.screen, scratch_path("test_npc_render.png"))
 
         # Check if there's variety in the image (NPCs add colors)
         pixels = list(screenshot.getdata())
@@ -184,7 +185,7 @@ class TestRunner:
             self.game.visual_y = self.client.y
 
         render_frame(self.game, self.client)
-        take_screenshot(self.game.screen, "/tmp/test_camera_1.png")
+        take_screenshot(self.game.screen, scratch_path("test_camera_1.png"))
 
         # Move back
         for _ in range(100):
@@ -194,11 +195,11 @@ class TestRunner:
             self.game.visual_y = self.client.y
 
         render_frame(self.game, self.client)
-        take_screenshot(self.game.screen, "/tmp/test_camera_2.png")
+        take_screenshot(self.game.screen, scratch_path("test_camera_2.png"))
 
         # Compare screenshots - they should be different
-        img1 = Image.open("/tmp/test_camera_1.png")
-        img2 = Image.open("/tmp/test_camera_2.png")
+        img1 = Image.open(scratch_path("test_camera_1.png"))
+        img2 = Image.open(scratch_path("test_camera_2.png"))
 
         pixels1 = list(img1.getdata())
         pixels2 = list(img2.getdata())

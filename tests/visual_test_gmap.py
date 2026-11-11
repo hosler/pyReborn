@@ -20,6 +20,7 @@ import io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE
 
 # Standalone script against a hand-started server on a hardcoded host:port
@@ -146,7 +147,7 @@ def run_visual_test():
     # Take screenshot
     print("\n7. Taking screenshot...")
     screenshot = take_screenshot(game.screen)
-    screenshot_path = "/tmp/gmap_visual_test.png"
+    screenshot_path = scratch_path("gmap_visual_test.png")
     screenshot.save(screenshot_path)
     print(f"   Saved to {screenshot_path}")
 

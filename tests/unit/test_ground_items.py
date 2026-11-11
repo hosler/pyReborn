@@ -67,6 +67,25 @@ def test_walkover_only_takes_giveaway_items_in_range_and_ready():
     assert gi.walkover_takes(10.0, 10.0, items, ages) == [(10.0, 10.0)]
 
 
+def test_walkover_absorbs_the_non_giveaway_kinds_locally():
+    items = {(10.0, 10.0): 'greenrupee', (10.0, 10.5): 'glove1',
+             (40.0, 40.0): 'sword', (10.5, 10.0): 'mirrorshield'}
+    ages = {k: 5.0 for k in items}
+    ages[(10.5, 10.0)] = 0.0                              # still in grace
+    assert gi.walkover_absorbs(10.0, 10.0, items, ages) == [(10.0, 10.5)]
+
+
+def test_auto_pickup_removes_non_giveaway_items_without_sending():
+    items = {(10.0, 10.0): 'glove1'}
+    game = _pickup_game((10.0, 10.0), items)
+    game.client.remove_item_local = Mock(
+        side_effect=lambda level, x, y: items.pop((x, y), None))
+    assert ActionsMixin._auto_pickup_items(game) == 0
+    game.client.pickup_item.assert_not_called()
+    game.client.remove_item_local.assert_called_once_with('a.nw', 10.0, 10.0)
+    assert items == {}
+
+
 def test_item_ages_forgets_removed_items_and_allows_retake():
     owner = SimpleNamespace()
     key = (5.0, 5.0)

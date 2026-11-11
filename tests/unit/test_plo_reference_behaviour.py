@@ -309,15 +309,119 @@ def test_serverwarp_default_answer_is_no(game, client, key):
     assert game.running
 
 
+def _press(game, *keys):
+    for key in keys:
+        name = pygame.key.name(key)
+        pygame.event.post(pygame.event.Event(
+            pygame.KEYDOWN, key=key, unicode=name if len(name) == 1 else ''))
+        game._handle_events()
+
+
+def _type_word(game, word):
+    _press(game, *[getattr(pygame, 'K_' + letter) for letter in word])
+
+
 def test_serverwarp_yes_takes_the_server_switch_path(game, client):
     client._handle_packet(178, WARP_PACKET)
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, unicode='y'))
-    game._handle_events()
+    # the confirm is the word "yes" then Enter, once the prompt is armed
+    game.server_warp_prompt['opened_at'] -= game.SERVER_WARP_ARM_SECONDS + 1
+    _type_word(game, 'warp')
+    _press(game, pygame.K_RETURN)
     assert game.switch_server.ip == '127.0.0.2'
     assert game.switch_server.port == 15001
     assert game.switch_server.name == 'Target Display'
     assert not game.running
     assert game.server_warp_prompt is None
+
+
+def _arm(game):
+    game.server_warp_prompt['opened_at'] -= game.SERVER_WARP_ARM_SECONDS + 1
+
+
+def test_serverwarp_a_stray_or_held_key_never_connects(game, client):
+    client._handle_packet(178, WARP_PACKET)
+    _type_word(game, 'warp')                   # inside the arming delay
+    _press(game, pygame.K_RETURN)              # not armed: Enter declines
+    assert game.switch_server is None and game.server_warp_prompt is None
+    client.server_warp_declined_until = 0.0
+    client._handle_packet(178, WARP_PACKET)
+    _arm(game)
+    _press(game, *([pygame.K_w] * 10), pygame.K_RETURN)   # a held, repeating key
+    assert game.switch_server is None and game.running
+    client.server_warp_declined_until = 0.0
+    client._handle_packet(178, WARP_PACKET)
+    _arm(game)
+    _type_word(game, 'war')
+    _press(game, pygame.K_RETURN)                         # incomplete word
+    assert game.switch_server is None
+
+
+def test_serverwarp_a_chat_line_ending_in_yes_enter_cannot_confirm(game, client):
+    """The old confirm was "yes": a player finishing a chat line could answer
+    the prompt by accident. The prompt now closes chat, drops queued key
+    events and starts its own empty field, and "yes" is not the word."""
+    game.typing = True
+    game.chat_input = "see you in a bit, yes"
+    pygame.event.post(pygame.event.Event(
+        pygame.KEYDOWN, key=pygame.K_RETURN, unicode='\r'))   # queued
+    client._handle_packet(178, WARP_PACKET)
+    assert game.typing is False and game.chat_input == ""
+    assert game.server_warp_prompt['typed'] == ''
+    assert pygame.event.peek(pygame.KEYDOWN) is False          # discarded
+    _arm(game)
+    _type_word(game, 'yes')
+    assert game.server_warp_prompt['typed'] == 'yes'
+    _press(game, pygame.K_RETURN)
+    assert game.switch_server is None and game.running
+    assert game.server_warp_prompt is None
+
+
+def test_serverwarp_prompt_field_backspace_and_draw(game, client):
+    client._handle_packet(178, WARP_PACKET)
+    _arm(game)
+    _type_word(game, 'wax')
+    _press(game, pygame.K_BACKSPACE)
+    assert game.server_warp_prompt['typed'] == 'wa'
+    game.hud.draw()
+
+
+def test_blocked_script_warp_shows_a_rate_limited_hud_notice(game, client):
+    client._protocol = SimpleNamespace(
+        connected=True, send_packet=lambda *a, **k: True)
+    client._authenticated = True
+    client.note_server_warp_declined()
+    assert client.send_server_warp('Somewhere') is False
+    assert game.hud_notice is not None and 'F8' in game.hud_notice[0]
+    first = game.hud_notice
+    client.send_server_warp('Elsewhere')              # inside 5 s: no new notice
+    assert game.hud_notice is first
+    client.server_warp_notice_at -= client.SERVER_WARP_NOTICE_INTERVAL + 1
+    client.send_server_warp('Third')
+    assert game.hud_notice is not first
+    game.hud.draw()
+
+
+def test_serverwarp_decline_blocks_new_offers_for_the_cooldown(game, client):
+    client._handle_packet(178, WARP_PACKET)
+    _press(game, pygame.K_n)
+    assert game.server_warp_prompt is None
+    client._handle_packet(178, WARP_PACKET)    # a hostile script asks again
+    assert game.server_warp_prompt is None
+    client.server_warp_declined_until = 0.0    # cooldown over
+    client._handle_packet(178, WARP_PACKET)
+    assert game.server_warp_prompt is not None
+
+
+def test_serverwarp_offers_are_capped_per_session(game, client):
+    for _ in range(client.SERVER_WARP_MAX_OFFERS):
+        client._handle_packet(178, WARP_PACKET)
+        assert game.server_warp_prompt is not None
+        game.server_warp_prompt = None
+    client._handle_packet(178, WARP_PACKET)
+    assert game.server_warp_prompt is None
+    game._handle_key_press(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F8))
+    client._handle_packet(178, WARP_PACKET)    # the player used F8
+    assert game.server_warp_prompt is not None
 
 
 def test_serverwarp_prompt_says_whether_the_target_is_listed(game, client):

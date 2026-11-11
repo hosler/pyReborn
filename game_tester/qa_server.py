@@ -28,12 +28,8 @@ import subprocess
 import sys
 import time
 
+from .fixtures import release_all, state_dir
 from .local_world import READY_MARKER, SHUTDOWN_TIMEOUT, STARTUP_TIMEOUT
-
-
-def state_dir():
-    return Path(os.environ.get(
-        "PYREBORN_QA_SERVERS_DIR", "~/.local/state/pyreborn/qa_servers")).expanduser().resolve()
 
 
 @contextmanager
@@ -207,6 +203,14 @@ def _log_tail(path):
         return log.read().decode(errors="replace")
 
 
+# Directories pygserver creates under its working directory when it starts
+# (FileSystem._ensure_directories, run_server.py). A default (no --world)
+# server runs in the checkout, so a run on a bare checkout leaves these behind
+# as empty, untracked directories; the manager removes the ones it saw appear.
+_SERVER_CREATED_DIRS = ("levels", "world", "gani", "images", "sounds", "scripts",
+                        "accounts", "npcs", "weapons")
+
+
 def _launch(checkout, config, log):
     return subprocess.Popen(
         [sys.executable, "run_server.py", str(config)], cwd=str(checkout),
@@ -256,6 +260,9 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
     holder = _settled_port_holder(port)
     if holder:
         raise ValueError(f"port {port} is in use: {_identity(holder)}")
+    if previous:        # a dead record's leftovers are still ours to remove
+        _cleanup(previous)
+        path.unlink(missing_ok=True)    # and so is the record: a failed start must not leave it
     checkout = Path(pygserver or os.environ.get(
         "PYGSERVER_DIR", Path(__file__).resolve().parents[2] / "pygserver")).expanduser().resolve()
     if not (checkout / "run_server.py").is_file():
@@ -278,13 +285,32 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
     options += (f"name = {name}\nserverport = {port}\nnoverifylogin = true\n"
                 f"serverside = {str(serverside).lower()}\n")
     config.write_text(options)
-    launch_config = _prepare_world(name, world, config) if world else config
+    try:
+        launch_config = _prepare_world(name, world, config) if world else config
+    except BaseException:
+        config.unlink(missing_ok=True)
+        raise
     # NPC registration (including sparringzone) happens at startup, even
     # though pygserver can discover newly added level files while running.
-    from .spar_fixture import write_spar_fixture
+    # The file lives in the served levels directory (the checkout's `levels/`,
+    # or the --world source through the private root's `world` link), because
+    # that is the only place pygserver registers level NPCs from. The manager
+    # therefore records what it wrote and `stop` removes it; a file that was
+    # already there with the right content is left alone and not recorded.
+    from .spar_fixture import spar_fixture
+    absent_dirs = [] if world else [str(checkout / name) for name in _SERVER_CREATED_DIRS
+                                    if not (checkout / name).exists()]
     levels_dir = launch_config / "world" if world else checkout / "levels"
     accounts_dir = launch_config / "accounts" if world else checkout / "accounts"
-    write_spar_fixture(levels_dir)
+    fixture = spar_fixture(levels_dir)
+    try:
+        fixture.install()
+        if fixture.refused:
+            raise ValueError(f"refusing to install {fixture.path}: a symlink is there")
+    except BaseException:
+        fixture.release()       # a partial write is unwound
+        config.unlink(missing_ok=True)
+        raise
     log_path = state_dir() / f"{name}.log"
     record = dict(name=name, port=port, pygserver_dir=str(checkout),
                   config_path=str(config), log_path=str(log_path), started=time.time(),
@@ -292,11 +318,20 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
                   starter=Path(os.environ["CLAUDE_JOB_DIR"]).name
                   if os.environ.get("CLAUDE_JOB_DIR") else os.getppid(),
                   serverside=serverside, levels_dir=str(levels_dir),
-                  accounts_dir=str(accounts_dir))
+                  accounts_dir=str(accounts_dir),
+                  fixtures=[fixture.to_dict()] if fixture.installed else [],
+                  created_dirs=absent_dirs)
     if world:
         record["world"] = world
-    with log_path.open("wb") as log:
-        process = _launch(checkout, launch_config, log)
+    try:
+        with log_path.open("wb") as log:
+            process = _launch(checkout, launch_config, log)
+    except BaseException:
+        fixture.release()
+        config.unlink(missing_ok=True)
+        raise
+    fixture.adopt(process.pid)      # the server now keeps the file alive
+    record["fixtures"] = [fixture.to_dict()] if fixture.installed else []
     try:
         deadline = time.monotonic() + STARTUP_TIMEOUT
         while time.monotonic() < deadline:
@@ -319,6 +354,9 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=SHUTDOWN_TIMEOUT)
+        fixture.release()
+        _remove_empty_dirs(absent_dirs)
+        config.unlink(missing_ok=True)
         raise
     print(f"{name} {port} {process.pid} {log_path}", flush=True)
     return record
@@ -340,7 +378,28 @@ def _settled_port_holder(port, grace=2.0):
 def stop(record):
     _terminate(record["pid"])
     _settled_port_holder(record["port"], grace=SHUTDOWN_TIMEOUT)
+    _cleanup(record)
     _record_path(record["name"]).unlink(missing_ok=True)
+
+
+def _remove_empty_dirs(paths):
+    for path in paths or ():
+        try:
+            Path(path).rmdir()      # only an empty directory goes
+        except OSError:
+            pass
+
+
+def _cleanup(record):
+    """Remove what `start` provisioned for this record: fixture files it wrote
+    (with any directory it created), the empty directories the server created
+    in the checkout, and the generated options file. The log and the private
+    account store stay, for post-mortems and reruns."""
+    release_all(record.get("fixtures"))
+    _remove_empty_dirs(record.get("created_dirs"))
+    config = record.get("config_path")
+    if config:
+        Path(config).unlink(missing_ok=True)
 
 
 def _parameters(record):
@@ -492,6 +551,7 @@ def main(argv=None):
             elif args.action == "prune":
                 for record in records():
                     if not is_live(record["pid"]):
+                        _cleanup(record)
                         _record_path(record["name"]).unlink()
         return 0
     except (OSError, ValueError, RuntimeError) as exc:

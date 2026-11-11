@@ -19,6 +19,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE
 
 # Standalone script against a hand-started server on a hardcoded host:port
@@ -103,8 +104,8 @@ def run_level_transition_test():
         game._render_world()
         game._render_entities()
         pygame.display.flip()
-    take_screenshot(game.screen, "/tmp/level_test_start.png")
-    print("   Saved /tmp/level_test_start.png")
+    take_screenshot(game.screen, scratch_path("level_test_start.png"))
+    print("   Saved level_test_start.png (scratch dir)")
 
     # Determine which direction to walk to reach an adjacent level
     # Grid (1,1) is center (chicken1.nw)
@@ -180,8 +181,8 @@ def run_level_transition_test():
             break
 
     # Take screenshot after walking
-    take_screenshot(game.screen, "/tmp/level_test_after_walk.png")
-    print(f"   Saved /tmp/level_test_after_walk.png")
+    take_screenshot(game.screen, scratch_path("level_test_after_walk.png"))
+    print("   Saved level_test_after_walk.png (scratch dir)")
     print(f"   Total moves: {move_count}")
 
     # Verify results

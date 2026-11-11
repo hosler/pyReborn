@@ -8,7 +8,10 @@ in-game. RC clients can manage players, accounts, files, and server settings.
 
 from typing import Optional, Callable, Dict, List
 
+from reborn_protocol.props import PLAYER_PROPS, encode_value
+
 from .client import Client
+from .colors_width import colors_len_in_force, colors_width_policy
 from .protocol import ClientType
 from .packets import (
     PacketID,
@@ -276,6 +279,21 @@ class RCClient(Client):
 
         data = build_rc_player_props_get(player_id)
         return self._protocol.send_packet(PacketID.PLI_RC_PLAYERPROPSGET2, data)
+
+    def encode_player_props(self, props: Dict[int, object]) -> bytes:
+        """Encode {PLPROP id: value} as the raw prop stream that
+        set_player_props / set_player_props_by_name take.
+
+        Ids go out in ascending order (the server's parser stops at the first
+        descending id) and PLPROP_COLORS is written at the width in force for
+        THIS connection (pyreborn.colors_width), so a server in normal mode
+        (5 bytes) and one in new-world mode (8 bytes) both parse it.
+        """
+        width = colors_len_in_force(self)
+        return b''.join(
+            bytes([prop_id + 32]) + encode_value(
+                PLAYER_PROPS[prop_id], props[prop_id], colors_len=width)
+            for prop_id in sorted(props))
 
     def set_player_props(self, player_id: int, world: str = '', props: bytes = b'',
                          flags=(), chests=(), weapons=()) -> bool:
@@ -869,7 +887,9 @@ class RCClient(Client):
 
         # Player Properties (RC format)
         if packet_id == PacketID.PLO_RC_PLAYERPROPSGET:
-            info = parse_rc_player_props(data)
+            width, known = colors_width_policy(self)
+            info = parse_rc_player_props(data, width, self.prop_parse_diagnostics,
+                                         known)
             self._last_player_props = info
             if self.on_player_props:
                 self.on_player_props(info)

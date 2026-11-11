@@ -733,6 +733,35 @@ class MainCommandsMixin:
         self.rt.on_triggeraction(to_num(args[0]), to_num(args[1]), action,
                                  getattr(ctx, "_npc_id", 0))
 
+    @_gs1_command(_GS1_MAIN_COMMANDS, "serverwarp")
+    def _cmd_serverwarp(self, name, args, ctx, imgs):
+        # serverwarp <server name>: ask the server list to move the session
+        # (TServerList.cpp:115-119 -> TClient::sendServerWarp). The same
+        # request the GS2 builtin makes; the answer arrives as PLO_SERVERWARP.
+        client = self.rt.client
+        send = getattr(client, "send_server_warp", None)
+        if send is not None and args:
+            send(",".join(to_str(a) for a in args))
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "hideplayer")
+    def _cmd_hideplayer(self, name, args, ctx, imgs):
+        # hideplayer <seconds>: TInitStatics.cpp:3425-3439 (see
+        # Client.hide_player for the tick conversion and clamp).
+        hide = getattr(self.rt.client, "hide_player", None)
+        if hide is not None:
+            hide(to_num(args[0]) if args else 0.0)
+
+    @_gs1_command(_GS1_MAIN_COMMANDS, "openurl", "openurl2")
+    def _cmd_openurl(self, name, args, ctx, imgs):
+        # Dropped on purpose: a script must not launch a browser. Logged once
+        # per distinct URL so the drop is visible at debug level.
+        url = to_str(args[0])[:200] if args else ""
+        seen = self.rt._openurl_logged
+        if url not in seen and len(seen) < 64:
+            seen.add(url)
+            logger.debug("%s dropped by policy (no external launch): %r",
+                         name, url)
+
     @_gs1_command(_GS1_MAIN_COMMANDS, "setshootparams")
     def _cmd_setshootparams(self, name, args, ctx, imgs):
         # setshootparams <name>,<p0>,<p1>,... — params the next `shoot` carries.

@@ -403,8 +403,10 @@ def handle_level_sign(client, data):
 def handle_minimap(client, data):
     mm = parse_minimap(data)
     if 'image' in mm:
-        # Both map-image packets share the same stored configuration and renderer.
-        client.bigmap_info = mm
+        # Login sends BIGMAP then MINIMAP (GServer-v2 origin/beta4
+        # PlayerClient.cpp:489-516); each keeps its own configuration so the
+        # second packet does not replace the first.
+        client.minimap_info = mm
     elif mm and client.on_minimap:
         client.on_minimap(mm['data'])
 

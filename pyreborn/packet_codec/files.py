@@ -134,18 +134,15 @@ def parse_start_message(data: bytes) -> str:
 
 
 def parse_fullstop(data: bytes) -> bool:
-    """Parse packet 176 or 177 as a one-way input stop command.
-
-    The C# server sends packet 176 with an empty payload (Player.cpp:696), and
-    its protocol enum defines both packet ids as blank stop commands
-    (IEnums.h:292-293). There is no payload toggle or matching resume packet;
-    a new connection clears the state.
-    """
+    """Packet 176 (PLO_KINGDOMSMODE) / 177 (PLO_NEWWORLDMODE): a bare mode
+    marker, no payload. Name kept for compatibility; despite it, nothing here
+    stops input (GServer-v2 origin/beta4 Player.cpp:748-752 only announces the
+    server mode). See handlers/session.py."""
     return True
 
 
 def parse_fullstop2(data: bytes) -> bool:
-    """Parse packet 177, which has the same blank one-way semantics."""
+    """Packet 177 (PLO_NEWWORLDMODE); same bare marker as parse_fullstop."""
     return parse_fullstop(data)
 
 
@@ -443,3 +440,131 @@ def build_update_class(class_name: str, checksum: int = 0) -> bytes:
 # their historical payloads so the packets are at least well-formed.
 # =============================================================================
 
+
+
+# =============================================================================
+# Update packages (.gupd): PLI 159, PLO 105 / 106 / 187
+#
+# Server side: GServer-v2 origin/beta4 server/src/player/packets/
+# PlayerClientPackets.cpp:1548-1595 (request handler, reply order) and
+# server/src/UpdatePackage.cpp:40-74 (only FILE lines are read).
+# Client side: Preagonal/FourPlay/quattroplay/src/TClient.cpp:263-339
+# (sendRequestUpdatePackage) and TUpdatePackage.cpp:327-471 (.gupd parser).
+# =============================================================================
+
+#: Longest package name the wire can carry: a GCHAR length tops out at 223
+#: (the reference client truncates to 0xdf, TClient.cpp:293-297).
+UPDATE_PACKAGE_NAME_MAX = 223
+#: FILE lines kept per package. Each costs five bytes in PLI 159, so this also
+#: bounds the request packet (512 * 5 = 2560 bytes).
+UPDATE_PACKAGE_FILES_MAX = 512
+#: Bytes of a .gupd that are read at all, and the longest line honoured.
+GUPD_BYTES_MAX = 256 * 1024
+GUPD_LINE_MAX = 512
+#: Extensions the reference client never installs from a package
+#: (TUpdatePackage.cpp:419-420); their FILE line still occupies a slot.
+GUPD_BLOCKED_EXTENSIONS = ('.exe', '.lexe', '.bat', '.com')
+#: Names a package may list but the client never reads back: its own cache
+#: index (hashing it through the cache layer used to delete it), dot-prefixed
+#: names (temp files, '.', '..') and anything with a control byte.
+GUPD_RESERVED_NAMES = ('index.json',)
+
+
+def gupd_name_reserved(base: str) -> bool:
+    """True for a FILE name the client must not hash or look up locally."""
+    lowered = base.lower()
+    return (lowered in GUPD_RESERVED_NAMES or lowered.startswith('.')
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in base))
+
+
+def parse_update_package_size(data: bytes):
+    """PLO_UPDATEPACKAGESIZE (105): {GCHAR nameLen}{name}{GINT5 bytesNeeded}.
+
+    Returns (name, size), or None when the packet is truncated or names
+    nothing (PlayerClientPackets.cpp:1588; client decode TClient.cpp:5518-5534).
+    """
+    if not data:
+        return None
+    reader = PacketReader(data)
+    name_len = reader.read_gchar()
+    if name_len <= 0 or name_len > UPDATE_PACKAGE_NAME_MAX:
+        return None
+    name = reader.read_string(name_len)
+    if len(name) != name_len or len(reader.remaining()) < 5:
+        return None
+    return name, reader.read_gint5()
+
+
+def parse_update_package_done(data: bytes) -> str:
+    """PLO_UPDATEPACKAGEDONE (106): the raw package name, no length prefix
+    (PlayerClientPackets.cpp:1593). Empty string for an unusable name."""
+    if not data or len(data) > UPDATE_PACKAGE_NAME_MAX:
+        return ''
+    return data.decode('latin-1', errors='replace')
+
+
+def build_update_package_request(name: str, reinstall: bool = False,
+                                 checksums=()) -> bytes:
+    """PLI_UPDATEPACKAGEREQUESTFILE (159):
+    {GCHAR nameLen}{name}{GUCHAR type}{GINT5 value per FILE line}.
+
+    type 1 = install, 2 = reinstall (the server clears the checksums for 2,
+    PlayerClientPackets.cpp:1555-1558). Each value is a file's CRC32 in .gupd
+    FILE order; None means "we do not have it" and goes out as five spaces
+    (TClient.cpp:305-333).
+    """
+    raw = name.encode('latin-1', errors='replace')[:UPDATE_PACKAGE_NAME_MAX]
+    builder = PacketBuilder()
+    builder.write_gchar(len(raw))
+    builder.write_bytes(raw)
+    builder.write_gchar(2 if reinstall else 1)
+    for value in list(checksums)[:UPDATE_PACKAGE_FILES_MAX]:
+        if value is None:
+            builder.write_bytes(b'     ')
+        elif value == 'blocked':
+            builder.write_bytes(b'    !')
+        else:
+            builder.write_gint5(value)
+    return builder.build()
+
+
+def parse_gupd(data) -> dict:
+    """Parse the FILE lines of an update-package description.
+
+    Only FILE is read, as on the server (UpdatePackage.cpp:51-74); the client
+    additionally insists on a first line of GRPKG001 (TUpdatePackage.cpp:343),
+    so anything else yields no files. Names are reduced to their basename and
+    a repeated basename keeps its first slot, matching the server's
+    one-entry-per-name map. Bounded by GUPD_BYTES_MAX, GUPD_LINE_MAX and
+    UPDATE_PACKAGE_FILES_MAX.
+
+    Returns {'files': [basename, ...], 'blocked': {indexes}, 'truncated': bool}
+    where 'blocked' lists slots whose extension the client never installs or
+    whose name is reserved (gupd_name_reserved).
+    """
+    if isinstance(data, str):
+        data = data.encode('latin-1', errors='replace')
+    truncated = len(data) > GUPD_BYTES_MAX
+    lines = data[:GUPD_BYTES_MAX].decode('latin-1', errors='replace').splitlines()
+    files, blocked, seen = [], set(), set()
+    if not lines or lines[0].strip() != 'GRPKG001':
+        return {'files': files, 'blocked': blocked, 'truncated': truncated}
+    for line in lines[1:]:
+        if len(line) > GUPD_LINE_MAX or line[:4].upper() != 'FILE':
+            continue
+        if len(line) > 4 and not line[4].isspace():
+            continue
+        base = line[4:].strip().replace('\\', '/').rsplit('/', 1)[-1]
+        if not base or base in seen:
+            continue
+        if len(files) >= UPDATE_PACKAGE_FILES_MAX:
+            truncated = True
+            break
+        seen.add(base)
+        # A blocked slot keeps its position (so later slots still line up with
+        # the server's list) but is sent as '    !' and never hashed.
+        if (base.lower().endswith(GUPD_BLOCKED_EXTENSIONS)
+                or gupd_name_reserved(base)):
+            blocked.add(len(files))
+        files.append(base)
+    return {'files': files, 'blocked': blocked, 'truncated': truncated}

@@ -7,7 +7,7 @@ import logging
 import math
 from typing import Optional
 
-from reborn_protocol import BDMODE, BDPROP
+from reborn_protocol import BDMODE, BDPROP, PLPROP, PLSTATUS
 from reborn_protocol.coords import local_coord, segment_at, world_to_local
 
 from .game.constants import BOMB_FUSE_TIME
@@ -49,6 +49,15 @@ class ActionsMixin:
             x: Item X position (default: player position)
             y: Item Y position (default: player position)
 
+        The item leaves the local model (and its expiry stamp) as the take is
+        sent, like the reference client, which deletes its extra in the same
+        animateExtras pass that calls sendTakeExtra (reference client
+        TServerLevel.cpp:1453-1457), applies no effect locally (rupees, hearts
+        and the rest arrive as player props) and gets no echo: the server
+        relays a take to the other players only. A late PLO_ITEMDEL from an
+        older server finds nothing left to remove. Callers own the distance
+        and age guards (the walk-over pickup applies them).
+
         Returns:
             True if packet sent successfully
         """
@@ -61,7 +70,13 @@ class ActionsMixin:
             y = self.player.y
 
         data = build_item_take(x, y)
-        return self._protocol.send_packet(PacketID.PLI_ITEMTAKE, data)
+        sent = self._protocol.send_packet(PacketID.PLI_ITEMTAKE, data)
+        if sent:
+            # Same half-tile spot the wire carries (build_item_take).
+            self.remove_item_local(self.get_current_level_from_position(),
+                                   int((x % 64) * 2) / 2.0,
+                                   int((y % 64) * 2) / 2.0)
+        return sent
 
     def send_item_del(self, x: float, y: float) -> bool:
         """Remove a level item without taking it (PLI_ITEMDEL).
@@ -304,6 +319,173 @@ class ActionsMixin:
 
         data = build_triggeraction(x, y, action, npc_id)
         return self._protocol.send_packet(PacketID.PLI_TRIGGERACTION, data)
+
+    #: hideplayer(seconds) runs at 60 timer ticks a second and clamps the
+    #: request to 0-10 s (TInitStatics.cpp:3425-3439).
+    HIDE_PLAYER_MAX_SECONDS = 10.0
+    HIDE_PLAYER_TICKS_PER_SECOND = 60.0
+
+    def hide_player(self, seconds: float) -> bool:
+        """Hide the local player for `seconds` (the ``hideplayer`` builtin).
+
+        The reference converts the request to ticks, ``clamp(seconds, 0, 10)
+        * 60 + 0.5`` (TInitStatics.cpp:3425-3439), stores it, counts it down
+        once per timer tick (TPlayer.cpp:7307-7308) and reports the player
+        hidden for as long as it is not negative: STATUS bit 2
+        (TPlayer.cpp:2696-2700), so other players see the hide too. Taking
+        damage ends it early (TPlayer.cpp:5734-5735). Returns True when the
+        status change was sent."""
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return False
+        if seconds != seconds:      # NaN clamps like the C++ comparisons: 0
+            seconds = 0.0
+        seconds = max(0.0, min(self.HIDE_PLAYER_MAX_SECONDS, seconds))
+        ticks = int(seconds * self.HIDE_PLAYER_TICKS_PER_SECOND + 0.5)
+        # the counter is hidden while >= 0, so n ticks hide for n + 1 ticks
+        self.hide_player_until = (
+            time.monotonic() + (ticks + 1) / self.HIDE_PLAYER_TICKS_PER_SECOND)
+        self.hide_player_hearts = self.player.hearts
+        status = int(self.player.status)
+        if status & PLSTATUS.HIDDEN:
+            return False
+        self.player.status = status | PLSTATUS.HIDDEN
+        return self._send_appearance_prop(PLPROP.STATUS, self.player.status)
+
+    def _tick_hide_player(self) -> None:
+        """End a hideplayer() hide on expiry, or when the player was hurt."""
+        player = self.player
+        hurt = (self.hide_player_hearts is not None
+                and player.hearts < self.hide_player_hearts)
+        self.hide_player_hearts = player.hearts
+        if not hurt and time.monotonic() < self.hide_player_until:
+            return
+        self.hide_player_until = 0.0
+        self.hide_player_hearts = None
+        if int(player.status) & PLSTATUS.HIDDEN:
+            player.status = int(player.status) & ~PLSTATUS.HIDDEN
+            self._send_appearance_prop(PLPROP.STATUS, player.status)
+
+    def _clear_hide_player(self, notify: bool = False) -> None:
+        """Drop a pending hideplayer() hide and the local HIDDEN bit. A
+        disconnect or reconnect ends the hide; leaving the bit would let a
+        server that persists status bring it back as a permanent hide.
+        `notify` tells a still-open connection the bit is gone first."""
+        self.hide_player_until = 0.0
+        self.hide_player_hearts = None
+        status = int(self.player.status)
+        if status & PLSTATUS.HIDDEN:
+            self.player.status = status & ~PLSTATUS.HIDDEN
+            if notify:
+                self._send_appearance_prop(PLPROP.STATUS, self.player.status)
+
+    #: Limits on server-warp traffic. All are our caps: the reference only
+    #: drops empty and repeated destinations (TClient.cpp:376). A script on an
+    #: untrusted server drives serverwarp(), and an accepted warp hands this
+    #: session's account name and password to the destination, so the player's
+    #: consent must not be farmed by repetition.
+    #:  - SERVER_WARP_MAX_CHARS: longest destination a script may send.
+    #:  - SERVER_WARP_MIN_INTERVAL: least seconds between any two sends,
+    #:    measured from the timestamp alone (a reply does not reopen it).
+    #:  - SERVER_WARP_DECLINE_COOLDOWN: after the player declines a prompt,
+    #:    no new prompt opens and no script send goes out for this long, for
+    #:    every destination.
+    #:  - SERVER_WARP_MAX_OFFERS: consent prompts per session; past it
+    #:    script-initiated warps are ignored until the player opens the F8
+    #:    server browser (reset_server_warp_limits).
+    SERVER_WARP_MAX_CHARS = 128
+    SERVER_WARP_MIN_INTERVAL = 1.0
+    SERVER_WARP_DECLINE_COOLDOWN = 30.0
+    SERVER_WARP_MAX_OFFERS = 5
+    #: Least seconds between two "a script's warp was blocked" notices.
+    SERVER_WARP_NOTICE_INTERVAL = 5.0
+
+    def server_warp_allowed(self) -> bool:
+        """True while neither the decline cooldown nor the offer cap blocks
+        a script-initiated server warp or a new consent prompt."""
+        return (time.monotonic() >= self.server_warp_declined_until
+                and self.server_warp_offers < self.SERVER_WARP_MAX_OFFERS)
+
+    def _note_server_warp_blocked(self, destination: str) -> None:
+        """Tell the player (log line + on_server_warp_blocked) that a script's
+        warp was suppressed by the cooldown or cap, at most once per
+        SERVER_WARP_NOTICE_INTERVAL seconds."""
+        now = time.monotonic()
+        last = self.server_warp_notice_at
+        if last is not None and now - last < self.SERVER_WARP_NOTICE_INTERVAL:
+            return
+        self.server_warp_notice_at = now
+        logger.warning("serverwarp(%r) blocked: server-move prompts are "
+                       "limited (decline cooldown or per-session cap)",
+                       destination[:40])
+        if self.on_server_warp_blocked:
+            self.on_server_warp_blocked(destination)
+
+    def note_server_warp_offer(self) -> bool:
+        """Count a consent prompt about to open; False when none may."""
+        if not self.server_warp_allowed():
+            return False
+        self.server_warp_offers += 1
+        return True
+
+    def note_server_warp_declined(self) -> None:
+        """The player said no: start the global decline cooldown."""
+        self.server_warp_declined_until = (
+            time.monotonic() + self.SERVER_WARP_DECLINE_COOLDOWN)
+
+    def reset_server_warp_limits(self) -> None:
+        """The player used the server browser themselves: lift the offer cap."""
+        self.server_warp_offers = 0
+
+    def send_server_warp(self, destination: str) -> bool:
+        """Ask the server list to move this session to another server.
+
+        The script builtin ``serverwarp(name)``. The reference sends
+        PLI_SERVERWARP with the destination text as-is, and drops an empty
+        destination or one equal to the last one sent
+        (TClient.cpp:358-381, TServerList.cpp:115-119). The listserver's
+        answer is PLO_SERVERWARP, which arrives through ``on_server_warp`` --
+        the callback a headless client uses. The pygame client turns it into
+        a consent prompt.
+
+        The destination comes from a script on an untrusted server, so it is
+        refused when it holds a control character (a newline would end the
+        packet early) or exceeds SERVER_WARP_MAX_CHARS. Any send inside
+        SERVER_WARP_MIN_INTERVAL seconds of the previous one is dropped, reply
+        or not; so is every send during the decline cooldown or once the
+        offer cap is reached (see server_warp_allowed). A repeat of the last
+        destination is dropped until a PLO_SERVERWARP reply clears it, so a
+        player who declined the prompt can ask again after the cooldown.
+        Returns True when a packet was sent.
+        """
+        if not isinstance(destination, str) or not destination:
+            return False
+        if (len(destination) > self.SERVER_WARP_MAX_CHARS
+                or not destination.isprintable()):
+            logger.debug("serverwarp: refused unusable destination %r",
+                         destination[:40])
+            return False
+        try:
+            data = destination.encode("latin-1")
+        except UnicodeEncodeError:
+            return False
+        if not self.connected or not self._authenticated:
+            return False
+        if destination == self.last_server_warp:
+            return False
+        if not self.server_warp_allowed():
+            self._note_server_warp_blocked(destination)
+            return False
+        now = time.monotonic()
+        if (self.last_server_warp_at
+                and now - self.last_server_warp_at < self.SERVER_WARP_MIN_INTERVAL):
+            return False
+        if not self._protocol.send_packet(PacketID.PLI_SERVERWARP, data):
+            return False
+        self.last_server_warp = destination
+        self.last_server_warp_at = now
+        return True
 
     def accept_server_warp(self, info: Optional[dict] = None) -> Optional[dict]:
         """Consent to a PLO_SERVERWARP offer; return its validated target.

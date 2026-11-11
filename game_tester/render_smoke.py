@@ -10,12 +10,15 @@ test_scenarios.py, exercise*.py, packet_coverage.py are owned by a different,
 concurrent pass and intentionally untouched/unused for anything but the
 reset_account_position() helper).
 
-Run standalone:
-    PYTHONPATH=../reborn-protocol python -m game_tester.render_smoke
+Run standalone (a private server; the target is always explicit):
+    SDL_VIDEODRIVER=dummy python -m game_tester.render_smoke --port 14932
+    python -m game_tester.qa_server run --port 14932 -- \\
+        python -m game_tester.render_smoke       # reads PYREBORN_TEST_PORT
 
-Requires a GServer-v2 instance on localhost:14900 (override with
-PYREBORN_TEST_HOST/PYREBORN_TEST_PORT) with testbot1/testbot2 accounts
-(noverifylogin) and testbot1/testbot2 logged OUT beforehand.
+It logs in testbot1/testbot2 and paints tiles over the wire, so it never
+defaults to the shared :14900; that needs an explicit `--shared`. Needs a
+server with testbot1/testbot2 accounts (noverifylogin) and both logged OUT
+beforehand.
 """
 
 import os
@@ -40,8 +43,10 @@ from pyreborn.game.constants import TILE_SIZE
 from game_tester.login import level_ready, login_client
 from game_tester.test_scenarios import reset_account_position
 
+SHARED_PORT = 14900
+# Set by main() from the command line; there is deliberately no default port.
 HOST = os.environ.get("PYREBORN_TEST_HOST", "localhost")
-PORT = int(os.environ.get("PYREBORN_TEST_PORT", "14900"))
+PORT = 0
 
 # A fresh account has no persisted PLPROP_MAGICPOINTS, which parses to the
 # same 0 as Player.mp's dataclass default - so testing against a fresh
@@ -566,6 +571,8 @@ def _t4b(game, c1, c2):
     game.client.bigmap_info = {'image': 'does_not_exist_12345.png',
                                'levels_file': '', 'x': 0.0, 'y': 0.0}
     game._ensure_bigmap_surface()  # missing image -> request + no-op, not raise
+    game.client.minimap_info = dict(game.client.bigmap_info)
+    game._ensure_minimap_surface()  # same contract for the corner map
 
 
 @check("tier4c_base_tileset_download_invalidates_the_world_surface")
@@ -690,7 +697,46 @@ def _tiny_png() -> bytes:
             + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
 
 
-def main() -> int:
+def parse_args(argv=None):
+    """Parse the command line. `--help` prints usage and exits; an unknown
+    flag is an error. Nothing here opens a socket."""
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="python -m game_tester.render_smoke",
+        description="Headless render smoke against a LIVE server. Logs in "
+                    "testbot1/testbot2 and paints tiles, so point it at a "
+                    "private server.")
+    parser.add_argument("--host", default=HOST,
+                        help="server host (default: PYREBORN_TEST_HOST or "
+                             "localhost)")
+    parser.add_argument("--port", type=int,
+                        help="server port (default: PYREBORN_TEST_PORT, "
+                             "which qa_server run exports; no other default)")
+    parser.add_argument("--shared", action="store_true",
+                        help=f"deliberately target localhost:{SHARED_PORT}, "
+                             "the shared reference server")
+    args = parser.parse_args(argv)
+    if args.shared:
+        if args.port not in (None, SHARED_PORT):
+            parser.error(f"--shared means port {SHARED_PORT}; drop --port")
+        args.port = SHARED_PORT
+    elif args.port is None:
+        env = os.environ.get("PYREBORN_TEST_PORT", "")
+        if not env.isdigit():
+            parser.error("no target port: pass --port N (a private server), "
+                         "or --shared for the shared one")
+        args.port = int(env)
+    if args.port == SHARED_PORT and not args.shared:
+        parser.error(f"port {SHARED_PORT} is the shared server; pass "
+                     "--shared to target it on purpose")
+    return args
+
+
+def main(argv=None) -> int:
+    global HOST, PORT
+    args = parse_args(argv)
+    HOST, PORT = args.host, args.port
+    print(f"render_smoke target: {HOST}:{PORT}", flush=True)
     reset_account_position("testbot1", mp=_TESTBOT1_MP)
     reset_account_position("testbot2")
 

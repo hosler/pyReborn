@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .asset_paths import normalize_asset_name, server_cache_dir
+from . import update_packages as _packages
 from .packets import (
-    PacketID, build_board_modify, build_update_class, build_update_file,
-    build_update_gani, build_update_script, build_wantfile,
+    PacketID, build_board_modify, gupd_name_reserved, build_update_class, build_update_file,
+    build_update_gani, build_update_package_request, build_update_script,
+    build_wantfile,
 )
 
 class FileTransferMixin:
@@ -121,6 +123,7 @@ class FileTransferMixin:
         if not self.connected or not self._authenticated:
             return False
 
+        _packages.note_requested(self, filename)
         cached_data = self.get_file(filename)
         cached_modtime = self._cached_file_modtime(filename)
         if cached_data is not None and cached_modtime is not None:
@@ -135,9 +138,68 @@ class FileTransferMixin:
         if not self.connected or not self._authenticated:
             return False
 
+        _packages.note_requested(self, filename)
         self._pending_files.add(filename)
         data = build_update_file(filename, mod_time)
         return self._protocol.send_packet(PacketID.PLI_UPDATEFILE, data)
+
+    def request_update_package(self, name: str, reinstall: bool = False) -> bool:
+        """Ask the server for an update package (PLI_UPDATEPACKAGEREQUESTFILE).
+
+        `name` is the package file name, e.g. "basepackage.gupd". The server
+        answers PLO 105 (bytes needed), then every file it thinks we lack, then
+        PLO 106; progress surfaces through on_update_package_progress /
+        _downloaded / on_packages_download_complete and `update_packages`.
+
+        Normal install sends the CRC32 of each cached file in .gupd FILE order
+        (five spaces for one we do not hold) so the server can skip those;
+        `reinstall` sends type 2 with every slot blank so everything comes
+        again. If the .gupd has not been downloaded yet the file list is empty
+        and the server sends the whole package. Returns True if the packet was
+        sent; False when offline, the name is unusable, or the package table
+        (update_packages.MAX_UPDATE_PACKAGES) is full.
+        """
+        if not self.connected or not self._authenticated:
+            return False
+        package = _packages.track_package(self, name)
+        if package is None:
+            return False
+        if not package.files:
+            blob = self.peek_file(name)
+            if blob is not None:
+                _packages.load_package_files(self, package, blob)
+        slots = []
+        for index, base in enumerate(package.files):
+            if index in package.blocked:
+                slots.append('blocked')
+            elif reinstall:
+                slots.append(None)
+            else:
+                slots.append(_packages.file_crc(self, base))
+        data = build_update_package_request(name, reinstall, slots)
+        if not self._protocol.send_packet(
+                PacketID.PLI_UPDATEPACKAGEREQUESTFILE, data):
+            return False
+        # Only now is the package ours to track. Reference
+        # TUpdatePackage::update (TUpdatePackage.cpp:256-302) resets the
+        # counters on a fresh request. A package whose server never answers is
+        # failed by update_packages.expire_stalled after
+        # PACKAGE_STALL_TIMEOUT seconds, or by cancel_update_package().
+        package.size = 0
+        package.received = 0
+        package.done = False
+        package.failed = False
+        package.downloading = True
+        package.last_activity = _packages._now()
+        return True
+
+    def cancel_update_package(self, name: str) -> bool:
+        """Stop waiting for a requested package; it reports failed."""
+        return _packages.cancel_package(self, name)
+
+    def get_update_package(self, name: str):
+        """The tracked UpdatePackage ({size, received, done}) or None."""
+        return self._update_packages.get(name)
 
     def get_file(self, filename: str) -> Optional[bytes]:
         """
@@ -186,6 +248,34 @@ class FileTransferMixin:
         # hashing again; bytes placed here by a wire handler are trusted too.
         self._received_files[filename] = data
         self._received_files[key] = data
+        return data
+
+    def peek_file(self, filename: str) -> Optional[bytes]:
+        """Read a downloaded file without touching the cache.
+
+        Same sources and integrity check as get_file(), but a missing or
+        mismatching entry just returns None: nothing is invalidated, unlinked
+        or rewritten. For callers whose file NAME comes from the server
+        (update-package CRCs).
+        """
+        data = self._received_files.get(filename)
+        if data is not None:
+            return data
+        key = normalize_asset_name(filename)
+        if not key:
+            return None
+        data = self._received_files.get(key)
+        if data is not None:
+            return data
+        try:
+            data = (server_cache_dir(self.host, self.port) / key).read_bytes()
+            metadata = self._load_cache_index().get(key)
+        except (OSError, ValueError, TypeError):
+            return None
+        if (not isinstance(metadata, dict)
+                or len(data) != metadata.get("size")
+                or hashlib.sha256(data).hexdigest() != metadata.get("sha256")):
+            return None
         return data
 
     def has_file(self, filename: str) -> bool:
@@ -277,7 +367,7 @@ class FileTransferMixin:
         # Empty assets are not legitimate downloads. A zero-byte tileset from
         # a cut-off large transfer was persisted and then shadowed a good user
         # copy across every restart, so never create that artifact again.
-        if not key or not file_data:
+        if not key or not file_data or gupd_name_reserved(key):
             return
         try:
             directory = server_cache_dir(self.host, self.port)
@@ -297,7 +387,7 @@ class FileTransferMixin:
     def _invalidate_cached_file(self, filename: str) -> None:
         """Discard memory and disk copies after a server update notice."""
         key = normalize_asset_name(filename)
-        if not key:
+        if not key or gupd_name_reserved(key):
             return
         for received_name in list(self._received_files):
             if normalize_asset_name(received_name) == key:
@@ -316,6 +406,17 @@ class FileTransferMixin:
             self._atomic_cache_write(directory / "index.json", encoded)
         except (OSError, ValueError, TypeError):
             pass
+
+    def _is_cache_entry(self, filename: str) -> bool:
+        """True if `filename` is something this client actually cached (in
+        memory or in the on-disk index), as opposed to a name a server made up."""
+        key = normalize_asset_name(filename)
+        if not key or gupd_name_reserved(key):
+            return False
+        if key in self._load_cache_index():
+            return True
+        return any(normalize_asset_name(name) == key
+                   for name in list(self._received_files))
 
     def is_file_pending(self, filename: str) -> bool:
         """Check if a file download is pending."""

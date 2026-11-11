@@ -167,6 +167,7 @@ class ClientGS1:
         # Stored locally so the local player sees them; full multiplayer sync
         # (PLI/PLO player props) is a later step.
         self._player_props: dict = {}
+        self._openurl_logged: set = set()  # URLs already debug-logged
         self._host = GS1ClientHost(self)
         # callbacks (same surface the pygame client wires up)
         self.on_showimg = None
@@ -1053,17 +1054,14 @@ class ClientGS1:
                 continue
             if math.hypot(ix + ox - cx, iy + oy - cy) > reach:
                 continue
-            items.pop((ix, iy), None)
             try:
                 cl.send_item_del(ix, iy)
             except Exception:
                 pass
-            cb = getattr(cl, "on_item", None)
-            if cb:
-                try:
-                    cb(ix, iy, kind, False)
-                except Exception:
-                    pass
+            try:
+                cl.remove_item_local(level, ix, iy)
+            except Exception:
+                items.pop((ix, iy), None)
             self._npc_take_effect(npc, index)
             return True
         return False

@@ -17,6 +17,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT
 
 # Standalone script against a hand-started server on a hardcoded host:port
@@ -164,7 +165,7 @@ def run_test():
 
         if result['success']:
             print(f"  ✓ Crossed to {result['end_grid']} ({result['end_level']}) in {result['steps']} steps")
-            take_screenshot(game.screen, f"/tmp/direction_test_{direction}.png")
+            take_screenshot(game.screen, scratch_path(f"direction_test_{direction}.png"))
         else:
             print(f"  ? Could not cross ({result.get('reason', 'unknown')})")
             print(f"    Position: {result['position']}")

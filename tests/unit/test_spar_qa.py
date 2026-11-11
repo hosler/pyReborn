@@ -63,14 +63,18 @@ def test_spar_skips_when_loopback_alias_cannot_bind(monkeypatch):
     assert '127.0.0.2' in result.details and 'cannot bind' in result.details
 
 
-def test_spar_missing_fixture_requests_restart(tmp_path, monkeypatch):
+def test_spar_missing_fixture_skips_without_writing(tmp_path, monkeypatch):
     monkeypatch.setenv('PYGSERVER_LEVELS_DIR', str(tmp_path))
     monkeypatch.setattr(tier2.socket, 'socket', MagicMock())
     connect = Mock(side_effect=AssertionError('must not connect'))
     monkeypatch.setattr(tier2, 'GameBot', connect)
     result = tier2.test_spar_rating_updates()
     assert result.skipped and not result.passed
-    assert 'restart' in result.details and (tmp_path / SPAR_LEVEL).exists()
+    # The arena only registers at server startup, so the test never writes it:
+    # a file it dropped mid-run could not help and nothing would remove it.
+    assert 'qa_server run' in result.details
+    assert not (tmp_path / SPAR_LEVEL).exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_skips_are_reported_separately(tmp_path, capsys):
@@ -94,9 +98,12 @@ def test_skips_are_reported_separately(tmp_path, capsys):
     (False, 'unchanged', False),
     (True, 'ratings', False),
     (False, 'kills', False),
-    (True, 'no_death_confirmation', False),
+    (True, 'no_death', False),
+    (True, 'no_claim', False),
+    (False, 'no_claim', False),
+    (False, 'death_counted', False),
 ])
-def test_live_assertions_require_death_rating_delivery_and_no_kills(
+def test_live_assertions_require_death_no_death_count_rating_delivery_and_no_kills(
         tmp_path, monkeypatch, same_ip, behavior, passes):
     write_spar_fixture(tmp_path)
     monkeypatch.setenv('PYGSERVER_LEVELS_DIR', str(tmp_path))
@@ -121,8 +128,13 @@ def test_live_assertions_require_death_rating_delivery_and_no_kills(
                                     disconnect=Mock()))
 
     def kill(*args, **kwargs):
-        clients[1].player.hearts = 0
-        if behavior != 'no_death_confirmation':
+        if behavior != 'no_death':
+            clients[1].player.hearts = 0
+            # the fatal hit is attributed and claimed, unless the case says not
+            clients[1]._pker_claimed = behavior != 'no_claim'
+        # A sparring zone counts no death (reference PlayerProps.cpp:576-580
+        # on origin/beta4; :567-571 in the local-beta4 checkout).
+        if behavior == 'death_counted':
             clients[1].player.deaths += 1
         if behavior == 'kills':
             clients[0].player.kills += 1

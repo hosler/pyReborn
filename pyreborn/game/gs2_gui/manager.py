@@ -30,6 +30,12 @@ def _ticks() -> int:
     return pygame.time.get_ticks()
 
 
+#: Most parentless (root) controls a script may add. The reference has no
+#: limit; ours stops a script from growing the tree and every per-frame pass
+#: over it without bound. Real GUIs (the Login server's) use a few dozen.
+MAX_ROOT_CONTROLS = 1000
+
+
 class GS2GuiManager:
     """Root of the GS2 GUI control tree.
 
@@ -229,6 +235,21 @@ class GS2GuiManager:
             _log_once(("addcontrol", type(ctrl).__name__),
                       "GS2 GUI: addcontrol() called on a non-control value (%r)", ctrl)
             return
+        if (not ctrl.is_profile and ctrl.parent is None
+                and ctrl not in self.roots
+                and len(self.roots) >= MAX_ROOT_CONTROLS):
+            # Refused BEFORE the control is touched (no manager, owner or
+            # wake state): it stays exactly as constructed and is simply not
+            # attached. Only the construction stack forgets it, as for any
+            # finished construction.
+            if ctrl in self._construction_stack:
+                del self._construction_stack[
+                    self._construction_stack.index(ctrl):]
+            _log_once(("root_cap",),
+                      "GS2 GUI: more than %d root controls; ignoring "
+                      "further addcontrol() of parentless controls",
+                      MAX_ROOT_CONTROLS)
+            return
         ctrl._manager = self
         if owner_vm is not None and ctrl._owner_vm is None:
             # every new-statement emits addcontrol from the constructing
@@ -262,6 +283,10 @@ class GS2GuiManager:
         if not ctrl._awake and (ctrl.parent is None
                                 or ctrl.parent._awake):
             ctrl.awaken()
+        if ctrl.parent is None and ctrl in self.roots:
+            # pushDialogControl, GuiCanvas.cpp:1246: fits the pushed dialog
+            # only; the other roots were fitted when they were added.
+            self.fit_main_controls(only=ctrl)
 
     def _reap_construction_leak(self) -> None:
         """Valid construction is synchronous within one VM execution, so the
@@ -674,14 +699,42 @@ class GS2GuiManager:
         })
         return obj
 
+    def fit_main_controls(self, only: Optional[GuiControl] = None) -> None:
+        """GuiCanvas::fitMainControls (gui/GuiCanvas.cpp:251-305): every
+        canvas-level control whose profile is `modal` and that is visible and
+        awake is resized to the canvas rectangle. The reference runs it when
+        a dialog is pushed (GuiCanvas.cpp:1246) and on every window resize
+        (TClientEnvironment.cpp:363). A control never shrinks below its
+        minimum size.
+
+        `only` fits a single root (a push: re-fitting every other root on
+        each add made adding N roots quadratic); the default is the full
+        pass a canvas resize needs. Controls whose profile is not modal are
+        skipped without touching their geometry."""
+        if self.canvas_size is None:
+            return
+        width, height = float(self.canvas_size[0]), float(self.canvas_size[1])
+        for root in ([only] if only is not None else list(self.roots)):
+            if not (root.visible and root._awake) or root.is_profile:
+                continue
+            if not root.resolve_profile().modal:
+                continue
+            root.resize_control(
+                0.0, 0.0, max(width, float(root.min_size[0])),
+                max(height, float(root.min_size[1])))
+
     def on_canvas_resize(self, new_w: int, new_h: int) -> None:
         old = self.canvas_size
         self.canvas_size = (new_w, new_h)
-        if old is None or old == (new_w, new_h):
+        if old == (new_w, new_h):
+            return
+        if old is None:
+            self.fit_main_controls()
             return
         for root in list(self.roots):
             root.on_parent_resized(float(old[0]), float(old[1]),
                                    float(new_w), float(new_h))
+        self.fit_main_controls()
         # The canvas root control resizes too: scripts hang dotted handlers
         # off its fixed names -- `function GraalControl.onResize(newwidth,
         # newheight)` in Login's Rescripted_Serverlist relayouts the whole

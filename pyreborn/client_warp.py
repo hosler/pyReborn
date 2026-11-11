@@ -354,6 +354,7 @@ class WarpMixin:
         PLO_LEVELSIGN at all). They mirror the server's own session cache."""
         self._reset_file_transfer_state(full_reset=False)
         self.items.clear()
+        self.item_stamps.clear()
         self.baddies.clear()
         self.horses.clear()
         self.board_layers.clear()

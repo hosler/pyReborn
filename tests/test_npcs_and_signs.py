@@ -17,6 +17,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyreborn import Client
+from _qa_scratch import scratch_path
 from pyreborn.pygame_game import GameClient, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE
 
 # Standalone script against a hand-started server on a hardcoded host:port
@@ -259,7 +260,7 @@ class NPCAndSignTests:
     def test_npc_in_viewport(self) -> bool:
         """Test that the client renders NPCs in the viewport."""
         render_frame(self.game, self.client)
-        screenshot = take_screenshot(self.game.screen, "/tmp/test_npc_viewport.png")
+        screenshot = take_screenshot(self.game.screen, scratch_path("test_npc_viewport.png"))
 
         # Check for variety (NPCs should add color)
         pixels = list(screenshot.getdata())
@@ -283,8 +284,8 @@ class NPCAndSignTests:
     def test_screenshot_with_npcs(self) -> bool:
         """Take a screenshot that shows NPCs."""
         render_frame(self.game, self.client)
-        img = take_screenshot(self.game.screen, "/tmp/test_npcs_full.png")
-        print(f"    Screenshot saved to /tmp/test_npcs_full.png")
+        img = take_screenshot(self.game.screen, scratch_path("test_npcs_full.png"))
+        print("    Screenshot saved to test_npcs_full.png (scratch dir)")
         return img is not None
 
 

@@ -86,16 +86,17 @@ class MinimapMixin:
         self._minimap_native_surface = self.minimap_surface
         self.minimap_surface = pygame.transform.scale(self.minimap_surface, self.minimap_size)
     def _ensure_bigmap_surface(self):
-        """Load the configured PLO_MINIMAP or PLO_BIGMAP image for the map UI.
+        """Load the PLO_BIGMAP image (M-key map); the minimap image stands in
+        when the server set no bigmap.
 
-        The shared configuration has no image callback, so this polls once per
-        image change while the map has nothing else to show.
+        The configuration has no image callback, so this polls once per image
+        change while the map has nothing else to show.
         """
-        info = self.client.bigmap_info
+        info = self.client.bigmap_info or self.client.minimap_info
         if not info or not info.get('image'):
             return
         image = info['image']
-        if getattr(self, '_bigmap_image_name', None) == image and self.minimap_surface is not None:
+        if self._bigmap_image_name == image and self.bigmap_surface is not None:
             return  # already built for this image
         sheet = self.sprite_mgr.load_sheet(image)
         if sheet is None:
@@ -103,6 +104,21 @@ class MinimapMixin:
             return
         self._bigmap_image_name = image
         self.bigmap_surface = sheet
+
+    def _ensure_minimap_surface(self):
+        """Load the PLO_MINIMAP image (corner map); the bigmap image stands in
+        when the server set no minimap."""
+        info = self.client.minimap_info or self.client.bigmap_info
+        if not info or not info.get('image'):
+            return
+        image = info['image']
+        if self._minimap_image_name == image and self.minimap_surface is not None:
+            return
+        sheet = self.sprite_mgr.load_sheet(image)
+        if sheet is None:
+            self._request_asset(image)
+            return
+        self._minimap_image_name = image
         self.minimap_surface = pygame.transform.smoothscale(sheet, self.minimap_size)
 
     def _get_minimap_palette(self) -> List[Tuple[int, int, int]]:

@@ -8,7 +8,7 @@ from reborn_protocol.gs2 import GS2Host
 from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import GS2VM
 from typing import List
-from reborn_protocol.gs2 import NOT_HANDLED
+from reborn_protocol.gs2 import GS2VarString, NOT_HANDLED
 from typing import Optional
 from ..particles import ParticleEmitter
 from ..particles import ParticleModifier
@@ -261,6 +261,13 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
             handler = _GS2_STR_METHODS.get(name)
             if handler is not None:
                 return handler(self, vm, name, args, obj)
+            if isinstance(obj, GS2VarString):
+                # A string HELD in a variable is a value, never a weapon
+                # name (only a literal receiver name-resolves). The VM
+                # delivers it for the root variable methods, and one this
+                # table does not implement (loadstring, ...) is a no-op,
+                # not a weapon fetch.
+                return 0.0
             # ("-Serverlist_Options").showOptions() -- a method call on a
             # string that NAMES a weapon script dispatches to that weapon's
             # public function (the reference resolves the string literal

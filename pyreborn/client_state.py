@@ -10,12 +10,14 @@ Nothing here talks to the network or to Client: these are plain state holders.
 """
 
 from collections import OrderedDict
+import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import tiletypes as _tiletypes
 
 MAX_CACHED_LEVELS = 512
 MAX_CACHED_FILES = 512
+MAX_REQUESTED_FILES = 4096
 
 
 class BoundedLRU(OrderedDict):
@@ -54,10 +56,13 @@ class SessionState:
     the session itself (flags, MOTD, freeze state, cookies)."""
 
     def __init__(self, version: str):
-        # PLPROP_COLORS width: v6 clients get 8 (extended body colors), classic
-        # v2/v5 clients get 5. Wrong width misaligns the whole player-props
-        # packet (garbled level name, spawn stuck at 0,0). See parse_player_props.
-        self.colors_len = 8 if str(version).startswith("6") else 5
+        # PLPROP_COLORS width PRIOR: 5, the reference default. The width is a
+        # server-wide mode (`servermode = newworld` -> 8), not a client-version
+        # fact, so it is not derived from `version`. The width actually in
+        # force is colors_width.colors_len_in_force(): PLO_NEWWORLDMODE (177)
+        # decides, else the session's parse evidence, else this prior. A wrong
+        # width misaligns the whole player-props packet.
+        self.colors_len = 5
         # Clients older than 2.1 receive PLO_FILE without the 5-byte modtime
         # header (GServer Player.cpp sendFile: "Older client versions didn't
         # send the modTime"). Only the 1.x entries qualify.
@@ -87,12 +92,19 @@ class SessionState:
 
         # Server-control state (tier 3).
         self.frozen = False              # PLO_FREEZEPLAYER2 / PLO_UNFREEZEPLAYER
-        self.classic_mode_disabled = False  # packet 176 (reborn-protocol: DISABLECLASSICMODE)
+        self.classic_mode_disabled = False  # packet 176 (KINGDOMSMODE; legacy flag name)
         self.server_mode = ''            # 'kingdoms' (176) / 'newworld' (177) marker
         self.input_frozen = False        # only a legacy lock now; no packet sets it
         self.npcs_hidden = False         # PLO_HIDENPCS
         self.login_complete = False      # PLO_ONLINEMODE (blank "you're logged in" marker)
         self.server_warp_info: Optional[dict] = None  # last PLO_SERVERWARP target
+        self.last_server_warp = ""       # last destination send_server_warp sent
+        self.last_server_warp_at = 0.0   # monotonic time of that send
+        self.server_warp_declined_until = 0.0  # monotonic end of the decline cooldown
+        self.server_warp_offers = 0      # consent prompts opened this session
+        self.server_warp_notice_at = None  # monotonic time of the last blocked-warp notice
+        self.hide_player_until = 0.0     # monotonic end of a hideplayer() hide
+        self.hide_player_hearts = None   # hearts last seen while hidden
         self.profiles: Dict[str, dict] = {}  # account -> profile (PLO_PROFILE)
         self.npcserver_addr: Optional[dict] = None  # PLO_NPCSERVERADDR
         self.net_cookie = ""             # PLO_SETNETCOOKIE
@@ -196,7 +208,8 @@ class GmapState:
         # file (Client.restore_known_gmap) instead of waiting for the server.
         self.last_gmap_name = ""
         self.requested_gmap = ""       # .gmap we've already sent a WANTFILE for
-        self.bigmap_info: Dict = {}    # PLO_BIGMAP (171): image/levels_file/x/y
+        self.bigmap_info: Dict = {}    # PLO_BIGMAP (171): image/levels_file/x/y (M-key map)
+        self.minimap_info: Dict = {}   # PLO_MINIMAP (172): same shape (corner map)
         self.gmap_spawn_x = 0   # GMAP grid x from PLO_PLAYERWARP2
         self.gmap_spawn_y = 0   # GMAP grid y from PLO_PLAYERWARP2
         # Offset between world coordinate grid and GMAP grid
@@ -291,6 +304,12 @@ class EntityState:
         # level or identical positions in adjacent gmap boards overwrite each
         # other and every off-origin item is later mistaken for segment zero.
         self.items: Dict[str, Dict[Tuple[float, float], str]] = {}
+        # When each ground item's client-side lifetime started: the moment it
+        # reached this client (see ground_items.ITEM_LIFETIME_TICKS). The
+        # server expires an item silently, so the client prunes `items` itself
+        # (Client.expire_items). `item_clock` is injectable for tests.
+        self.item_stamps: Dict[Tuple[str, Tuple[float, float]], float] = {}
+        self.item_clock: Callable[[], float] = time.monotonic
 
         # Baddy coordinates are level-local on the wire. Keep the owning level
         # or identical positions in adjacent gmap boards are later folded onto
@@ -370,6 +389,12 @@ class FileTransfers:
         # transaction state keyed by filename so unrelated starts cannot
         # replace bytes already in flight.
         self.large_file_transfers: Dict[str, dict] = {}
+
+        # Update packages (.gupd) by name -> update_packages.UpdatePackage, and
+        # the normalised names this session asked for (PLO_UPDATEPACKAGEISUPDATED
+        # re-requests only those; FourPlay TClient.cpp:2407-2436).
+        self.update_packages: Dict[str, object] = {}
+        self.requested_files: Dict[str, bool] = BoundedLRU(MAX_REQUESTED_FILES)
 
 
 class ScriptTransport:
@@ -466,6 +491,14 @@ class Callbacks:
         self.on_file: Optional[Callable[[str, bytes], None]] = None
         # File failure callback: handler(filename)
         self.on_file_send_failed: Optional[Callable[[str], None]] = None
+        # Update-package events (reference onUpdatePackageDownloaded,
+        # onPackagesDownloadComplete, onUpdatePackageFailed):
+        # progress(name, received, size), downloaded(name), complete(),
+        # failed(gupd_filename).
+        self.on_update_package_progress: Optional[Callable[[str, int, int], None]] = None
+        self.on_update_package_downloaded: Optional[Callable[[str], None]] = None
+        self.on_packages_download_complete: Optional[Callable[[], None]] = None
+        self.on_update_package_failed: Optional[Callable[[str], None]] = None
 
         # Sign callback: handler(x, y, text) - when sign text is received
         self.on_sign: Optional[Callable[[float, float, str], None]] = None
@@ -545,6 +578,10 @@ class Callbacks:
         # Server warp target: handler(info) with name/host/port (PLO_SERVERWARP).
         # pyReborn does NOT auto-connect; the app decides.
         self.on_server_warp: Optional[Callable[[dict], None]] = None
+        # A script's serverwarp() was suppressed by the decline cooldown or
+        # the per-session offer cap: handler(destination), at most one call
+        # per SERVER_WARP_NOTICE_INTERVAL seconds.
+        self.on_server_warp_blocked: Optional[Callable[[str], None]] = None
         # Inbound triggeraction: handler(info) with player_id/npc_id/x/y/action.
         self.on_triggeraction: Optional[Callable[[dict], None]] = None
         # Profile received: handler(profile dict) (PLO_PROFILE).

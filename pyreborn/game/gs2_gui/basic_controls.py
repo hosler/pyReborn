@@ -347,6 +347,20 @@ class GuiButtonBaseCtrl(GuiControl):
     def is_active(self) -> bool:
         return to_bool(self._members.get("active", 1))
 
+    def label_color(self, prof):
+        """Text colour of a button label (GuiButtonCtrl::onRender,
+        gui/GuiButtonCtrl.cpp:125-160): an inactive control uses the
+        profile's not-active font colour (`fontcolorna`), an active hovered
+        one `fontcolorhl` (when set), anything else `fontcolor`. The
+        decompiled profile code gives `fontcolorna` no default of its own
+        (GuiControlProfile::initObject, gui/GuiControlProfile.cpp:178-221
+        only copies it from the script-defined GuiDefaultProfile), so an
+        inactive button whose profile never set it keeps its normal colour,
+        and the hover colour never applies to it."""
+        if not self.is_active():
+            return prof.fg_na or prof.fg
+        return prof.fg_hl if (self.hovered and prof.fg_hl) else prof.fg
+
     def on_action(self) -> bool:
         """The engine's onAction(): the activation path a click/Enter/hotkey
         takes (GuiButtonBaseCtrl.cpp:59-94). Inactive controls do nothing at
@@ -517,7 +531,10 @@ class GuiButtonCtrl(GuiButtonBaseCtrl):
                 lx = r.right - tw - 8
             else:
                 lx = max(tx, r.centerx - tw // 2)
-            _draw_label(surf, font, text, prof.fg,
+            # the mouse-over text colour is the profile's fontcolorhl, an
+            # inactive control's its fontcolorna (see label_color)
+            fg = self.label_color(prof)
+            _draw_label(surf, font, text, fg,
                         (lx, r.centery - font.get_height() // 2),
                         prof.text_shadow)
 

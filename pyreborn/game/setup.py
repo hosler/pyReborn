@@ -67,6 +67,10 @@ class SetupMixin:
         """Setup asset search paths."""
         # Server art wins over the user's stock copy of the same filename;
         # bundled defaults are the last resort.
+        # Build the GS2 GUI font roots here, once, so drawing never scans
+        # content directories (profiles.prime_font_roots).
+        from .gs2_gui.profiles import prime_font_roots
+        prime_font_roots()
         return [
             asset_paths.server_cache_dir(self.client.host, self.client.port),
             *asset_paths.content_dirs(),

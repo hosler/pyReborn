@@ -19,6 +19,7 @@ the tree then the imperative overlays. The tile-editor/debug overlay stays in
 render.py — it is editor UI, not the play HUD.
 """
 
+import time
 from typing import Optional, Tuple
 
 import pygame
@@ -428,6 +429,12 @@ class HUD:
             # Draws nothing while closed; it is last so RC tools sit over
             # every other overlay, matching their input priority.
             rc_ui.draw(surf)
+        notice = getattr(self.game, 'hud_notice', None)
+        if notice is not None:
+            if time.monotonic() >= notice[1]:
+                self.game.hud_notice = None
+            else:
+                self._draw_hud_notice(surf, notice[0])
         # Topmost, like its input priority: nothing may cover the consent prompt.
         if getattr(self.game, 'server_warp_prompt', None) is not None:
             self._draw_server_warp_prompt(surf)
@@ -553,8 +560,8 @@ class HUD:
         if not (stats_mask(g) & STAT_MINIMAP):
             return          # hidden by a script's showstats call
         if g.minimap_visible and not g.minimap_surface:
-            # Try either configured map image when raw minimap data built no surface.
-            g._ensure_bigmap_surface()
+            # Build the corner map image when raw minimap data built no surface.
+            g._ensure_minimap_surface()
         if not (g.minimap_visible and g.minimap_surface):
             return
         mw, mh = g.minimap_size
@@ -573,7 +580,7 @@ class HUD:
 
     def _draw_big_map(self, surf):
         g = self.game
-        if not g.minimap_surface:
+        if g.bigmap_surface is None:
             g._ensure_bigmap_surface()
         source = g.bigmap_surface
         if source is None:
@@ -670,7 +677,7 @@ class HUD:
                   "and password."]
         g = self.game
         pad, line_h, w = 14, 20, 380
-        h = pad * 2 + 30 + line_h * len(lines) + 28
+        h = pad * 2 + 30 + line_h * len(lines) + 76
         x = (g.screen_w - w) // 2
         y = (g.screen_h - h) // 2
         theme.draw_panel(surf, pygame.Rect(x, y, w, h))
@@ -680,8 +687,29 @@ class HUD:
         for line in lines:
             surf.blit(g.font_small.render(line, True, theme.TEXT), (x + pad, ty))
             ty += line_h
-        surf.blit(g.font_small.render("Y = connect   N / Esc / Enter = stay here",
-                                      True, theme.TEXT_DIM), (x + pad, ty + 6))
+        word = g.SERVER_WARP_CONFIRM_WORD
+        armed = (time.monotonic() - prompt.get('opened_at', 0.0)
+                 >= g.SERVER_WARP_ARM_SECONDS)
+        to_connect = (f'To connect type "{word}", then Enter:'
+                      if armed else "Read the request...")
+        surf.blit(g.font_small.render(to_connect, True, theme.TEXT),
+                  (x + pad, ty + 6))
+        field = pygame.Rect(x + pad, ty + 26, w - pad * 2, 22)
+        pygame.draw.rect(surf, (20, 30, 26), field)
+        pygame.draw.rect(surf, theme.TEXT_DIM, field, 1)
+        shown = prompt.get('typed', '') + ('_' if armed else '')
+        surf.blit(g.font_small.render(shown, True, theme.TEXT),
+                  (field.x + 4, field.y + 3))
+        surf.blit(g.font_small.render("Esc / N / any other Enter = stay here",
+                                      True, theme.TEXT_DIM), (x + pad, ty + 54))
+
+    def _draw_hud_notice(self, surf, text):
+        g = self.game
+        label = g.font_small.render(text, True, theme.WARN)
+        box = label.get_rect(midtop=(g.screen_w // 2, 8)).inflate(16, 8)
+        pygame.draw.rect(surf, (20, 30, 26), box)
+        pygame.draw.rect(surf, theme.WARN, box, 1)
+        surf.blit(label, label.get_rect(center=box.center))
 
     def _draw_server_list(self, surf):
         g = self.game

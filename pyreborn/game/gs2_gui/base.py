@@ -21,6 +21,9 @@ if TYPE_CHECKING:  # annotation-only; real imports would cycle
 #: 500 ms increments mouseClickCount, else it resets to 1)
 DOUBLE_CLICK_MS = 500
 
+#: most children one read of a control's `controls` array hands back
+MAX_CONTROLS_VIEW = 4096
+
 
 def catcher_identity(vm) -> Any:
     """A catchevent catcher's stable identity: the runtime (kind, key) the
@@ -402,6 +405,14 @@ class GuiControl(GS2Object):
             return None
         if k in self._METHOD_NAMES and not super().has(k):
             return getattr(self, "_m_" + k)
+        if k == "controls":
+            # The child-control array the base constructor registers as a
+            # property (GuiControl.cpp:3225-3230: createChild("controls")
+            # backed by m_controls). A SNAPSHOT in z-order, bottom first --
+            # script code can read, index and iterate it but cannot edit the
+            # live tree through it -- and capped, so one control with an
+            # enormous child list cannot make a script copy it every frame.
+            return list(self.children[:MAX_CONTROLS_VIEW])
         if k == "rows" and k not in self._members:
             # the row-model array, indexable from script:
             # `PlayerList_List.rows[selectedrow].icon` / the F2 tab's
@@ -741,7 +752,7 @@ class GuiControl(GS2Object):
 
     def set(self, key: str, value: Any) -> None:
         k = key.lower()
-        if k == "parent":
+        if k in ("parent", "controls"):
             return
         if k in self._NUM_ATTRS:
             value = to_num(value)
@@ -883,7 +894,8 @@ class GuiControl(GS2Object):
     def has(self, key: str) -> bool:
         k = key.lower()
         return (k in self._NUM_ATTRS or k in ("visible", "icon", "parent",
-                "alpha", "rotation", "isinanimation", "isininoutanimation")
+                "alpha", "rotation", "isinanimation", "isininoutanimation",
+                "controls")
                 or k == "profile"
                 or k in self._STR_ATTRS or k in self._EVENT_MEMBERS
                 or k in self._TORQUE_PROPS or super().has(k))

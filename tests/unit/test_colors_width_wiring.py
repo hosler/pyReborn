@@ -43,7 +43,7 @@ def test_newworld_announcement_makes_the_width_known(monkeypatch):
     """A 2.22 client prefers 5; after 177 an ambiguous stream parses at 8,
     and the login look-ahead sees exactly what the handler parsed."""
     client, seen = _client('2.22', monkeypatch)
-    client._handle_packet(PacketID.PLO_FULLSTOP2, b'')
+    client._handle_packet(PacketID.PLO_NEWWORLDMODE, b'')
     assert client.server_mode == 'newworld'
     client._handle_packet(PacketID.PLO_PLAYERPROPS,
                           gchar(13) + colors(AMBIGUOUS_NEWWORLD))
@@ -83,6 +83,7 @@ def test_npc_and_other_player_props_share_the_session_evidence(monkeypatch):
 def test_single_parse_per_login_packet(monkeypatch):
     """The look-ahead reuses the handler's parse: evidence counts once."""
     client, seen = _client('6.037', monkeypatch)
+    client._colors_len = 8   # prior preferring 8, so a 5-byte stream exercises the fallback
     client._handle_packet(PacketID.PLO_PLAYERPROPS,
                           gchar(13) + colors(CLASSIC) + gchar(15) + gchar(20))
     assert client.prop_parse_diagnostics['width_fallbacks'] == 1
@@ -91,7 +92,7 @@ def test_single_parse_per_login_packet(monkeypatch):
 
 def test_reconnect_resets_mode_and_width_evidence(monkeypatch):
     client, _ = _client('6.037', monkeypatch)
-    client._handle_packet(PacketID.PLO_FULLSTOP2, b'')
+    client._handle_packet(PacketID.PLO_NEWWORLDMODE, b'')
     client._handle_packet(PacketID.PLO_PLAYERPROPS, gchar(13) + colors(CLASSIC))
     assert client.server_mode == 'newworld'
     assert client.prop_parse_diagnostics['width_fallbacks'] == 1

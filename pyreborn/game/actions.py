@@ -128,8 +128,9 @@ class ActionsMixin:
         """Walk-over pickup (TServerLevel::animateExtras).
 
         Sends PLI_ITEMTAKE addressed at the item's own spot after checking
-        its age and distance. The server validates the request independently.
-        A sent request is forgotten when the item disappears."""
+        its age and distance; the item leaves the local model as the take is
+        sent (`Client.pickup_item`), so nothing waits on a server echo.
+        Kinds the reference does not report are removed locally only."""
         if getattr(self.client, 'ghost_mode', 0):
             return 0
         client = self.client
@@ -154,6 +155,13 @@ class ActionsMixin:
                 item_type = str(items[key]).lower()
                 self.sound_mgr.play("item2.wav" if any(
                     part in item_type for part in ('heart', 'key')) else "item.wav")
+        # The reference deletes the other touched kinds too, but only the
+        # giveaway kinds are reported (TServerLevel.cpp:1453-1457).
+        for key in ground_items.walkover_absorbs(local_x, local_y, items, ages):
+            item_type = str(items[key]).lower()
+            client.remove_item_local(level_name, key[0], key[1])
+            self.sound_mgr.play("item2.wav" if any(
+                part in item_type for part in ('heart', 'key')) else "item.wav")
         return count
 
     def _giveaway_stats(self):

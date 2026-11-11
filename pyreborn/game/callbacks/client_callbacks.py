@@ -479,7 +479,12 @@ def wire_client_callbacks(game):
                 target['name'], target['host'], target['port'])
         game.offer_server_warp(info)
 
+    def on_server_warp_blocked(destination):
+        game.show_hud_notice(
+            "A script's server move was blocked. F8 opens the server browser.")
+
     game.client.on_server_warp = on_server_warp
+    game.client.on_server_warp_blocked = on_server_warp_blocked
     pending = getattr(game.client, 'server_warp_info', None)
     if isinstance(pending, dict):
         on_server_warp(pending)

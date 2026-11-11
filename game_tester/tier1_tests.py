@@ -19,12 +19,14 @@ Run: python -m game_tester --tier1
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
 import random
 import time
 from typing import List, Optional, Tuple
 
+from .fixtures import FixtureFile
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
 
@@ -37,17 +39,45 @@ _BIGFILE_SEED = 0x9E3779B9
 
 # Where a locally-run server keeps the files it serves. Only used when the
 # target is loopback - a remote server's disk is none of our business.
+# pygserver serves `levels/` (and `world/` when a checkout has one); the
+# reference server serves `world/`. Directories that do not exist are skipped,
+# never created: a missing directory means that server is not set up here.
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _SERVER_WORLD_DIRS = (
+    os.path.join(_REPO, "pygserver", "levels"),
     os.path.join(_REPO, "pygserver", "world"),
     os.path.join(_REPO, "GServer-v2", "bin", "servers", "default", "world"),
 )
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
+# Fixtures this process provisioned and still owes the filesystem a removal for.
+_PROVISIONED: List[FixtureFile] = []
+
 
 def bigfile_bytes() -> bytes:
     """The fixture's content. Deterministic across machines and runs."""
     return random.Random(_BIGFILE_SEED).randbytes(BIGFILE_SIZE)
+
+
+def _candidate_world_dirs() -> Tuple[str, ...]:
+    # `qa_server run` exports the private/served levels directory of the server
+    # it started; that is the one a --port run must target.
+    override = os.environ.get("PYGSERVER_LEVELS_DIR")
+    if override:
+        return (override,)
+    return _SERVER_WORLD_DIRS
+
+
+def cleanup_bigfile() -> int:
+    """Remove the fixture from every directory this process put it in.
+
+    A copy that already existed with the right bytes was never recorded, so it
+    stays. Runs at the end of run_tier1_tests and again at interpreter exit.
+    """
+    removed = 0
+    while _PROVISIONED:
+        removed += _PROVISIONED.pop().release()
+    return removed
 
 
 def ensure_bigfile_served(host: str) -> Optional[str]:
@@ -56,26 +86,33 @@ def ensure_bigfile_served(host: str) -> Optional[str]:
     Returns a reason string if it could not be provisioned, else None. Writing
     is skipped entirely for a non-loopback host: we cannot reach that server's
     disk, and the test reports the resulting refusal rather than pretending.
+    Whatever this writes is removed by cleanup_bigfile(); an identical copy
+    that was already there is left untouched.
     """
     if host not in _LOOPBACK:
         return f"target {host} is not local, cannot place the fixture"
     payload = bigfile_bytes()
-    written = []
-    for world_dir in _SERVER_WORLD_DIRS:
+    candidates = _candidate_world_dirs()
+    served = []
+    for world_dir in candidates:
         if not os.path.isdir(world_dir):
             continue
-        path = os.path.join(world_dir, BIGFILE_NAME)
+        fixture = FixtureFile(world_dir, BIGFILE_NAME, payload)
         try:
-            if not os.path.exists(path) or os.path.getsize(path) != len(payload) \
-                    or open(path, "rb").read() != payload:
-                with open(path, "wb") as f:
-                    f.write(payload)
-            written.append(world_dir)
+            fixture.install()
         except OSError as e:
-            return f"could not write {path}: {e}"
-    if not written:
+            fixture.release()
+            return f"could not write {fixture.path}: {e}"
+        if fixture.refused:
+            return f"{fixture.path} is a symlink; refusing to write through it"
+        if fixture.installed:
+            if not _PROVISIONED:
+                atexit.register(cleanup_bigfile)
+            _PROVISIONED.append(fixture)
+        served.append(world_dir)
+    if not served:
         return ("no server world directory found (looked in "
-                + ", ".join(_SERVER_WORLD_DIRS) + ")")
+                + ", ".join(candidates) + ")")
     return None
 
 
@@ -207,5 +244,6 @@ def run_tier1_tests(host: str = "localhost", port: int = 14900,
     finally:
         bot0.disconnect()
         bot1.disconnect()
+        cleanup_bigfile()
 
     return results

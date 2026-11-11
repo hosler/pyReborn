@@ -320,3 +320,143 @@ def test_launch_uses_python_child_and_new_session(tmp_path, monkeypatch):
     assert captured["stderr"] == subprocess.STDOUT
     assert captured["stdout"] == "log"
     assert captured["env"]["PYGSERVER_QA"] == "1"
+
+
+# --- fixtures provisioned by `start` do not outlive the server ---------------
+
+def test_stop_removes_the_fixture_and_the_directory_start_created(managed):
+    from game_tester.spar_fixture import SPAR_LEVEL
+    state, checkout, _, _ = managed
+    assert not (checkout / "levels").exists()
+    assert qa.main(["start"]) == 0
+    assert (checkout / "levels" / SPAR_LEVEL).is_file()
+    assert read_record(state)["fixtures"]
+    assert qa.main(["stop", "dev"]) == 0
+    assert not (checkout / "levels").exists()
+    assert not (state / "dev.serveroptions.txt").exists()
+
+
+def test_stop_keeps_a_preexisting_matching_fixture_and_its_directory(managed):
+    from game_tester.spar_fixture import SPAR_LEVEL, write_spar_fixture
+    state, checkout, _, _ = managed
+    write_spar_fixture(checkout / "levels")
+    (checkout / "levels" / "keep.nw").write_text("level")
+    assert qa.main(["start"]) == 0
+    assert read_record(state)["fixtures"] == []
+    assert qa.main(["stop", "dev"]) == 0
+    assert (checkout / "levels" / SPAR_LEVEL).is_file()
+    assert (checkout / "levels" / "keep.nw").is_file()
+
+
+def test_prune_removes_the_fixture_of_a_dead_server(managed):
+    from game_tester.spar_fixture import SPAR_LEVEL
+    _, checkout, children, _ = managed
+    assert qa.main(["start"]) == 0
+    children[0].kill()
+    children[0].wait(timeout=5)
+    assert (checkout / "levels" / SPAR_LEVEL).is_file()
+    assert qa.main(["prune"]) == 0
+    assert not (checkout / "levels").exists()
+
+
+def test_failed_start_removes_the_fixture(managed, monkeypatch):
+    _, checkout, _, _ = managed
+
+    def launch(directory, config, log):
+        process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(9)"],
+                                   stdout=log, stderr=subprocess.STDOUT)
+        managed[2].append(process)
+        return process
+
+    monkeypatch.setattr(qa, "_launch", launch)
+    assert qa.main(["start"]) == 2
+    assert not (checkout / "levels").exists()
+    assert not (managed[0] / "dev.serveroptions.txt").exists()
+
+
+def test_launch_failure_removes_the_fixture_and_options_file(managed, monkeypatch):
+    state, checkout, _, _ = managed
+
+    def launch(directory, config, log):
+        raise OSError("cannot exec")
+
+    monkeypatch.setattr(qa, "_launch", launch)
+    assert qa.main(["start"]) == 2
+    assert not (checkout / "levels").exists()
+    assert not (state / "dev.serveroptions.txt").exists()
+
+
+def test_partial_fixture_write_is_released(managed, monkeypatch):
+    state, checkout, _, _ = managed
+    from game_tester import fixtures
+
+    real = fixtures.Path.write_bytes
+
+    def write_bytes(self, data):
+        if "qa_sparzone.nw" in self.name:       # the atomic write's temp file
+            real(self, data[:5])        # a truncated write, then the failure
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(fixtures.Path, "write_bytes", write_bytes)
+    assert qa.main(["start"]) == 2
+    assert not (checkout / "levels").exists()
+    assert not (state / "dev.serveroptions.txt").exists()
+
+
+def test_a_symlink_at_the_fixture_path_refuses_the_start(managed, tmp_path):
+    from game_tester.spar_fixture import SPAR_LEVEL
+    state, checkout, _, _ = managed
+    (checkout / "levels").mkdir()
+    (checkout / "levels" / SPAR_LEVEL).symlink_to(tmp_path / "nowhere.nw")
+    assert qa.main(["start"]) == 2
+    assert (checkout / "levels" / SPAR_LEVEL).is_symlink()
+    assert not (tmp_path / "nowhere.nw").exists()
+    assert not (state / "dev.serveroptions.txt").exists()
+
+
+def test_failed_restart_over_a_dead_record_leaves_no_record(managed, monkeypatch):
+    from game_tester.spar_fixture import SPAR_LEVEL
+    state, checkout, children, _ = managed
+    assert qa.main(["start"]) == 0
+    children[0].kill()
+    children[0].wait(timeout=5)
+    assert (state / "dev.json").exists()
+    monkeypatch.setattr(qa, "_launch", lambda d, c, log: (_ for _ in ()).throw(OSError("x")))
+    assert qa.main(["start"]) == 2
+    assert not (state / "dev.json").exists()
+    # A prune after this must not re-release a file another run owns now.
+    from game_tester.spar_fixture import spar_fixture
+    live = spar_fixture(checkout / "levels")
+    live.install()
+    assert qa.main(["prune"]) == 0
+    assert (checkout / "levels" / SPAR_LEVEL).is_file()
+    live.release()
+
+
+def test_run_leaves_no_fixture_behind(managed):
+    _, checkout, _, _ = managed
+    assert qa.main(["run", "--", sys.executable, "-c", "pass"]) == 0
+    assert not (checkout / "levels").exists()
+
+
+def test_stop_removes_empty_directories_the_server_created(managed, monkeypatch):
+    """pygserver mkdirs `world/`, `gani/`... in its cwd at startup (they show up
+    as empty untracked directories); only those it created, and only if empty."""
+    state, checkout, children, _ = managed
+    (checkout / "gani").mkdir()                     # already ours: never removed
+    real_launch = qa._launch
+
+    def launch(directory, config, log):
+        process = real_launch(directory, config, log)
+        for name in ("world", "images", "gani"):
+            (checkout / name).mkdir(exist_ok=True)
+        return process
+
+    monkeypatch.setattr(qa, "_launch", launch)
+    assert qa.main(["start"]) == 0
+    (checkout / "images" / "kept.png").write_bytes(b"x")   # no longer empty
+    assert qa.main(["stop", "dev"]) == 0
+    assert not (checkout / "world").exists()
+    assert (checkout / "images" / "kept.png").exists()
+    assert (checkout / "gani").is_dir()

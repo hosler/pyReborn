@@ -34,6 +34,7 @@ pyreborn/
 ├── nc_client.py          # NPC Control client
 ├── npc_handler.py        # NPC state tracking
 ├── gani.py               # GANI animation parser
+├── update_packages.py    # .gupd update-package progress/events (PLO 105/106/187)
 ├── gs1_client/           # GS1 script transport/state package
 │   ├── __init__.py       # Compatibility exports (see packets.py for the idiom)
 │   ├── registry.py       # Handler tables + @_gs1_builtin/@_gs1_command
@@ -113,6 +114,7 @@ game_tester/              # Automated QA framework
 ├── version_probe.py      # Live login probe across client versions
 ├── gmap_tests.py         # GMAP coordinate-crossing suite
 ├── gs2_tests.py          # GS2 bytecode transport suite
+├── fixtures.py           # FixtureFile/provisioned_file: QA files that are removed again
 ├── tier1_tests.py        # Board modify / large files
 ├── tier2_tests.py        # Bomb/arrow/horse/flagdel relay
 ├── tier3_tests.py        # Freeze/say2/triggeraction/serverwarp
@@ -674,9 +676,13 @@ and `parse_prop_stream`. It replaced six independent parsers across this client
 and pygserver, which is what let them drift apart.
 
 Two more traps from the same fix:
-- `PLPROP_COLORS` is 5 bytes on classic and 8 on v6 new-world. The server picks
-  the width from a server-wide mode, NOT from the client version, so you cannot
-  derive it from the handshake.
+- `PLPROP_COLORS` is 5 bytes unless the server runs `servermode = newworld`
+  (then 8, announced by PLO 177). The server picks the width from that
+  server-wide mode, NOT from the client version. `pyreborn/colors_width.py`
+  owns the rule for BOTH directions: 177 -> 8; else the session's parse
+  evidence (`colors_seen_5/8`); else 5. Send paths (`send_colors`,
+  `RCClient.encode_player_props`) use `colors_len_in_force()`. The client
+  never sends NPC colors (the reference reads those at 5 regardless).
 - Property streams arrive in ASCENDING id order. A strict parser STOPS at the
   first descending id instead of raising an error, so an out-of-order writer
   makes entities silently arrive half-populated.
@@ -972,10 +978,14 @@ arrive" are then trivially true. Three of six tests passed while they tested
 nothing, which hid two real cross-segment failures. If `gmap_world_loaded`
 fails, you started the wrong world.
 
-`--tier1` writes its own large-file fixture into whichever local server world
-directory it finds, and it generates that fixture from a fixed seed. The suite
-used to depend on an untracked 45000-byte blob that existed on exactly one
-machine.
+`--tier1` writes its own large-file fixture into the local server's served
+directory (`$PYGSERVER_LEVELS_DIR`, else `pygserver/levels`, `pygserver/world`
+and the reference server's `world/` when they exist), and it generates that
+fixture from a fixed seed. It removes what it wrote when the run ends
+(`game_tester/fixtures.py`); an identical copy that was already there is never
+touched. `qa_server start` records the spar arena it provisions the same way,
+and `qa_server stop`/`prune` remove it, plus any empty directory pygserver
+created in the checkout at startup (`world/`, ...).
 
 ## Where assets live
 
@@ -1091,7 +1101,9 @@ $PY -m pytest                          # unit + integration
 $PY -m game_tester.qa_server run --port 14900 -- $PY -m game_tester  # live bot QA
 $PY -m game_tester.qa_server list       # managed servers and orphans
 # For interactive sessions: qa_server start --name dev; qa_server stop dev
-SDL_VIDEODRIVER=dummy $PY -m game_tester.render_smoke
+# render_smoke logs in the test accounts and paints tiles: always give it a
+# private server's port (it refuses :14900 without --shared)
+SDL_VIDEODRIVER=dummy $PY -m game_tester.render_smoke --port 14932
 ```
 
 `qa_server run` defaults to port 14901 and exports `PYREBORN_TEST_PORT` and

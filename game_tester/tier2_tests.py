@@ -20,7 +20,7 @@ from pyreborn.packets import PacketID, parse_player_props
 
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
-from .spar_fixture import SPAR_LEVEL, write_spar_fixture
+from .spar_fixture import SPAR_LEVEL, spar_fixture_ready
 
 
 def _issue(sev: str, cat: str, desc: str) -> Issue:
@@ -305,12 +305,14 @@ def _spar_rating_test(host: str, port: int, accounts: Tuple[str, str],
     levels_dir = (world.world_dir if world is not None else
                   Path(os.environ.get("PYGSERVER_LEVELS_DIR",
                        Path(__file__).resolve().parents[2] / "pygserver" / "levels")))
-    try:
-        if write_spar_fixture(levels_dir):
-            return skip(f"created {levels_dir / SPAR_LEVEL}; restart the server "
-                        "to register its sparringzone NPC, then rerun via qa_server run")
-    except OSError as exc:
-        return skip(f"cannot provision {SPAR_LEVEL}: {exc}")
+    # The arena NPC registers at server startup, so writing the level mid-run
+    # cannot make this test pass. `qa_server start/run` provisions it before
+    # launch and removes it on stop; a test that wrote it itself would only
+    # leave it behind.
+    if not spar_fixture_ready(levels_dir):
+        return skip(f"{levels_dir / SPAR_LEVEL} is absent or stale; run this "
+                    "through `qa_server run`, which provisions it at startup "
+                    "and removes it on stop")
 
     # Dedicated accounts avoid racing the preceding suite's disconnect saves.
     # Reset before login, so reruns start at the server's 1500/350 defaults.
@@ -381,13 +383,24 @@ def _spar_rating_test(host: str, port: int, accounts: Tuple[str, str],
         bot0.client.put_bomb(bot1.client.x, bot1.client.y, power=1, timer_ms=1500)
         _pump(bot0, bot1, 6.0, until=lambda: bot1.client.player.hearts <= 0)
         died = bot1.client.player.hearts <= 0
-        _pump(bot0, bot1, 5.0,
-              until=lambda: bot1.client.player.deaths > deaths
-              and (same_ip or all(ratings)))
+        # The victim's client names the killer and sends CLAIMPKER in the same
+        # step the fatal hit lands, so this is the evidence that a fight
+        # happened. The same-IP case has no server reply to wait for, and
+        # without this a run with no fight at all would read as "no rating
+        # change".
+        hit_landed = bool(died and bot1.client._pker_claimed)
+        # The real event is the rating change on the killer and the victim. A
+        # death counter is no signal here: the reference server counts no
+        # death and drops no item in a sparring zone (reference PlayerProps.cpp
+        # :576-580 on origin/beta4; :567-571 in the local-beta4 checkout), so
+        # `deaths` never moves. The same-IP case has no event to wait for; the
+        # window below is its observation time.
+        if not same_ip:
+            _pump(bot0, bot1, 5.0, until=lambda: all(ratings))
         # Observe late credit, especially in the negative case.
         _pump(bot0, bot1, 2.0)
         after = [rating(bot) for bot in bots]
-        death_recorded = bot1.client.player.deaths == deaths + 1
+        deaths_unchanged = bot1.client.player.deaths == deaths    # not counted in a spar zone
         no_kill = bot0.client.player.kills == kills
         if same_ip:
             rating_ok = after == before and not any(ratings)
@@ -396,9 +409,9 @@ def _spar_rating_test(host: str, port: int, accounts: Tuple[str, str],
                          and after[1][0] < before[1][0]
                          and all(0 < value[1] < old[1]
                                  for value, old in zip(after, before)))
-        passed = bool(died and death_recorded and no_kill and rating_ok)
+        passed = bool(hit_landed and deaths_unchanged and no_kill and rating_ok)
         details = (f"sources=127.0.0.1/{source}, ratings {before} -> {after}, "
-                   f"RATING packets={ratings}, victim_died={died}, "
+                   f"RATING packets={ratings}, victim_died={died}, hit_landed={hit_landed}, "
                    f"deaths {deaths}->{bot1.client.player.deaths}, "
                    f"killer kills {kills}->{bot0.client.player.kills}")
         issues = [] if passed else [_issue("HIGH", "spar", details)]

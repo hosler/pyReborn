@@ -30,44 +30,98 @@ class InputMixin:
     # going through __init__ paths still reads None.
     server_warp_prompt = None
 
+    # -- short HUD notice --------------------------------------------------
+    #: (text, monotonic expiry) of the one-line notice at the top of the
+    #: screen, or None. Class-level default for the same reason as the prompt.
+    hud_notice = None
+    HUD_NOTICE_SECONDS = 6.0
+
+    def show_hud_notice(self, text: str) -> None:
+        self.hud_notice = (str(text), time.monotonic() + self.HUD_NOTICE_SECONDS)
+
     # -- PLO_SERVERWARP consent ------------------------------------------
+    #: The word the player types, then Enter, to follow a server's request.
+    #: The prompt has its own input field that starts empty, and its keys are
+    #: ignored for SERVER_WARP_ARM_SECONDS after it opens, so neither a held
+    #: key nor a chat line being finished ("yes" + Enter) can confirm it.
+    SERVER_WARP_CONFIRM_WORD = "warp"
+    SERVER_WARP_ARM_SECONDS = 1.5
+    SERVER_WARP_INPUT_MAX = 16
+
     def offer_server_warp(self, info) -> bool:
         """Ask the player whether to follow a server's move-to-another-server
         request. The target is chosen by the game server, so it is never
-        followed without a Yes: a hostile server could otherwise collect the
-        account name and password this client logs in with. Unusable targets
-        are dropped without a prompt, and while one prompt is open further
-        offers are ignored so the answer cannot be swapped underneath the
-        player. Returns True when a prompt is now open."""
+        followed without an explicit confirm: a hostile server could
+        otherwise collect the account name and password this client logs in
+        with. Unusable targets are dropped without a prompt, and while one
+        prompt is open further offers are ignored so the answer cannot be
+        swapped underneath the player. After a decline, or once the
+        per-session offer cap is used up, no prompt opens (see
+        ActionsMixin.server_warp_allowed). Opening the prompt closes chat
+        input and discards queued key events, so text the player was typing
+        elsewhere never lands in the prompt's field. Returns True when a
+        prompt is now open."""
         from ..packet_codec.gameplay import validate_server_warp_target
         target = validate_server_warp_target(info)
         if target is None or self.server_warp_prompt is not None:
+            return False
+        if not self.client.note_server_warp_offer():
+            self.client._note_server_warp_blocked(target['name'])
             return False
         host = target['host'].lower()
         target['in_list'] = any(
             str(getattr(entry, 'ip', '')).lower() == host
             and getattr(entry, 'port', None) == target['port']
             for entry in getattr(self, 'servers', ()))
+        target['opened_at'] = time.monotonic()
+        target['typed'] = ''    # the prompt's own input field, starts empty
         self.server_warp_prompt = target
         self.show_player_list = False
         self.show_server_list = False
         self.pm_target_id = None
         self.typing = False
+        self.chat_input = ""
         self._ensure_settings_ui().close()
+        pygame.event.clear((KEYDOWN, pygame.KEYUP, pygame.TEXTINPUT))
         return True
 
+    def _decline_server_warp(self):
+        self.server_warp_prompt = None
+        self.client.note_server_warp_declined()
+
     def _handle_server_warp_key(self, event):
-        # Default is No: only an explicit Y follows the server's request.
-        if event.key == K_y:
-            from ..listserver import ServerEntry
-            target, self.server_warp_prompt = self.server_warp_prompt, None
-            self.switch_server = ServerEntry(
-                name=target['name'], type_prefix='', language='', description='',
-                url='', version='', player_count=0,
-                ip=target['host'], port=target['port'])
-            self.running = False
-        elif event.key in (K_n, K_ESCAPE, K_RETURN):
-            self.server_warp_prompt = None
+        # Default is No. Esc / N decline at once; Enter follows the request
+        # only when the prompt is armed and its field holds the confirm word
+        # exactly -- any other Enter declines (and starts the decline
+        # cooldown). Other keys type into the prompt's own field.
+        prompt = self.server_warp_prompt
+        if event.key in (K_n, K_ESCAPE):
+            self._decline_server_warp()
+            return
+        word = self.SERVER_WARP_CONFIRM_WORD
+        armed = (time.monotonic() - prompt['opened_at']
+                 >= self.SERVER_WARP_ARM_SECONDS)
+        if event.key == K_RETURN:
+            if armed and prompt['typed'] == word:
+                from ..listserver import ServerEntry
+                target, self.server_warp_prompt = prompt, None
+                self.switch_server = ServerEntry(
+                    name=target['name'], type_prefix='', language='',
+                    description='', url='', version='', player_count=0,
+                    ip=target['host'], port=target['port'])
+                self.running = False
+            else:
+                self._decline_server_warp()
+            return
+        if not armed:
+            return
+        if event.key == K_BACKSPACE:
+            prompt['typed'] = prompt['typed'][:-1]
+            return
+        char = getattr(event, 'unicode', '') or ''
+        if (len(char) == 1 and char.isprintable()
+                and len(prompt['typed']) < self.SERVER_WARP_INPUT_MAX):
+            prompt['typed'] += char.lower()
 
     def _update_death_state(self, current_time):
         player = self.client.player
@@ -317,9 +371,10 @@ class InputMixin:
                     # navigation/equip keys. Nothing reaches gameplay/GS1.
                     self.inventory_ui.handle_key(event.key, self.client.weapons)
                 elif getattr(self.client, 'input_frozen', False):
-                    # PLO_FULLSTOP/FULLSTOP2: client ignores normal input until
-                    # reconnect (no resume packet exists). Modal overlays above
-                    # stay usable so the local player isn't completely locked out.
+                    # Legacy lock: no packet sets it now (176/177 are server-mode
+                    # markers). A host that sets it ignores normal input until
+                    # reconnect. Modal overlays above stay usable so the local
+                    # player isn't completely locked out.
                     pass
                 else:
                     self._handle_key_press(event)
@@ -513,6 +568,9 @@ class InputMixin:
             self.show_player_list = False
             self.settings_ui.close()
             self.server_list_sel = 0
+            # The player is using the browser themselves: script-initiated
+            # server warps may be offered again.
+            self.client.reset_server_warp_limits()
 
         elif event.key == K_F9:
             # Toggle the settings overlay (sound/music/day-night/minimap/zoom).

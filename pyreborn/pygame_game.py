@@ -358,10 +358,11 @@ class GameClient(
         self.minimap_visible = True  # Toggle with M key
         self.big_map_visible = False
         self.minimap_size = (100, 100)  # Display size in pixels
-        # Tier 4b: set when minimap_surface was built from a PLO_BIGMAP world
-        # image rather than PLO_MINIMAP per-tile data (see game/minimap.py
-        # _ensure_bigmap_surface) - changes how the player dot is positioned.
+        # Image names the two map surfaces were built from (PLO_BIGMAP drives
+        # bigmap_surface, PLO_MINIMAP drives minimap_surface; see
+        # game/minimap.py _ensure_bigmap_surface / _ensure_minimap_surface).
         self._bigmap_image_name: Optional[str] = None
+        self._minimap_image_name: Optional[str] = None
 
         # Ghost mode state
         self.ghost_mode = self.client.ghost_mode

@@ -117,24 +117,31 @@ def handle_hide_npcs(client, data):
 def handle_server_warp(client, data):
     # GServer-v2/server/src/ServerList.cpp:974-982.
     client.server_warp_info = parse_server_warp(data)
+    # The request is answered, so the same destination may be asked again
+    # (the reference never needs this: it follows the answer at once).
+    client.last_server_warp = ""
     if client.on_server_warp:
         client.on_server_warp(client.server_warp_info)
 
 
-@handles(PacketID.PLO_DISABLECLASSICMODE)
-def handle_disable_classic_mode(client, data):
-    # Packet 176 is PLO_KINGDOMSMODE in the current reference enum
-    # (gs2lib IEnums.h, sent at GServer-v2 Player.cpp:750). An older enum
-    # called it FULLSTOP, which is why this once froze input and hid the HUD;
-    # nothing in the reference server sends a stop packet at 176/177.
+@handles(PacketID.PLO_KINGDOMSMODE)
+def handle_kingdoms_mode(client, data):
+    # Packet 176: the server runs `servermode = kingdoms`. A bare marker sent
+    # right after PLO_SIGNATURE, `else if` against 177 (GServer-v2 origin/beta4
+    # server/src/player/Player.cpp:748-752). It is not a stop or freeze, so
+    # input and HUD are untouched. `classic_mode_disabled` is the legacy flag
+    # name for the same fact.
     client.classic_mode_disabled = True
     client.server_mode = 'kingdoms'
 
 
-@handles(PacketID.PLO_FULLSTOP2)
-def handle_fullstop2(client, data):
-    # Packet 177 is PLO_NEWWORLDMODE (Player.cpp:752): a mode marker, never
-    # an input lock.
+@handles(PacketID.PLO_NEWWORLDMODE)
+def handle_newworld_mode(client, data):
+    # Packet 177: `servermode = newworld` (Player.cpp:751-752). Also the
+    # server-wide switch to the 8-byte PLPROP_COLORS (PropertySerializers.h:
+    # 793-796), so receiving it is positive evidence for that width
+    # (handlers/entities.py colors_width_policy); never receiving it proves
+    # nothing.
     client.server_mode = 'newworld'
 
 

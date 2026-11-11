@@ -23,9 +23,14 @@ def _client(version):
     return client
 
 
-@pytest.mark.parametrize(("version", "width"), [("2.22", 5), ("6.037", 8)])
-def test_send_colors_uses_session_width(version, width):
+@pytest.mark.parametrize(("version", "mode", "width"), [
+    ("2.22", "", 5), ("6.037", "", 5),                   # reference default
+    ("2.22", "newworld", 8), ("6.037", "newworld", 8),   # PLO_NEWWORLDMODE
+])
+def test_send_colors_uses_session_width(version, mode, width):
+    """The width is the server's mode, never the client version."""
     client = _client(version)
+    client.server_mode = mode
 
     assert client.send_colors(range(1, 9))
 

@@ -646,7 +646,8 @@ def test_parse_versions_validates_and_deduplicates():
 
 def test_client_counts_player_prop_width_fallbacks_and_parse_errors():
     client = Client(version="6.037")
-    # A classic five-byte COLORS payload followed by X/Y. The v6-preferred
+    client._colors_len = 8   # a prior preferring 8, so the 5-byte stream falls back
+    # A classic five-byte COLORS payload followed by X/Y. The 8-preferring
     # width desynchronizes; the classic fallback consumes it cleanly.
     classic_props = bytes([13 + 32, 32, 33, 34, 35, 36,
                            15 + 32, 52, 16 + 32, 54])

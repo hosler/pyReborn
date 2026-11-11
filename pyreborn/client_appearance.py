@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from reborn_protocol.props import PLAYER_PROPS, encode_value
 
+from .colors_width import colors_len_in_force
 from .packets import PacketID, build_chat, build_player_chat
 
 
@@ -52,7 +53,7 @@ class AppearanceMixin:
         if not self.connected or not self._authenticated:
             return False
         payload = bytes([prop_id + 32]) + encode_value(
-            PLAYER_PROPS[prop_id], value, colors_len=self._colors_len)
+            PLAYER_PROPS[prop_id], value, colors_len=colors_len_in_force(self))
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, payload)
 
     @staticmethod
@@ -87,7 +88,7 @@ class AppearanceMixin:
         value = list(self.player.colors if colors is None else colors)
         sent = self._send_appearance_prop(13, value)
         if sent:
-            self.player.colors = value[:self._colors_len]
+            self.player.colors = value[:colors_len_in_force(self)]
             self._remember_appearance(colors=self.player.colors)
         return sent
 

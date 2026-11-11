@@ -147,7 +147,18 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         # 188-193); a reused Client must not carry them to the next one.
         self.server_mode = ''
         self.classic_mode_disabled = False
+        # TClient.cpp:5638-5639: a new session clears the pending
+        # serverwarp target and the sent-destination memory.
+        self.server_warp_info = None
+        self.last_server_warp = ""
+        self.last_server_warp_at = 0.0
+        self.server_warp_declined_until = 0.0
+        self.server_warp_offers = 0
+        self.server_warp_notice_at = None
+        self._clear_hide_player()
         self._last_self_props = None
+        self.items.clear()          # a new session must not age (or delete) old items
+        self.item_stamps.clear()
         self.prop_parse_diagnostics.clear()
         self.prop_parse_diagnostics.update(
             warnings=0, errors=0, width_fallbacks=0)
@@ -167,11 +178,14 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             self._failed_files.clear()
             self._file_attempts.clear()
             self._cache_index = None
+            self._update_packages.clear()
+            self._requested_files.clear()
 
     def disconnect(self):
         """Disconnect from the server."""
         if self.gs2_host is not None:
             self.gs2_host.reset_session()
+        self._clear_hide_player(notify=True)
         self._protocol.disconnect()
         self._authenticated = False
 
@@ -310,11 +324,18 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         finally:
             self._in_update = False
 
+        if self._update_packages:
+            from .update_packages import expire_stalled
+            expire_stalled(self)
+
         from .npc_movement import tick_moves
         tick_moves(self)
+        self.expire_items()
         self._tick_sword_attack()
         self._tick_arrow_sims()
         self._tick_bomb_sims()
+        if self.hide_player_until:
+            self._tick_hide_player()
 
         return packets
 
@@ -422,6 +443,46 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             return self.chests  # type: ignore[return-value]
         return self.chests.get(level_name, {})
 
+    def expire_items(self, now: Optional[float] = None) -> List[Tuple[str, float, float, str]]:
+        """Drop ground items whose lifetime ran out; return what was dropped.
+
+        The reference server removes an item after its lifetime without telling
+        anyone (Level.cpp:711-716), so each client ages its own copy and removes
+        it (reference client TServerLevel.cpp:1400-1470, animateExtras). An item
+        the model holds with no start stamp (a GS1 or local drop) starts now.
+
+        Like that client, each timer-expired item also goes out as PLI_ITEMDEL
+        (reference client TServerLevel.cpp:1468-1469: `time < 0` calls
+        sendRemoveExtra, packet shape as the pickup). Only the timer path
+        sends: pickup and PLO_ITEMDEL removals never reach this function, and
+        the reference only walks the level the player is in, so buckets of any
+        other level are pruned silently.
+        """
+        from . import ground_items
+        expired = ground_items.expire_items(
+            self, self.item_clock() if now is None else now)
+        if expired and self.connected:
+            for level_name, x, y, _item_type in expired:
+                if level_name == self._current_level_name:
+                    self.send_item_del(x, y)
+        return expired
+
+    def remove_item_local(self, level_name: str, x: float, y: float) -> Optional[str]:
+        """Forget one ground item and its expiry stamp; return its type or None.
+
+        The one removal path for every way an item leaves the model: the
+        player's own take, a GS1 `take`, a server PLO_ITEMDEL, the timer. Fires
+        `on_item(x, y, type, False)` only when an item was actually there, so
+        a later echo for the same spot is a no-op and never calls back twice.
+        """
+        key = (x, y)
+        self.item_stamps.pop((level_name, key), None)
+        bucket = self.items.get(level_name)
+        item_type = bucket.pop(key, None) if isinstance(bucket, dict) else None
+        if item_type is not None and self.on_item:
+            self.on_item(x, y, item_type, False)
+        return item_type
+
     def items_in_level(self, level_name: str) -> Dict[Tuple[float, float], str]:
         """Return ground items for one level, or an empty mapping."""
         # Accept the former flat shape when lightweight callers replace this
@@ -523,6 +584,13 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'npcs_hidden': ('session', 'npcs_hidden'),
     'login_complete': ('session', 'login_complete'),
     'server_warp_info': ('session', 'server_warp_info'),
+    'last_server_warp': ('session', 'last_server_warp'),
+    'last_server_warp_at': ('session', 'last_server_warp_at'),
+    'server_warp_declined_until': ('session', 'server_warp_declined_until'),
+    'server_warp_offers': ('session', 'server_warp_offers'),
+    'server_warp_notice_at': ('session', 'server_warp_notice_at'),
+    'hide_player_until': ('session', 'hide_player_until'),
+    'hide_player_hearts': ('session', 'hide_player_hearts'),
     'profiles': ('session', 'profiles'),
     'npcserver_addr': ('session', 'npcserver_addr'),
     'net_cookie': ('session', 'net_cookie'),
@@ -565,6 +633,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'gmap_name': ('gmap_state', 'gmap_name'),
     '_requested_gmap': ('gmap_state', 'requested_gmap'),
     'bigmap_info': ('gmap_state', 'bigmap_info'),
+    'minimap_info': ('gmap_state', 'minimap_info'),
     '_gmap_spawn_x': ('gmap_state', 'gmap_spawn_x'),
     '_gmap_spawn_y': ('gmap_state', 'gmap_spawn_y'),
     '_gmap_offset_x': ('gmap_state', 'gmap_offset_x'),
@@ -591,6 +660,8 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'player_list': ('entities', 'player_list'),
     'all_players': ('entities', 'all_players'),
     'items': ('entities', 'items'),
+    'item_stamps': ('entities', 'item_stamps'),
+    'item_clock': ('entities', 'item_clock'),
     'baddies': ('entities', 'baddies'),
     'weapons': ('entities', 'weapons'),
     'bombs': ('entities', 'bombs'),
@@ -615,6 +686,8 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     '_uptodate_files': ('file_transfers', 'uptodate_files'),
     '_cache_index': ('file_transfers', 'cache_index'),
     '_large_file_transfers': ('file_transfers', 'large_file_transfers'),
+    '_update_packages': ('file_transfers', 'update_packages'),
+    '_requested_files': ('file_transfers', 'requested_files'),
 
     # --- script / bytecode transport ---------------------------------------
     'gs1_host': ('scripts', 'gs1_host'),
@@ -644,6 +717,10 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_projectile': ('callbacks', 'on_projectile'),
     'on_file': ('callbacks', 'on_file'),
     'on_file_send_failed': ('callbacks', 'on_file_send_failed'),
+    'on_update_package_progress': ('callbacks', 'on_update_package_progress'),
+    'on_update_package_downloaded': ('callbacks', 'on_update_package_downloaded'),
+    'on_packages_download_complete': ('callbacks', 'on_packages_download_complete'),
+    'on_update_package_failed': ('callbacks', 'on_update_package_failed'),
     'on_sign': ('callbacks', 'on_sign'),
     'on_explosion': ('callbacks', 'on_explosion'),
     'on_bush_cut': ('callbacks', 'on_bush_cut'),
@@ -673,6 +750,7 @@ _STATE_ALIASES: Dict[str, Tuple[str, str]] = {
     'on_say2': ('callbacks', 'on_say2'),
     'on_player_left': ('callbacks', 'on_player_left'),
     'on_server_warp': ('callbacks', 'on_server_warp'),
+    'on_server_warp_blocked': ('callbacks', 'on_server_warp_blocked'),
     'on_triggeraction': ('callbacks', 'on_triggeraction'),
     'on_profile': ('callbacks', 'on_profile'),
     'on_hide_npcs': ('callbacks', 'on_hide_npcs'),

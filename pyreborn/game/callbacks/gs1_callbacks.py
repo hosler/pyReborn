@@ -3,6 +3,7 @@
 import os
 import time
 
+from ...colors_width import colors_len_in_force
 from ...flyingobjects import NOT_BOUNCING
 from ...sprites import strip_tiledef_image
 from .client_callbacks import route_gs2_source
@@ -364,8 +365,9 @@ def wire_gs1_callbacks(game):
         elif code.startswith('#C') and code[2:].isdigit():
             index = int(code[2:])
             colors = list(game.client.player.colors)
-            if 0 <= index < game.client._colors_len:
-                colors.extend([0] * (game.client._colors_len - len(colors)))
+            width = colors_len_in_force(game.client)
+            if 0 <= index < width:
+                colors.extend([0] * (width - len(colors)))
                 colors[index] = int(float(value))
                 game.client.send_colors(colors)
         elif code in _PLAYER_PROP:

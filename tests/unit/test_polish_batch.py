@@ -38,10 +38,10 @@ def test_mode_packets_preserve_input_and_connection_reset_clears_legacy_lock():
     changes = []
     client.on_fullstop = changes.append
 
-    client._handle_packet(PacketID.PLO_DISABLECLASSICMODE, b"")
+    client._handle_packet(PacketID.PLO_KINGDOMSMODE, b"")
     assert client.classic_mode_disabled
     assert not client.input_frozen
-    client._handle_packet(PacketID.PLO_FULLSTOP2, b"")
+    client._handle_packet(PacketID.PLO_NEWWORLDMODE, b"")
     assert not client.input_frozen
     assert changes == []
 

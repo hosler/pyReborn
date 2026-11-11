@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 import pygame
@@ -36,6 +39,143 @@ def _log_once(key: Tuple, msg: str, *fmt: Any) -> None:
 # look are the bar.
 # =============================================================================
 
+#: Largest text-shadow offset a script may ask for, in pixels each way. The
+#: reference accepts any integer (GuiControlProfileProperties.cpp:463-466); a
+#: hostile server could otherwise park the shadow anywhere on screen.
+MAX_SHADOW_OFFSET = 16
+
+#: Fonts a profile's `fonttype` can name are looked up as `<name>.ttf` in the
+#: bundled asset directory and the user-content roots' `fonts/` directories
+#: ONLY (never a path the script supplies). The name is a plain file stem.
+_FONT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+
+#: TFontManager::getFontBaseName (FourPlay quattroplay/src/TFontManager.cpp:
+#: 144-186): three family prefixes map to the face files that shipped with the
+#: client, anything else is the lowercased name itself.
+_FONT_FAMILY_PREFIXES = (("tempus", "tempsitc"), ("trebuc", "trebuc"),
+                         ("courier", "cour"))
+
+
+class _TextShadow:
+    """A profile's text shadow: truthy when `textshadow` is on. The offset
+    and colour are the profile's `shadowoffset` / `shadowcolor`, which the
+    reference initialises to (1, 1) and opaque black
+    (GuiControlProfile.cpp:189-198) and applies in GuiControl::renderText
+    (gui/GuiControl.cpp:2737-2740)."""
+
+    __slots__ = ("enabled", "dx", "dy", "color")
+
+    def __init__(self, enabled=False, dx=1, dy=1, color=(0, 0, 0, 255)):
+        self.enabled = bool(enabled)
+        self.dx = dx
+        self.dy = dy
+        self.color = color
+
+    def __bool__(self):
+        return self.enabled
+
+    def __repr__(self):
+        return (f"_TextShadow({self.enabled}, {self.dx}, {self.dy}, "
+                f"{self.color})")
+
+
+def _shadow_offset(value, default=(1, 1)):
+    """A `shadowoffset` field ({x, y} array or 'x y' string) as a pair of
+    ints clamped to +-MAX_SHADOW_OFFSET, else `default`."""
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        parts = list(value[:2])
+    else:
+        parts = to_str(value).replace(",", " ").split()[:2]
+        if len(parts) < 2:
+            return default
+    try:
+        return tuple(max(-MAX_SHADOW_OFFSET, min(MAX_SHADOW_OFFSET,
+                                                 int(to_num(p)))) for p in parts)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+#: The faces a `fonttype` can name, indexed once per session: lowercase file
+#: stem -> resolved path, for every regular `.ttf` directly inside the bundled
+#: asset directory and each user-content root's `fonts/` directory (earlier
+#: roots win). A script can change `fonttype` every frame, so a lookup must
+#: never touch the disk: after the index is built every name -- found or not
+#: -- is one dict lookup, and unknown names fall back to the default face.
+_font_index: Optional[Dict[str, str]] = None
+_font_index_key: Optional[str] = None
+
+
+def reset_font_resolution() -> None:
+    """Forget the font index (a new session, or the content directories
+    changed); it is rebuilt on the next lookup."""
+    global _font_index, _font_index_key
+    _font_index = None
+    _font_index_key = None
+
+
+def prime_font_roots() -> Dict[str, str]:
+    """Build the font index from the bundled assets, then the user-content
+    roots (asset_paths.content_dirs()). The prefs load and directory scans
+    happen here, once, never from the draw path (game/setup.py primes it at
+    startup). Rebuilt only when PYREBORN_CONTENT_DIR changes; call
+    reset_font_resolution() after the saved content directories change.
+    Only a regular file whose resolved path stays inside the directory it was
+    listed in is indexed."""
+    global _font_index, _font_index_key
+    key = os.environ.get("PYREBORN_CONTENT_DIR", "")
+    if _font_index is not None and key == _font_index_key:
+        return _font_index
+    roots = [Path(__file__).resolve().parents[2] / "assets"]
+    try:
+        from ... import asset_paths
+        roots.extend(asset_paths.content_dirs())
+    except Exception:  # noqa: BLE001 - prefs/asset trouble must not hide text
+        pass
+    index: Dict[str, str] = {}
+    for root in roots:
+        for directory in (root, root / "fonts"):
+            try:
+                real_dir = directory.resolve()
+                entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.suffix.lower() != ".ttf" or not entry.is_file():
+                        continue
+                    resolved = entry.resolve()
+                    if real_dir in resolved.parents:
+                        index.setdefault(entry.stem.lower(), str(resolved))
+                except OSError:
+                    continue
+    _font_index, _font_index_key = index, key
+    return index
+
+
+def resolve_font_file(font_type: str, bold: bool) -> Optional[str]:
+    """Path of the face file a profile's `fonttype` names, or None.
+
+    Mirrors the reference's file naming (`<base>` + `bd` for bold + `.ttf`,
+    TFontManager.cpp:99-142) but only knows the faces prime_font_roots()
+    indexed. None means "use the default face". Profiles are re-resolved
+    every draw, so this is a dict lookup and never reads the disk."""
+    name = font_type.strip().lower()
+    if name.endswith(".ttf"):
+        name = name[:-4]
+    for prefix, base in _FONT_FAMILY_PREFIXES:
+        if name.startswith(prefix):
+            name = base
+            break
+    if not _FONT_NAME_RE.match(name):
+        return None
+    index = prime_font_roots()
+    for stem in ([name + "bd", name] if bold else [name]):
+        found = index.get(stem)
+        if found:
+            return found
+    return None
+
+
 class GuiProfile:
     """A RESOLVED style (plain colors/fonts + optional skin-bitmap name),
     built from profile field dicts by _profile_from_fields. bg may be None
@@ -51,12 +191,15 @@ class GuiProfile:
     __slots__ = ("bg", "border", "border_style", "border_thickness",
                  "border_na", "fg", "title_bg",
                  "title_fg", "font_size", "font_bold", "align",
-                 "bitmap", "transparency", "opaque", "text_shadow")
+                 "bitmap", "transparency", "opaque", "text_shadow",
+                 "font_type", "font_path", "fg_hl", "fg_sel", "fg_na", "modal")
 
     def __init__(self, bg, border, fg, title_bg, title_fg,
                  border_style=1, font_size=18, font_bold=False, align="left",
                  bitmap="", transparency=1.0, opaque=None, text_shadow=False,
-                 border_thickness=1, border_na=None):
+                 border_thickness=1, border_na=None, font_type="",
+                 font_path=None, fg_hl=None, fg_sel=None, modal=False,
+                 fg_na=None):
         self.bg = bg
         self.border = border
         self.border_style = border_style
@@ -76,7 +219,22 @@ class GuiProfile:
         #: Torque `opaque` field: plain containers/text draw a background
         #: fill ONLY when this is set (GuiControl semantics); None = unset
         self.opaque = opaque
+        #: bool, or a _TextShadow carrying the profile's offset and colour
         self.text_shadow = text_shadow
+        #: `fonttype` as the script wrote it, and the face file it resolved
+        #: to (None = default face)
+        self.font_type = font_type
+        self.font_path = font_path
+        #: `fontcolorhl` / `fontcolorsel`; None = the script never set them
+        self.fg_hl = fg_hl
+        self.fg_sel = fg_sel
+        #: `fontcolorna`, the text colour of an inactive control (None = not
+        #: set: draw sites dim `fg` instead)
+        self.fg_na = fg_na
+        #: `modal`: a visible, awake canvas-level control with a modal
+        #: profile is fitted to the canvas (GuiCanvas::fitMainControls,
+        #: gui/GuiCanvas.cpp:251-305)
+        self.modal = modal
 
 
 _DEFAULT_PROFILE_NAME = "guidefaultprofile"
@@ -212,12 +370,14 @@ _DEFAULT_GUIPROFILE = GuiProfile(
     title_bg=_BLUE_FILL, title_fg=(235, 240, 250))
 
 #: profile fields that carry style meaning (everything else a script sets on
-#: a profile -- textoffset, shadow params -- is retained on the object but not
+#: a profile -- textoffset, tab, modal -- is retained on the object but not
 #: consulted by the solid-color renderer)
 _STYLE_FIELDS = frozenset({
     "fillcolor", "fontcolor", "bordercolor", "bordercolorna", "fillcolorhl",
     "fillcolorna", "fontsize", "fontstyle", "align", "justify", "border",
     "borderthickness", "opaque", "bitmap", "transparency", "textshadow",
+    "shadowoffset", "shadowcolor", "fonttype", "fontcolorhl", "fontcolorsel",
+    "fontcolorna", "modal",
 })
 
 #: `justify` and `align` are ONE slot under two names -- identical getter and
@@ -314,16 +474,31 @@ def _profile_from_fields(fields: Dict[str, Any]) -> GuiProfile:
         transparency = max(0.0, min(1.0, to_num(fields.get("transparency"))))
     opaque = to_bool(fields["opaque"]) if "opaque" in fields else None
     align = to_str(fields.get("align", "left"))
+    bold = "b" in to_str(fields.get("fontstyle", "")).lower()
+    font_type = ""
+    font_path = None
+    if "fonttype" in fields:
+        font_type = to_str(fields["fonttype"])[:64]
+        font_path = resolve_font_file(font_type, bold)
+    shadow = _TextShadow(to_bool(fields.get("textshadow", 0)))
+    if "shadowoffset" in fields:
+        shadow.dx, shadow.dy = _shadow_offset(fields["shadowoffset"])
+    if "shadowcolor" in fields:
+        shadow.color = _color(fields["shadowcolor"], shadow.color)
     return GuiProfile(
         bg=bg, border=border, fg=fg, title_bg=title_bg, title_fg=fg,
         border_style=style, border_thickness=thickness,
         border_na=_color(fields.get("bordercolorna"), border),
         font_size=size,
-        font_bold="b" in to_str(fields.get("fontstyle", "")).lower(),
+        font_bold=bold,
         align=align if align in _ALIGNMENTS else "left",
         bitmap=to_str(fields.get("bitmap", "")),
-        transparency=transparency, opaque=opaque,
-        text_shadow=to_bool(fields.get("textshadow", 0)))
+        transparency=transparency, opaque=opaque, text_shadow=shadow,
+        font_type=font_type, font_path=font_path,
+        fg_hl=_color(fields.get("fontcolorhl")),
+        fg_sel=_color(fields.get("fontcolorsel")),
+        fg_na=_color(fields.get("fontcolorna")),
+        modal=to_bool(fields.get("modal", 0)))
 
 
 def _readable_on(fill, base_bg, default_fg):
@@ -427,6 +602,11 @@ def _font(fonts, prof: GuiProfile):
         return None
     at = getattr(fonts, "at", None)
     if at is not None:
+        if prof.font_path:
+            try:
+                return at(prof.font_size, prof.font_bold, path=prof.font_path)
+            except Exception:  # unreadable face file: default face below
+                pass
         try:
             return at(prof.font_size, prof.font_bold)
         except Exception:
@@ -452,10 +632,19 @@ def _wrap_text(font: pygame.font.Font, text: str, max_width: int) -> List[str]:
 
 
 def _draw_label(surf, font, text, color, pos, shadow=False):
-    """Render one text run, with the profile's optional 1px black drop
-    shadow (textshadow=true on most IRC_* profiles -- the classic look)."""
+    """Render one text run, with the profile's optional drop shadow
+    (textshadow=true on most IRC_* profiles -- the classic look). `shadow` is
+    False, True (the default 1px black shadow) or a profile's _TextShadow,
+    whose offset and colour come from `shadowoffset` / `shadowcolor`."""
     if shadow:
-        surf.blit(font.render(text, True, (0, 0, 0)), (pos[0] + 1, pos[1] + 1))
+        if shadow is True:
+            dx, dy, tint = 1, 1, (0, 0, 0, 255)
+        else:
+            dx, dy, tint = shadow.dx, shadow.dy, shadow.color
+        cast = font.render(text, True, tuple(tint[:3]))
+        if len(tint) > 3 and tint[3] < 255:
+            cast.set_alpha(tint[3])
+        surf.blit(cast, (pos[0] + dx, pos[1] + dy))
     label = font.render(text, True, color)
     surf.blit(label, pos)
     return label
