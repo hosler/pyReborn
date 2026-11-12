@@ -4,9 +4,9 @@ Simple dataclass for player state.
 """
 
 from dataclasses import dataclass, field
-import time
 import math
 
+from .clock import Clock
 from .hurt import HurtState
 
 
@@ -84,6 +84,33 @@ class Player:
     hurt_timeout: float = 0.0  # When hurt animation should end
     action_mode: int = 0
     hurt: HurtState = field(default_factory=HurtState, repr=False, compare=False)
+    # The owning client's clock (Client passes its own); a bare Player gets a
+    # private one. Only read when no_hurt() is called without a `now`.
+    clock: Clock = field(default_factory=Clock, repr=False, compare=False)
+
+    # Emoticon shown over the player (GS2 showemoticon) and the ticks left
+    # before it hides: TPlayer::showEmoticon sets emoticontimeout_start = 32
+    # (TPlayer.cpp:2789, TInitStatics.cpp:1011) and TPlayer::timer counts it
+    # down once per tick, hiding it at zero (TPlayer.cpp:7262-7287).
+    emoticon: object = ""
+    emoticon_ticks: int = 0
+    EMOTICON_TICKS = 32
+
+    def show_emoticon(self, value) -> None:
+        """Show `value` (a name, or a key index) for EMOTICON_TICKS ticks."""
+        object.__setattr__(self, 'emoticon', value)
+        object.__setattr__(self, 'emoticon_ticks',
+                           self.EMOTICON_TICKS if value not in ("", None) else 0)
+
+    def tick_emoticon(self) -> None:
+        """One tick of the emoticon countdown (TPlayer.cpp:7262-7287). The
+        reference pauses the count for a "stay" emoticon gani after its first
+        five ticks; this client draws no emoticon gani, so it never pauses."""
+        if self.emoticon_ticks <= 0:
+            return
+        self.emoticon_ticks -= 1
+        if self.emoticon_ticks <= 0:
+            self.emoticon = ""
 
     def no_hurt(self, now=None):
         """Representable getNoHurt gates (TPlayer.cpp:3013-3043).
@@ -91,7 +118,7 @@ class Player:
         Mode 10 is swimming; death is pause mode 2 / the DEAD status bit.
         Server HP assignments use update_from_props and bypass this test.
         """
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         if self.action_mode == 3 and self.hurt.generation and not self.hurt.immune(now):
             self.action_mode = 0
         return (self.hurt.immune(now) or self.hearts <= 0

@@ -5,15 +5,19 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from .clock import Clock
 from .nc_client import NCClient
 from .packets import PacketID
 
 logger = logging.getLogger(__name__)
+
+# The link runs on its own worker thread and connection, apart from any
+# game's simulation, so it keeps a clock of its own for request deadlines.
+_LINK_CLOCK = Clock()
 
 NC_PROOF_TIMEOUT = 6.0
 NC_REQUEST_TIMEOUT = 6.0
@@ -117,7 +121,7 @@ class _LinkedNCClient(NCClient):
 
     def pump_correlated_requests(self) -> None:
         """Expire dead sends, then allow one wire request of each kind."""
-        now = time.monotonic()
+        now = _LINK_CLOCK.frame_now()
         if (self._npc_attribute_outstanding is not None
                 and now - self._npc_attribute_outstanding[0]
                 >= NC_REQUEST_TIMEOUT):
@@ -295,8 +299,8 @@ class NCLink:
         nc.get_weapon_list()
         nc.get_level_list()
         stop_event = stop_event or self._stop
-        deadline = time.time() + NC_PROOF_TIMEOUT
-        while time.time() < deadline and not stop_event.is_set():
+        deadline = _LINK_CLOCK.frame_now() + NC_PROOF_TIMEOUT
+        while _LINK_CLOCK.frame_now() < deadline and not stop_event.is_set():
             nc.update(timeout=0.1)
             if nc.saw_nc_packet:
                 return True

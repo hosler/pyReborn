@@ -9,7 +9,6 @@ tables)."""
 import math
 import os
 import sys
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -27,6 +26,7 @@ pygame.display.set_mode((64, 64))
 
 from pygame.locals import K_a, K_d, K_s, K_SPACE, K_UP, K_DOWN, K_LEFT, K_RIGHT
 
+from pyreborn.clock import Clock
 from pyreborn import ground_items as gi
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.input import InputMixin
@@ -101,14 +101,15 @@ def test_item_ages_forgets_removed_items_and_allows_retake():
 
 def _pickup_game(player_xy, items, take_ok=True):
     client = SimpleNamespace(
-        connected=True, _authenticated=True,
+        connected=True, authenticated=True,
         player=SimpleNamespace(x=player_xy[0], y=player_xy[1]),
         get_current_level_from_position=lambda: 'a.nw',
         items_in_level=lambda name: items,
         pickup_item=Mock(return_value=take_ok),
     )
-    return SimpleNamespace(client=client, sound_mgr=Mock(),
-                           _item_first_seen={('a.nw', k): time.monotonic() - 2.0 for k in items})
+    clock = Clock()
+    return SimpleNamespace(client=client, sound_mgr=Mock(), clock=clock,
+                           _item_first_seen={('a.nw', k): clock.sim_now() - 2.0 for k in items})
 
 
 def test_auto_pickup_sends_one_take_per_item_until_server_removes_it():
@@ -121,7 +122,7 @@ def test_auto_pickup_sends_one_take_per_item_until_server_removes_it():
     items.clear()                                              # server removed it
     ActionsMixin._auto_pickup_items(game)
     items[(10.0, 10.0)] = 'greenrupee'                         # dropped again
-    game._item_first_seen[('a.nw', (10.0, 10.0))] = time.monotonic() - 2.0
+    game._item_first_seen[('a.nw', (10.0, 10.0))] = game.clock.sim_now() - 2.0
     assert ActionsMixin._auto_pickup_items(game) == 1
 
 
@@ -216,15 +217,16 @@ def test_giveaway_drop_costs_the_stat_and_lays_the_item():
     player = SimpleNamespace(x=10.0, y=10.0, direction=3, rupees=40, bombs=0,
                              arrows=0, hearts=3.0)
     client = SimpleNamespace(
-        player=player, items={}, _send_appearance_prop=Mock(),
+        player=player, items={}, send_appearance_prop=Mock(),
         send_item_add=Mock(return_value=True),
         get_current_level_from_position=lambda: 'a.nw')
     player.action_mode = 9
-    game = SimpleNamespace(client=client, sound_mgr=Mock(), _giveaway_item=2)
+    game = SimpleNamespace(client=client, sound_mgr=Mock(), clock=Clock(),
+                           _giveaway_item=2)
     game._giveaway_stats = lambda: ActionsMixin._giveaway_stats(game)
     assert ActionsMixin._giveaway_drop(game) is True
     assert player.rupees == 10
-    client._send_appearance_prop.assert_called_once_with(PLPROP.RUPEESCOUNT, 10)
+    client.send_appearance_prop.assert_called_once_with(PLPROP.RUPEESCOUNT, 10)
     client.send_item_add.assert_called_once_with(12.5, 11.0, 2)
     assert client.items == {'a.nw': {(12.5, 11.0): 'redrupee'}}
     assert game._giveaway_item is None
@@ -255,7 +257,7 @@ class _ChordHarness(InputMixin):
     def __init__(self):
         self.client = SimpleNamespace(
             player=SimpleNamespace(hearts=3.0, direction=0),
-            input_frozen=False, _local_level_transition='')
+            input_frozen=False, local_level_transition='')
         self.gs1 = SimpleNamespace(default_movement=True, keys_dir=set(),
                                    keys_raw=set())
         self.typing = False
@@ -348,7 +350,7 @@ class _GiveawayInputHarness(_ChordHarness, ActionsMixin):
         from pyreborn.player import Player
         self.client.player = Player(rupees=40, bombs=5, arrows=5)
         self.client.items = {}
-        self.client._send_appearance_prop = Mock()
+        self.client.send_appearance_prop = Mock()
         self.client.send_item_add = Mock(return_value=True)
         self.client.get_current_level_from_position = lambda: 'a.nw'
         self.sound_mgr = Mock()

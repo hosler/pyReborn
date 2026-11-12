@@ -375,11 +375,34 @@ def _settled_port_holder(port, grace=2.0):
         time.sleep(0.05)
 
 
-def stop(record):
+def stop(record, purge=False):
+    """Stop a managed server and remove what `start` provisioned. The log
+    and the private account store stay unless `purge` is set."""
     _terminate(record["pid"])
     _settled_port_holder(record["port"], grace=SHUTDOWN_TIMEOUT)
     _cleanup(record)
     _record_path(record["name"]).unlink(missing_ok=True)
+    if purge:
+        _purge(record["name"])
+
+
+def _purge(name):
+    """Delete a stopped server's log and its `<name>.world` staging
+    directory (account store included) from the state directory.
+
+    Only those two fixed names under state_dir() are touched; `_record_path`
+    already restricts `name` to [A-Za-z0-9_-]. The staging directory holds
+    symlinks into the source world: rmtree unlinks a symlink and never
+    descends through it, so the source is never touched. A `.world` that is
+    itself a symlink is unlinked, not followed."""
+    _record_path(name)      # validates the name
+    directory = state_dir()
+    (directory / f"{name}.log").unlink(missing_ok=True)
+    world = directory / f"{name}.world"
+    if world.is_symlink():
+        world.unlink()
+    elif world.is_dir():
+        shutil.rmtree(world)
 
 
 def _remove_empty_dirs(paths):
@@ -497,6 +520,9 @@ def _parser():
     selection.add_argument("--port", type=int)
     selection.add_argument("--all", action="store_true")
     halt.add_argument("--orphans", action="store_true")
+    halt.add_argument("--purge", action="store_true",
+                      help="also delete each stopped server's log and its "
+                           "<name>.world staging directory (accounts included)")
     again = commands.add_parser("restart")
     again.add_argument("name")
     ready = commands.add_parser("ensure")
@@ -537,7 +563,7 @@ def main(argv=None):
                 elif not args.all:
                     selected = []
                 for record in selected:
-                    stop(record)
+                    stop(record, purge=args.purge)
                 if args.orphans:
                     for process in orphans():
                         _terminate(process["pid"])

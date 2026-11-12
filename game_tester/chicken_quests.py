@@ -180,23 +180,13 @@ def reset_quest_account(account: str = ACCOUNT) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Frame pump - render_smoke.py's loop body, minus real pygame events.
+# Frame pump - N real frames (GameClient.step).
 # ---------------------------------------------------------------------------
 def _pump(game, n: int = 8, dt: float = 0.05):
     for _ in range(n):
-        game.client.update(timeout=0.02)
-        game._load_new_npcs()
-        game._process_pending_warp()
-        game._process_self_shoots()
-        game.gs1.process_coroutines(dt)
-        game.gs1.process_timeouts(dt)
-        game.gs1.advance_input_frame()
-        game._check_level_change()
-        game._update_swimming_state()
-        game._update_visual_position(dt)
-        game._update_animations(dt)
-        game._last_dt = dt
-        game._render()
+        # The real frame, packets waited for briefly (net_timeout) since
+        # nothing else paces this loop.
+        game.step(dt, strict=True, net_timeout=0.02)
 
 
 class QuestSession:
@@ -229,14 +219,10 @@ class QuestSession:
             self.client.update(timeout=0.05)
         self.game = GameClient(self.client)
         self.game.running = True
-        self.game.visual_x, self.game.visual_y = self.client.x, self.client.y
         self.messages = []
         self.game.gs1.on_say = lambda npc_id, text: self.messages.append(text)
         self.game.gs1.on_say2 = lambda text: self.messages.append(text)
-        self.game._load_npc_scripts()
-        self.game._trigger_playerenters()
-        self.game.npc_handler.update_npcs()
-        self.game._gs1_level = self.client._current_level_name
+        self.game.start()
         _pump(self.game, 10)
         self._deliver_scripts()
 

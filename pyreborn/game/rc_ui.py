@@ -6,8 +6,10 @@ and the panel reports "connecting" / "no RC access" / the live session rather
 than the key doing nothing for players without rights.
 
 Shape follows the other modal overlays (F7 player list, F9 settings): it owns
-its own `.visible` state, `game/input.py` routes KEYDOWN to `handle_key` while
-it is open, and `game/hud.py` draws it last. It is bigger than those because
+its own `.visible` state, and its entry in the overlay stack
+(game/overlays.py, `RCTools`) routes KEYDOWN to `handle_key` while it is open
+and draws it above every panel below it in input priority. It is bigger than
+those because
 it carries five tabs, so it draws its own panel instead of reusing
 `_draw_list_overlay`.
 

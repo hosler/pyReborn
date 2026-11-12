@@ -82,8 +82,7 @@ def _run_server(entry: Any, prefs: Prefs, seconds: float, out_dir: Path) -> dict
         try:
             game = GameClient(outcome.client)
             game._explorer_log_capture = logs
-            game._load_npc_scripts()
-            game._trigger_playerenters()
+            game.start()
             result = ExplorerBot(game, pump=GamePump(game), writer=writer,
                                  policy=policy).explore(seconds)
         finally:

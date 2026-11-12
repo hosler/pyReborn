@@ -316,7 +316,7 @@ def test_stalled_package_fails_after_the_timeout_and_unblocks_completion(
     client.on_update_package_failed = failed.append
     client.on_packages_download_complete = lambda: complete.append(1)
     clock = [1000.0]
-    monkeypatch.setattr(up, '_now', lambda: clock[0])
+    monkeypatch.setattr(client.clock, 'frame_now', lambda: clock[0])
     client.request_update_package('a.gupd')
     client.request_update_package('b.gupd')
     client._handle_packet(PacketID.PLO_UPDATEPACKAGEDONE, b'a.gupd')
@@ -341,7 +341,7 @@ def test_progress_resets_the_stall_clock_and_update_expires(monkeypatch):
     failed = []
     client.on_update_package_failed = failed.append
     clock = [0.0]
-    monkeypatch.setattr(up, '_now', lambda: clock[0])
+    monkeypatch.setattr(client.clock, 'frame_now', lambda: clock[0])
     client._handle_packet(PacketID.PLO_FILE, _chunk('base.gupd', GUPD))
     client.request_update_package('base.gupd')
     clock[0] = up.PACKAGE_STALL_TIMEOUT - 1

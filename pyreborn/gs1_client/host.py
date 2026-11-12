@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import logging
 import re
 
@@ -8,6 +10,7 @@ from reborn_protocol.gs1.runtime import Host, UNSET
 from reborn_protocol.gs1.values import to_num
 from reborn_protocol.gs2 import GS2Object
 
+from ..gmap_coords import grid_index
 from .objects import _GS1ObjectRef
 from .registry import _FALL_THROUGH, _GS1_LAYER_COMMANDS, _GS1_MAIN_COMMANDS, _GS1_NPC_COMMANDS, _GS1_NPC_TAIL_COMMANDS, _GS1_PRE_COMMANDS, _report_gs1_error
 from .host_builtins import BuiltinsMixin
@@ -16,6 +19,9 @@ from .host_commands_main import MainCommandsMixin
 from .host_commands_npc import NpcCommandsMixin
 from .host_commands_pre import PreCommandsMixin
 from .host_functions import FunctionsMixin
+
+if TYPE_CHECKING:
+    from .runtime import ClientGS1
 
 
 
@@ -183,7 +189,7 @@ class GS1ClientHost(
     def _build_remote_records(self, cl):
         # World frame, like playerx/playery in host_builtins.py::_pb_position.
         # Reference: GServer-v2/server/include/object/Character.h:getTilePosition (map*64 + local).
-        segments = {name: cell for cell, name in (getattr(cl, "gmap_grid", {}) or {}).items()}
+        segments = grid_index(getattr(cl, "gmap_grid", {}))
         current_segment = segments.get(getattr(cl, "_current_level_name", ""), (0, 0))
         out = []
         for pid, op in getattr(cl, "players", {}).items():

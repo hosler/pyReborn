@@ -48,10 +48,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 BASELINE_PATH = Path(__file__).with_name("behaviour_baselines.json")
 SCHEMA_VERSION = 1
 
-#: Fixed simulation step.  Frames are paced to real time at this rate so the
-#: amount of *script* time a fingerprint covers is the same on a fast and a
-#: slow machine (host-call counts are driven by settimer/sleep, i.e. by script
-#: time, so an unpaced loop would make them machine-dependent).
+#: Frame step.  Frames are paced to real time at this rate so the amount of
+#: *script* time a fingerprint covers is the same on a fast and a slow machine
+#: (host-call counts are driven by settimer/sleep, i.e. by script time, so an
+#: unpaced loop would make them machine-dependent). The simulation itself runs
+#: in 50 ms ticks (pyreborn/clock.py): a tick every third frame. Baselines
+#: recorded before the tick model (2026-11-12) counted GS2 timers at up to
+#: 120 Hz; their timer-driven host-call counts are stale until re-recorded.
 FRAME_DT = 1.0 / 60.0
 
 #: Default observation window.  25s is what the ad-hoc Login diagnostic used:
@@ -547,30 +550,13 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
     try:
         if replay_bytecode:
             replayed = _replay_existing_bytecode(game.gs2, client)
-        game._load_npc_scripts()
-        game._trigger_playerenters()
+        game.start()
 
         start = time.monotonic()
         frames = 0
         deadline = start + seconds
         while time.monotonic() < deadline and client.connected:
-            game._frame_dt = FRAME_DT
-            client.update(timeout=0)
-            game._load_new_npcs()
-            game._process_pending_warp()
-            game._process_self_shoots()
-            game.gs1.process_coroutines(FRAME_DT)
-            game.gs1.process_timeouts(FRAME_DT)
-            game.gs2.process_coroutines(FRAME_DT)
-            game.gs2.process_timeouts(FRAME_DT)
-            game._check_scripted_link_warp()
-            game.gs1.advance_input_frame()
-            game._check_level_change()
-            game._update_swimming_state()
-            game._update_visual_position(FRAME_DT)
-            game._update_animations(FRAME_DT)
-            game._last_dt = FRAME_DT
-            game._render()
+            game.step(FRAME_DT, strict=True)
             frames += 1
             # Pace to real time so script time ~= wall time (see FRAME_DT).
             slack = (start + frames * FRAME_DT) - time.monotonic()
@@ -584,11 +570,7 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
         ui_opened = _open_ui(game, open_ui) if open_ui else {}
         if ui_opened:
             for _ in range(int(1.0 / FRAME_DT)):
-                game._frame_dt = FRAME_DT
-                client.update(timeout=0)
-                game.gs2.process_coroutines(FRAME_DT)
-                game.gs2.process_timeouts(FRAME_DT)
-                game._render()
+                game.step(FRAME_DT, strict=True)
                 frames += 1
 
         wall = time.monotonic() - start

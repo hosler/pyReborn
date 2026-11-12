@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from pyreborn.gani import GaniParser
+from pyreborn.gmap_coords import grid_of
 
 
 MAX_FILES = 40
@@ -730,8 +731,7 @@ class DeepCrawler:
         return self.result
 
     def _gmap_cell(self, level: str) -> tuple[int, int] | None:
-        return next((cell for cell, name in getattr(self.client, "gmap_grid", {}).items()
-                     if str(name).casefold() == str(level).casefold()), None)
+        return grid_of(getattr(self.client, "gmap_grid", {}), str(level), casefold=True)
 
     def _crawl_gmap(self, start: str) -> None:
         """Breadth-first grid crawl, routing between work items over known seams.
@@ -1238,10 +1238,16 @@ class DeepCrawler:
     def _tick_frame(client: Any, level: str, dt: float) -> None:
         game = DeepCrawler._render_game(client)
         game._frame_dt = min(dt, 0.1)
+        clock = game.clock
+        # The crawler never starts the game, so update() runs the Client's
+        # own simulation ticks (pyreborn/clock.py); the presentation side
+        # (gani steps, combat objects) follows them tick for tick.
+        before = clock.tick
         client.update(timeout=0)
-        game._update_visual_position(game._frame_dt)
-        game._update_animations(game._frame_dt)
-        game._last_dt = game._frame_dt
+        for _ in range(clock.tick - before):
+            game._update_animations(clock.TICK_SECONDS)
+            game._advance_combat_objects(clock.TICK_SECONDS, clock.sim_now())
+        game._update_visual_position(clock.alpha)
 
     @staticmethod
     def _render_game(client: Any):
@@ -1253,6 +1259,7 @@ class DeepCrawler:
             game = GameClient(client)
             # Bytecode and received NPC scripts are exercised only by recording hosts.
             client.on_gs2_bytecode = None
+            game.gs2.detach()  # GS2 now listens beside the slot; clearing the slot no longer unhooks it
             client._crawl_render_game = game
         return game
 

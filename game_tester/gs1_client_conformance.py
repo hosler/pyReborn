@@ -427,16 +427,14 @@ def _chk_weapon_truncation(env):
 
 
 def _chk_freezeplayer(env):
-    import time
-    remaining = env.gs1._freeze_until - time.monotonic()
+    remaining = env.gs1._freeze_until - env.game.clock.sim_now()
     _expect(0.0 < remaining <= 1.5,
             f"freezeplayer 1.5 arms a monotonic deadline at most 1.5s out "
             f"(remaining={remaining:.3f})")
 
 
 def _chk_unfreezeplayer(env):
-    import time
-    _expect(env.gs1._freeze_until <= time.monotonic(),
+    _expect(env.gs1._freeze_until <= env.game.clock.sim_now(),
             "unfreezeplayer should clear pending freeze time")
 
 
@@ -1263,23 +1261,13 @@ def _stop_server(proc, workdir):
 
 
 # ---------------------------------------------------------------------------
-# Client pump (render_smoke's loop body: everything but real input events)
+# Client pump: N real frames (GameClient.step)
 # ---------------------------------------------------------------------------
 def _pump(game, n=8, dt=0.05):
     for _ in range(n):
-        game.client.update(timeout=0.02)
-        game._load_new_npcs()
-        game._process_pending_warp()
-        game._process_self_shoots()
-        game.gs1.process_coroutines(dt)
-        game.gs1.process_timeouts(dt)
-        game.gs1.advance_input_frame()
-        game._check_level_change()
-        game._update_swimming_state()
-        game._update_visual_position(dt)
-        game._update_animations(dt)
-        game._last_dt = dt
-        game._render()
+        # The real frame, packets waited for briefly (net_timeout) since
+        # nothing else paces this loop.
+        game.step(dt, strict=True, net_timeout=0.02)
 
 
 # ---------------------------------------------------------------------------
@@ -1388,11 +1376,7 @@ def run_gs1_client_conformance(host: Optional[str] = None,
 
         game = GameClient(client)
         game.running = True
-        game.visual_x, game.visual_y = client.x, client.y
-        game._load_npc_scripts()
-        game._trigger_playerenters()
-        game.npc_handler.update_npcs()
-        game._gs1_level = client._current_level_name
+        game.start()
         _pump(game, 10)
 
         env = CaseEnv(game, client)

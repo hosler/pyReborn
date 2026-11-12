@@ -151,6 +151,9 @@ class Protocol:
         self.socket: Optional[socket.socket] = None
         self.connected = False
         self.connect_timeout = 30.0
+        # Fired once when the socket drops under us (EOF, send/recv error).
+        # An explicit disconnect() does not fire it.
+        self.on_disconnect: Optional[Callable[[], None]] = None
 
         # Version config
         self.version = VERSIONS.get(version, VERSIONS["2.22"])
@@ -259,6 +262,14 @@ class Protocol:
         self.gen = 2
         self.codec = Gen2Codec()
 
+    def _connection_lost(self) -> None:
+        """The peer or the socket dropped. Flip `connected` and, on the
+        True -> False transition only, tell the owner."""
+        was_connected = self.connected
+        self.connected = False
+        if was_connected and self.on_disconnect is not None:
+            self.on_disconnect()
+
     def disconnect(self):
         """Disconnect from server"""
         self.connected = False
@@ -366,7 +377,7 @@ class Protocol:
 
         except Exception as e:
             print(f"Send failed: {e}")
-            self.connected = False
+            self._connection_lost()
             return False
 
     def recv_packets(self, timeout: float = 0.01) -> List[Tuple[int, bytes]]:
@@ -398,7 +409,7 @@ class Protocol:
                     chunk = self.socket.recv(
                         min(65536, MAX_SOCKET_DRAIN_BYTES - received))
                     if not chunk:
-                        self.connected = False
+                        self._connection_lost()
                         # A draining call can read the peer's final bundle and
                         # then observe EOF immediately; parse those bytes below
                         # because connected=False prevents a later call from
@@ -409,7 +420,7 @@ class Protocol:
             except BlockingIOError:
                 pass
             except Exception:
-                self.connected = False
+                self._connection_lost()
                 # Bytes received before this failing iteration remain valid and
                 # must not be stranded behind the disconnected guard above.
 

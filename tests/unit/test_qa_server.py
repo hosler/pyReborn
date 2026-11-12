@@ -460,3 +460,58 @@ def test_stop_removes_empty_directories_the_server_created(managed, monkeypatch)
     assert not (checkout / "world").exists()
     assert (checkout / "images" / "kept.png").exists()
     assert (checkout / "gani").is_dir()
+
+
+def _world_source(tmp_path):
+    source = tmp_path / "world-source"
+    (source / "world").mkdir(parents=True)
+    (source / "world" / "start.nw").write_text("level")
+    (source / "images").mkdir()
+    (source / "images" / "tiles.png").write_bytes(b"png")
+    return source
+
+
+def test_stop_keeps_log_and_world_without_purge(managed, tmp_path):
+    state, _, _, launches = managed
+    source = _world_source(tmp_path)
+    assert qa.main(["start", "--name", "keep", "--world", str(source)]) == 0
+    (launches[0] / "accounts" / "saved.json").write_text("{}")
+    assert qa.main(["stop", "keep"]) == 0
+    assert (state / "keep.log").is_file()
+    assert (state / "keep.world" / "accounts" / "saved.json").is_file()
+
+
+def test_stop_purge_removes_log_and_world_but_not_the_source(managed, tmp_path):
+    state, _, children, launches = managed
+    source = _world_source(tmp_path)
+    assert qa.main(["start", "--name", "gone", "--world", str(source)]) == 0
+    assert qa.main(["start", "--name", "stays", "--port", "14902",
+                    "--world", str(source)]) == 0
+    (launches[0] / "accounts" / "saved.json").write_text("{}")
+    assert (launches[0] / "images").is_symlink()
+    assert qa.main(["stop", "--purge", "gone"]) == 0
+    assert not qa.is_live(children[0].pid)
+    assert not (state / "gone.log").exists()
+    assert not (state / "gone.world").exists()
+    assert not (state / "gone.json").exists()
+    # rmtree unlinked the staging symlinks without descending into them.
+    assert (source / "world" / "start.nw").read_text() == "level"
+    assert (source / "images" / "tiles.png").read_bytes() == b"png"
+    # Another server's files are not touched.
+    assert (state / "stays.log").is_file()
+    assert (state / "stays.world").is_dir()
+    assert qa.main(["stop", "--purge", "--all"]) == 0
+    assert not (state / "stays.world").exists()
+    assert not list(state.glob("*.log"))
+
+
+def test_purge_unlinks_a_symlinked_world_without_following_it(managed, tmp_path):
+    state, _, _, _ = managed
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("x")
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "odd.world").symlink_to(target, target_is_directory=True)
+    qa._purge("odd")
+    assert not (state / "odd.world").exists()
+    assert (target / "keep.txt").read_text() == "x"

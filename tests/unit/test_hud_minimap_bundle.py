@@ -67,7 +67,7 @@ def test_hearts_wrap_after_ten_and_half_heart_fills_left_side_only():
 def test_world_entity_dots_use_each_players_segment():
     client = SimpleNamespace(
         x=96, y=32, gmap_width=3, gmap_height=2,
-        _current_level_name="middle",
+        current_level_name="middle",
         gmap_grid={(0, 0): "left", (1, 0): "middle", (2, 0): "right"},
         players={7: {"x": 32, "y": 16, "level": "right"}},
     )

@@ -9,8 +9,10 @@ from typing import List, Optional, Tuple
 
 from reborn_protocol.coords import (
     LEVEL_SIZE, gmap_extent, in_level_bounds, level_index, local_coord,
-    segment_at,
+    segment_at, segment_origin,
 )
+
+from ..gmap_coords import grid_of, level_at, origin_at
 
 from ..tiletypes import (
     TileType, get_tile_type, type_is_blocking, selection_for, effective_tile_type,
@@ -140,12 +142,11 @@ class CollisionMixin:
         behavior) made every collision probe near a segment boundary test the
         wrong level's tiles, which is exactly where walls felt flaky."""
         if self.client.in_gmap_segment:
-            grid = segment_at(x, y)
-            seg = self.client.gmap_grid.get(grid)
+            seg = level_at(self.client.gmap_grid, x, y)
             if seg:
                 return seg, self.client.levels.get(seg)
             return None, None
-        name = self.client._current_level_name
+        name = self.client.current_level_name
         return name, (self.client.levels.get(name) or self.client.tiles)
 
     def _world_to_level_local(self, x: float, y: float) -> Tuple[int, int]:
@@ -348,8 +349,7 @@ class CollisionMixin:
         level = getattr(host, 'level_object', None)
         if getattr(client, 'level_nopk', False) or (level is not None and level.get('isnopkzone')):
             return False
-        origin = (client.x - local_coord(client.x), client.y - local_coord(client.y)) \
-            if client.in_gmap_segment else (0, 0)
+        origin = origin_at(client.x, client.y) if client.in_gmap_segment else (0, 0)
         for pid, player in getattr(client, 'players', {}).items():
             if pid == client.player.id:
                 continue
@@ -362,17 +362,17 @@ class CollisionMixin:
             offset = origin
             gx, gy = player.get('gmaplevelx'), player.get('gmaplevely')
             if client.in_gmap_segment and gx is not None and gy is not None:
-                offset = (gx * LEVEL_SIZE, gy * LEVEL_SIZE)
-            elif name and name != client._current_level_name:
+                offset = segment_origin(gx, gy)
+            elif name and name != client.current_level_name:
                 # On a gmap the roster carries the MAP name, not the segment:
                 # like render_collect._world_pos_for_level, assume the local
                 # segment then. A different plain level means elsewhere.
                 if not name.lower().endswith('.gmap'):
-                    grid = next((grid for grid, level_name in client.gmap_grid.items()
-                                 if level_name == name), None) if client.in_gmap_segment else None
+                    grid = (grid_of(client.gmap_grid, name)
+                            if client.in_gmap_segment else None)
                     if grid is None:
                         continue
-                    offset = (grid[0] * LEVEL_SIZE, grid[1] * LEVEL_SIZE)
+                    offset = segment_origin(*grid)
             px, py = player.get('world_x'), player.get('world_y')
             if px is None:
                 px = player.get('x', 0) + offset[0]
@@ -392,10 +392,10 @@ class CollisionMixin:
             if not bomb.get('exploded') and bx + .25 <= x < bx + 3 and by <= y < by + 2:
                 return True
         presented = {(bomb['x'], bomb['y']) for bomb in active}
-        levels = [(self.client._current_level_name, 0, 0)]
+        levels = [(self.client.current_level_name, 0, 0)]
         if self.client.in_gmap_segment:
-            levels = [(name, gx * LEVEL_SIZE, gy * LEVEL_SIZE)
-                      for (gx, gy), name in self.client.gmap_grid.items()]
+            levels = [(name, *segment_origin(*cell))
+                      for cell, name in self.client.gmap_grid.items()]
         for name, ox, oy in levels:
             for bomb in self.client.bombs_in_level(name).values():
                 bx, by = bomb['x'] + ox, bomb['y'] + oy

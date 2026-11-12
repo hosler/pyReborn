@@ -7,7 +7,7 @@ exist: sound volume, background music on/off, the day/night ambient tint
 (prefs.day_night), the minimap, and zoom.
 
 Follows the same modal-overlay shape as the F7 player list / F8 server list
-(see game/input.py's KEYDOWN dispatch chain and game/hud.py's
+(see its `Settings` entry in game/overlays.py and game/hud.py's
 `_draw_list_overlay`) but owns its own `.visible`/`.selected` state instead
 of a `game.show_x` flag -- the same pattern InventoryUI already uses.
 `GameClient` constructs it through `game/input.py` during setup so saved prefs

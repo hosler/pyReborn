@@ -12,14 +12,15 @@ from typing import Optional
 from pathlib import Path
 from types import SimpleNamespace
 from ..gs1_client import board_world_dims
-import time
+from ..clock import Clock
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .helpers import _csv_unflatten, _image_size, _is_admin_guild
 from .host import GS2ClientHost
 from .objects import _BoardTilesColumn, _GaniThisObject, _LevelObject, _NpcThisObject, layer_image_get
 from .objects_player import _FlagScopeObject, _NameObject, _PlayerAttrObject, _PlayerColorsObject, _PlayerObject, _ThisObject, _guild_from_nick
-from .registry import GS2GuiManager, GuiControl, PENDING_EVENT_CAP, SAVE_LINES_CACHE_MAX_BYTES, SAVE_LINES_MAX_CHARS_PER_LINE, SAVE_LINES_MAX_LINES, SCHEDULED_EVENT_CAP, TIMER_BACKLOG_CAP, TIMER_RESOLUTION, _GS1_TEXT_ARGS, _GlobalsStore, _REMOTE_PLAYER_EMPTY_STRINGS, _REMOTE_PLAYER_STICKY_NUMBERS, logger
+from .game_shell import GameShell
+from .registry import gui_layer, is_gui_control, PENDING_EVENT_CAP, SAVE_LINES_CACHE_MAX_BYTES, SAVE_LINES_MAX_CHARS_PER_LINE, SAVE_LINES_MAX_LINES, SCHEDULED_EVENT_CAP, _TIMER_CANCEL, _GS1_TEXT_ARGS, _GlobalsStore, _REMOTE_PLAYER_EMPTY_STRINGS, _REMOTE_PLAYER_STICKY_NUMBERS, logger
 
 CLASS_JOIN_WAIT_SECONDS = 5.0
 CLASS_JOIN_WAIT_PUMPS = 300
@@ -40,7 +41,10 @@ class _EventWait(VMCoroutineWait):
         self.value = None
 
     def ready(self):
-        if self.value is None and self.runtime._wait_time >= self.deadline:
+        # waitfor times out on the script clock, with the same 0.0001 slack
+        # as sleep (TScriptSpace.cpp:1088-1096).
+        if (self.value is None
+                and self.deadline - self.runtime._wait_time < _TIMER_CANCEL):
             self.resolve(0.0)
         return self.value is not None
 
@@ -63,7 +67,7 @@ class _ClassJoinWait(VMCoroutineWait):
         self.runtime = runtime
         self.vm = vm
         self.classname = classname
-        self.deadline = time.monotonic() + CLASS_JOIN_WAIT_SECONDS
+        self.deadline = runtime.clock.frame_now() + CLASS_JOIN_WAIT_SECONDS
         self.pumps = 0
         self.timed_out = False
 
@@ -77,7 +81,7 @@ class _ClassJoinWait(VMCoroutineWait):
                for joined in self.vm.joined):
             return True
         if (self.pumps >= CLASS_JOIN_WAIT_PUMPS
-                or time.monotonic() >= self.deadline):
+                or self.runtime.clock.frame_now() >= self.deadline):
             self.timed_out = True
             return True
         return False
@@ -99,6 +103,15 @@ class _ClassJoinWait(VMCoroutineWait):
 class ClientGS2:
     """Runs GS2 bytecode client-side. Mirrors ClientGS1's surface: load_*,
     trigger_event, process_timeouts, attach()."""
+
+    @property
+    def clock(self) -> Clock:
+        """The client's clock; a private one for a runtime built without a
+        client."""
+        clock = getattr(self.client, 'clock', None)
+        if clock is None:
+            clock = self.__dict__.setdefault('_own_clock', Clock())
+        return clock
 
     def __init__(self, client=None, gs1=None):
         self.client = client
@@ -136,7 +149,8 @@ class ClientGS2:
         self._in_log_message = False
         # GUI-controls tree (showgui/GuiControl); None when pygame isn't
         # installed (headless callers, e.g. game_tester's GameBot).
-        self.gui = GS2GuiManager(rt2=self) if GS2GuiManager is not None else None
+        manager_cls = gui_layer().manager
+        self.gui = manager_cls(rt2=self) if manager_cls is not None else None
         if self.gui is not None:
             options_dialog = self.gui.register_native_control(
                 "GuiWindowCtrl", "OptionsDlg2D")
@@ -173,7 +187,7 @@ class ClientGS2:
             installer_window.height = 370.0
             installer_window.set_visible(False)
             installer_window._native_canvas_control = True
-        self.game_shell = None
+        self.game_shell: Optional[GameShell] = None
         self._control_bindings: Dict[tuple, int] = {
             (0, 0): 38, (1, 0): 37, (2, 0): 40, (3, 0): 39,
             (4, 0): 68, (5, 0): 83, (6, 0): 65, (7, 0): 77,
@@ -183,6 +197,8 @@ class ClientGS2:
         self._update_packages: Dict[str, GS2Object] = {}
         self.echo_log: List[str] = []
         self._timeouts: Dict[tuple, float] = {}   # (kind, key) -> seconds left
+        # (kind, key) -> the script pass that armed it (Clock.script_pass)
+        self._timeout_pass: Dict[tuple, int] = {}
         # scheduleevent() arms: [{key, left, event, params}] -- see
         # schedule_event/_process_scheduled_events
         self._scheduled: List[dict] = []
@@ -195,8 +211,7 @@ class ClientGS2:
         # prop; they have no coroutine to time them out (_expire_listed_joins).
         self._listed_join_deadlines: Dict[tuple, tuple] = {}
         self._join_timeout_warned: set = set()
-        self._prev_bytecode_cb = None
-        self._prev_server_text_cb = None
+        self._detach_hooks = []
         # Bytecode that arrived inside the client's packet loop, waiting to
         # be loaded/run from the game loop (see _on_bytecode).
         self._pending_bytecode: List[tuple] = []
@@ -220,7 +235,6 @@ class ClientGS2:
         # serializes entries behind an event coroutine that is already
         # running (and may itself be parked in join()).
         self._join_gated_events: Dict[tuple, List[tuple]] = {}
-        self._timer_accumulator = 0.0
         # Script definitions are shared; entries in vms["gani"] are the
         # independent hidden objects attached to individual wearers.
         self._gani_classes: Dict[str, GS2VM] = {}
@@ -976,8 +990,15 @@ class ClientGS2:
         if self.client is None:
             return self
         self.client.gs2_host = self
-        self._prev_bytecode_cb = self.client.on_gs2_bytecode
-        self.client.on_gs2_bytecode = self._on_bytecode
+        if self._detach_hooks:
+            # Already attached: a second pass would subscribe twice and
+            # re-queue the bytecode that already loaded.
+            return self
+        # Subscribed beside the client's own slots (client.add_listener), so an
+        # embedder's on_gs2_bytecode / on_server_text hook and this runtime
+        # coexist: the slot runs first, this runtime after it.
+        self._detach_hooks = [
+            self.client.add_listener('on_gs2_bytecode', self._on_bytecode)]
         # Bytecode that arrived BEFORE this hook existed still has to run.
         # Classes first so
         # a weapon's toplevel join() resolves immediately (a late class
@@ -987,22 +1008,16 @@ class ClientGS2:
             for key, blob in list(pending.get(kind, {}).items()):
                 self._pending_bytecode.append((kind, key, blob))
         self.pump_pending()
-        # PLO_SERVERTEXT -> onReceiveText engine event. NB the pygame shell's
-        # _setup_callbacks() later replaces client.on_server_text with its own
-        # chat-log handler, which forwards here explicitly (game/setup.py) --
-        # this direct hook covers headless embedders that never run setup.
-        self._prev_server_text_cb = getattr(self.client, "on_server_text", None)
-        if hasattr(self.client, "on_server_text"):
-            self.client.on_server_text = self._on_server_text
+        # PLO_SERVERTEXT -> onReceiveText engine event.
+        self._detach_hooks.append(
+            self.client.add_listener('on_server_text', self.handle_server_text))
         return self
 
-    def _on_server_text(self, text: str):
-        if self._prev_server_text_cb is not None:
-            try:
-                self._prev_server_text_cb(text)
-            except Exception:
-                pass
-        self.handle_server_text(text)
+    def detach(self) -> None:
+        """Unsubscribe from the client's callbacks (the inverse of attach)."""
+        for remove in self._detach_hooks:
+            remove()
+        self._detach_hooks = []
 
     def handle_server_text(self, text: str) -> None:
         """Inbound PLO_SERVERTEXT -> the v6 engine's onReceiveText(texttype,
@@ -1040,11 +1055,6 @@ class ClientGS2:
         self.trigger_event("onReceiveText", texttype, textoption, textlines)
 
     def _on_bytecode(self, kind: str, key, blob: bytes):
-        if self._prev_bytecode_cb is not None:
-            try:
-                self._prev_bytecode_cb(kind, key, blob)
-            except Exception:
-                pass
         # This callback fires from inside client._handle_packet. Running the
         # script here (run_toplevel/onCreated) would execute VM code — which
         # may sleep() and pump update() — from inside the packet loop. Defer
@@ -1180,8 +1190,8 @@ class ClientGS2:
             return None
         if getattr(client, "_in_update", False):
             return None      # async: load_bytecode will run it on arrival
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = self.clock.frame_now() + timeout
+        while self.clock.frame_now() < deadline:
             client.update(timeout=0.05)
             for i, (kind, key, blob) in enumerate(self._pending_bytecode):
                 nk = key.lower() if isinstance(key, str) else key
@@ -1276,14 +1286,14 @@ class ClientGS2:
             if owner in self._pending_joins.get(cname, ()):
                 self._listed_join_deadlines.setdefault(
                     (id(owner), cname),
-                    (owner, time.monotonic() + CLASS_JOIN_WAIT_SECONDS))
+                    (owner, self.clock.frame_now() + CLASS_JOIN_WAIT_SECONDS))
 
     def _expire_listed_joins(self) -> None:
         """Give up on NPC-listed class joins whose class never arrived, so the
         NPC's gated events run (the join() path does this via _ClassJoinWait)."""
         if not self._listed_join_deadlines:
             return
-        now = time.monotonic()
+        now = self.clock.frame_now()
         for key, (vm, deadline) in list(self._listed_join_deadlines.items()):
             cname = key[1]
             if vm in self._pending_joins.get(cname, ()):
@@ -1436,7 +1446,7 @@ class ClientGS2:
     def dispatch_object_event(self, obj, event, *args, fallback_vm=None):
         if isinstance(obj, str):
             obj = self.host.get_object(obj)
-        if GuiControl is not None and isinstance(obj, GuiControl):
+        if is_gui_control(obj):
             return float(obj.fire_event("on" + _event_name(event), *args))
         owners = getattr(obj, "script_vms", ()) or ()
         if owners:
@@ -1577,8 +1587,9 @@ class ClientGS2:
 
     def reset_session(self) -> None:
         """Discard execution frames and class waits owned by the session."""
-        from ..game.gs2_gui.profiles import reset_font_resolution
-        reset_font_resolution()
+        reset_fonts = gui_layer().reset_fonts
+        if reset_fonts is not None:
+            reset_fonts()
         self._coros.clear()
         self._event_waiters.clear()
         self._wait_time = 0.0
@@ -1617,6 +1628,7 @@ class ClientGS2:
         self._active_coro_keys.add(key)
         self._coros.append({"gen": gen, "vm": vm, "key": key,
                             "event": event, "wait": delay,
+                            "pass": self.clock.script_pass(),
                             "remaining": (float(delay)
                                           if not isinstance(delay, VMCoroutineWait)
                                           else 0.0)})
@@ -1657,9 +1669,15 @@ class ClientGS2:
                 if not wait.ready():
                     still.append(coro)
                     continue
+            elif not self.clock.timer_counts(coro.get("pass")):
+                still.append(coro)
+                continue
             else:
                 coro["remaining"] -= dt
-            if not isinstance(wait, VMCoroutineWait) and coro["remaining"] > 0:
+            # sleep resumes once less than 0.0001 is left on the script clock
+            # (TScriptSpace.cpp:1062): sleep(0.05) resumes on the next tick.
+            if (not isinstance(wait, VMCoroutineWait)
+                    and coro["remaining"] >= _TIMER_CANCEL):
                 still.append(coro)
                 continue
             try:
@@ -1672,6 +1690,7 @@ class ClientGS2:
                 try:
                     delay = next(coro["gen"])
                     coro["wait"] = delay
+                    coro["pass"] = self.clock.script_pass()
                     coro["remaining"] = (float(delay)
                                          if not isinstance(delay, VMCoroutineWait)
                                          else 0.0)
@@ -1957,12 +1976,10 @@ class ClientGS2:
                      or self.event_waiters(getattr(vm, "this", None), "onUpdate"))
                         and not self._npc_timer_suppressed(kind, key, vm)):
                     self._run(vm, "onUpdate")
-        self._timer_accumulator = min(
-            self._timer_accumulator + max(0.0, dt), TIMER_BACKLOG_CAP)
-        steps = int(self._timer_accumulator / TIMER_RESOLUTION)
-        self._timer_accumulator -= steps * TIMER_RESOLUTION
-        for _ in range(steps):
-            self._process_timeout_step(TIMER_RESOLUTION)
+        # One call is one step of the script clock (a game tick advances it
+        # by 0.05, TScriptUniverse.cpp:226-231). dt <= 0 fires nothing.
+        if dt > 0:
+            self._process_timeout_step(dt)
         self._sync_script_position()
 
     def schedule_event(self, vm: GS2VM, delay: float, event: str,
@@ -1984,7 +2001,8 @@ class ClientGS2:
             return
         self._scheduled.append({"key": key, "left": max(0.0, to_num(delay)),
                                 "event": event, "params": list(params),
-                                "target": target})
+                                "target": target,
+                                "pass": self.clock.script_pass()})
 
     def cancel_events(self, vm: GS2VM, event: str = "") -> None:
         """cancelevents([name]): drop this script's pending scheduled events
@@ -2001,8 +2019,10 @@ class ClientGS2:
     def _process_scheduled_events(self, dt: float) -> None:
         due = []
         for item in self._scheduled:
+            if not self.clock.timer_counts(item.get("pass")):
+                continue
             item["left"] -= dt
-            if item["left"] <= 0:
+            if item["left"] < _TIMER_CANCEL:   # TScriptSpace.cpp:1062
                 due.append(item)
         if not due:
             return
@@ -2029,8 +2049,10 @@ class ClientGS2:
                 # onTimeout changed the player's gani -> _free_gani_vm
                 # popped that gani VM's entry from under the snapshot)
                 continue
+            if not self.clock.timer_counts(self._timeout_pass.get(vm_key)):
+                continue
             t = left - dt
-            if t > 0:
+            if t >= _TIMER_CANCEL:    # fires below 0.0001, TScriptSpace.cpp:1036
                 self._timeouts[vm_key] = t
                 continue
             del self._timeouts[vm_key]      # handler may re-arm
@@ -2245,13 +2267,15 @@ class ClientGS2:
             # position on the wire -- nothing for us to announce.
             self._pos_sync_last = snap
             return
-        now = time.time()
-        if now < self._pos_sync_next:
+        if not self.clock.passed(self._pos_sync_next):
             return
-        self._pos_sync_next = now + 0.05
-        self._pos_sync_last = snap
+        self._pos_sync_next = self.clock.sim_now() + Clock.TICK_SECONDS
         try:
-            client.send_position()
+            # Record the snapshot only once it is on the wire: a warp earlier
+            # in this tick ends its movement and send_position returns False,
+            # and the next tick must still see the change.
+            if client.send_position():
+                self._pos_sync_last = snap
         except Exception:
             pass
 

@@ -124,12 +124,12 @@ class TestRenderChestsSegmentOrigin:
 
 
 class TestRenderItemsSegmentOrigin:
-    def test_item_blit_and_depth_use_world_frame(self, monkeypatch):
+    def test_item_blit_and_depth_use_world_frame(self, sim_time, monkeypatch):
         c = _client_with_grid()
         c.items = {"chicken1.nw": {(5.0, 5.0): "greenrupee"}}
         h = _ChestRenderHarness(c)
         h._item_first_seen = {('chicken1.nw', (5.0, 5.0)): 100.0}
-        monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 102.0)
+        sim_time(lambda: 102.0)
         entities = []
         frame = h._frame_context()
         frame.screen_size = h.screen.get_size()

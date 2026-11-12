@@ -189,8 +189,7 @@ class TestShimmerRamp:
     def test_ramp_cycles_off_half_full_half(self, monkeypatch):
         h = _RenderHarness(_fake_connected_client())
         times = iter((0.0, 0.3, 0.6, 0.9, 1.2))
-        monkeypatch.setattr('pyreborn.game.render_world.time.time',
-                            lambda: next(times))
+        monkeypatch.setattr('time.monotonic', lambda: next(times))
 
         assert [h._shimmer_ramp_step() for _ in range(5)] == [0, 1, 2, 3, 0]
 

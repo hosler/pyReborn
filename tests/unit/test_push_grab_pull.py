@@ -19,7 +19,6 @@ attributes _move()/_try_link_warp() touch.
 
 import os
 import sys
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -155,10 +154,10 @@ def _harness_facing_wall(direction: int = 0):
 
 
 class TestPushHoldState:
-    def test_push_repeats_after_twenty_ticks_with_sound(self, monkeypatch):
+    def test_push_repeats_after_twenty_ticks_with_sound(self, sim_time, monkeypatch):
         # TPlayer.cpp:7531-7544,7558-7561: move and sound on each 20-tick cycle.
         now = [100.0]
-        monkeypatch.setattr('time.time', lambda: now[0])
+        sim_time(lambda: now[0])
         _, h = _harness_facing_wall()
         h._stone_action = Mock()
         h.sound_mgr = Mock()
@@ -179,10 +178,10 @@ class TestPushHoldState:
         h._update_push_hold(0, -1)
         assert h._stone_action.call_count == 2
 
-    def test_direction_change_resets_repeat_cycle_and_counter(self, monkeypatch):
+    def test_direction_change_resets_repeat_cycle_and_counter(self, sim_time, monkeypatch):
         # TPlayer.cpp:7529-7531: starting a new push resets the mode counter.
         now = [100.0]
-        monkeypatch.setattr('time.time', lambda: now[0])
+        sim_time(lambda: now[0])
         _, h = _harness_facing_wall()
         h._stone_action = Mock()
         h._update_push_hold(0, -1)
@@ -202,10 +201,10 @@ class TestPushHoldState:
 
     @pytest.mark.parametrize('scripted,animation_sound', [(True, False), (False, True)])
     def test_push_sound_leaves_scripted_movement_and_animation_audio_alone(
-            self, monkeypatch, scripted, animation_sound):
+            self, sim_time, monkeypatch, scripted, animation_sound):
         # TPlayer.cpp:7535: only default movement owns the built-in sound.
         now = [100.0]
-        monkeypatch.setattr('time.time', lambda: now[0])
+        sim_time(lambda: now[0])
         _, h = _harness_facing_wall()
         h._stone_action = Mock()
         h.sound_mgr = Mock()
@@ -226,7 +225,7 @@ class TestPushHoldState:
     def test_held_past_threshold_switches_to_push(self):
         c, h = _harness_facing_wall()
         h._push_hold_dir = (0, -1)
-        h._push_hold_start = time.time() - (PUSH_HOLD_TIME + 0.1)
+        h._push_hold_start = h.clock.sim_now() - (PUSH_HOLD_TIME + 0.1)
         h._update_push_hold(0, -1)
 
         assert h.is_pushing is True
@@ -236,7 +235,7 @@ class TestPushHoldState:
     def test_changing_direction_resets_the_hold_timer(self):
         c, h = _harness_facing_wall()
         h._push_hold_dir = (0, -1)
-        h._push_hold_start = time.time() - (PUSH_HOLD_TIME + 0.1)
+        h._push_hold_start = h.clock.sim_now() - (PUSH_HOLD_TIME + 0.1)
         # Switch to a different held direction: the timer must restart, not
         # carry over the elapsed time from the old direction.
         h._update_push_hold(1, 0)
@@ -247,7 +246,7 @@ class TestPushHoldState:
     def test_clear_push_hold_resets_state(self):
         c, h = _harness_facing_wall()
         h._push_hold_dir = (0, -1)
-        h._push_hold_start = time.time() - (PUSH_HOLD_TIME + 0.1)
+        h._push_hold_start = h.clock.sim_now() - (PUSH_HOLD_TIME + 0.1)
         h._update_push_hold(0, -1)
         assert h.is_pushing is True
 
@@ -261,7 +260,7 @@ class TestPushHoldState:
         assert c.player.is_carrying() is True
 
         h._push_hold_dir = (0, -1)
-        h._push_hold_start = time.time() - (PUSH_HOLD_TIME + 0.1)
+        h._push_hold_start = h.clock.sim_now() - (PUSH_HOLD_TIME + 0.1)
         h._update_push_hold(0, -1)
 
         assert h.is_pushing is False

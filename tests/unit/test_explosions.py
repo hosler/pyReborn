@@ -264,29 +264,37 @@ def test_cell_sprite_uses_top_left_and_no_fallback():
     game._render_explosion_burst.assert_not_called()
 
 
-def test_legacy_remote_cross_expands_on_render(monkeypatch):
+def test_legacy_remote_cross_expands_on_render():
     # TServerLevel.cpp:1614-1641: legacy cross entries use the same cell order.
     game = CellGame()
-    game.client.active_explosions = [{'x': 3, 'y': 4, 'radius': 2, 'time': 100}]
+    game.client.active_explosions = [{'x': 3, 'y': 4, 'radius': 2, 'time': 100,
+                                      'tick': game.client.clock.tick}]
     game._render_explosion_cell = Mock()
-    monkeypatch.setattr('time.time', lambda: 100.1)
+    game.client.clock.begin_tick()
     game._render_server_explosions()
     assert game._render_explosion_cell.call_count == 9
 
 
-def test_legacy_bomb_computes_cells_lazily_on_render(monkeypatch):
-    # TServerLevel.cpp:1710-1724: type 2 expands into all five crosses.
+def test_legacy_bomb_computes_cells_lazily_on_render():
+    # TServerLevel.cpp:1710-1724: type 2 expands into all five crosses; the
+    # burst lasts twelve ticks (TServerLevel.cpp:1606, TExplosion.cpp:101-102).
     game = CellGame()
+    clock = game.client.clock
     bomb = {'x': 3, 'y': 4, 'time': 97, 'explosion_time': 100,
-            'exploded': True, 'power': 2}
+            'explosion_tick': clock.tick, 'exploded': True, 'power': 2}
     game.active_bombs = [bomb]
     game.bomb_fuse_time = 3
     game.explosion_duration = .6
     game._render_explosion_cell = Mock()
-    monkeypatch.setattr('time.time', lambda: 100.1)
+    clock.begin_tick()
+    game._advance_bombs()
     game._render_bombs()
     assert len(bomb['cells']) == 53
     assert game._render_explosion_cell.call_count == 53
-    monkeypatch.setattr('time.time', lambda: 100.601)
-    game._render_bombs()
+    for _ in range(10):                 # ticks 2..11 of the burst
+        clock.begin_tick()
+        game._advance_bombs()
+    assert game.active_bombs == [bomb]
+    clock.begin_tick()                  # tick 12: gone
+    game._advance_bombs()
     assert game.active_bombs == []

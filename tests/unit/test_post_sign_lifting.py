@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pygame
 
+from pyreborn.clock import Clock
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.collision import CollisionMixin
 from pyreborn.game.render_effects import EffectsRenderMixin
@@ -54,6 +55,7 @@ class _Harness(ActionsMixin, CollisionMixin, EffectsRenderMixin):
         self.tiles = [77] * 4096
         self.grass_tile_id = 77
         self.client = SimpleNamespace(
+            clock=Clock(),
             player=Player(x=0, y=0, direction=2), x=0, y=0,
             in_gmap_segment=False,
             get_current_level_from_position=lambda: "test.nw",
@@ -104,7 +106,7 @@ class _SignPopupHarness(LevelObjectsRenderMixin):
     def __init__(self):
         self.client = SimpleNamespace(
             player=Player(x=10, y=10, direction=0),
-            _current_level_name="test.nw",
+            current_level_name="test.nw",
             signs={"test.nw": {(11, 12): "read me"}},
             gmap_width=0,
             in_gmap_segment=False,

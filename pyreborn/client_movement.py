@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 from reborn_protocol.coords import segment_at, segment_origin, world_to_local
+from reborn_protocol.props import PLAYER_PROPS, payload_len
 
+from .gmap_coords import grid_of
 from .packets import PacketID, build_level_warp, build_movement
 
+#: Asset and file requests do not depend on where we stand, so they do not
+#: send a tick's held position first (see movement_batch): a gani or sound
+#: fetched mid-walk must not split the tick's one position packet in two.
+#: Every other packet keeps its call order relative to our position.
+_ORDER_FREE_PACKETS = frozenset(int(p) for p in (
+    PacketID.PLI_WANTFILE, PacketID.PLI_UPDATEFILE, PacketID.PLI_VERIFYWANTSEND,
+    PacketID.PLI_UPDATEGANI, PacketID.PLI_UPDATESCRIPT, PacketID.PLI_UPDATECLASS,
+    PacketID.PLI_UPDATEPACKAGEREQUESTFILE, PacketID.PLI_REQUESTTEXT))
 
 
 class MovementMixin:
@@ -41,6 +52,8 @@ class MovementMixin:
         # Server froze us (PLO_FREEZEPLAYER2): movement is a no-op until
         # PLO_UNFREEZEPLAYER, matching real client behavior.
         if self.frozen:
+            return False
+        if self.tick_movement_ended:
             return False
 
         from .attachments import sends_attachment, stored_position, sync_attachment
@@ -77,8 +90,7 @@ class MovementMixin:
             # not the one our position falls in: a server-set local just past
             # the edge (70.25) puts us beyond our own segment without moving
             # us to the next one.
-            home_grid = next((cell for cell, name in self.gmap_grid.items()
-                              if name == self._current_level_name), None)
+            home_grid = grid_of(self.gmap_grid, self._current_level_name)
             old_grid = home_grid
             if old_grid is None:
                 old_grid = segment_at(self.player.x, self.player.y)
@@ -108,7 +120,7 @@ class MovementMixin:
         # props (78/79); classic servers only understand X/Y (15/16).
         data = build_movement(local_x, local_y, direction,
                               use_new_format=self._use_pixel_props)
-        if self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data):
+        if self._send_position_props(data):
             # Update local state
             self.player.x = new_x
             self.player.y = new_y
@@ -164,6 +176,8 @@ class MovementMixin:
         """
         if not self.connected or not self._authenticated:
             return False
+        if self.tick_movement_ended:
+            return False
         from .attachments import sends_attachment, stored_position, sync_attachment
         sync_attachment(self, self.player)
         local_x, local_y = (stored_position(self, self.player.x, self.player.y)
@@ -171,10 +185,87 @@ class MovementMixin:
                             else world_to_local(self.player.x, self.player.y))
         data = build_movement(local_x, local_y, self.player.direction,
                               use_new_format=self._use_pixel_props)
-        if not self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data):
+        if not self._send_position_props(data):
             return False
         self._note_position_sent()
         return True
+
+    # -- one movement packet per tick ----------------------------------------
+    #
+    # The reference sends its outgoing player props once per timer call
+    # (TAdventure.cpp:496 sendOutgoing). move() and send_position() decide
+    # what goes on the wire when they are called (coordinate frame, seam
+    # crossing and its PLI_LEVELWARP, attachment), exactly as without a tick;
+    # inside movement_batch() the finished props are held instead of sent,
+    # and a later position in the same tick replaces the held values prop by
+    # prop. The held props go out before any other packet (so the wire order
+    # is the call order) and when the batch ends. Nothing is re-read from the
+    # player at that point. A warp (warp_to_level) ends the tick's movement:
+    # move() and send_position() do nothing more until the batch ends.
+
+    @contextmanager
+    def movement_batch(self) -> Iterator[None]:
+        """Hold this block's position packets and send them as one. Re-entrant."""
+        if self.__dict__.get('_movement_hold') is not None:
+            yield
+            return
+        proto = self._protocol
+        had_own = 'send_packet' in vars(proto)
+        original = proto.send_packet
+        hold = {'props': {}, 'warped': False}
+
+        def flush() -> None:
+            props, hold['props'] = hold['props'], {}
+            if props:
+                original(PacketID.PLI_PLAYERPROPS, b''.join(
+                    bytes([pid + 32]) + payload for pid, payload in props.items()))
+
+        def send_packet(packet_id, *args, **kwargs):
+            if int(packet_id) not in _ORDER_FREE_PACKETS:
+                flush()
+            return original(packet_id, *args, **kwargs)
+
+        self._movement_hold = hold
+        proto.send_packet = send_packet
+        try:
+            yield
+        finally:
+            self._movement_hold = None
+            if had_own:
+                proto.send_packet = original
+            else:
+                try:
+                    del proto.send_packet
+                except AttributeError:
+                    pass
+            flush()
+
+    def _send_position_props(self, data: bytes) -> bool:
+        """Send a finished position PLI_PLAYERPROPS, or hold it for the
+        tick's one packet (merged with what the tick already holds)."""
+        hold = self.__dict__.get('_movement_hold')
+        if hold is None:
+            return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
+        held = hold['props']
+        pos = 0
+        while pos < len(data):
+            pid = data[pos] - 32
+            end = pos + 1 + payload_len(PLAYER_PROPS[pid], data, pos + 1)
+            held[pid] = data[pos + 1:end]
+            pos = end
+        return True
+
+    @property
+    def tick_movement_ended(self) -> bool:
+        """True after a warp inside the current tick (see movement_batch)."""
+        hold = self.__dict__.get('_movement_hold')
+        return hold is not None and hold['warped']
+
+    def end_tick_movement(self) -> None:
+        """A warp happened: no more walking or position packets this tick."""
+        hold = self.__dict__.get('_movement_hold')
+        if hold is not None:
+            hold['warped'] = True
 
     # -- last-transmitted position -----------------------------------------
     #

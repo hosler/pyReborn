@@ -3,6 +3,13 @@
 import re
 from pathlib import Path
 
+# Shared with the library layer; defined in pyreborn/constants.py.
+from ..constants import (  # noqa: F401
+    BOMB_FUSE_TIME, PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
+    PLAYER_COLLISION_BOTTOM, PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
+    PLAYER_COLLISION_TOP, WALK_SPEED,
+)
+
 # The pyreborn/ package directory. Anchored here (not via __file__ in the
 # mixin modules) so asset/path resolution is independent of which game/*.py
 # file a method was split into.
@@ -13,9 +20,7 @@ TILE_SIZE = 16
 SCREEN_WIDTH = 640
 SCREEN_HEIGHT = 480
 MOVE_STEP = 0.25  # Tiles moved per step; matches Client.move()'s default step
-WALK_SPEED = 10.0  # FourPlay TPlayer.cpp:807
 SHIELD_SPEED_MULTIPLIER = 1.2  # FourPlay TInitStatics.cpp:1243
-BOMB_FUSE_TIME = 3.0  # GServer Level.cpp:1986
 EXPLOSION_DURATION = 0.6  # 12 animate() calls × 50ms (TExplosion.cpp:101).
 THROW_DISTANCE = 9.0  # 9 ticks × 1.0 tile/tick (TPlayer.cpp:7831).
 THROW_DURATION = 0.45  # 9 ticks × 50ms (TServerCarry.cpp:118).
@@ -27,13 +32,6 @@ REVIVAL_INPUT_DELAY = 1.5  # FourPlay TPlayer.cpp:7319
 CORNER_ASSIST_MAX = 0.5  # tiles - max perpendicular nudge near a doorway/corner
 PUSH_HOLD_TIME = (38 - 18) * .05  # Batch A countdown to the push pose.
 
-# Player collision geometry relative to the 3x3 sprite's top-left anchor.
-PLAYER_COLLISION_LEFT = 0.5
-PLAYER_COLLISION_RIGHT = 2.5
-PLAYER_COLLISION_TOP = 1.0
-PLAYER_COLLISION_BOTTOM = 3.0
-PLAYER_BODY_CENTER_X = (PLAYER_COLLISION_LEFT + PLAYER_COLLISION_RIGHT) / 2
-PLAYER_BODY_CENTER_Y = (PLAYER_COLLISION_TOP + PLAYER_COLLISION_BOTTOM) / 2
 PLAYER_STAND_X = 1.5
 PLAYER_STAND_Y = 2.5
 

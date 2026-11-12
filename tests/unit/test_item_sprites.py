@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pygame
 import pytest
 
+from pyreborn.clock import Clock
 from pyreborn import ground_items as gi
 from pyreborn.classic_sprites import SPRITE_RECTS
 from pyreborn.game.constants import TILE_SIZE
@@ -62,7 +63,8 @@ def test_sheet_arriving_after_fallback_replaces_the_vector_icon():
 
 class _ItemScene(LevelObjectsRenderMixin, EntityCollectMixin):
     def __init__(self, item_type, time_left, zoom=1.0):
-        self.client = SimpleNamespace(items_in_level=lambda _: {(10.0, 20.0): item_type})
+        self.client = SimpleNamespace(clock=Clock(),
+                                     items_in_level=lambda _: {(10.0, 20.0): item_type})
         self._current_segment_info = lambda: ('a.nw', 64, 64)
         # Half a tick avoids floating point boundaries in item_time().
         self._item_first_seen = {
@@ -88,8 +90,8 @@ class _ItemScene(LevelObjectsRenderMixin, EntityCollectMixin):
 @pytest.mark.parametrize('item_type,size', [('greenrupee', (16, 32)),
                                            ('bombs', (28, 32)),
                                            ('heart', (16, 16))])
-def test_reference_sprite_and_shadow_positions_and_order(monkeypatch, item_type, size):
-    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+def test_reference_sprite_and_shadow_positions_and_order(sim_time, monkeypatch, item_type, size):
+    sim_time(lambda: 100.0)
     h = _ItemScene(item_type, time_left=100)
     ent, = h.collect()
     # World item anchor (74,84), yBase=85, native dimensions in pixels:
@@ -105,8 +107,8 @@ def test_reference_sprite_and_shadow_positions_and_order(monkeypatch, item_type,
     assert h.sprite_mgr.get_sprite.call_args_list[0].args == ('sprites.png', 24, 0, 16, 8)
 
 
-def test_bob_moves_only_item_and_keeps_shadow_and_depth_fixed(monkeypatch):
-    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+def test_bob_moves_only_item_and_keeps_shadow_and_depth_fixed(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     fresh = _ItemScene('greenrupee', time_left=164)
     settled = _ItemScene('greenrupee', time_left=100)
     a, = fresh.collect()
@@ -118,8 +120,8 @@ def test_bob_moves_only_item_and_keeps_shadow_and_depth_fixed(monkeypatch):
 
 
 @pytest.mark.parametrize('time_left,visible', [(35, False), (34, True), (-1, False)])
-def test_blink_and_expiry_hide_both_sprite_and_shadow(monkeypatch, time_left, visible):
-    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+def test_blink_and_expiry_hide_both_sprite_and_shadow(sim_time, monkeypatch, time_left, visible):
+    sim_time(lambda: 100.0)
     h = _ItemScene('greenrupee', time_left)
     entities = h.collect()
     for ent in entities:
@@ -127,8 +129,8 @@ def test_blink_and_expiry_hide_both_sprite_and_shadow(monkeypatch, time_left, vi
     assert h.screen.blit.call_count == (2 if visible else 0)
 
 
-def test_item_and_shadow_scale_with_camera_zoom(monkeypatch):
-    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+def test_item_and_shadow_scale_with_camera_zoom(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     h = _ItemScene('greenrupee', time_left=100, zoom=2.0)
     ent, = h.collect()
     h._draw_item_entity(ent, FrameContext())
@@ -139,8 +141,8 @@ def test_item_and_shadow_scale_with_camera_zoom(monkeypatch):
     assert icon.args[1] == (2384, 2688)
 
 
-def test_shadow_stays_visible_when_bobbing_icon_is_off_screen(monkeypatch):
-    monkeypatch.setattr('pyreborn.game.render_collect.time.monotonic', lambda: 100.0)
+def test_shadow_stays_visible_when_bobbing_icon_is_off_screen(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     h = _ItemScene('greenrupee', time_left=164)
     # Put the item entirely above the viewport but keep its shadow visible.
     h._world_to_screen = lambda x, y: (50, -100 if y < 85 else 10)

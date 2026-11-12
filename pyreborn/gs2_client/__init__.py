@@ -40,13 +40,13 @@ _modules = (
 _export_names = [
     'Any', 'ClientGS2', 'Dict', 'EMITTER_METHOD_NAMES',
     'FREEZE_MAX_TICKS', 'FREEZE_TICKS_PER_SECOND', 'GS2ClientHost', 'GS2Host',
-    'GS2GuiManager', 'GS2Object', 'GS2VM', 'GS2_NULL',
-    'GuiControl', 'GuiPopUpEditCtrl', 'List',
+    'GS2Object', 'GS2VM', 'GS2_NULL',
+    'List',
     'MODIFIER_METHOD_NAMES', 'NOT_HANDLED', 'Optional', 'PENDING_EVENT_CAP',
     'PLATFORM_NAME', 'PLAYER_ATTR', 'PLAYER_ATTR_COUNT', 'ParticleEmitter',
     'ParticleModifier', 'Path', 'SAVE_LINES_CACHE_MAX_BYTES', 'SAVE_LINES_MAX_CHARS_PER_LINE',
-    'SAVE_LINES_MAX_LINES', 'SCHEDULED_EVENT_CAP', 'SimpleNamespace', 'TIMER_BACKLOG_CAP',
-    'TIMER_RESOLUTION', 'UNSET', 'ZOOM_FACTOR_MAX', 'ZOOM_FACTOR_MIN',
+    'SAVE_LINES_MAX_LINES', 'SCHEDULED_EVENT_CAP', 'SimpleNamespace',
+    'UNSET', 'ZOOM_FACTOR_MAX', 'ZOOM_FACTOR_MIN',
     '_BoardTilesColumn', '_CanvasObject', '_DEFAULT_STAFF_GUILDS', '_EngineObject',
     '_FALL_THROUGH', '_FlagScopeObject', '_GANI_TRANSFORM_DEFAULTS', '_GS1_COMMANDS',
     '_GS1_FUNCTIONS', '_GS1_LEVEL_PROBES', '_GS1_PURE', '_GS1_TEXT_ARGS',
@@ -66,7 +66,7 @@ _export_names = [
     'annotations', 'board_tile_read',
     'board_tile_write', 'board_world_dims', 'emitter_for_record', 'gs2_casefold',
     'layer_image_get', 'logger', 'logging', 'math',
-    'sys', 'time', 'to_bool', 'to_num',
+    'sys', 'to_bool', 'to_num',
     'to_str',
 ]
 for _export_name in _export_names:
@@ -77,10 +77,26 @@ for _export_name in _export_names:
     else:
         raise ImportError(f'missing GS2 client compatibility export: {_export_name}')
 
+_GUI_LAYER_NAMES = {
+    'GS2GuiManager': 'manager', 'GuiControl': 'control',
+    'GuiPopUpEditCtrl': 'popup',
+}
+
+
+def __getattr__(name):
+    # The GUI classes belong to the game layer; resolve them on first access
+    # so importing this package never loads pygame.
+    member = _GUI_LAYER_NAMES.get(name)
+    if member is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from .registry import gui_layer
+    return getattr(gui_layer(), member)
+
+
 # NOTE: these are re-exported by VALUE, as in packets.py and gs1_client. Patching
 # a name here (monkeypatch or otherwise) does NOT reach the submodule that reads
 # it -- patch the owning module instead, e.g. pyreborn.gs2_client.runtime for
-# GS2GuiManager / SAVE_LINES_CACHE_MAX_BYTES.
+# SAVE_LINES_CACHE_MAX_BYTES.
 del _registry, _helpers, _objects, _objects_player
 del _host_any, _host_collections, _host_engine, _host_gui
 del _host_objmethods, _host_particles, _host_vars, _host_bare

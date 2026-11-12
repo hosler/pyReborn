@@ -45,12 +45,26 @@ def test_item_is_pruned_when_its_lifetime_runs_out():
     client.on_item.assert_called_with(7.0, 9.0, "bluerupee", False)
 
 
+def _headless_frames(client):
+    """Drive the client's frame time by hand: returns a function that
+    advances it, so update() runs its own ticks (Clock.pump_headless)."""
+    frame = [0.0]
+    client.clock.set_sources(source=lambda: frame[0])
+
+    def advance(seconds):
+        frame[0] += seconds
+    return advance
+
+
 def test_update_drives_the_expiry_so_headless_bots_see_it(monkeypatch):
     client, clock = make_client()
     client._protocol = Mock()
     client._protocol.recv_packets.return_value = []
+    advance = _headless_frames(client)
+    client.update(timeout=0)              # the headless pump starts measuring
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)
     clock[0] += 9.0
+    advance(client.clock.tick_length)     # one tick of frame time
     client.update(timeout=0)
     assert client.items_in_level("A.nw") == {}
 
@@ -216,9 +230,13 @@ def test_expiry_sends_one_itemdel_with_the_item_position():
 def test_update_sends_the_itemdel_for_headless_bots():
     client, clock = make_connected_client()
     client._protocol.recv_packets.return_value = []
+    advance = _headless_frames(client)
+    client.update(timeout=0)
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)
     clock[0] += 9.0
+    advance(client.clock.tick_length)
     client.update(timeout=0)
+    advance(client.clock.tick_length)
     client.update(timeout=0)
     assert sent_itemdels(client) == [DEL]
 

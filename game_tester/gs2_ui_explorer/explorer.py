@@ -212,6 +212,7 @@ class ExplorerBot:
         value_control = None
         options: list[str] = []
         first_value = ""
+        record = None
         for index in range(12):
             if time.monotonic() - start >= duration:
                 break

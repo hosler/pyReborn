@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from reborn_protocol.gs2 import GS2Object
 from typing import Optional
 from reborn_protocol.gs1.runtime import UNSET
 import sys
-import time
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .helpers import FREEZE_MAX_TICKS, FREEZE_TICKS_PER_SECOND, ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN, _GANI_TRANSFORM_DEFAULTS
-from .registry import TIMER_RESOLUTION, _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READONLY, _TIMER_CANCEL
+from .registry import _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READONLY, _TIMER_CANCEL
 from ..gs1_client.objects import ENGINE_PLAYER_PROPS
 from ..script_player_props import sync_script_player_stat
-from ..game.constants import WALK_SPEED
+from ..constants import WALK_SPEED
+
+if TYPE_CHECKING:
+    from .runtime import ClientGS2
 
 class _EngineObject(GS2Object):
     """Stand-in for the v6 C# client's engine-object surface (the Unity-side
@@ -533,8 +535,8 @@ class _PlayerObject(GS2Object):
                 # b RO (TPlayerProperties.cpp:144, :171; raw-address bodies).
                 # Player.hurt_timeout is when the hurt animation ends, which
                 # is the only "recently hit" state this client keeps.
-                return 1.0 if to_num(getattr(p, "hurt_timeout", 0.0)) > \
-                    time.time() else 0.0
+                return 0.0 if self._rt2.clock.passed(
+                    to_num(getattr(p, "hurt_timeout", 0.0))) else 1.0
             if key in ("hurtdx", "hurtdy", "hurtpower"):
                 # d RO (:153, :162, :180). PLO_HURTPLAYER carries these but
                 # nothing retains them past the handler, so 0.0 -- which is
@@ -680,8 +682,8 @@ class _ThisObject(GS2Object):
 
     def set(self, key: str, value: Any) -> None:
         if key.lower() == "timeout":
-            # same floor as the settimer() builtin (see TIMER_RESOLUTION)
-            # so this.timeout = 0.01 loops tick at frame rate too.
+            # Stored as given, like the settimer() builtin: a short timeout
+            # fires on the next tick, at whatever rate the frame tick sets.
             # `timeout = 0` (or anything <= 0.0001) CANCELS the pending
             # timer instead of arming an immediate fire — the reference
             # engine's setTimeout deactivates it (TScriptSpace::setTimeout,
@@ -691,7 +693,8 @@ class _ThisObject(GS2Object):
             if v <= _TIMER_CANCEL:
                 self._rt2._timeouts.pop(self._vm_key, None)
                 return
-            self._rt2._timeouts[self._vm_key] = max(v, TIMER_RESOLUTION)
+            self._rt2._timeouts[self._vm_key] = v
+            self._rt2._timeout_pass[self._vm_key] = self._rt2.clock.script_pass()
             return
         super().set(key, value)
 

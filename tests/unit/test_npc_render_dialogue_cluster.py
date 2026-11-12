@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pyreborn.clock import Clock
 from pyreborn import Client
 from pyreborn.game.dialogue import format_sign_text
 from pyreborn.game.setup import SetupMixin
@@ -245,7 +246,7 @@ def test_gs2_chat_write_survives_a_detached_runtime():
 
 def test_setup_on_say_clears_the_bubble_on_empty_text():
     game = type("_Game", (SetupMixin,), {})()
-    game.client = SimpleNamespace(player=SimpleNamespace())
+    game.client = SimpleNamespace(player=SimpleNamespace(), clock=Clock())
     game.gs1 = ClientGS1(game.client)
     game.player_anim = _AnimRecorder()
     game.npc_chat_texts = {}

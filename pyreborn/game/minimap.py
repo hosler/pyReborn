@@ -8,6 +8,8 @@ import pygame
 
 from reborn_protocol.coords import LEVEL_SIZE, gmap_extent, local_to_world
 
+from ..gmap_coords import grid_index
+
 
 def aspect_fit(source_size, bounds):
     """Largest size fitting in bounds while preserving source aspect ratio."""
@@ -30,8 +32,8 @@ def map_entity_positions(client):
                       if is_world else (LEVEL_SIZE, LEVEL_SIZE))
     yield (client.x % span_x) / span_x, (client.y % span_y) / span_y, (255, 0, 0)
 
-    level_to_grid = {name: cell for cell, name in client.gmap_grid.items()}
-    current_grid = level_to_grid.get(client._current_level_name)
+    level_to_grid = grid_index(client.gmap_grid)
+    current_grid = level_to_grid.get(client.current_level_name)
     for pdata in client.players.values():
         px, py = pdata.get('world_x'), pdata.get('world_y')
         if px is None or py is None:

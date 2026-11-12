@@ -62,7 +62,7 @@ class _FakePlayer:
 
 class _FakeClient:
     input_frozen = False
-    _local_level_transition = ''
+    local_level_transition = ''
 
     def __init__(self):
         self.player = _FakePlayer()
@@ -232,7 +232,7 @@ class _PopupHarness(LevelObjectsRenderMixin):
 
 def _popup_client(player_x, player_y):
     c = _FakeClient()
-    c._current_level_name = "bomblobby.nw"
+    c.current_level_name = "bomblobby.nw"
     c.gmap_grid = {}
     c.in_gmap_segment = False
     # sign tile at (20, 40) — the v6 piano-instructions sign

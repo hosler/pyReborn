@@ -3,11 +3,17 @@ Pygame game client for pyreborn.
 
 Contains the main GameClient class. Behavior lives in per-concern mixins
 under pyreborn/game/ (render, input, actions, collision, setup, minimap,
-tile_editor). This module wires them together via __init__ and run().
+tile_editor). This module wires them together via __init__ and owns the
+frame pipeline: start() once, step() per frame, shutdown() once; run() is the
+production loop over them, and the game_tester harnesses call them directly.
 """
 
-import time
-from typing import Dict, List, Optional, Tuple
+import logging
+import os
+import sys
+import traceback
+from contextlib import contextmanager
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import pygame
 
@@ -41,6 +47,8 @@ from .game.render_entities import EntityRenderMixin, BaddySheet
 from .game.render_effects import EffectsRenderMixin
 from .game.render_objects import LevelObjectsRenderMixin
 
+logger = logging.getLogger(__name__)
+
 
 class GameClient(
     SetupMixin,
@@ -64,6 +72,35 @@ class GameClient(
         """Visible weapon names from the server-owned live weapon state."""
         return [name for name in self.client.weapons
                 if not str(name).startswith('-')]
+
+    # -- the GameShell protocol (gs2_client/game_shell.py) -------------------
+    # Public names for what the GS2 runtime reads from its host; the private
+    # attributes they wrap stay, because the game layer and game_tester use them.
+
+    #: isfullscreenmode(): the game window has no fullscreen toggle.
+    fullscreen = False
+
+    @property
+    def day_night_enabled(self) -> bool:
+        return getattr(self, '_day_night_enabled', False)
+
+    @day_night_enabled.setter
+    def day_night_enabled(self, value: bool) -> None:
+        self._day_night_enabled = value
+
+    @property
+    def camera_enabled(self) -> bool:
+        return getattr(self, '_camera_enabled', False)
+
+    @camera_enabled.setter
+    def camera_enabled(self, value: bool) -> None:
+        self._camera_enabled = value
+
+    def dismiss_dialogue(self) -> None:
+        self._dismiss_dialogue()
+
+    def showtext_font(self, name: str, size: int, bold: bool):
+        return self._showtext_font(name, size, bold)
 
     def selected_weapon_full_index(self) -> int:
         """Index of the equipped weapon in the FULL client.weapons ordering.
@@ -89,6 +126,13 @@ class GameClient(
     def __init__(self, client: Client, password: Optional[str] = None):
         self.client = client
         self.running = True
+        # Frame-pipeline lifecycle (see start/step/shutdown).
+        self._started = False
+        self._shut_down = False
+        self._frame_count = 0
+        # Contained frame-phase failures, keyed by (phase, exception type,
+        # innermost file:line) -> how many times that site has raised.
+        self.frame_errors: Dict[Tuple[str, str, str], int] = {}
         # Kept for the F10 RC tools only: RC is a separate connection and has
         # to log in again (see rc_link.py). Without it the overlay says so
         # instead of silently having no RC.
@@ -120,7 +164,9 @@ class GameClient(
                                  caption=f"pyreborn - {client.player.account}",
                                  native=True, on_resize=self._on_window_resize)
         self.screen = self.viewport.canvas
-        self.clock = pygame.time.Clock()
+        #: Frame pacing only (`run()` calls .tick(60)); NOT the time source,
+        #: which is `self.clock` (the client's).
+        self.frame_limiter = pygame.time.Clock()
 
         # Camera: single source of truth for world<->screen mapping, replacing
         # the offset math that used to be copy-pasted into every render method.
@@ -142,7 +188,8 @@ class GameClient(
 
         # Initialize managers
         self.sprite_mgr = SpriteManager(
-            self.asset_paths, fetch_bytes=self.client.get_file)
+            self.asset_paths, fetch_bytes=self.client.get_file,
+            clock=self.client.clock)
         self.tileset_mgr = TilesetManager(self.sprite_mgr)
         # Classic (2.x) servers assume the classic client's BUILT-IN default
         # tileset, pics1.png — their scripts only issue addtiledef to RESET
@@ -161,8 +208,8 @@ class GameClient(
         # Tiledef applicability is scoped by level-name prefix; seed the
         # login level (later changes flow through _reload_level_scripts).
         self.tileset_mgr.set_current_level(
-            getattr(self.client, "_current_level_name", "") or "")
-        self.sound_mgr = SoundManager(self.asset_paths)
+            getattr(self.client, "current_level_name", "") or "")
+        self.sound_mgr = SoundManager(self.asset_paths, clock=self.client.clock)
         self.gani_parser = GaniParser(
             self.asset_paths, fetch_bytes=self.client.get_file)
 
@@ -222,7 +269,7 @@ class GameClient(
             self.npc_handler.gs2 = self.gs2
 
         # UI components
-        self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr)
+        self.inventory_ui = InventoryUI(self.screen, self.sprite_mgr, clock=self.client.clock)
         self.gs1.selected_weapon_index = self.selected_weapon_full_index
         self.heart_display = HeartDisplay(10, 10)
         self.hud = HUD(self)
@@ -234,13 +281,19 @@ class GameClient(
 
         # Timing
         self.walk_speed = WALK_SPEED
-        self._move_accum = 0.0  # Accumulates sub-step movement across frames
-        self._frame_dt = 0.0    # Most recent frame delta, set by run()
-        self.last_action_time = 0.0
-        self.action_delay = 0.3  # 300ms between actions
+        self._move_accum = 0.0  # Walk distance not yet applied as a MOVE_STEP
+        self._frame_dt = 0.0    # Most recent frame delta (presentation only)
+        # "Never" is -inf, so the first action right after the session
+        # starts is never held back by a cooldown (sim time starts at 0).
+        self.last_action_time = float('-inf')
+        # Cooldowns in simulation seconds, compared with clock.passed: 7 ticks
+        # between actions, 4 between sword swings. The code before the tick
+        # model allowed the next one strictly after 0.3 s / 0.15 s; on the
+        # tick grid that is the 7th / 4th tick (no reference counter found).
+        self.action_delay = 0.35
         # Sword has its own, much shorter, cooldown so it can be spam-swung.
-        self.last_sword_time = 0.0
-        self.sword_delay = 0.15
+        self.last_sword_time = float('-inf')
+        self.sword_delay = 0.2
 
         # Key state tracking
         self.key_just_pressed: Dict[int, bool] = {}
@@ -273,7 +326,7 @@ class GameClient(
 
         # Built-in push/grab/pull prediction; actions dispatch NPC triggers.
         self._push_hold_dir = None    # (dx, dy) of the currently-blocked held direction
-        self._push_hold_start = None  # time.time() the block started, None when not holding
+        self._push_hold_start = None  # clock.sim_now() the block started, None when not holding
         self.is_pushing = False       # True when the push countdown reaches 18
         self.grab_state = None        # None | "grab" | "pull"
         self._grab_direction = None   # facing direction pinned for the current grab
@@ -289,17 +342,18 @@ class GameClient(
         # writes x/y from the VM, bypassing _move()'s link check).
         self._scripted_link_pos = None
 
-        # Smooth movement - visual position tracks the authoritative position.
+        # Draw position of the local player: the authoritative position
+        # interpolated between the last two ticks (_update_visual_position).
         self.visual_x = 0.0
         self.visual_y = 0.0
         self._seen_level_transition_epoch = (
-            self.client._local_level_transition_epoch)
+            self.client.local_level_transition_epoch)
         # Player sprite top-left in render frame, set each frame by _sync_camera.
         self._player_render_pos = (0.0, 0.0)
-        # How fast the camera/local-player visual chases the real position. Kept
-        # well above walk_speed so it locks on each frame (no floaty lag).
-        self.follow_speed = 24.0
-        self.lerp_speed = 18.0  # still used to ease *other* players' positions
+        # Draw positions of moving things between the last two ticks
+        # (presentation only; see game/interpolation.py).
+        from .game.interpolation import TickInterpolator
+        self.interpolator = TickInterpolator()
 
         # Combat effects - floating damage numbers
         # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
@@ -323,7 +377,7 @@ class GameClient(
         self.break_effects: List[dict] = []
         self.leaf_particles: List[dict] = []
         self.water_ripples: List[dict] = []
-        self._last_ripple_time = 0.0
+        self._last_ripple_time = float('-inf')
         self._ripple_surface_cache: Dict[int, pygame.Surface] = {}
 
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
@@ -339,7 +393,7 @@ class GameClient(
 
         # Speech bubble state (for say/chat - shows above entity heads)
         self.local_chat_text: str = ""  # Local player's chat bubble
-        self.local_chat_time: float = 0.0
+        self.local_chat_time: Optional[float] = None  # None: no bubble yet
         self.npc_chat_texts: Dict[int, Tuple[str, float]] = {}  # npc_id -> (text, time)
         self.chat_bubble_duration: float = 4.0  # How long chat bubbles stay visible
 
@@ -383,6 +437,10 @@ class GameClient(
         self.server_list_sel = 0
         self.servers: List = []
         self.switch_server = None
+        #: The frame tick the next session starts with: this one's when a
+        #: script serverwarp moves us (the reference keeps it), None (50 ms)
+        #: when the player picks the server.
+        self.switch_frame_tick: Optional[int] = None
 
         # Suppress "X entered" spam from the login roster dump: join
         # announcements only fire after this time (set when the loop starts).
@@ -426,12 +484,45 @@ class GameClient(
         if getattr(self, "inventory_ui", None) is not None:
             self.inventory_ui.screen = self.screen
 
-    def run(self):
-        """Main game loop."""
-        import os as _os
-        self._dbg = bool(_os.environ.get("PYREBORN_DEBUG"))
-        last_time = time.time()
-        frame_count = 0
+    # ------------------------------------------------------------------
+    # Frame pipeline: start() once, step() once per frame, shutdown() once.
+    # run() is the production driver. game_tester harnesses and tests call
+    # start()/step() directly, so every one of them runs the same frame the
+    # player does; a phase added to step() reaches all of them at once.
+    #
+    # Timing model (pyreborn/clock.py): the simulation runs in ticks
+    # (`_simulation_tick`) of the frame tick, 50 ms unless a script changes
+    # it (adventure_setframetick); a frame runs at most
+    # Clock.MAX_TICKS_PER_FRAME of them and drops late time beyond that, like
+    # the reference (AndroidInterface.cpp:170-179). Events, network and the
+    # render run every frame; the render interpolates moving things between
+    # the last two ticks (`clock.alpha`).
+    # ------------------------------------------------------------------
+
+    #: The error-containment groups of step(), in the order they run. The
+    #: ones from "world" to "level" run once per tick.
+    FRAME_PHASES = ("input", "network", "world", "movement", "gs1", "gs2",
+                    "level", "render")
+
+    #: Clamp on the presentation dt (`_frame_dt`, fades and particles). The
+    #: simulation never sees it: it advances by whole ticks.
+    MAX_FRAME_DT = 0.1
+
+    def start(self) -> None:
+        """One-time setup before the first frame. Calling it again is a no-op.
+
+        Seeds the visual position, runs the level's NPC scripts and their
+        playerenters, snapshots the collision shapes they recorded
+        (setshape/setshape2), and remembers which level the GS1 engine is
+        loaded for so the per-tick level-change detector only re-runs on an
+        actual warp."""
+        if self._started:
+            return
+        self._started = True
+        self._dbg = bool(os.environ.get("PYREBORN_DEBUG"))
+        self._frame_count = 0
+        # From here on this game runs the ticks; client.update() only reads.
+        self.clock.host_driven = True
 
         # Initialize visual position to actual position
         self.visual_x = self.client.x
@@ -447,124 +538,302 @@ class GameClient(
         self.npc_handler.update_npcs()
         # Remember which level the GS1 engine is loaded for so the loop's
         # level-change detector only re-runs on an actual warp.
-        self._gs1_level = self.client._current_level_name
-        self._gs1_visual_level_epoch = self.client._plain_level_change_epoch
+        self._gs1_level = self.client.current_level_name
+        self._gs1_visual_level_epoch = self.client.plain_level_change_epoch
 
         # Let the login roster dump settle before announcing further joins.
-        self.roster_ready_time = time.time() + 2.0
+        self.roster_ready_time = self.clock.frame_now() + 2.0
 
-        print(f"Starting game loop. running={self.running}, connected={self.client.connected}")
+    def step(self, dt: float, *,
+             events: Optional[Iterable["pygame.event.Event"]] = None,
+             strict: bool = True, net_timeout: float = 0.0) -> None:
+        """Run exactly one frame: events, network, the due simulation ticks,
+        then the render.
 
-        while self.running and self.client.connected:
-            frame_count += 1
-            current_time = time.time()
-            dt = current_time - last_time
-            last_time = current_time
-            # Clamp dt so a stall (e.g. window drag) can't teleport the player
-            self._frame_dt = min(dt, 0.1)
+        ``dt`` is the real seconds since the previous frame. It feeds the
+        tick accumulator (``clock.ticks_due``): a frame that completes a
+        tick (``clock.tick_length``, 50 ms by default) runs ONE
+        `_simulation_tick`; late time beyond Clock.MAX_TICKS_PER_FRAME ticks
+        is dropped, never caught up. At 60 fps and the default tick a tick
+        runs every third frame. ``_frame_dt`` (dt clamped to
+        MAX_FRAME_DT) is presentation only. ``events`` are posted to the
+        pygame event queue before the input phase drains it (a harness's
+        synthetic input). ``net_timeout`` is how long ``client.update`` may
+        wait for packets; the production loop passes 0 because
+        ``frame_limiter.tick`` already paces it.
 
-            # Behavioral heartbeat (PYREBORN_DEBUG=1): every ~2s log what the
-            # player is actually doing, to diagnose "stuff stopped working".
-            if self._dbg and frame_count % 120 == 0:
-                p = self.client.player
-                import sys as _sys
-                print(f"[hb] f={frame_count} lvl={self.client._current_level_name} "
-                      f"pos=({self.client.x:.1f},{self.client.y:.1f}) dir={p.direction} "
-                      f"moving={getattr(self,'is_moving',None)} sitting={getattr(p,'is_sitting',None)} "
-                      f"hearts={p.hearts} npcs={len(self.client.npcs)} scripts={len(self.gs1.scripts)}",
-                      file=_sys.stderr)
+        Per frame:
+          input       pygame events; key and click EDGES are latched until a
+                      tick consumes them (`key_just_pressed`)
+          network     packets, applied as they arrive (Client.update, which
+                      runs no tick while a game drives them)
+        Per tick (`_simulation_tick`, 0..MAX_TICKS_PER_FRAME times), in the
+        reference's order (see `_simulation_tick`):
+          world       the Client's own tick (NPC moves, items, sword, arrows,
+                      bombs), NPCs that streamed in late, death state and
+                      respawn, one gani step, bombs, arrows, flying and
+                      thrown objects
+          movement    held keys sampled now, plus the latched edges; walking
+                      and actions; the low-hearts reminder; actionprojectile2
+                      for our own shots
+          gs1         GS1 coroutines, then timeouts (one tick of script time)
+          gs2         GS2 coroutines, then timeouts (settimer / onTimeout)
+          level       a pending script warp, the scripted-movement link
+                      check, the keydown2 input snapshot, the GS1 reload on a
+                      level change, swimming
+          (the tick's position goes out as ONE packet at its end)
+        Per frame again:
+          render      interpolated draw positions, the whole draw, which ends
+                      with viewport.present()
 
-            # Handle events
+        ``strict=True`` (the default, for harnesses and tests) lets a phase's
+        exception propagate. ``run()`` passes ``strict=False``: a failing phase
+        is logged once per failing site with its traceback, counted in
+        ``frame_errors``, and the frame continues with the next phase.
+        Either way a failed render pass drops its half-built frame context.
+        ``KeyboardInterrupt`` and ``SystemExit`` always propagate."""
+        self._frame_count += 1
+        self._frame_dt = min(max(dt, 0.0), self.MAX_FRAME_DT)
+        clock = self.clock
+        clock.host_driven = True
+
+        # Behavioral heartbeat (PYREBORN_DEBUG=1): every ~2s log what the
+        # player is actually doing, to diagnose "stuff stopped working".
+        if getattr(self, '_dbg', False) and self._frame_count % 120 == 0:
+            p = self.client.player
+            print(f"[hb] f={self._frame_count} t={clock.tick} lvl={self.client.current_level_name} "
+                  f"pos=({self.client.x:.1f},{self.client.y:.1f}) dir={p.direction} "
+                  f"moving={getattr(self,'is_moving',None)} sitting={getattr(p,'is_sitting',None)} "
+                  f"hearts={p.hearts} npcs={len(self.client.npcs)} scripts={len(self.gs1.scripts)}",
+                  file=sys.stderr)
+
+        for event in events or ():
+            pygame.event.post(event)
+
+        with self._frame_phase("input", strict):
             self._handle_events()
 
-            # Handle held key input
-            self._handle_input(current_time)
+        with self._frame_phase("network", strict):
+            # Non-blocking in production: frame_limiter.tick(60) already
+            # paces the loop, so update()'s default 10ms select() wait on
+            # top of it would only add input latency.
+            self.client.update(timeout=net_timeout)
 
-            # Update client (process packets). Non-blocking: clock.tick(60)
-            # below already paces the loop, so there's no need for update()'s
-            # default 10ms select() wait on top of it - that just adds input
-            # latency without changing the frame rate.
-            self.client.update(timeout=0)
-            self._update_low_hearts_warning()
+        for _ in range(clock.ticks_due(dt)):
+            self._simulation_tick(strict)
 
-            # Load + run NPCs that streamed in after startup (slow server).
-            self._load_new_npcs()
-
-            # A GS1 setlevel2/serverwarp (e.g. arena entry) requested a warp;
-            # perform it now, between events, not mid-script (re-entrant).
-            self._process_pending_warp()
-            # Fire actionprojectile2 for projectiles we shot ourselves.
-            self._process_self_shoots()
-            # Resume scripts suspended on `sleep` whose timer elapsed (NPC 162
-            # waiting for players, countdowns, ...). Drained before timeouts so a
-            # finishing coroutine can re-arm its timeout this frame.
-            self.gs1.process_coroutines(self._frame_dt)
-            # Drive NPC + weapon `timeout` events (proximity checks, room-join
-            # logic, the arena's per-frame bomb gameplay loop).
-            self.gs1.process_timeouts(self._frame_dt)
-            self.gs2.process_coroutines(self._frame_dt)
-            # GS2 VM onTimeout scheduling (settimer / this.timeout).
-            self.gs2.process_timeouts(self._frame_dt)
-            # Scripted movement (disabledefmovement) writes player x/y from
-            # the script engines above, bypassing _move()'s link check —
-            # probe door links here on any position change (see
-            # _check_scripted_link_warp).
-            self._check_scripted_link_warp()
-            # Snapshot held keys so keydown2(code, edge=true) sees just-pressed.
-            self.gs1.advance_input_frame()
-            # Reload the GS1 engine when we land in a new level (script warp,
-            # door, or server-initiated), once its NPCs have streamed in.
-            self._check_level_change()
-
-            self._update_death_state(time.time())
-            # Check for respawn (death -> alive transition)
-            if hasattr(self, '_was_dead') and self._was_dead and self.client.player.hearts > 0:
-                # We respawned! Reset animation to idle
-                self.player_anim.set_animation("idle", self.client.player.direction)
-                self._was_dead = False
-            # Track death state
-            self._was_dead = self.client.player.hearts <= 0
-
-            # Update swimming state (in case of server-side warps)
-            self._update_swimming_state()
-
-            # Update visual position (smooth interpolation)
-            self._update_visual_position(self._frame_dt)
-
-            # Update animations
-            self._update_animations(self._frame_dt)
-
-            # Update and render projectiles (needs dt for movement)
-            self._last_dt = self._frame_dt
-
-            # Render
+        with self._frame_phase("render", strict):
+            self._update_visual_position(clock.alpha)
             self._render()
 
-            # Cap framerate
-            self.clock.tick(60)
+    def _simulation_tick(self, strict: bool) -> None:
+        """One tick of the simulation (see `step()`); it runs every
+        `clock.tick_length` seconds (the frame tick, 50 ms by default).
 
-        # Cleanup
-        print(f"Game loop exited after {frame_count} frames. running={self.running}, connected={self.client.connected}")
-        # Remember whatever size the WM/player left the window at, mirroring
-        # pygame_screens.py's _Screen._finish, so the next launch (login
-        # screen, then this game) opens at it instead of snapping back to
-        # whatever prefs.json had before this session.
+        The phases follow the reference's timer pass (network first, which
+        `step()` pumps per frame; TAdventure.cpp:471-496): the player's
+        timer (TPlayer.cpp:7211) counts its counters and animates the
+        objects (TServerPlayer.cpp:454-457 -> TServerNPC.cpp:1477-1484 ->
+        TServerLevel.cpp:1212-1224), then reads the keys and moves
+        (keyCheck, TPlayer.cpp:7331-7339); the scripts run after that
+        (doNPCActions, TPlayer.cpp:7374, :6395-6406, runs every script),
+        the warp a script asked for is sent right after them (:6401-6406),
+        then the level links are tested (testForMapLinks, :7375-7379); the
+        props go out last (sendOutgoing, TAdventure.cpp:496)."""
+        clock = self.clock
+        clock.begin_tick()
+        clock._in_tick = True
+        now = clock.sim_now()
+        # One tick of every per-tick mechanic: a fixed amount whatever the
+        # frame tick (Clock.TICK_SECONDS).
+        tick = clock.TICK_SECONDS
         try:
-            Prefs.load().remember_window_size(self.screen_w, self.screen_h)
-        except Exception:
-            pass
-        self.client.disconnect()
-        # The RC link is a second connection on its own thread; drop it with
-        # the game one so a server switch doesn't leave it logged in.
-        rc_ui = getattr(self, 'rc_ui', None)
-        if rc_ui is not None:
-            rc_ui.shutdown()
-        dev_ui = getattr(self, 'dev_ui', None)
-        if dev_ui is not None:
-            dev_ui.shutdown()
-        self.sound_mgr.stop_all()
-        self.sound_mgr.stop_music()
-        pygame.quit()
+            with self.client.movement_batch():
+                with self._frame_phase("world", strict):
+                    # The Client's own tick: NPC moves, items, sword, arrows,
+                    # bombs, hideplayer, explosions, the emoticon counter.
+                    self.client.run_tick()
+                    # Load + run NPCs that streamed in after startup (slow
+                    # server).
+                    self._load_new_npcs()
+                    # Death state and respawn (the timer's HP check comes
+                    # before keyCheck, TPlayer.cpp:7223-7226).
+                    self._update_death_state(now)
+                    if getattr(self, '_was_dead', False) and self.client.player.hearts > 0:
+                        # We respawned! Reset animation to idle
+                        self.player_anim.set_animation("idle", self.client.player.direction)
+                        self._was_dead = False
+                    self._was_dead = self.client.player.hearts <= 0
+                    # One gani step for every animation, then bombs, arrows,
+                    # flying objects, thrown objects and the pushaway nudge.
+                    # They keep running during a level transition: the
+                    # reference's timer runs on the loading screen too
+                    # (GuiCanvas.cpp:1540-1545).
+                    self._update_animations(tick)
+                    self._advance_combat_objects(tick, now)
+
+                with self._frame_phase("movement", strict):
+                    self._handle_input(now)
+                    self._update_low_hearts_warning()
+                    # Fire actionprojectile2 for projectiles we shot ourselves.
+                    self._process_self_shoots()
+
+                # This tick's step of the script clock: frametick/1000, or
+                # the real time since the last tick below a 50 ms frame tick
+                # (TScriptUniverse.cpp:226-231, Clock.begin_tick).
+                script_dt = clock.script_dt
+                with self._frame_phase("gs1", strict):
+                    # Resume scripts suspended on `sleep` whose timer elapsed,
+                    # then the `timeout` events.
+                    self.gs1.process_coroutines(script_dt)
+                    self.gs1.process_timeouts(script_dt)
+
+                with self._frame_phase("gs2", strict):
+                    self.gs2.process_coroutines(script_dt)
+                    # GS2 VM onTimeout scheduling (settimer / this.timeout).
+                    self.gs2.process_timeouts(script_dt)
+                # A timer armed from here on counts from the next tick.
+                clock.end_script_pass()
+
+                with self._frame_phase("level", strict):
+                    # A GS1 setlevel2/serverwarp (e.g. arena entry) requested
+                    # a warp; perform it now, after the scripts, not
+                    # mid-script (re-entrant).
+                    self._process_pending_warp()
+                    # Scripted movement (disabledefmovement) writes player x/y
+                    # from the script engines above, bypassing _move()'s link
+                    # check - probe door links here on any position change.
+                    self._check_scripted_link_warp()
+                    # Snapshot held keys so keydown2(code, edge=true) sees
+                    # just-pressed exactly once.
+                    self.gs1.advance_input_frame()
+                    # Reload the GS1 engine when we land in a new level
+                    # (script warp, door, or server-initiated), once its NPCs
+                    # have streamed in.
+                    self._check_level_change()
+                    # Swimming state (in case of a warp or a server move).
+                    self._update_swimming_state()
+        finally:
+            clock._in_tick = False
+            clock.end_script_pass()
+            # The tick consumed every latched edge.
+            self._end_input_tick()
+
+    def _advance_combat_objects(self, dt: float, now: float) -> None:
+        """One tick of bombs, arrows, flying objects, thrown objects and the
+        pushaway nudge."""
+        self._advance_bombs()
+        self._update_projectiles(dt)
+        self._update_thrown(dt)
+
+    @contextmanager
+    def _frame_phase(self, phase: str, strict: bool) -> Iterator[None]:
+        """Error boundary around one phase of step() (see its docstring)."""
+        try:
+            yield
+        except Exception as exc:
+            if phase == "render":
+                # A pass that raised left its FrameContext open (in_frame,
+                # half-queued world draws and lights). Drop it, so anything
+                # that asks for a context before the next frame begins gets a
+                # fresh idle one instead of queueing into a dead frame.
+                self._frame_ctx = None
+            if strict:
+                raise
+            self._contain_frame_error(phase, exc)
+            if phase == "input" and pygame.event.get(pygame.QUIT):
+                # The failure may have come before the queue was read; a
+                # pending close request must still end the loop.
+                self.running = False
+
+    def _contain_frame_error(self, phase: str, exc: BaseException) -> None:
+        """Log a contained phase failure once per site; count every repeat."""
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "?"
+        key = (phase, type(exc).__name__, where)
+        count = self.frame_errors.get(key, 0) + 1
+        self.frame_errors[key] = count
+        if count == 1:
+            logger.error(
+                "Frame phase %r raised %s at %s; the frame continues (repeats "
+                "from this site are counted in GameClient.frame_errors)",
+                phase, type(exc).__name__, where,
+                exc_info=(type(exc), exc, exc.__traceback__))
+        elif count in (10, 100, 1000) or count % 10000 == 0:
+            logger.warning("Frame phase %r: %s at %s has raised %d times",
+                           phase, type(exc).__name__, where, count)
+
+    def shutdown(self, *, remember_window: bool = True) -> None:
+        """End the session. Safe to call more than once; only the first call
+        acts, and one failing step does not skip the rest.
+
+        Saves the window size to prefs (``remember_window``; harnesses pass
+        False so a test run does not rewrite the player's prefs), disconnects
+        the game connection, shuts down the RC and NC link workers, stops
+        sound and music, and quits pygame."""
+        if self._shut_down:
+            return
+        self._shut_down = True
+
+        def attempt(label, fn):
+            try:
+                fn()
+            except Exception:
+                logger.warning("shutdown: %s failed", label, exc_info=True)
+
+        if remember_window:
+            # Remember whatever size the WM/player left the window at,
+            # mirroring pygame_screens.py's _Screen._finish, so the next
+            # launch (login screen, then this game) opens at it instead of
+            # snapping back to whatever prefs.json had before this session.
+            attempt("saving the window size",
+                    lambda: Prefs.load().remember_window_size(
+                        self.screen_w, self.screen_h))
+        attempt("disconnect", self.client.disconnect)
+        # The RC link is a second connection on its own thread (and the dev
+        # playground's NC link a third); drop them with the game one so a
+        # server switch doesn't leave them logged in.
+        for name in ('rc_ui', 'dev_ui'):
+            ui = getattr(self, name, None)
+            if ui is not None:
+                attempt(f"{name} shutdown", ui.shutdown)
+        sound_mgr = getattr(self, 'sound_mgr', None)
+        if sound_mgr is not None:
+            attempt("stopping sounds", sound_mgr.stop_all)
+            attempt("stopping music", sound_mgr.stop_music)
+        attempt("pygame quit", pygame.quit)
+
+    def run(self):
+        """Main game loop: start(), step() until quit or disconnect, and
+        shutdown() however the loop ends (an escaped exception included).
+
+        Returns the server the player picked from the F8 list, so the launcher
+        can reconnect, or None for a normal quit or a lost connection."""
+        try:
+            # Measured from before startup, as it always was: the first
+            # frame's dt covers the startup work (and is clamped).
+            last_time = self.clock.frame_now()
+            self.start()
+            print(f"Starting game loop. running={self.running}, connected={self.client.connected}")
+
+            while self.running and self.client.connected:
+                current_time = self.clock.frame_now()
+                dt = current_time - last_time
+                last_time = current_time
+                self.step(dt, strict=False)
+                # Cap the display rate. The simulation is not tied to it: it
+                # advances in frame ticks whatever the frame rate (one per
+                # frame at most, so a tick shorter than the frame runs once
+                # per frame).
+                self.frame_limiter.tick(60)
+
+            print(f"Game loop exited after {self._frame_count} frames. "
+                  f"running={self.running}, connected={self.client.connected}")
+            if self.running and not self.client.connected:
+                reason = getattr(self.client, 'disconnect_reason', '') or ''
+                print(f"Connection to the server was lost{': ' + reason if reason else ''}")
+        finally:
+            self.shutdown()
 
         # If the player picked another server from the F8 list, hand it back to
         # the launcher so it can reconnect. None = normal quit.

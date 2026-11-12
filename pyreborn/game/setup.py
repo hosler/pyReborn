@@ -2,7 +2,6 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
-import time
 
 from pathlib import Path
 from typing import List, Optional
@@ -13,11 +12,12 @@ from .callbacks.client_callbacks import (
     SAMPLE_EXTS, append_start_message, route_gs2_source,
 )
 from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
+from .clocked import ClockedMixin
 
 
 
 
-class SetupMixin:
+class SetupMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _invalidate_tile_derived_caches(self) -> None:
@@ -49,7 +49,7 @@ class SetupMixin:
 
     def _update_low_hearts_warning(self, now: Optional[float] = None) -> bool:
         """Play the low-health reminder at most once per second."""
-        now = time.monotonic() if now is None else now
+        now = self.clock.frame_now() if now is None else now
         player = self.client.player
         active = (getattr(self, '_low_hearts_warning_enabled', True)
                   and self.client.connected and 0 < player.hearts <= 1.0
@@ -111,6 +111,9 @@ class SetupMixin:
             cache = getattr(self, attr, None)
             if isinstance(cache, dict):
                 cache.pop(npc_id, None)
+        interpolator = getattr(self, 'interpolator', None)
+        if interpolator is not None:
+            interpolator.forget(('npc', npc_id))
 
     def _load_npc_scripts(self):
         """Route NPC source to its engine and fire each GS1 script's
@@ -177,7 +180,7 @@ class SetupMixin:
         the arena's control NPC run before the player's -validation weapon
         had set #P2, so it read the room as empty and kicked the host
         (":No Players:") before the match could form."""
-        if self.client._current_level_name != getattr(self, '_gs1_level', None):
+        if self.client.current_level_name != getattr(self, '_gs1_level', None):
             return
         if not self.gs1.board_ready():
             return  # same boardless-playerenters rule as _trigger_playerenters
@@ -245,8 +248,8 @@ class SetupMixin:
         """Reload the GS1 engine when the player lands in a new level (script
         warp, door, or server-initiated), once that level's NPCs have streamed
         in. warp_to_level clears NPCs, so reloading too early would run nothing."""
-        lvl = self.client._current_level_name
-        epoch = self.client._plain_level_change_epoch
+        lvl = self.client.current_level_name
+        epoch = self.client.plain_level_change_epoch
         if epoch != getattr(self, '_gs1_visual_level_epoch', epoch):
             # NOT a blanket clear: GS2 weapon HUD stores persist across
             # levels (real-client parity — see ClientGS1.drop_level_weapon_
@@ -284,7 +287,7 @@ class SetupMixin:
             self._gs1_level = None
         if not lvl or lvl == getattr(self, '_gs1_level', None):
             return
-        now = time.time()
+        now = self.clock.frame_now()
         if getattr(self, '_level_change_pending', None) != lvl:
             self._level_change_pending = lvl
             self._level_change_at = now
@@ -312,7 +315,7 @@ class SetupMixin:
         if gs2 is None:
             return keep
         # Shape-1 boxes block but do not publish tile types (TServerNPC.cpp:2018).
-        self._gs2_shape1_npcs = set(self.gs1._shape1_npcs)
+        self._gs2_shape1_npcs = set(self.gs1.shape1_npcs)
         npc_vms = gs2.vms.get('npc', {})
         for nid, geom in self.gs1.shapes.items():
             if nid in npc_vms or str(nid) in npc_vms:
@@ -340,9 +343,9 @@ class SetupMixin:
                 continue  # despawned between snapshot and restore
             self.gs1.shapes[nid] = geom
             if nid in getattr(self, '_gs2_shape1_npcs', ()):
-                self.gs1._shape1_npcs.add(nid)
+                self.gs1.shape1_npcs.add(nid)
             w, h, flags = geom
-            self.gs1._update_shape_blocks(nid, npc, w, h, flags)
+            self.gs1.update_shape_blocks(nid, npc, w, h, flags)
 
     def _reload_level_scripts(self, lvl: str):
         """Swap the GS1 engine + per-NPC render state over to the current level."""
@@ -360,7 +363,7 @@ class SetupMixin:
         # prefix the manager re-evaluates here. Levels that want different
         # tiles re-run removetiledefs + addtiledef2 themselves (classic
         # bomber's arena NPC 162 does).
-        self.tileset_mgr.set_current_level(self.client._current_level_name)
+        self.tileset_mgr.set_current_level(self.client.current_level_name)
         self._invalidate_tile_derived_caches()
         self._camera_focus = None   # scripted setfocus dies with its level
         self._load_npc_scripts()
@@ -371,6 +374,14 @@ class SetupMixin:
             cache = getattr(self, attr, None)
             if isinstance(cache, dict):
                 cache.clear()
+        # Draw positions of the old level's things: the new level's start
+        # where they are, not sliding from an old entity with the same id.
+        interpolator = getattr(self, 'interpolator', None)
+        if interpolator is not None:
+            local = interpolator.current('local')
+            interpolator.reset()
+            if local is not None:
+                interpolator.position('local', local, self.clock.tick, 1.0)
         # Combat effects are level-local (bomb/arrow/thrown-object flight,
         # break bursts) — carrying them across a warp let a bomb armed in the
         # old level keep ticking (and eventually exploding) on top of the

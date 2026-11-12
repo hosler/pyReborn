@@ -23,6 +23,7 @@ from reborn_protocol.gs1.lexer import tokenize
 from reborn_protocol.gs1.parser import Parser
 from reborn_protocol.gs1.values import to_num, to_str
 
+from ..clock import Clock
 from ..particles import ParticleEmitter
 from ..tiletypes import (
     TileType, effective_tile_type, get_tile_type, selection_for,
@@ -31,7 +32,7 @@ from ..tiletypes import (
 from .board import board_tile_read, board_layer_tile_ids, _board_locate
 from .host import GS1ClientHost
 from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope, _current_baddies
-from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _report_gs1_error
+from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _TIMEOUT_CANCEL, _report_gs1_error
 
 
 
@@ -49,9 +50,8 @@ class ClientGS1:
 
     def _flag_send_allowed(self) -> bool:
         """Token-bucket gate for outbound PLI_FLAGSET (see _flag_tokens)."""
-        import time as _t
-        now = _t.time()
-        if self._flag_last_refill:
+        now = self.clock.sim_now()
+        if self._flag_last_refill is not None:
             self._flag_tokens = min(
                 self._FLAG_SEND_BURST,
                 self._flag_tokens + (now - self._flag_last_refill) * self._FLAG_SEND_RATE)
@@ -60,6 +60,15 @@ class ClientGS1:
             return False
         self._flag_tokens -= 1.0
         return True
+
+    @property
+    def clock(self) -> Clock:
+        """The client's clock; a private one for a runtime built without a
+        client."""
+        clock = getattr(self.client, 'clock', None)
+        if clock is None:
+            clock = self.__dict__.setdefault('_own_clock', Clock())
+        return clock
 
     def __init__(self, client=None):
         self.client = client
@@ -85,7 +94,7 @@ class ClientGS1:
         # packets so untrusted server bytecode can't flood the wire with a
         # setstring loop. Shared by the server + client flag scopes.
         self._flag_tokens = float(self._FLAG_SEND_BURST)
-        self._flag_last_refill = 0.0
+        self._flag_last_refill = None   # never refilled yet
         self._proj_params: list = []   # #p(n) during actionprojectile2/keypressed
         self._callnpc_depth = 0        # nesting guard, see _CALLNPC_MAX_DEPTH
         self._shoot_params: list = []  # set by setshootparams, sent by shoot
@@ -160,6 +169,8 @@ class ClientGS1:
         self._shape_types: dict = {}
         self._shape_type_owners: dict = {}   # npc_id -> {(tx,ty): type}
         self._weapon_timeouts: dict = {}  # prog-key -> seconds until timeout event
+        # prog-key -> the script pass that armed it (Clock.script_pass)
+        self._weapon_timeout_pass: dict = {}
         self._weapon_imgs: dict = {}      # prog-key -> showimg/showani layer table
         self._coros: list = []            # suspended script coroutines (sleep)
         self._active_coro_keys: set = set()  # prog-keys with a live coroutine
@@ -570,6 +581,19 @@ class ClientGS1:
                     return this.setdefault("save", [0.0] * 10)
                 return this.get("save") or []
         return None
+
+    @property
+    def shape1_npcs(self) -> set:
+        """NPC ids whose setshape is the shape-1 kind (blocks, no tile types)."""
+        return self._shape1_npcs
+
+    def has_program(self, key: str) -> bool:
+        """True when a script program is loaded under this key."""
+        return key in self._progs
+
+    def update_shape_blocks(self, npc_id, npc, w, h, flags):
+        """Public name of _update_shape_blocks."""
+        return self._update_shape_blocks(npc_id, npc, w, h, flags)
 
     def _update_shape_blocks(self, npc_id, npc, w, h, flags):
         """Record live shape geometry and refresh legacy diagnostic snapshots,
@@ -1067,9 +1091,8 @@ class ClientGS1:
         return False
 
     def _npc_take_effect(self, npc, index):
-        import time as _t
         npc["take_item"] = index
-        npc["take_until"] = _t.monotonic() + self._TAKE_DISPLAY_SECONDS
+        npc["take_until"] = self.clock.sim_now() + self._TAKE_DISPLAY_SECONDS
         npc.pop("take_value", None)
         counter = self._TAKE_COUNTERS.get(index)
         if counter is not None:
@@ -1107,10 +1130,12 @@ class ClientGS1:
         self.process_attachment()
         for npc_id, npc in list(getattr(self.client, "npcs", {}).items()):
             t = npc.get("_timeout")
-            if t is None:
+            if t is None or not self.clock.timer_counts(npc.get("_timeout_pass")):
                 continue
             t -= dt
-            if t <= 0:
+            # TScriptSpace.cpp:1030-1047: fires once less than 0.0001 is left
+            # (a 0.05 timeout fires on the next tick, 0.1 two ticks later).
+            if t < _TIMEOUT_CANCEL:
                 npc["_timeout"] = None      # event handler may re-arm it
                 npc.pop("timershow", None)  # TScriptSpace.cpp:1042-1045
                 self.trigger_npc_event(npc_id, "timeout")
@@ -1124,8 +1149,10 @@ class ClientGS1:
             if entry is None or entry["prog"] is None:
                 self._weapon_timeouts.pop(key, None)
                 continue
+            if not self.clock.timer_counts(self._weapon_timeout_pass.get(key)):
+                continue
             t = self._weapon_timeouts[key] - dt
-            if t <= 0:
+            if t < _TIMEOUT_CANCEL:
                 del self._weapon_timeouts[key]   # event handler may re-arm it
                 self._run(entry, "timeout")
             else:
@@ -1279,6 +1306,7 @@ class ClientGS1:
             self._active_coro_keys.add(key)
         self._coros.append({"gen": gen, "ctx": ctx, "key": key,
                             "entry": entry, "event": event,
+                            "pass": self.clock.script_pass(),
                             "remaining": (0.0 if delay is PREEMPTED
                                           else float(delay)),
                             "preempted": delay is PREEMPTED,
@@ -1291,8 +1319,13 @@ class ClientGS1:
             return
         still = []
         for c in self._coros:
+            if not self.clock.timer_counts(c.get("pass")):
+                still.append(c)
+                continue
             c["remaining"] -= dt
-            if c["remaining"] > 0:
+            # A sleep resumes once less than 0.0001 is left on the script
+            # clock (TScriptSpace.cpp:1062): sleep(0.05) resumes next tick.
+            if c["remaining"] >= _TIMEOUT_CANCEL:
                 still.append(c)
                 continue
             # Sleep already crossed level changes before slicing existed, so
@@ -1314,6 +1347,7 @@ class ClientGS1:
                 delay = self._pump(c["gen"])
                 c["remaining"] = (0.0 if delay is PREEMPTED
                                   else float(delay))
+                c["pass"] = self.clock.script_pass()
                 c["preempted"] = delay is PREEMPTED
                 c["board_wait_frames"] = 0
                 still.append(c)

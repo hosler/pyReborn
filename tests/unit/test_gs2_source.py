@@ -100,10 +100,11 @@ def game(monkeypatch):
     compiler = Mock(last_error='parse error: expected expression\nsecond line')
     compiler.compile.return_value = b'compiled'
     monkeypatch.setattr(client_callbacks, 'Gs2Compiler', Mock(return_value=compiler))
-    client = SimpleNamespace(
-        send_level_chat=Mock(), global_flags={}, weapons={}, npcs={}, on_packet={},
-        gs2_bytecode={'weapon': {}, 'npc': {}}, on_gs2_bytecode=Mock(),
-        _current_level_name='test.nw')
+    client = Client('localhost', 14900)
+    client.send_level_chat = Mock()
+    client.gs2_bytecode = {'weapon': {}, 'npc': {}}
+    client.on_gs2_bytecode = Mock()
+    client.current_level_name = 'test.nw'
     game = SimpleNamespace(
         client=client, gs1=Mock(scripts={}), sound_mgr=SimpleNamespace(),
         _request_asset=Mock(), _gs1_level='test.nw', npc_handler=Mock())

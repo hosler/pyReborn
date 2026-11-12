@@ -7,7 +7,6 @@ In browser, use proxy_url parameter to connect via WebSocket proxy.
 """
 
 import logging
-import time
 import traceback
 from typing import Optional, Dict, List, Tuple
 
@@ -17,11 +16,13 @@ MAX_LARGE_FILE_SIZE = 256 * 1024 * 1024
 LARGE_FILE_SIZE_SLACK = 64 * 1024
 
 from reborn_protocol.coords import (
-    LEVEL_SIZE, in_level_bounds, level_index, segment_at,
+    LEVEL_SIZE, in_level_bounds, level_index,
 )
 
+from .clock import Clock
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
+from .gmap_coords import level_at
 # BoundedLRU / MAX_CACHED_* keep their old client.py names for callers and
 # tests that reach for them there (tests/unit/test_security_correctness.py).
 from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
@@ -38,6 +39,7 @@ from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
     ScriptTransport,
     SessionState,
     WarpState,
+    derive_state_aliases,
 )
 from .packets import PacketID
 # Importing the package registers every @handles handler; PACKET_HANDLERS is
@@ -53,6 +55,7 @@ HANDLED_PLO_IDS = set(PACKET_HANDLERS)
 
 from .client_actions import ActionsMixin
 from .client_appearance import AppearanceMixin
+from .client_callbacks import CallbackMixin, emit
 from .client_combat import CombatMixin
 from .client_files import FileTransferMixin
 from .client_gmap import GmapMixin
@@ -60,7 +63,7 @@ from .client_movement import MovementMixin
 from .client_warp import WarpMixin
 
 
-class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixin,
+class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixin,
              FileTransferMixin, GmapMixin):
     """
     Dead simple Reborn client.
@@ -97,6 +100,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self.version = version
         self.proxy_url = proxy_url
         self.persist_downloads = True
+        # The one clock of this client and of any GameClient built over it.
+        self.clock = Clock()
 
         # Grouped state (see client_state.py). Every field on these components
         # is also reachable under its historical flat name on the client
@@ -111,7 +116,9 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self.file_transfers = FileTransfers()
         self.scripts = ScriptTransport()
         self.callbacks = Callbacks()
+        self._init_callback_listeners()
         self.instrumentation = Instrumentation(HANDLED_PLO_IDS)
+        self.entities.item_clock = self.clock.sim_now
 
         # Use WebSocketProtocol in browser, regular Protocol otherwise
         if IS_BROWSER:
@@ -121,7 +128,14 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         else:
             self._protocol = Protocol(host, port, version, source_address=source_address)
 
-        self.player = Player()
+        # A dropped socket (EOF, send/recv error) reaches the app through
+        # on_disconnect exactly once per session; see _notify_disconnect.
+        self._socket_dropped = False
+        self._logging_in = False
+        self._disconnect_notified = False
+        self._protocol.on_disconnect = self._on_protocol_disconnect
+
+        self.player = Player(clock=self.clock)
         self._login_appearance_applied = False
         self._last_self_props = None
 
@@ -140,34 +154,30 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         # TServerList.cpp:333 -> TTiles.cpp:285-287 clears server tiledefs.
         self.level_state.tiletypes.reset_tiledefs()
         self._authenticated = False
+        self._socket_dropped = False
+        self._disconnect_notified = False
         self._login_appearance_applied = False
         self._reset_file_transfer_state()
         # Server mode and COLORS-width evidence describe ONE server session
         # (the mode is read once at server start, GServer-v2 Server.cpp:
         # 188-193); a reused Client must not carry them to the next one.
-        self.server_mode = ''
-        self.classic_mode_disabled = False
-        # TClient.cpp:5638-5639: a new session clears the pending
+        # TClient.cpp:5638-5639: a new session also clears the pending
         # serverwarp target and the sent-destination memory.
-        self.server_warp_info = None
-        self.last_server_warp = ""
-        self.last_server_warp_at = 0.0
-        self.server_warp_declined_until = 0.0
-        self.server_warp_offers = 0
-        self.server_warp_notice_at = None
+        self.session.reset(
+            'server_mode', 'classic_mode_disabled', 'server_warp_info',
+            'last_server_warp', 'last_server_warp_at',
+            'server_warp_declined_until', 'server_warp_offers',
+            'server_warp_notice_at')
         self._clear_hide_player()
         self._last_self_props = None
-        self.items.clear()          # a new session must not age (or delete) old items
-        self.item_stamps.clear()
-        self.prop_parse_diagnostics.clear()
-        self.prop_parse_diagnostics.update(
-            warnings=0, errors=0, width_fallbacks=0)
+        # a new session must not age (or delete) old items
+        self.entities.reset('items', 'item_stamps')
+        self.instrumentation.reset('prop_parse_diagnostics')
         if self.gs2_host is not None:
             self.gs2_host.reset_session()
         if self.input_frozen:
             self.input_frozen = False
-            if self.on_fullstop:
-                self.on_fullstop(False)
+            emit(self, 'on_fullstop', False)
         return self._protocol.connect()
 
     def _reset_file_transfer_state(self, full_reset: bool = True) -> None:
@@ -186,8 +196,26 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         if self.gs2_host is not None:
             self.gs2_host.reset_session()
         self._clear_hide_player(notify=True)
+        # An explicit disconnect never fires on_disconnect (that hook reports
+        # the server or the network ending the session), and a later socket
+        # event from the closing transport must stay silent too.
+        self._disconnect_notified = True
+        self._socket_dropped = False
         self._protocol.disconnect()
         self._authenticated = False
+
+    def _on_protocol_disconnect(self) -> None:
+        """Protocol callback: the socket dropped under us. Only flags it; the
+        notification waits for the end of update(), after the final received
+        bundle (possibly a PLO_DISCMESSAGE with the reason) was dispatched."""
+        self._socket_dropped = True
+
+    def _notify_disconnect(self, reason: str) -> None:
+        """Fire on_disconnect(reason) at most once per session."""
+        if self._disconnect_notified:
+            return
+        self._disconnect_notified = True
+        emit(self, 'on_disconnect', reason)
 
     @property
     def connected(self) -> bool:
@@ -249,17 +277,33 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         if not self.connected:
             return False
 
+        # A drop during login belongs to the failed login, not to an
+        # established session: hold the drop notification while we wait, and
+        # discard it if the login fails.
+        self._logging_in = True
+        ok = False
+        try:
+            ok = self._login_wait(username, password, timeout)
+        finally:
+            self._logging_in = False
+            if not ok:
+                self._socket_dropped = False
+                if not self.connected:
+                    self._disconnect_notified = True
+        return ok
+
+    def _login_wait(self, username: str, password: str, timeout: float) -> bool:
         # Send login packet
         if not self._protocol.send_login(username, password):
             return False
 
         self.player.account = username
-        self._login_time = time.time()
+        self._login_time = self.clock.frame_now()
         self.disconnect_reason = ""
 
         # Wait for authentication response
-        start = time.time()
-        while time.time() - start < timeout:
+        start = self.clock.frame_now()
+        while self.clock.frame_now() - start < timeout:
             self.update(timeout=0.1)
             if self._authenticated:
                 return True
@@ -272,21 +316,23 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         return False
 
 
-
-
-
-
-
-
-
-
     # =========================================================================
     # Update Loop
     # =========================================================================
 
     def update(self, timeout: float = 0.01) -> List[Tuple[int, bytes]]:
         """
-        Read incoming packets. Call this regularly (e.g., in game loop).
+        Read incoming packets, and run the simulation ticks that are due.
+
+        Packets are applied as they arrive. The library's own simulations
+        (NPC movement, item expiry, sword/arrow/bomb ticks, ...) run in fixed
+        ticks (`run_tick`, pyreborn/clock.py). Without a host driving the
+        ticks, this call runs the ticks the frame time since the previous call
+        makes due, with the same policy a GameClient frame uses: at most
+        `Clock.MAX_TICKS_PER_FRAME`, the rest dropped. A long `timeout` is
+        waited out in slices that end on tick boundaries, so a bot that waits
+        in update() keeps its simulation at real speed. When a host
+        (GameClient) drives the ticks, update() only handles packets.
 
         Args:
             timeout: How long to wait for packets (seconds)
@@ -294,6 +340,58 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         Returns:
             List of (packet_id, data) tuples received
         """
+        clock = self.clock
+        if clock.host_driven or clock._in_tick or getattr(self, '_in_update', False):
+            return self._receive(timeout)
+        self.run_due_ticks(clock.pump_headless())
+        deadline = clock.frame_now() + max(0.0, timeout)
+        received: List[Tuple[int, bytes]] = []
+        while True:
+            before = clock.frame_now()
+            wait = min(max(0.0, deadline - before),
+                       clock.time_to_next_tick())
+            packets = self._receive(wait)
+            received.extend(packets)
+            self.run_due_ticks(clock.pump_headless())
+            after = clock.frame_now()
+            # A time source that did not move during the wait (a stub
+            # transport, a frozen test clock) would never reach the deadline.
+            if (packets or not self.connected or after >= deadline
+                    or after <= before):
+                return received
+
+    def run_due_ticks(self, count: int) -> None:
+        """Run `count` simulation ticks (begin_tick + run_tick each)."""
+        clock = self.clock
+        for _ in range(count):
+            clock.begin_tick()
+            clock._in_tick = True
+            try:
+                self.run_tick()
+            finally:
+                clock._in_tick = False
+
+    def run_tick(self) -> None:
+        """One simulation tick of the library's own simulations.
+
+        The reference runs these once per 50 ms timer call (TAdventure.cpp:
+        471-496, TServerLevel.cpp:1212-1224). The clock's tick has already
+        advanced (`Clock.begin_tick`), so everything here reads the new
+        `sim_now()`. A GameClient calls this from its own tick; a headless
+        client gets it from update()."""
+        from .npc_movement import tick_moves
+        tick_moves(self)
+        self.expire_items()
+        self._tick_sword_attack()
+        self._tick_arrow_sims()
+        self._tick_bomb_sims()
+        if self.hide_player_until:
+            self._tick_hide_player()
+        self._expire_explosions()
+        self.player.tick_emoticon()
+
+    def _receive(self, timeout: float) -> List[Tuple[int, bytes]]:
+        """Wait up to `timeout` for packets and dispatch them; no ticks."""
         packets = self._protocol.recv_packets(timeout)
 
         # Flagged so re-entrant callers (a GS2 script sleep() pumping update
@@ -324,18 +422,19 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         finally:
             self._in_update = False
 
+        if self._socket_dropped and not self._logging_in:
+            self._socket_dropped = False
+            try:
+                self._notify_disconnect(
+                    self.disconnect_reason or "Connection lost")
+            except Exception:
+                logger.exception("on_disconnect callback raised")
+
+        # A stalled download is a real-time wait, not simulation: checked on
+        # every receive, against frame time.
         if self._update_packages:
             from .update_packages import expire_stalled
             expire_stalled(self)
-
-        from .npc_movement import tick_moves
-        tick_moves(self)
-        self.expire_items()
-        self._tick_sword_attack()
-        self._tick_arrow_sims()
-        self._tick_bomb_sims()
-        if self.hide_player_until:
-            self._tick_hide_player()
 
         return packets
 
@@ -363,7 +462,9 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
                 and self._last_self_props is not None):
             self._apply_login_appearance(self._last_self_props)
 
-        # Custom handler
+        # Listeners (library/game subscribers), then the embedder's own hook.
+        for listener in vars(self).get('_packet_listeners', {}).get(packet_id, ()):
+            listener(data)
         if packet_id in self.on_packet:
             self.on_packet[packet_id](data)
 
@@ -424,8 +525,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
             return self._current_level_name
 
         # Player coords are GMAP-relative, so the grid cell is simply their segment
-        return self.gmap_grid.get(segment_at(self.player.x, self.player.y),
-                                  self._current_level_name)
+        return (level_at(self.gmap_grid, self.player.x, self.player.y)
+                or self._current_level_name)
 
     def get_chest_opened(self, level_name: str, x: int, y: int) -> bool:
         """Return True if the chest at local coordinates is open."""
@@ -479,8 +580,8 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
         self.item_stamps.pop((level_name, key), None)
         bucket = self.items.get(level_name)
         item_type = bucket.pop(key, None) if isinstance(bucket, dict) else None
-        if item_type is not None and self.on_item:
-            self.on_item(x, y, item_type, False)
+        if item_type is not None:
+            emit(self, 'on_item', x, y, item_type, False)
         return item_type
 
     def items_in_level(self, level_name: str) -> Dict[Tuple[float, float], str]:
@@ -558,212 +659,17 @@ class Client(MovementMixin, CombatMixin, AppearanceMixin, ActionsMixin, WarpMixi
 # =============================================================================
 # State-component aliases
 #
-# Client attribute name -> (component attribute on Client, field on it). The
-# state lives on the components in client_state.py; each entry below installs
-# a get/set property so every historical flat name still works - the pygame
-# game/ layer, game_tester and ~50 test modules read and write these directly.
-# Adding state means adding it to a component AND listing it here.
+# The state lives on the components in client_state.py. Each declared field
+# there becomes a get/set property on Client under its historical flat name
+# (the pygame game/ layer, game_tester and ~50 test modules read and write
+# these directly). The mapping is derived from the components' declared fields
+# (client_state.derive_state_aliases), so adding state is ONE edit: declare the
+# field in the component's constructor. The only explicit entries are the
+# per-component ALIAS_PRIVATE sets (flat name = "_" + field), ALIAS_PROPERTIES
+# and NO_ALIAS knobs in client_state.py.
 # =============================================================================
 
-_STATE_ALIASES: Dict[str, Tuple[str, str]] = {
-    # --- session / handshake ------------------------------------------------
-    '_colors_len': ('session', 'colors_len'),
-    '_file_no_modtime': ('session', 'file_no_modtime'),
-    '_use_pixel_props': ('session', 'use_pixel_props'),
-    '_authenticated': ('session', 'authenticated'),
-    '_login_time': ('session', 'login_time'),
-    '_raw_data_expected': ('session', 'raw_data_expected'),
-    '_in_update': ('session', 'in_update'),
-    'server_time': ('session', 'server_time'),
-    'ghost_mode': ('session', 'ghost_mode'),
-    'ghost_icon': ('session', 'ghost_icon'),
-    'frozen': ('session', 'frozen'),
-    'input_frozen': ('session', 'input_frozen'),
-    'classic_mode_disabled': ('session', 'classic_mode_disabled'),
-    'server_mode': ('session', 'server_mode'),
-    'npcs_hidden': ('session', 'npcs_hidden'),
-    'login_complete': ('session', 'login_complete'),
-    'server_warp_info': ('session', 'server_warp_info'),
-    'last_server_warp': ('session', 'last_server_warp'),
-    'last_server_warp_at': ('session', 'last_server_warp_at'),
-    'server_warp_declined_until': ('session', 'server_warp_declined_until'),
-    'server_warp_offers': ('session', 'server_warp_offers'),
-    'server_warp_notice_at': ('session', 'server_warp_notice_at'),
-    'hide_player_until': ('session', 'hide_player_until'),
-    'hide_player_hearts': ('session', 'hide_player_hearts'),
-    'profiles': ('session', 'profiles'),
-    'npcserver_addr': ('session', 'npcserver_addr'),
-    'net_cookie': ('session', 'net_cookie'),
-    'global_flags': ('session', 'global_flags'),
-    'staff_guilds': ('session', 'staff_guilds'),
-    'status_list': ('session', 'status_list'),
-    'server_message': ('session', 'server_message'),
-    'server_text': ('session', 'server_text'),
-    'has_npc_server': ('session', 'has_npc_server'),
-    'rpg_window_lines': ('session', 'rpg_window_lines'),
-    'default_weapon': ('session', 'default_weapon'),
-    'server_signature': ('session', 'server_signature'),
-    'disconnect_reason': ('session', 'disconnect_reason'),
-
-    # --- level / board ------------------------------------------------------
-    'tiles': ('level_state', 'tiles'),
-    '_tiles_level_name': ('level_state', 'tiles_level_name'),
-    'levels': ('level_state', 'levels'),
-    '_current_level_name': ('level_state', 'current_level_name'),
-    '_pending_level_name': ('level_state', 'pending_level_name'),
-    '_pending_board_level_name': ('level_state', 'pending_board_level_name'),
-    '_adjacent_level_requests': ('level_state', 'adjacent_level_requests'),
-    'active_level': ('level_state', 'active_level'),
-    'level_modtimes': ('level_state', 'level_modtimes'),
-    'links': ('level_state', 'links'),
-    'chests': ('level_state', 'chests'),
-    'chest_items': ('level_state', 'chest_items'),
-    'chest_signs': ('level_state', 'chest_signs'),
-    'signs': ('level_state', 'signs'),
-    'sign_lists': ('level_state', 'sign_lists'),
-    'board_layers': ('level_state', 'board_layers'),
-    '_board_layers_level_name': ('level_state', 'board_layers_level_name'),
-    'board_heights': ('level_state', 'board_heights'),
-    'is_leader': ('level_state', 'is_leader'),
-
-    # --- gmap world --------------------------------------------------------
-    'gmap_grid': ('gmap_state', 'gmap_grid'),
-    'gmap_width': ('gmap_state', 'gmap_width'),
-    'gmap_height': ('gmap_state', 'gmap_height'),
-    'gmap_name': ('gmap_state', 'gmap_name'),
-    '_requested_gmap': ('gmap_state', 'requested_gmap'),
-    'bigmap_info': ('gmap_state', 'bigmap_info'),
-    'minimap_info': ('gmap_state', 'minimap_info'),
-    '_gmap_spawn_x': ('gmap_state', 'gmap_spawn_x'),
-    '_gmap_spawn_y': ('gmap_state', 'gmap_spawn_y'),
-    '_gmap_offset_x': ('gmap_state', 'gmap_offset_x'),
-    '_gmap_offset_y': ('gmap_state', 'gmap_offset_y'),
-    '_known_gmap_segments': ('gmap_state', 'known_gmap_segments'),
-    '_warp_echo': ('warp_state', 'warp_echo'),
-    '_last_gmap_name': ('gmap_state', 'last_gmap_name'),
-
-    # --- in-flight warp / transition ---------------------------------------
-    '_awaiting_warp_confirm': ('warp_state', 'awaiting_warp_confirm'),
-    '_warp_fallback': ('warp_state', 'warp_fallback'),
-    '_local_level_transition': ('warp_state', 'local_level_transition'),
-    '_local_level_transition_epoch': ('warp_state', 'local_level_transition_epoch'),
-    '_local_level_transition_started': ('warp_state', 'local_level_transition_started'),
-    '_local_level_transition_direction': ('warp_state', 'local_level_transition_direction'),
-    '_plain_level_change_epoch': ('warp_state', 'plain_level_change_epoch'),
-
-    # --- entities ----------------------------------------------------------
-    'npcs': ('entities', 'npcs'),
-    '_npc_cache': ('entities', 'npc_cache'),
-    '_npc_pos_epoch': ('entities', 'npc_pos_epoch'),
-    'npc_moves': ('entities', 'npc_moves'),
-    'players': ('entities', 'players'),
-    'player_list': ('entities', 'player_list'),
-    'all_players': ('entities', 'all_players'),
-    'items': ('entities', 'items'),
-    'item_stamps': ('entities', 'item_stamps'),
-    'item_clock': ('entities', 'item_clock'),
-    'baddies': ('entities', 'baddies'),
-    'weapons': ('entities', 'weapons'),
-    'bombs': ('entities', 'bombs'),
-    'arrows': ('entities', 'arrows'),
-    'horses': ('entities', 'horses'),
-    'active_explosions': ('entities', 'active_explosions'),
-
-    # --- combat ------------------------------------------------------------
-    '_arrow_sims': ('combat_state', 'arrow_sims'),
-    '_pending_arrow_hits': ('combat_state', 'pending_arrow_hits'),
-    '_arrow_hurt_suppress': ('combat_state', 'arrow_hurt_suppress'),
-    '_local_arrow_reports': ('combat_state', 'local_arrow_reports'),
-    '_own_recent_arrows': ('combat_state', 'own_recent_arrows'),
-    'auto_respond_hurt': ('combat_state', 'auto_respond_hurt'),
-    'hurt_animation': ('combat_state', 'hurt_animation'),
-
-    # --- file transfers ----------------------------------------------------
-    '_pending_files': ('file_transfers', 'pending_files'),
-    '_received_files': ('file_transfers', 'received_files'),
-    '_failed_files': ('file_transfers', 'failed_files'),
-    '_file_attempts': ('file_transfers', 'file_attempts'),
-    '_uptodate_files': ('file_transfers', 'uptodate_files'),
-    '_cache_index': ('file_transfers', 'cache_index'),
-    '_large_file_transfers': ('file_transfers', 'large_file_transfers'),
-    '_update_packages': ('file_transfers', 'update_packages'),
-    '_requested_files': ('file_transfers', 'requested_files'),
-
-    # --- script / bytecode transport ---------------------------------------
-    'gs1_host': ('scripts', 'gs1_host'),
-    'gs2_host': ('scripts', 'gs2_host'),
-    'gs2_bytecode': ('scripts', 'gs2_bytecode'),
-    'gs2_script_headers': ('scripts', 'gs2_script_headers'),
-    'gani_setbackto': ('scripts', 'gani_setbackto'),
-    '_gs2_requested': ('scripts', 'gs2_requested'),
-
-    # --- instrumentation ---------------------------------------------------
-    'packet_stats': ('instrumentation', 'packet_stats'),
-    '_warned_packet_errors': ('instrumentation', 'warned_packet_errors'),
-    '_handled_plo_ids': ('instrumentation', 'handled_plo_ids'),
-    'prop_parse_diagnostics': ('instrumentation', 'prop_parse_diagnostics'),
-
-    # --- callbacks ---------------------------------------------------------
-    'on_packet': ('callbacks', 'on_packet'),
-    'on_chat': ('callbacks', 'on_chat'),
-    'on_level': ('callbacks', 'on_level'),
-    'on_hurt': ('callbacks', 'on_hurt'),
-    'on_item': ('callbacks', 'on_item'),
-    'on_pm': ('callbacks', 'on_pm'),
-    'on_add_player': ('callbacks', 'on_add_player'),
-    'on_del_player': ('callbacks', 'on_del_player'),
-    'on_baddy': ('callbacks', 'on_baddy'),
-    'on_weapon_add': ('callbacks', 'on_weapon_add'),
-    'on_projectile': ('callbacks', 'on_projectile'),
-    'on_file': ('callbacks', 'on_file'),
-    'on_file_send_failed': ('callbacks', 'on_file_send_failed'),
-    'on_update_package_progress': ('callbacks', 'on_update_package_progress'),
-    'on_update_package_downloaded': ('callbacks', 'on_update_package_downloaded'),
-    'on_packages_download_complete': ('callbacks', 'on_packages_download_complete'),
-    'on_update_package_failed': ('callbacks', 'on_update_package_failed'),
-    'on_sign': ('callbacks', 'on_sign'),
-    'on_explosion': ('callbacks', 'on_explosion'),
-    'on_bush_cut': ('callbacks', 'on_bush_cut'),
-    'on_leaps': ('callbacks', 'on_leaps'),
-    'on_hit_objects': ('callbacks', 'on_hit_objects'),
-    'on_minimap': ('callbacks', 'on_minimap'),
-    'on_board_layer': ('callbacks', 'on_board_layer'),
-    'on_ghost_mode': ('callbacks', 'on_ghost_mode'),
-    'on_start_message': ('callbacks', 'on_start_message'),
-    'on_board_modify': ('callbacks', 'on_board_modify'),
-    'on_file_uptodate': ('callbacks', 'on_file_uptodate'),
-    'on_bomb_add': ('callbacks', 'on_bomb_add'),
-    'on_bomb_del': ('callbacks', 'on_bomb_del'),
-    'on_bomb_exploded': ('callbacks', 'on_bomb_exploded'),
-    'on_arrow_add': ('callbacks', 'on_arrow_add'),
-    'on_horse_add': ('callbacks', 'on_horse_add'),
-    'on_horse_del': ('callbacks', 'on_horse_del'),
-    'on_firespy': ('callbacks', 'on_firespy'),
-    'on_throwcarried': ('callbacks', 'on_throwcarried'),
-    'on_pushaway': ('callbacks', 'on_pushaway'),
-    'on_npc_moved': ('callbacks', 'on_npc_moved'),
-    'on_npc_move': ('callbacks', 'on_npc_move'),
-    'on_npc_del': ('callbacks', 'on_npc_del'),
-    'on_sword_hit_npc': ('callbacks', 'on_sword_hit_npc'),
-    'on_freeze': ('callbacks', 'on_freeze'),
-    'on_fullstop': ('callbacks', 'on_fullstop'),
-    'on_say2': ('callbacks', 'on_say2'),
-    'on_player_left': ('callbacks', 'on_player_left'),
-    'on_server_warp': ('callbacks', 'on_server_warp'),
-    'on_server_warp_blocked': ('callbacks', 'on_server_warp_blocked'),
-    'on_triggeraction': ('callbacks', 'on_triggeraction'),
-    'on_profile': ('callbacks', 'on_profile'),
-    'on_hide_npcs': ('callbacks', 'on_hide_npcs'),
-    'on_login_complete': ('callbacks', 'on_login_complete'),
-    'on_chest': ('callbacks', 'on_chest'),
-    'on_disconnect': ('callbacks', 'on_disconnect'),
-    'on_gs2_bytecode': ('callbacks', 'on_gs2_bytecode'),
-    'on_server_text': ('callbacks', 'on_server_text'),
-    'on_rpg_window': ('callbacks', 'on_rpg_window'),
-    'on_baddy_hurt': ('callbacks', 'on_baddy_hurt'),
-    'on_flag': ('callbacks', 'on_flag'),
-    'on_flag_del': ('callbacks', 'on_flag_del'),
-}
+_STATE_ALIASES: Dict[str, Tuple[str, str]] = derive_state_aliases()
 
 
 def _state_alias(component: str, field: str) -> property:
@@ -786,6 +692,24 @@ for _alias_name, (_alias_component, _alias_field) in _STATE_ALIASES.items():
             "state alias %r would shadow an existing Client attribute"
             % _alias_name)
     setattr(Client, _alias_name, _state_alias(_alias_component, _alias_field))
+
+
+# Public names for the state the game layer reads. The flat names above that
+# carry a leading underscore are historical; the game layer uses these.
+_PUBLIC_STATE_ALIASES = (
+    'current_level_name', 'pending_level_name', 'board_layers_level_name',
+    'local_level_transition', 'local_level_transition_epoch',
+    'local_level_transition_started', 'local_level_transition_direction',
+    'plain_level_change_epoch', 'gmap_offset_x', 'gmap_offset_y',
+)
+
+for _public_name in _PUBLIC_STATE_ALIASES:
+    _component, _field = _STATE_ALIASES['_' + _public_name]
+    if hasattr(Client, _public_name):
+        raise RuntimeError(
+            "public state alias %r would shadow an existing Client attribute"
+            % _public_name)
+    setattr(Client, _public_name, _state_alias(_component, _field))
 
 
 # =============================================================================

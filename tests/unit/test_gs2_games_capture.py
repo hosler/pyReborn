@@ -314,8 +314,10 @@ def test_offline_deep_drive_covers_six_branches_breadth_first(tmp_path,
     enter.set("onaction", reveal_launchers)
 
     clock = {"now": 0.0}
-    monkeypatch.setattr("game_tester.gs2_ui_explorer.explorer.time.monotonic",
-                        lambda: clock["now"])
+    # Only the explorer's own reads of time are faked; the library's clock
+    # (a findweapon wait in the GS2 runtime) keeps reading real time.
+    monkeypatch.setattr("game_tester.gs2_ui_explorer.explorer.time",
+                        SimpleNamespace(monotonic=lambda: clock["now"]))
 
     class HonestPump:
         def settle(self, cap):

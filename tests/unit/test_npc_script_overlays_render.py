@@ -83,7 +83,19 @@ def test_take_icon_and_total_replace_the_timer(game, monkeypatch):
     assert game.screen.get_at((cx + 20, top + 4))[:3] == (0, 0, 0)
 
 
+_CARRYSTILL = """SPRITE 0 body.png 0 0 32 32
+ANI
+LOOP
+SETBACKTO idle
+WAIT 1
+ANIEND
+"""
+
+
 def test_carrying_character_npc_draws_its_object(game):
+    # Seed the gani instead of relying on a download cache entry.
+    game.gani_parser.put_cache(
+        'carrystill', game.gani_parser.parse_content(_CARRYSTILL, 'carrystill'))
     calls = []
     real = game._draw_carried_object
 
@@ -98,6 +110,7 @@ def test_carrying_character_npc_draws_its_object(game):
                      'carry_sprite': carry_code(0x109)}, at=(20.0, 40.0))
     finally:
         del game._draw_carried_object
+        game.gani_parser.cache.pop('carrystill', None)
     assert calls == [(20.0, 40.0, carry_code(0x109), 1)]
 
 

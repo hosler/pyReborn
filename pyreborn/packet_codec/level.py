@@ -469,100 +469,6 @@ def parse_chat(data: bytes) -> tuple:
     return (player_id, message)
 
 
-def parse_player_movement(data: bytes) -> dict:
-    """
-    Parse PLO_TOALL (packet 13) as movement update.
-    Movement updates contain props 78 (X2) and 79 (Y2) for position.
-    Returns dict with player_id, x, y, or None if not a movement packet.
-    """
-    if len(data) < 4:
-        return None
-
-    reader = PacketReader(data)
-    player_id = reader.read_gshort()
-
-    result = {'id': player_id}
-    pos = reader.pos
-
-    # Check if this looks like movement data (starts with prop 7 or similar)
-    if pos >= len(data):
-        return None
-
-    first_prop = data[pos] - 32
-    if first_prop < 0 or first_prop > 100:
-        return None  # Probably text, not props
-
-    while pos < len(data):
-        if pos >= len(data):
-            break
-        prop_id = data[pos] - 32
-        pos += 1
-
-        if prop_id < 0 or prop_id > 100:
-            # This looks like text, not movement data
-            return None
-
-        # PLPROP_X2 (78) - high precision X position
-        if prop_id == 78:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                pos += 2
-                raw = (b1 << 7) | b2
-                pixels = raw >> 1
-                if raw & 1:
-                    pixels = -pixels
-                result['x'] = pixels / 16.0
-
-        # PLPROP_Y2 (79) - high precision Y position
-        elif prop_id == 79:
-            if pos + 1 < len(data):
-                b1 = data[pos] - 32
-                b2 = data[pos + 1] - 32
-                pos += 2
-                raw = (b1 << 7) | b2
-                pixels = raw >> 1
-                if raw & 1:
-                    pixels = -pixels
-                result['y'] = pixels / 16.0
-
-        # PLPROP_SPRITE (17) or direction
-        elif prop_id == 17:
-            if pos < len(data):
-                result['sprite'] = data[pos] - 32
-                pos += 1
-
-        # Single byte props (0-20 range typically)
-        elif prop_id in [1, 2, 3, 4, 5, 6, 7, 18, 19]:
-            if pos < len(data):
-                pos += 1  # Skip value byte
-
-        # PLPROP_CURLEVEL (20) - level name string - extract it
-        elif prop_id == 20:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1
-                if str_len > 0 and pos + str_len <= len(data):
-                    result['level'] = data[pos:pos + str_len].decode('latin-1', errors='replace')
-                    pos += str_len
-
-        # String props - skip them
-        elif prop_id in [0, 10, 11, 12, 21, 22, 23]:
-            if pos < len(data):
-                str_len = data[pos] - 32
-                pos += 1 + str_len
-
-        else:
-            # Unknown prop, assume 1 byte
-            if pos < len(data):
-                pos += 1
-
-    # Only return if we got position data
-    if 'x' in result or 'y' in result:
-        return result
-    return None
-
-
 def parse_board_packet(data: bytes) -> list:
     """
     Parse PLO_BOARDPACKET (packet 101) - 8192 bytes of raw tile data.
@@ -580,30 +486,6 @@ def parse_board_packet(data: bytes) -> list:
         tiles.append(0)
 
     return tiles[:4096]
-
-
-def parse_level_board(data: bytes) -> list:
-    """
-    Parse PLO_LEVELBOARD (packet 0) - compressed tile data.
-    Returns list of 4096 tile IDs (64x64 grid).
-    """
-    import zlib
-
-    if len(data) < 2:
-        return [0] * 4096
-
-    # First 2 bytes might be length prefix
-    try:
-        # Try decompressing the whole thing
-        decompressed = zlib.decompress(data)
-    except:
-        try:
-            # Skip first 2 bytes (length prefix) and try again
-            decompressed = zlib.decompress(data[2:])
-        except:
-            return [0] * 4096
-
-    return parse_board_packet(decompressed)
 
 
 def parse_bigmap(data: bytes) -> dict:

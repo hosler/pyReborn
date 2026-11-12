@@ -8,7 +8,7 @@ from reborn_protocol.gs1.interp import Interpreter
 from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import host_value
 
-from ..sprites import REBORN_PALETTE, REBORN_PALETTE_ALIASES
+from ..palette import REBORN_PALETTE, REBORN_PALETTE_ALIASES
 from .registry import NPC_ATTR, PLAYER_ATTR, _NPC_WRITE
 
 

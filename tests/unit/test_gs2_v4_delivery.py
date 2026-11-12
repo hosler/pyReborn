@@ -111,8 +111,8 @@ def test_v4_bytecode_matches_modern_delivery(kind, empty, transport, monkeypatch
     for client in (old, modern):
         info = client.gs2_script_headers[name]
         assert (info['type'], info['name'], info['bytecode']) == (kind, name, blob)
-    assert old_runtime._prev_bytecode_cb.call_args_list == modern_runtime._prev_bytecode_cb.call_args_list
-    old_runtime._prev_bytecode_cb.assert_called_once_with(kind, name, blob)
+    assert old.on_gs2_bytecode.call_args_list == modern.on_gs2_bytecode.call_args_list
+    old.on_gs2_bytecode.assert_called_once_with(kind, name, blob)
     assert old.gs1_host.receive_class_source.call_args_list == modern.gs1_host.receive_class_source.call_args_list
     if kind == 'class' and not empty:
         old.gs1_host.receive_class_source.assert_called_once_with(name, blob)

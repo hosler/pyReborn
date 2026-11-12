@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any
 from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import GS2VM
-import time
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .objects_player import _CanvasObject, _engine_object
-from .registry import GS2GuiManager, _gs2_object
+from .registry import _gs2_object
 from ..throwing import carry_object
 
 class HostObjectsMixin:
@@ -178,7 +177,7 @@ class HostObjectsMixin:
     @_gs2_object("lighteffectsenabled")
     def _obj_lighting_enabled(self, name):
         game = getattr(self.rt2, "game_shell", None)
-        return 1.0 if getattr(game, "_day_night_enabled", False) else 0.0
+        return 1.0 if getattr(game, "day_night_enabled", False) else 0.0
 
     @_gs2_object("spritesimage", "statusimage")
     def _obj_sheet_names(self, name):
@@ -465,10 +464,11 @@ class HostObjectsMixin:
         if client is None or not getattr(client, "connected", False) or rt2._sleeping:
             # Disconnected, or already inside another sleep()'s update() pump: re-entering
             # update() would re-enter packet handling. Wait the FULL duration in slices
-            # with plain time.sleep() instead.
-            end = time.time() + secs
-            while time.time() < end:
-                time.sleep(min(0.05, end - time.time()))
+            # with plain clock.sleep() instead.
+            clock = rt2.clock
+            end = clock.frame_now() + secs
+            while clock.frame_now() < end:
+                clock.sleep(min(0.05, end - clock.frame_now()))
             return
         if getattr(client, "_in_update", False):
             # Inside client._handle_packet itself (an onAction handler fired
@@ -481,13 +481,13 @@ class HostObjectsMixin:
             # real elapsed time) rather than silently dropping it.
             owed = min(getattr(vm, "_gs2_sleep_debt", 0.0) + secs, 1.0)
             wait = min(owed, 0.05)
-            time.sleep(wait)
+            rt2.clock.sleep(wait)
             vm._gs2_sleep_debt = owed - wait
             return
         rt2._sleeping = True
         try:
-            end = time.time() + secs
-            while time.time() < end and getattr(client, "connected", False):
+            end = rt2.clock.frame_now() + secs
+            while rt2.clock.frame_now() < end and getattr(client, "connected", False):
                 client.update(timeout=0.02)
         finally:
             rt2._sleeping = False

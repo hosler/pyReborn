@@ -10,10 +10,13 @@ Nothing here talks to the network or to Client: these are plain state holders.
 """
 
 from collections import OrderedDict
-import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import tiletypes as _tiletypes
+from .clock import Clock
+
+# What an EntityState reads when no Client has rebound `item_clock`.
+_DEFAULT_CLOCK = Clock()
 
 MAX_CACHED_LEVELS = 512
 MAX_CACHED_FILES = 512
@@ -51,11 +54,80 @@ class BoundedLRU(OrderedDict):
             self.popitem(last=False)
 
 
-class SessionState:
+class StateComponent:
+    """Base of every state component below.
+
+    The component's declared fields are whatever its constructor assigns to
+    public (non-underscore) attributes. That one declaration drives two things:
+
+    * `reset()` restores declared defaults (all fields, or the named ones).
+    * client.py derives the flat `Client.<name>` alias for each field from
+      `state_fields()` and `ALIAS_PRIVATE`, so a new field is added in ONE place.
+
+    Class knobs a component may override:
+
+    * `ALIAS_PRIVATE` - fields whose flat Client name carries a leading
+      underscore (`_authenticated` for `authenticated`).
+    * `ALIAS_PROPERTIES` - fields implemented as class-level properties, which
+      `vars()` cannot see.
+    * `NO_ALIAS` - fields deliberately not exposed on Client.
+    """
+
+    ALIAS_PRIVATE: frozenset = frozenset()
+    ALIAS_PROPERTIES: Tuple[str, ...] = ()
+    NO_ALIAS: frozenset = frozenset()
+
+    _ctor_args: tuple = ()
+
+    @classmethod
+    def _default_args(cls) -> tuple:
+        return ()
+
+    @classmethod
+    def state_fields(cls) -> List[str]:
+        """Declared field names, from a default-constructed instance."""
+        probe = cls(*cls._default_args())
+        names = [n for n in vars(probe) if not n.startswith('_')]
+        names += [n for n in cls.ALIAS_PROPERTIES if n not in names]
+        return names
+
+    def reset(self, *fields: str) -> None:
+        """Restore declared defaults: the named fields, or all when none given.
+
+        Mutable containers are cleared and refilled in place, so a reference
+        another object holds to one of them stays valid.
+        """
+        fresh = type(self)(*self._ctor_args)
+        for name in (fields or self.state_fields()):
+            default = getattr(fresh, name)
+            current = getattr(self, name, None)
+            if (type(current) is type(default)
+                    and isinstance(default, (dict, list, set))):
+                current.clear()
+                if isinstance(default, dict):
+                    current.update(default)
+                elif isinstance(default, list):
+                    current.extend(default)
+                else:
+                    current.update(default)
+            else:
+                setattr(self, name, default)
+
+
+class SessionState(StateComponent):
     """Connection/handshake state plus everything the server announces about
     the session itself (flags, MOTD, freeze state, cookies)."""
 
+    ALIAS_PRIVATE = frozenset({
+        'colors_len', 'file_no_modtime', 'use_pixel_props', 'authenticated',
+        'login_time', 'raw_data_expected', 'in_update'})
+
+    @classmethod
+    def _default_args(cls) -> tuple:
+        return ("2.22",)
+
     def __init__(self, version: str):
+        self._ctor_args = (version,)
         # PLPROP_COLORS width PRIOR: 5, the reference default. The width is a
         # server-wide mode (`servermode = newworld` -> 8), not a client-version
         # fact, so it is not derived from `version`. The width actually in
@@ -126,8 +198,15 @@ class SessionState:
         self.ghost_icon = False             # PLO_GHOSTICON
 
 
-class LevelState:
+class LevelState(StateComponent):
     """The current level and every per-level thing keyed by level name."""
+
+    ALIAS_PRIVATE = frozenset({
+        'tiles_level_name', 'current_level_name', 'pending_level_name',
+        'pending_board_level_name', 'adjacent_level_requests',
+        'board_layers_level_name'})
+    ALIAS_PROPERTIES = ('current_level_name',)
+    NO_ALIAS = frozenset({'tiletypes'})   # reached as client.level_state.tiletypes
 
     def __init__(self):
         self.tiletypes = _tiletypes.TileTypeSelection()
@@ -194,8 +273,12 @@ class LevelState:
         self.tiletypes.set_current_level(value)
 
 
-class GmapState:
+class GmapState(StateComponent):
     """The loaded .gmap world: its grid, dimensions and coordinate framing."""
+
+    ALIAS_PRIVATE = frozenset({
+        'requested_gmap', 'gmap_spawn_x', 'gmap_spawn_y', 'gmap_offset_x',
+        'gmap_offset_y', 'known_gmap_segments', 'last_gmap_name'})
 
     def __init__(self):
         # GMAP grid: maps (x, y) -> level_name
@@ -224,9 +307,15 @@ class GmapState:
         self.known_gmap_segments: set = set()
 
 
-class WarpState:
+class WarpState(StateComponent):
     """In-flight level change: what we optimistically flipped to, what the
     server still has to confirm, and the renderer's transition hold."""
+
+    ALIAS_PRIVATE = frozenset({
+        'awaiting_warp_confirm', 'local_level_transition',
+        'local_level_transition_epoch', 'local_level_transition_started',
+        'local_level_transition_direction', 'plain_level_change_epoch',
+        'warp_fallback', 'warp_echo'})
 
     def __init__(self):
         # Destination of a client-initiated warp awaiting the server's
@@ -261,9 +350,12 @@ class WarpState:
         self.warp_echo: Optional[Tuple[str, float]] = None
 
 
-class EntityState:
+class EntityState(StateComponent):
     """Everything living in the world: NPCs, players, baddies, items and the
     transient bomb/arrow/horse entities."""
+
+    ALIAS_PRIVATE = frozenset({'npc_cache', 'npc_pos_epoch'})
+    NO_ALIAS = frozenset({'next_bomb_id'})   # reached as client.entities.next_bomb_id
 
     def __init__(self):
         # NPCs: maps npc_id -> npc dict with x, y, image, etc.
@@ -309,7 +401,8 @@ class EntityState:
         # server expires an item silently, so the client prunes `items` itself
         # (Client.expire_items). `item_clock` is injectable for tests.
         self.item_stamps: Dict[Tuple[str, Tuple[float, float]], float] = {}
-        self.item_clock: Callable[[], float] = time.monotonic
+        # Client rebinds this to its own clock's now().
+        self.item_clock: Callable[[], float] = _DEFAULT_CLOCK.sim_now
 
         # Baddy coordinates are level-local on the wire. Keep the owning level
         # or identical positions in adjacent gmap boards are later folded onto
@@ -336,9 +429,13 @@ class EntityState:
         self.active_explosions: List[dict] = []
 
 
-class CombatState:
+class CombatState(StateComponent):
     """Client-authoritative combat bookkeeping (see the arrow-simulation
     section in client.py for the design these fields implement)."""
+
+    ALIAS_PRIVATE = frozenset({
+        'arrow_sims', 'pending_arrow_hits', 'arrow_hurt_suppress',
+        'local_arrow_reports', 'own_recent_arrows'})
 
     def __init__(self):
         # Victim-side arrow flight simulation (client-authoritative combat
@@ -371,8 +468,13 @@ class CombatState:
         self.hurt_animation = "hurt"   # Animation to use when hurt
 
 
-class FileTransfers:
+class FileTransfers(StateComponent):
     """Download bookkeeping, including the large-file chunk protocol."""
+
+    ALIAS_PRIVATE = frozenset({
+        'pending_files', 'received_files', 'failed_files', 'file_attempts',
+        'uptodate_files', 'cache_index', 'large_file_transfers',
+        'update_packages', 'requested_files'})
 
     def __init__(self):
         # File download tracking
@@ -397,9 +499,11 @@ class FileTransfers:
         self.requested_files: Dict[str, bool] = BoundedLRU(MAX_REQUESTED_FILES)
 
 
-class ScriptTransport:
+class ScriptTransport(StateComponent):
     """Script/bytecode transport plus the optional GS1/GS2 host attachments
     that received scripts are handed to."""
+
+    ALIAS_PRIVATE = frozenset({'gs2_requested'})
 
     def __init__(self):
         # Optional GS1 host attachment point: if the embedding app (pygame
@@ -428,10 +532,17 @@ class ScriptTransport:
         self.gs2_requested: set = set()
 
 
-class Instrumentation:
+class Instrumentation(StateComponent):
     """Packet-coverage counters and parser diagnostics read by the QA probes."""
 
+    ALIAS_PRIVATE = frozenset({'warned_packet_errors', 'handled_plo_ids'})
+
+    @classmethod
+    def _default_args(cls) -> tuple:
+        return ((),)
+
     def __init__(self, handled_plo_ids):
+        self._ctor_args = (handled_plo_ids,)
         # Packet coverage instrumentation (for the QA coverage harness).
         # Maps packet_id -> {'received': n, 'handled': n, 'errors': n, 'last_error': str}
         self.packet_stats: Dict[int, Dict[str, object]] = {}
@@ -450,7 +561,7 @@ class Instrumentation:
         }
 
 
-class Callbacks:
+class Callbacks(StateComponent):
     """The `on_*` hooks an embedding app assigns. Each is None until set."""
 
     def __init__(self):
@@ -608,3 +719,33 @@ class Callbacks:
         self.on_baddy_hurt: Optional[Callable[[int, int], None]] = None
         self.on_flag: Optional[Callable[[str, str], None]] = None
         self.on_flag_del: Optional[Callable[[str], None]] = None
+
+
+# Client attribute name -> component class. client.py builds the flat state
+# aliases (Client.<field>) from these classes' declared fields.
+COMPONENT_CLASSES: Dict[str, type] = {
+    'session': SessionState,
+    'level_state': LevelState,
+    'gmap_state': GmapState,
+    'warp_state': WarpState,
+    'entities': EntityState,
+    'combat_state': CombatState,
+    'file_transfers': FileTransfers,
+    'scripts': ScriptTransport,
+    'instrumentation': Instrumentation,
+    'callbacks': Callbacks,
+}
+
+
+def derive_state_aliases() -> Dict[str, Tuple[str, str]]:
+    """Flat Client attribute name -> (component attribute, field)."""
+    aliases: Dict[str, Tuple[str, str]] = {}
+    for component, cls in COMPONENT_CLASSES.items():
+        for field in cls.state_fields():
+            if field in cls.NO_ALIAS:
+                continue
+            name = '_' + field if field in cls.ALIAS_PRIVATE else field
+            if name in aliases:
+                raise RuntimeError("duplicate state alias %r" % name)
+            aliases[name] = (component, field)
+    return aliases

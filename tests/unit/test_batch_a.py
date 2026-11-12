@@ -18,8 +18,8 @@ from .test_push_grab_pull import _harness_facing_wall
 
 
 @pytest.mark.parametrize('carry_update_first', [False, True])
-def test_bomb_pickup_never_explodes_for_observer(monkeypatch, carry_update_first):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def test_bomb_pickup_never_explodes_for_observer(sim_time, monkeypatch, carry_update_first):
+    sim_time(lambda: 100.0)
     game = Game()
     wire_client_callbacks(game)
     bomb = game._add_remote_bomb({'x': 10, 'y': 10, 'timer_ms': 2000}, now=100)
@@ -40,8 +40,8 @@ def test_bomb_pickup_never_explodes_for_observer(monkeypatch, carry_update_first
         assert not owner.get('_carried_bomb')
 
 
-def test_bomb_removal_uses_packet_segment_on_gmap(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def test_bomb_removal_uses_packet_segment_on_gmap(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     game = Game()
     wire_client_callbacks(game)
     game.client.gmap_grid = {(1, 0): 'throw.nw'}
@@ -52,9 +52,9 @@ def test_bomb_removal_uses_packet_segment_on_gmap(monkeypatch):
     assert not game.active_bombs and not bomb['exploded']
 
 
-def test_push_countdown_and_repeated_directional_event(monkeypatch):
+def test_push_countdown_and_repeated_directional_event(sim_time, monkeypatch):
     now = [100.0]
-    monkeypatch.setattr('time.time', lambda: now[0])
+    sim_time(lambda: now[0])
     client, game = _harness_facing_wall()
     client.triggeraction = Mock()
     game._update_push_hold(0, -1)
@@ -75,9 +75,9 @@ def test_push_countdown_and_repeated_directional_event(monkeypatch):
     assert game._push_counter == 38
 
 
-def test_pull_counter_19_and_local_script_parameters(monkeypatch):
+def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch):
     now = [100.0]
-    monkeypatch.setattr('time.time', lambda: now[0])
+    sim_time(lambda: now[0])
     client, game = _harness_facing_wall()
     game.gs1 = ClientGS1(client)
     client.npcs[10001] = {'x': 30, 'y': 19, 'visible': True}

@@ -1,6 +1,5 @@
 """Shared flight and landing data for carried objects."""
 
-import time
 
 from reborn_protocol.coords import in_level_bounds, segment_at, segment_origin
 
@@ -205,7 +204,7 @@ def advance_throw(game, obj, dt, remote=False):
                     'owner_id': obj.get('owner_id', 0), 'damage': damage,
                     'pvp': False,
                     'damage_type': 'bush', 'dx': obj['dx'], 'dy': obj['dy'],
-                    'resolve_at': time.time() + client._ARROW_HIT_GRACE})
+                    'resolve_at': client.clock.sim_now() + client._ARROW_HIT_GRACE})
                 return True
         else:
             for pid, p in getattr(client, 'players', {}).items():

@@ -2,9 +2,10 @@
 
 import math
 
-from reborn_protocol.coords import local_coord, segment_origin
+from reborn_protocol.coords import local_coord
 from reborn_protocol.props import PLAYER_PROPS, encode_value
 
+from .gmap_coords import level_origin, local_from_world
 from .packet_codec.common import Z_MIN_TILES, Z_MAX_TILES
 
 
@@ -49,10 +50,7 @@ def attach(client, player, npc_id, deferred=False, send=False):
         detach(client, player, send=send)
     # TServerPlayer.cpp:530-562: keep world displacement on immediate attach.
     if isinstance(player, dict):
-        grid = getattr(client, 'gmap_grid', {})
-        cell = next((cell for cell, level in grid.items()
-                     if level == data.get('level')), None)
-        origin = segment_origin(*cell) if cell else (0, 0)
+        origin = level_origin(getattr(client, 'gmap_grid', {}), data.get('level'))
         for axis, offset in zip(('x', 'y'), origin):
             data[axis] = data.get('world_' + axis, data.get(axis, 0) + offset)
     nx, ny = npc_position(npc)
@@ -155,10 +153,7 @@ def stored_position(client, x, y):
             nx, ny = npc_position(npc)
             # Receivers add the NPC position; both positions are world-space.
             return _rounded(x - nx), _rounded(y - ny)
-    cell = next((cell for cell, name in getattr(client, 'gmap_grid', {}).items()
-                 if name == level), None)
-    ox, oy = segment_origin(*cell) if cell else (0, 0)
-    return x - ox, y - oy
+    return local_from_world(getattr(client, 'gmap_grid', {}), level, x, y)
 
 
 def sends_attachment(client):

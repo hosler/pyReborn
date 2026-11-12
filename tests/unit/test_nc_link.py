@@ -89,7 +89,7 @@ def test_dead_npc_request_times_out_before_next_request_is_sent():
     client = nc_link._LinkedNCClient()
     link._set_state(READY, "active")
     clock = [10.0]
-    with patch.object(nc_link.time, "monotonic", side_effect=lambda: clock[0]), \
+    with patch.object(nc_link._LINK_CLOCK, "frame_now", side_effect=lambda: clock[0]), \
             patch.object(client, "_send", return_value=True) as send:
         assert link.get_npc(999) is True
         assert link.get_npc(20) is True
@@ -107,7 +107,7 @@ def test_dead_npc_request_times_out_before_next_request_is_sent():
 def test_slow_npc_reply_within_timeout_remains_attributed():
     client = nc_link._LinkedNCClient()
     clock = [10.0]
-    with patch.object(nc_link.time, "monotonic", side_effect=lambda: clock[0]), \
+    with patch.object(nc_link._LINK_CLOCK, "frame_now", side_effect=lambda: clock[0]), \
             patch.object(client, "_send", return_value=True):
         assert client.get_npc(42) is True
         clock[0] += nc_link.NC_REQUEST_TIMEOUT - 0.1

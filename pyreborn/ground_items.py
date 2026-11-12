@@ -20,6 +20,8 @@ Preagonal/FourPlay/quattroplay/src/:
 import math
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
+from .client_callbacks import emit
+
 # One oracle tick is one 20 Hz client frame (the same 0.05 s the rest of
 # pyReborn uses for classic frame timing).
 TICK = 0.05
@@ -77,7 +79,9 @@ LAY_BASE = (0.5, 1.0)
 
 def item_time(age: float) -> int:
     """Oracle `m_time` for an item first seen `age` seconds ago."""
-    return ITEM_LIFETIME_TICKS - int(max(0.0, age) / TICK)
+    # The slack keeps a whole number of ticks of simulation time (a
+    # difference of two sim_now() readings, off by ~1e-10) on its tick.
+    return ITEM_LIFETIME_TICKS - int(max(0.0, age) / TICK + 1e-6)
 
 
 def item_expired(age: float) -> bool:
@@ -257,10 +261,8 @@ def expire_items(client, now: float):
                 live.add((level_name, key))
     for stale in [k for k in stamps if k not in live]:
         del stamps[stale]
-    callback = getattr(client, 'on_item', None)
-    if callback:
-        for _level, x, y, item_type in expired:
-            callback(x, y, item_type, False)
+    for _level, x, y, item_type in expired:
+        emit(client, 'on_item', x, y, item_type, False)
     return expired
 
 

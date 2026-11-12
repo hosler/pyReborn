@@ -27,29 +27,6 @@ class FakeKeys:
         return 512
 
 
-def pump_frame(game, dt, current_time):
-    """One proven classic-bomber frame, including input and rendering."""
-    game._frame_dt = dt
-    game._handle_events()
-    game._handle_input(current_time)
-    game.client.update(timeout=0)
-    game._load_new_npcs()
-    game._process_pending_warp()
-    game._process_self_shoots()
-    game.gs1.process_coroutines(dt)
-    game.gs1.process_timeouts(dt)
-    game.gs2.process_coroutines(dt)
-    game.gs2.process_timeouts(dt)
-    game._check_scripted_link_warp()
-    game.gs1.advance_input_frame()
-    game._check_level_change()
-    game._update_swimming_state()
-    game._update_visual_position(dt)
-    game._update_animations(dt)
-    game._last_dt = dt
-    game._render()
-
-
 class _WarningLog(logging.Handler):
     def __init__(self):
         super().__init__(logging.WARNING)
@@ -90,16 +67,7 @@ class HeadlessGameClient:
             if not outcome.ok or not outcome.settled:
                 raise RuntimeError(f"headless login/level failed: {outcome.rejection}")
             self.game = GameClient(self.client, password=password)
-            # Match the initialization before GameClient.run's frame loop.
-            game = self.game
-            game.visual_x, game.visual_y = self.client.x, self.client.y
-            game._update_swimming_state()
-            game._load_npc_scripts()
-            game._trigger_playerenters()
-            game.npc_handler.update_npcs()
-            game._gs1_level = self.client._current_level_name
-            game._gs1_visual_level_epoch = self.client._plain_level_change_epoch
-            game.roster_ready_time = time.time() + 2
+            self.game.start()
         except BaseException:
             self.close()
             raise
@@ -115,7 +83,7 @@ class HeadlessGameClient:
         original = self.pygame.key.get_pressed
         self.pygame.key.get_pressed = lambda: self.keys
         try:
-            pump_frame(self.game, self.frame_dt, time.time())
+            self.game.step(self.frame_dt, strict=True)
         except Exception:
             self.frame_exceptions.append(traceback.format_exc())
         finally:
@@ -178,18 +146,14 @@ class HeadlessGameClient:
         self._closed = True
         logging.getLogger().removeHandler(self._warnings)
         try:
-            self.client.disconnect()
+            if self.game is not None:
+                # The game's own shutdown: disconnect, RC/NC links, sound,
+                # pygame. A harness never rewrites the player's prefs.
+                self.game.shutdown(remember_window=False)
+            else:
+                self.client.disconnect()
         finally:
-            try:
-                if self.game is not None:
-                    for name in ("rc_ui", "dev_ui"):
-                        ui = getattr(self.game, name, None)
-                        if ui is not None:
-                            ui.shutdown()
-                    self.game.sound_mgr.stop_all()
-                    self.game.sound_mgr.stop_music()
-            finally:
-                self.pygame.quit()
+            self.pygame.quit()
 
     def __enter__(self):
         return self

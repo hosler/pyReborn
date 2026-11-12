@@ -19,7 +19,6 @@ the tree then the imperative overlays. The tile-editor/debug overlay stays in
 render.py — it is editor UI, not the play HUD.
 """
 
-import time
 from typing import Optional, Tuple
 
 import pygame
@@ -29,6 +28,8 @@ from .assets import render_outlined_text
 from .ui import UIManager, Panel, Label, Widget, TOPLEFT, TOPRIGHT, MIDTOP
 from .minimap import aspect_fit, map_entity_positions
 from ..inventory_ui import resolve_weapon_indicator
+from .keymap import help_lines
+from .overlays import build_overlays
 
 
 # showstats bits (GServer-v2 docs, "showstats"): which default-HUD elements
@@ -279,27 +280,8 @@ class StatsPanel(Widget):
 class HUD:
     """Owns the play HUD: a declarative widget tree plus a few imperative draws."""
 
-    HELP_LINES = [
-        ("Arrow Keys", "Move"),
-        ("A", "Grab / Pick up / Throw"),
-        ("S or Space", "Swing sword"),
-        ("D", "Use weapon"),
-        ("Q", "Inventory"),
-        ("Wheel / 0", "Zoom / reset"),
-        ("M", "Open map"),
-        ("N", "Noclip (walk through walls)"),
-        ("Enter", "Chat"),
-        ("F1", "Debug / tile editor"),
-        ("F2", "Unstick: warp to (30,30)"),
-        ("F7", "Player list / PM"),
-        ("F8", "Server list"),
-        ("F9", "Settings"),
-        ("F10", "RC tools (staff)"),
-        ("F11", "Level edit mode (staff)"),
-        ("F12", "Dev playground (staff)"),
-        ("PageUp/Down", "Scroll chat log"),
-        ("H", "Close this help"),
-    ]
+    #: The controls overlay's rows, generated from the keymap (game/keymap.py).
+    HELP_LINES = help_lines()
 
     def __init__(self, game):
         self.game = game
@@ -388,56 +370,30 @@ class HUD:
         self.ui.update(g.viewport.mouse_pos())
 
     def draw(self):
+        """Paint the HUD, then the overlay stack bottom-up (the reverse of
+        its input priority, game/overlays.py), so whatever takes the keys
+        first is drawn on top. While the death presentation is up only the
+        entries that are not part of the play HUD draw (it covers the rest);
+        a full stop (`input_frozen`) hides the HUD widgets and minimap, and
+        the HUD entries hide their own parts (see ChatInput, Dialogue, Help)."""
         surf = self.game.screen
         presentation = getattr(self.game, 'combat_presentation', None)
-        if presentation is not None and presentation.death_started is not None:
-            return
-        input_frozen = getattr(self.game.client, 'input_frozen', False)
-        if not input_frozen:
+        dead = presentation is not None and presentation.death_started is not None
+        if not dead and not getattr(self.game.client, 'input_frozen', False):
             self.ui.draw(surf)
-            self._draw_dialogue(surf)
-            self._draw_chat(surf)
+            # The corner map is HUD furniture, not an overlay: it is drawn
+            # under the dialogue box and chat log, which never reach the
+            # top-right corner it sits in.
             self._draw_minimap(surf)
-            if self.game.show_help and not (self.game.typing or self.game.debug_mode
-                                            or self.game.inventory_ui.visible):
-                self._draw_help_overlay(surf)
-        elif self.game.typing:
-            # Chat input remains modal and accepts keys during a full stop.
-            self._draw_chat(surf, show_log=False)
-        if getattr(self.game, 'big_map_visible', False):
-            self._draw_big_map(surf)
-        if self.game.show_player_list:
-            self._draw_player_list(surf)
-        if self.game.show_server_list:
-            self._draw_server_list(surf)
-        settings_ui = getattr(self.game, 'settings_ui', None)
-        if settings_ui is not None and settings_ui.visible:
-            self._draw_settings(surf)
-        # Edit mode decorates the WORLD, so it goes under the panels: grid,
-        # object markers and toolbar first, then the palette it opens.
-        overlay = getattr(self.game, 'editor_overlay', None)
-        if overlay is not None:
+        stack = getattr(self.game, 'overlays', None)
+        if stack is None:
+            # A bare game object (a harness without InputMixin): the same
+            # stack, bound to this HUD.
+            stack = build_overlays(self.game, hud=self)
+        for overlay in reversed(stack):
+            if dead and overlay.hud_layer:
+                continue
             overlay.draw(surf)
-            editor = self.game.level_editor
-            if editor.state.enabled and editor.state.palette_visible:
-                self.game.tile_palette.draw(surf, editor.state.tile)
-        dev_ui = getattr(self.game, 'dev_ui', None)
-        if dev_ui is not None:
-            dev_ui.draw(surf)
-        rc_ui = getattr(self.game, 'rc_ui', None)
-        if rc_ui is not None:
-            # Draws nothing while closed; it is last so RC tools sit over
-            # every other overlay, matching their input priority.
-            rc_ui.draw(surf)
-        notice = getattr(self.game, 'hud_notice', None)
-        if notice is not None:
-            if time.monotonic() >= notice[1]:
-                self.game.hud_notice = None
-            else:
-                self._draw_hud_notice(surf, notice[0])
-        # Topmost, like its input priority: nothing may cover the consent prompt.
-        if getattr(self.game, 'server_warp_prompt', None) is not None:
-            self._draw_server_warp_prompt(surf)
 
     # -- imperative overlays ---------------------------------------------
     def _draw_dialogue(self, surf):
@@ -571,7 +527,7 @@ class HUD:
         pygame.draw.rect(surf, theme.SURFACE_RAISED, border)
         pygame.draw.rect(surf, theme.MOSS, border, 2)
         surf.blit(g.minimap_surface, (mx, my))
-        if g.client._current_level_name:
+        if g.client.current_level_name:
             for frac_x, frac_y, color in map_entity_positions(g.client):
                 dot_x = int(mx + frac_x * mw)
                 dot_y = int(my + frac_y * mh)
@@ -688,7 +644,7 @@ class HUD:
             surf.blit(g.font_small.render(line, True, theme.TEXT), (x + pad, ty))
             ty += line_h
         word = g.SERVER_WARP_CONFIRM_WORD
-        armed = (time.monotonic() - prompt.get('opened_at', 0.0)
+        armed = (g.clock.frame_now() - prompt.get('opened_at', 0.0)
                  >= g.SERVER_WARP_ARM_SECONDS)
         to_connect = (f'To connect type "{word}", then Enter:'
                       if armed else "Read the request...")

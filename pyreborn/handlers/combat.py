@@ -4,7 +4,6 @@ These packets contain damage, relayed shots and explosions, and the
 bomb, arrow, horse, and firespy entity families.
 """
 
-import time
 
 from ..packets import (
     PacketID,
@@ -22,6 +21,7 @@ from ..packets import (
     parse_shoot,
     parse_throwcarried,
 )
+from ..client_callbacks import emit
 from .registry import handles
 
 
@@ -29,8 +29,8 @@ from .registry import handles
 # Same id across versions; classic uses SHOOT (v1 wire), 6.037 SHOOT2.
 def _relay_shoot(client, data, v2):
     info = parse_shoot(data, v2=v2)
-    if info and client.on_projectile:
-        client.on_projectile(info)
+    if info:
+        emit(client, 'on_projectile', info)
 
 
 @handles(PacketID.PLO_SHOOT)
@@ -59,8 +59,9 @@ def handle_hurt_player(client, data):
         # arrows at all (no NPCServer => arrows are a pure client-
         # authoritative relay, see msgPLI_ARROWADD), so this is a
         # pygserver-only concern in practice.
-        local_arrow_until = client._local_arrow_reports.pop(attacker_id, 0.0)
-        already_applied = time.time() < local_arrow_until
+        local_arrow_until = client._local_arrow_reports.pop(attacker_id, None)
+        already_applied = (local_arrow_until is not None
+                           and not client.clock.passed(local_arrow_until))
 
         # We got hurt - client is source of truth for health
         # Auto-respond with new health and hurt animation
@@ -83,7 +84,7 @@ def handle_hurt_player(client, data):
             # and drop any in-flight sims from them so ours doesn't
             # also apply this same hit once it resolves.
             client._arrow_hurt_suppress[attacker_id] = (
-                time.time() + client._ARROW_HURT_SUPPRESS_WINDOW)
+                client.clock.sim_now() + client._ARROW_HURT_SUPPRESS_WINDOW)
             if any(s['owner_id'] == attacker_id for s in client._arrow_sims):
                 client._arrow_sims = [
                     s for s in client._arrow_sims if s['owner_id'] != attacker_id]
@@ -92,14 +93,12 @@ def handle_hurt_player(client, data):
                     p for p in client._pending_arrow_hits if p['owner_id'] != attacker_id]
 
         # Callback (after responding, so player.hearts is updated)
-        if client.on_hurt:
-            client.on_hurt(
-                attacker_id,
-                damage,
-                hurt_info.get('damage_type', 0),
-                hurt_info.get('source_x', 0),
-                hurt_info.get('source_y', 0)
-            )
+        emit(client, 'on_hurt',
+             attacker_id,
+             damage,
+             hurt_info.get('damage_type', 0),
+             hurt_info.get('source_x', 0),
+             hurt_info.get('source_y', 0))
 
 
 @handles(PacketID.PLO_EXPLOSION)
@@ -124,8 +123,8 @@ def handle_explosion(client, data):
 def handle_hit_objects(client, data):
     # Hit objects feedback (packet 46)
     hit = parse_hit_objects(data)
-    if hit and client.on_hit_objects:
-        client.on_hit_objects(hit['x'], hit['y'], hit['power'], hit['player_id'])
+    if hit:
+        emit(client, 'on_hit_objects', hit['x'], hit['y'], hit['power'], hit['player_id'])
 
 
 @handles(PacketID.PLO_BADDYHURT)
@@ -145,8 +144,7 @@ def handle_baddy_hurt(client, data):
             client._leader_apply_baddy_damage(bid, bh['power'])
         else:
             baddy['power'] = max(0, baddy.get('power', 0) - bh['power'])
-    if client.on_baddy_hurt:
-        client.on_baddy_hurt(bid, bh['power'])
+    emit(client, 'on_baddy_hurt', bid, bh['power'])
 
 
 @handles(PacketID.PLO_BOMBADD)
@@ -169,9 +167,8 @@ def handle_bomb_add(client, data):
         level_name, info['x'], info['y'], wx=info['x'] + ox, wy=info['y'] + oy,
         owner_id=info['owner_id'], from_player=info['from_player'],
         power=info['power'], fuse_s=(info['ticks'] + 1) * 0.05,
-        placed_at=time.time(), extra=info)
-    if client.on_bomb_add:
-        client.on_bomb_add(record)
+        placed_at=client.clock.sim_now(), extra=info)
+    emit(client, 'on_bomb_add', record)
 
 
 @handles(PacketID.PLO_BOMBDEL)
@@ -181,8 +178,7 @@ def handle_bomb_del(client, data):
     info = parse_bomb_del(data)
     level_name = client._pending_level_name or client._current_level_name
     client._remove_bombs_at(level_name, info['x'], info['y'])
-    if client.on_bomb_del:
-        client.on_bomb_del(info['x'], info['y'])
+    emit(client, 'on_bomb_del', info['x'], info['y'])
 
 
 @handles(PacketID.PLO_ARROWADD)
@@ -193,8 +189,7 @@ def handle_arrow_add(client, data):
     client.arrows.append(info)
     if len(client.arrows) > 64:
         client.arrows = client.arrows[-64:]
-    if client.on_arrow_add:
-        client.on_arrow_add(info)
+    emit(client, 'on_arrow_add', info)
     client._start_arrow_sim(info)
 
 
@@ -204,8 +199,7 @@ def handle_horse_add(client, data):
     info = parse_horse_add(data)
     level_name = client._pending_level_name or client._current_level_name
     client.horses.setdefault(level_name, {})[(info['x'], info['y'])] = info
-    if client.on_horse_add:
-        client.on_horse_add(info)
+    emit(client, 'on_horse_add', info)
 
 
 @handles(PacketID.PLO_HORSEDEL)
@@ -214,24 +208,21 @@ def handle_horse_del(client, data):
     info = parse_horse_del(data)
     level_name = client._pending_level_name or client._current_level_name
     client.horses.setdefault(level_name, {}).pop((info['x'], info['y']), None)
-    if client.on_horse_del:
-        client.on_horse_del(info['x'], info['y'])
+    emit(client, 'on_horse_del', info['x'], info['y'])
 
 
 @handles(PacketID.PLO_FIRESPY)
 def handle_firespy(client, data):
     # Fire spy weapon effect from another player (packet 20).
     info = parse_firespy(data)
-    if client.on_firespy:
-        client.on_firespy(info)
+    emit(client, 'on_firespy', info)
 
 
 @handles(PacketID.PLO_THROWCARRIED)
 def handle_throw_carried(client, data):
     # Another player threw their carried object/npc (packet 21).
     info = parse_throwcarried(data)
-    if client.on_throwcarried:
-        client.on_throwcarried(info['owner_id'])
+    emit(client, 'on_throwcarried', info['owner_id'])
 
 
 @handles(PacketID.PLO_PUSHAWAY)
@@ -240,5 +231,5 @@ def handle_push_away(client, data):
     # for the GCHAR decode this uses (GServer-v2's IEnums.h doc comment is
     # the only reference for this packet in this workspace).
     push = parse_push_away(data)
-    if push and client.on_pushaway:
-        client.on_pushaway(push['dx'], push['dy'])
+    if push:
+        emit(client, 'on_pushaway', push['dx'], push['dy'])

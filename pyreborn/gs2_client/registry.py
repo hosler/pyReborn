@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from typing import Dict
 from ..gs1_client import PLAYER_ATTR
 from reborn_protocol.gs2 import casefold as gs2_casefold
@@ -11,6 +11,9 @@ from reborn_protocol.gs2 import to_bool
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 
+if TYPE_CHECKING:
+    from .runtime import ClientGS2
+
 logger = logging.getLogger(__name__)
 
 # Limits for untrusted script writes to each server-scoped cache directory.
@@ -18,35 +21,87 @@ SAVE_LINES_MAX_LINES = 4096
 SAVE_LINES_MAX_CHARS_PER_LINE = 4096
 SAVE_LINES_CACHE_MAX_BYTES = 5 * 1024 * 1024
 
-# Floor for settimer()/this.timeout. The v6 reference has no 0.05s clamp (that
-# is the legacy GS1 path, OpenReborn.Common ScriptObj.cs:100). Its GS2 timers
-# fire off the fixed-timestep Update (GameEngine.cs:755, TargetElapsedTime =
-# 1/120 s at :171), so a self-rearming setTimer(0.01) ticks at frame rate --
-# which is what sizes CadavreTest's cog spin and -Test_Movement's walk.
-TIMER_RESOLUTION = 1.0 / 120.0
+# settimer()/this.timeout have no floor of their own. The script clock
+# (pyreborn/clock.py script_now) steps once per tick, by frametick/1000 or,
+# below a 50 ms frame tick, by the real time since the last tick
+# (TScriptUniverse.cpp:226-231), and a timeout fires once less than 0.0001 of
+# it is left (TScriptSpace.cpp:1030-1047). So a timer fires at most once per
+# tick, and the tick rate is whatever adventure_setframetick set.
 # settimer(v)/this.timeout = v at or below this CANCELS the pending timer —
 # the reference setTimeout deactivates for values <= 0.0001
 # (TScriptSpace::setTimeout, Preagonal/FourPlay/quattroplay/src/
-# TScriptSpace.cpp:121-129). Mirrors gs1_client._TIMEOUT_CANCEL.
+# TScriptSpace.cpp:121-129). Mirrors gs1_client._TIMEOUT_CANCEL. It is also
+# the slack every script-clock deadline is checked with (timeouts, sleep,
+# scheduleevent, waitfor: TScriptSpace.cpp:1036, :1062, :1088-1096).
 _TIMER_CANCEL = 0.0001
-TIMER_BACKLOG_CAP = 0.25
 PENDING_EVENT_CAP = 16
 # Ceiling on scheduleevent() arms in flight across every script (a runaway
 # script must not be able to grow the queue without bound).
 SCHEDULED_EVENT_CAP = 256
 
-# GS2 GUI-controls layer (showgui/GuiControl -- see gs2_gui.py's module
-# docstring for how `new GuiButtonCtrl(...) { onAction = function(){...}; }`
-# actually compiles). Lives under game/ (pygame-only, unlike the rest of this
-# module) so headless callers -- e.g. game_tester's GameBot, which imports
-# ClientGS2 with no pygame installed -- still work; GUI construction/builtins
-# just no-op when it's unavailable.
-try:
-    from ..game.gs2_gui import GS2GuiManager, GuiControl, GuiPopUpEditCtrl
-except Exception:  # pragma: no cover - pygame not installed (headless use)
-    GS2GuiManager = None
-    GuiControl = None
-    GuiPopUpEditCtrl = None
+# GS2 GUI-controls layer (showgui/GuiControl). The control classes are
+# pygame-backed and live in the game layer (pyreborn.game.gs2_gui); the
+# library never imports them at import time. That package registers itself
+# here (register_gui_layer) when it is first imported, and the library
+# resolves the layer on first use through gui_layer(), which imports it
+# lazily. Headless callers -- e.g. game_tester's GameBot -- therefore get the
+# same GUI tree as before; with pygame unavailable every member stays None
+# and GUI construction/builtins just no-op.
+_GUI_LAYER_MODULE = "pyreborn.game.gs2_gui"
+
+
+class _GuiLayer:
+    manager = None          # GS2GuiManager
+    control = None          # GuiControl
+    popup = None            # GuiPopUpEditCtrl
+    method_names = None     # callable -> set of control method names
+    reset_fonts = None      # callable, clears the GUI font resolution cache
+    resolved = False
+
+
+_gui_layer = _GuiLayer()
+
+
+def register_gui_layer(manager, control, popup, method_names, reset_fonts):
+    """Called by the game layer's GS2 GUI package when it is imported."""
+    _gui_layer.manager = manager
+    _gui_layer.control = control
+    _gui_layer.popup = popup
+    _gui_layer.method_names = method_names
+    _gui_layer.reset_fonts = reset_fonts
+
+
+def gui_layer() -> "_GuiLayer":
+    """The registered GUI layer, importing it on first use.
+
+    Every member is None when the game layer cannot be imported (pygame not
+    installed), exactly as the old import-time try/except behaved.
+    """
+    # The flag is set only AFTER the import returns. Set before it, a second
+    # thread arriving mid-import skipped the import and saw a half-empty
+    # layer (manager None). Now that thread calls import_module too and
+    # blocks on the module's import lock until the first thread finishes.
+    # A re-entrant call from inside the import gets the partly initialised
+    # module from sys.modules and returns at once.
+    if not _gui_layer.resolved:
+        try:
+            import importlib
+            importlib.import_module(_GUI_LAYER_MODULE)
+        except Exception:  # pragma: no cover - pygame not installed
+            pass
+        _gui_layer.resolved = True
+    return _gui_layer
+
+
+def is_gui_control(obj) -> bool:
+    control = gui_layer().control
+    return control is not None and isinstance(obj, control)
+
+
+def is_gui_popup(obj) -> bool:
+    popup = gui_layer().popup
+    return popup is not None and isinstance(obj, popup)
+
 
 #: GS1 command names (from the shared lexer table) -- any GS2 builtin call
 #: with a matching name is routed to GS1ClientHost.call_command so both
@@ -281,7 +336,7 @@ def _set_selected_weapon(rt2: "ClientGS2", key: str, value: Any) -> bool:
 def _set_lighting_enabled(rt2: "ClientGS2", key: str, value: Any) -> bool:
     game = getattr(rt2, "game_shell", None)
     if game is not None:
-        game._day_night_enabled = to_bool(value)
+        game.day_night_enabled = to_bool(value)
     return True
 
 

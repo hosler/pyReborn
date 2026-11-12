@@ -2,12 +2,82 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pygame
 
 from .assets import render_outlined_text
 from .frame_context import FrameContext
+
+
+#: Side of a grid cell, in screen pixels. A plate is roughly 60x14, so a
+#: plate touches a handful of cells and a cell holds a handful of plates.
+_CELL = 64
+#: A rect covering more cells than this is kept in a flat list instead.
+_MAX_CELLS = 64
+
+
+class _NameplateGrid:
+    """Coarse bucket grid over the plates placed so far this frame.
+
+    `first_collision` finds a placed rect that `rect.colliderect` accepts, and
+    None exactly when `any(rect.colliderect(r) for r in rects)` was False: the grid only narrows which placed rects are tested, always to a
+    superset of those that can collide (it buckets by each rect's normalised
+    bounds), and `colliderect` still decides every candidate."""
+
+    __slots__ = ('rects', 'count', 'cells', 'wide')
+
+    def __init__(self, rects: list):
+        self.rects = rects
+        self.count = 0
+        self.cells: dict = {}
+        self.wide: list = []
+        for r in rects:
+            self.add(r)
+        self.count = len(rects)
+
+    @staticmethod
+    def _span(rect):
+        x0, x1 = rect.x, rect.x + rect.w
+        y0, y1 = rect.y, rect.y + rect.h
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        return x0 // _CELL, x1 // _CELL, y0 // _CELL, y1 // _CELL
+
+    def add(self, rect) -> None:
+        cx0, cx1, cy0, cy1 = self._span(rect)
+        if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > _MAX_CELLS:
+            self.wide.append(rect)
+        else:
+            cells = self.cells
+            for cy in range(cy0, cy1 + 1):
+                for cx in range(cx0, cx1 + 1):
+                    bucket = cells.get((cx, cy))
+                    if bucket is None:
+                        cells[(cx, cy)] = [rect]
+                    else:
+                        bucket.append(rect)
+        self.count += 1
+
+    def first_collision(self, rect):
+        for r in self.wide:
+            if rect.colliderect(r):
+                return r
+        cx0, cx1, cy0, cy1 = self._span(rect)
+        if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > _MAX_CELLS:
+            # a very large probe: test every placed rect, as the flat scan did
+            return next((r for r in self.rects if rect.colliderect(r)), None)
+        cells = self.cells
+        for cy in range(cy0, cy1 + 1):
+            for cx in range(cx0, cx1 + 1):
+                bucket = cells.get((cx, cy))
+                if bucket:
+                    for r in bucket:
+                        if rect.colliderect(r):
+                            return r
+        return None
 
 
 class RenderTextMixin:
@@ -24,10 +94,31 @@ class RenderTextMixin:
         rects = (self._frame_context() if frame is None else frame).nameplate_rects
         w, h = size
         rect = pygame.Rect(int(name_x), int(name_y), int(w), int(h))
-        while any(rect.colliderect(r) for r in rects):
-            rect.y += h + 2
+        index = self._nameplate_index(rects)
+        step = h + 2
+        solid = w > 0 and h > 0
+        while True:
+            hit = index.first_collision(rect)
+            if hit is None:
+                break
+            if solid and hit.w > 0 and hit.h > 0 and rect.y < hit.bottom:
+                # Every nudge that still overlaps `hit` would collide and be
+                # nudged again, so go straight to the first one that clears it.
+                rect.y += max(1, -(-(hit.bottom - rect.y) // step)) * step
+            else:
+                rect.y += step
+        index.add(rect)
         rects.append(rect)
         return rect.x, rect.y
+
+    def _nameplate_index(self, rects: list) -> "_NameplateGrid":
+        """The spatial index over this frame's placed plates. It is tied to
+        the frame's own `nameplate_rects` list (identity and length), so a new
+        frame, or a plate appended behind its back, rebuilds it."""
+        held = getattr(self, '_nameplate_grid', None)
+        if held is None or held.rects is not rects or held.count != len(rects):
+            held = self._nameplate_grid = _NameplateGrid(rects)
+        return held
 
     def _render_text_cached(self, font: pygame.font.Font, text: str,
                              color: Tuple[int, int, int]) -> pygame.Surface:

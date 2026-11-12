@@ -29,7 +29,7 @@ def log(msg):
     print(f"[{ACCOUNT} {time.time()-t0:7.2f}] {msg}", flush=True)
 
 
-from game_tester.headless_client import FakeKeys, pump_frame
+from game_tester.headless_client import FakeKeys
 
 
 fake_keys = FakeKeys()
@@ -55,6 +55,7 @@ for _ in range(60):
 log(f"initial level={client._current_level_name!r} pos=({client.x},{client.y})")
 
 game = GameClient(client)
+game.start()
 dt = 0.05
 errors = []
 warps = []
@@ -63,8 +64,8 @@ last_pos = [(client.x, client.y)]
 last_default_movement = [None]
 
 
-def frame(current_time):
-    pump_frame(game, dt, current_time)
+def frame(current_time=None):
+    game.step(dt, strict=True)
 
 
 def pump(seconds, label=""):
@@ -73,7 +74,7 @@ def pump(seconds, label=""):
     while time.time() < end:
         n += 1
         try:
-            frame(time.time())
+            frame()
         except Exception:
             tb = traceback.format_exc()
             errors.append(tb)

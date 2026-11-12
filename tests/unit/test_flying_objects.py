@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pytest
 
+from pyreborn.clock import Clock
 from pyreborn.client_combat import CombatMixin
 from pyreborn.flyingobjects import (
     BOUNCE_COUNTER, FLYING_TICK_SECONDS, NOT_BOUNCING,
@@ -43,6 +44,7 @@ class _Harness(FlyingObjectsMixin):
         self.npc_cells = {}
         self.sound_mgr = _Sound()
         self.client = SimpleNamespace(
+            clock=Clock(),
             player=SimpleNamespace(x=player_xy[0], y=player_xy[1]),
             players={},
             in_gmap_segment=False,
@@ -273,9 +275,10 @@ def test_flying_damage_respects_immunity():
 
 def _game():
     client = SimpleNamespace(player=SimpleNamespace(id=1, account="a"),
-                             _ARROW_SPEED=20.0, _ARROW_MAX_DISTANCE=128.0)
+                             clock=Clock(),
+                             ARROW_SPEED=20.0, ARROW_MAX_DISTANCE=128.0)
     game = SimpleNamespace(
-        gs1=ClientGS1(None), client=client, player_anim=SimpleNamespace(),
+        gs1=ClientGS1(None), client=client, clock=client.clock, player_anim=SimpleNamespace(),
         active_bombs=[], thrown_objects=[], other_thrown_objects=[],
         active_projectiles=[])
     wire_gs1_callbacks(game)

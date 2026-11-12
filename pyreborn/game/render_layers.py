@@ -69,7 +69,7 @@ class LayerRenderMixin:
                 continue
             npc_level = npc.get('_level')
             if (npc_level and not getattr(client, 'in_gmap_segment', False)
-                    and npc_level != getattr(client, '_current_level_name', None)):
+                    and npc_level != getattr(client, 'current_level_name', None)):
                 continue
             imgs = npc.get('imgs')
             if imgs:
@@ -333,7 +333,17 @@ class LayerRenderMixin:
             self._render_scripted_gani_fallback(rec)
             return
 
-        anim.update(getattr(self, '_frame_dt', 0.05))
+        # Gani steps follow the simulation tick (one step per tick), however
+        # often the layer is drawn.
+        clock = getattr(self, 'clock', None)
+        if clock is not None:
+            tick = clock.tick
+            last = rec.get('_anim_tick')
+            rec['_anim_tick'] = tick
+            if last is not None and tick > last:
+                anim.update((tick - last) * clock.TICK_SECONDS)
+        else:
+            anim.update(getattr(self, '_frame_dt', 0.05))
         sx, sy = self._layer_pos(rec)
         equip = self._showani_param_equip(rec.get('params'))
         self._render_animated_entity(int(sx), int(sy), anim, equip)

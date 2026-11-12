@@ -13,7 +13,7 @@ from pyreborn.game.render_objects import LevelObjectsRenderMixin
 
 
 class _Client:
-    _current_level_name = "test.nw"
+    current_level_name = "test.nw"
     in_gmap_segment = False
     gmap_grid = {}
 

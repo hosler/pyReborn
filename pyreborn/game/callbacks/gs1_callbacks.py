@@ -1,7 +1,6 @@
 """Wire GS1 audio, speech, dialogue, animation, warp, and trigger callbacks."""
 
 import os
-import time
 
 from ...colors_width import colors_len_in_force
 from ...flyingobjects import NOT_BOUNCING
@@ -35,7 +34,7 @@ def wire_gs1_callbacks(game):
     # rather than letting the stale bubble ride out its timeout.
     def on_say(npc_id, message):
         if message:
-            game.npc_chat_texts[npc_id] = (message, time.time())
+            game.npc_chat_texts[npc_id] = (message, game.clock.sim_now())
         else:
             game.npc_chat_texts.pop(npc_id, None)
 
@@ -97,7 +96,7 @@ def wire_gs1_callbacks(game):
 
     # freezeplayer N — lock local input for N seconds (NPC dialogue, etc).
     def on_freezeplayer(seconds):
-        game._frozen_until = time.time() + max(0.0, float(seconds or 0))
+        game._frozen_until = game.clock.sim_now() + max(0.0, float(seconds or 0))
 
     # toweapons <name> converts a level NPC into a local weapon and asks the
     # server to persist the grant. Weapon callers retain name-only behavior.
@@ -149,9 +148,8 @@ def wire_gs1_callbacks(game):
     # never pushes X, that loop fires the same action endlessly and floods
     # the server. Send a given action at most once per 5s.
     def on_triggeraction(x, y, action, npc_id):
-        now = time.time()
         sent = game._triggeraction_sent
-        if now - sent.get(action, 0.0) < 5.0:
+        if action in sent and not game.clock.passed(sent[action], 5.0):
             # PYREBORN_DEBUG breadcrumb (same idiom as npc_handler's
             # [touch] line): a suppressed re-send within the 5s window is
             # invisible otherwise. GS1-path repeats are deliberately
@@ -162,7 +160,7 @@ def wire_gs1_callbacks(game):
                 print(f"[trigger] throttled (<5s repeat): {action!r}",
                       file=sys.stderr)
             return
-        sent[action] = now
+        sent[action] = game.clock.sim_now()
         if os.environ.get("PYREBORN_DEBUG"):
             import sys
             print(f"[trigger] -> server: {action!r}", file=sys.stderr)
@@ -231,7 +229,7 @@ def wire_gs1_callbacks(game):
                      carry_code(0x15c): 3}.get(code, 1)
             if len(game.active_bombs) >= MAX_SCRIPT_OBJECTS:
                 return
-            bomb = {'x': x, 'y': y, 'time': time.time(), 'fuse_time': 3.0,
+            bomb = {'x': x, 'y': y, 'time': game.clock.sim_now(), 'fuse_time': 3.0,
                     'fuse_remaining': 3.0, 'power': power, 'exploded': False,
                     'source': 'script', 'in_flight': True}
             obj = make_throw(x, y, direction, 'bomb', ())
@@ -263,12 +261,12 @@ def wire_gs1_callbacks(game):
     def on_flying(x, y, direction, power):
         if len(game.active_projectiles) >= MAX_SCRIPT_OBJECTS:
             return
-        step = game.client._ARROW_SPEED
+        step = game.client.ARROW_SPEED
         dx, dy = ((0, -step), (-step, 0), (0, step), (step, 0))[direction]
         game.active_projectiles.append({
-            'x': x, 'y': y, 'dx': dx, 'dy': dy, 'time': time.time(),
+            'x': x, 'y': y, 'dx': dx, 'dy': dy, 'time': game.clock.sim_now(),
             'direction': direction, 'gani': {2: 'fireblast', 3: 'nukeshot'}[power],
-            'max_distance': game.client._ARROW_MAX_DISTANCE,
+            'max_distance': game.client.ARROW_MAX_DISTANCE,
             'start_x': x, 'start_y': y, 'source': 'script',
             'flying': True, 'power': power, 'from_player': False,
             'lx': x, 'ly': y, 'tick_acc': 0.0, 'bounce': NOT_BOUNCING,
@@ -281,7 +279,7 @@ def wire_gs1_callbacks(game):
     # (render_effects.py runs the fuse, burst, sound and bush-break).
     def on_putbomb(power, x, y, fuse_s):
         game.active_bombs.append({
-            'x': float(x), 'y': float(y), 'time': time.time(),
+            'x': float(x), 'y': float(y), 'time': game.clock.sim_now(),
             'fuse_time': max(0.05, float(fuse_s)),
             'power': max(1, int(power)), 'exploded': False,
             'source': 'script',
@@ -293,10 +291,10 @@ def wire_gs1_callbacks(game):
         if explode:
             game._detonate_bomb(bomb)
             return
-        position = game.client._bomb_half_tile(bomb['x'], bomb['y'])
+        position = game.client.bomb_half_tile(bomb['x'], bomb['y'])
         game.active_bombs[:] = [b for b in game.active_bombs
                                 if b.get('exploded')
-                                or game.client._bomb_half_tile(b['x'], b['y']) != position]
+                                or game.client.bomb_half_tile(b['x'], b['y']) != position]
 
     # putexplosion's presentation half (the damage/washit/wire half is
     # client-level, gs1_client._spawn_explosion): boom + shake + bushes.
@@ -356,7 +354,7 @@ def wire_gs1_callbacks(game):
                 import sys
                 print(f"[chat] {value!r}", file=sys.stderr)
             game.local_chat_text = value
-            game.local_chat_time = time.time()
+            game.local_chat_time = game.clock.sim_now()
             game.client.player.chat = value
         elif code == '#3':
             game.client.send_head_image(value)

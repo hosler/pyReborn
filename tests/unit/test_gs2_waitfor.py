@@ -177,7 +177,7 @@ def test_cancellation_during_scheduler_pass_does_not_restore_parked_frame():
 
 def test_wall_clock_does_not_expire_wait_before_timer_pump(monkeypatch):
     clock = [10.0]
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
     runtime, vm = _runtime()
     _wait(runtime, vm)
     clock[0] = 11.0

@@ -70,30 +70,11 @@ class Survey:
     def pump(self, frames: int = 1) -> None:
         game = self.game
         for _ in range(frames):
-            game._frame_dt = 1.0 / FPS
-            game._handle_events()
-            self.client.update(timeout=0)
-            game._load_new_npcs()
-            game._process_pending_warp()
-            game.gs1.process_coroutines(game._frame_dt)
-            game.gs1.process_timeouts(game._frame_dt)
-            game.gs2.process_coroutines(game._frame_dt)
-            game.gs2.process_timeouts(game._frame_dt)
-            game._check_scripted_link_warp()
-            game.gs1.advance_input_frame()
-            game._check_level_change()
-            game._update_visual_position(game._frame_dt)
-            game._update_animations(game._frame_dt)
-            game._render()
-            game.viewport.present()
-            game.clock.tick(FPS)
+            game.step(1.0 / FPS, strict=True)
+            game.frame_limiter.tick(FPS)
 
     def settle(self) -> None:
-        self.game._load_npc_scripts()
-        self.game._trigger_playerenters()
-        self.game.npc_handler.update_npcs()
-        self.game._gs1_level = self.client._current_level_name
-        self.game._gs1_visual_level_epoch = self.client._plain_level_change_epoch
+        self.game.start()
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             self.pump()

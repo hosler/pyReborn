@@ -31,16 +31,20 @@ import logging
 import os
 import queue
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from .clock import Clock
 from .packets import PacketID
 from .rc_client import RCClient
 
 logger = logging.getLogger(__name__)
+
+# The link runs on its own worker thread and connection, apart from any
+# game's simulation, so it keeps a clock of its own for its deadlines.
+_LINK_CLOCK = Clock()
 
 # How long to wait for the server to prove it accepted us as an RC before
 # giving up. The proof is an RC-only packet (see _EVIDENCE_IDS); a plain
@@ -270,8 +274,8 @@ class RCLink:
         rc.list_rcs()
         rc.get_server_flags()
         stop_event = stop_event or self._stop
-        deadline = time.time() + RC_PROOF_TIMEOUT
-        while time.time() < deadline and not stop_event.is_set():
+        deadline = _LINK_CLOCK.frame_now() + RC_PROOF_TIMEOUT
+        while _LINK_CLOCK.frame_now() < deadline and not stop_event.is_set():
             rc.update(timeout=0.1)
             if rc.saw_rc_packet:
                 return True

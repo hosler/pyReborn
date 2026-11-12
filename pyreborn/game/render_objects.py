@@ -8,9 +8,12 @@ import pygame
 
 from reborn_protocol.coords import segment_origin
 
+from ..gmap_coords import grid_of
+
 from .. import ground_items
 from ..classic_sprites import draw_sprite
 from .constants import TILE_SIZE, PLAYER_STAND_X, PLAYER_STAND_Y
+from .clocked import ClockedMixin
 
 
 _ITEM_COLORS = {
@@ -32,15 +35,14 @@ _DEFAULT_ITEM_COLOR = (220, 220, 100)
 _CHEST_REVEAL_DURATION_MS = 24 * 50
 
 
-class LevelObjectsRenderMixin:
+class LevelObjectsRenderMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _current_segment_info(self):
         """Return the current segment's level name and world-tile origin."""
-        level_name = self.client._current_level_name
+        level_name = self.client.current_level_name
         if self.client.in_gmap_segment:
-            grid = next((cell for cell, name in self.client.gmap_grid.items()
-                         if name == level_name), None)
+            grid = grid_of(self.client.gmap_grid, level_name)
             if grid is not None:
                 return (level_name, *segment_origin(*grid))
         return level_name, 0, 0
@@ -123,7 +125,7 @@ class LevelObjectsRenderMixin:
 
     def _sync_chest_reveals(self, now_ms: int) -> None:
         """Start a reveal when a known chest changes from closed to open."""
-        level_name = self.client._current_level_name
+        level_name = self.client.current_level_name
         chests = self.client.chests_in_level(level_name)
         snapshots = getattr(self, "_chest_reveal_snapshots", None)
         if snapshots is None:
@@ -167,7 +169,7 @@ class LevelObjectsRenderMixin:
     def _render_chest_reveals(self, now_ms: Optional[int] = None) -> None:
         """Update and draw short-lived item reveals above opened chests."""
         if now_ms is None:
-            now_ms = pygame.time.get_ticks()
+            now_ms = self.clock.frame_now_ms()
         self._sync_chest_reveals(now_ms)
         reveals = getattr(self, "_chest_reveals", [])
         if not reveals:
@@ -249,7 +251,7 @@ class LevelObjectsRenderMixin:
         # piano sign showed the parchment popup AND the dialogue pager).
         if getattr(self, 'dialogue_text', None) is not None:
             return
-        signs = self.client.signs.get(self.client._current_level_name)
+        signs = self.client.signs.get(self.client.current_level_name)
         if not signs:
             return
 

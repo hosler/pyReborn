@@ -3,12 +3,13 @@
 import logging
 import os
 import re
-import time
 
 from reborn_protocol.gs2.compiler import Gs2Compiler
 from reborn_protocol.gs2.detect import looks_like_gs2
 
 from ...asset_paths import normalize_asset_name
+from ...client_callbacks import emit
+from ...gmap_coords import level_origin, world_from_local
 from ...packets import PacketID, parse_npcweapondel
 from ..constants import CHAT_HISTORY_CAP
 
@@ -52,9 +53,7 @@ def route_gs2_source(game, kind, key, script):
             # Match handlers/scripts.py: retain the blob for runtime startup
             # replay, then let ClientGS2._on_bytecode queue it for load_bytecode.
             game.client.gs2_bytecode[kind][key] = blob
-            callback = game.client.on_gs2_bytecode
-            if callback is not None:
-                callback(kind, key, blob)
+            emit(game.client, 'on_gs2_bytecode', kind, key, blob)
             return True
         error = getattr(compiler, 'last_error', '') or 'compilation failed'
     if identity not in game._gs2_source_warned:
@@ -118,7 +117,7 @@ def wire_client_callbacks(game):
     def on_add_player(pid, info):
         # The server dumps the whole roster on login; only announce joins
         # that arrive after that settles (roster_ready_time, set in run()).
-        if time.time() >= game.roster_ready_time:
+        if game.clock.frame_now() >= game.roster_ready_time:
             game._append_chat(f"-> {_roster_name(info)} entered")
 
     def on_del_player(pid, info):
@@ -127,7 +126,7 @@ def wire_client_callbacks(game):
     def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
         was_dead = game.current_anim_name == 'dead'
         state = game.client.player.hurt
-        stamp = (state.generation, time.time())
+        stamp = (state.generation, game.clock.sim_now())
         advanced = state.generation > getattr(game, '_presented_hurt_generation', 0)
         tracked = state.generation > 0 and game.client.auto_respond_hurt and damage > 0
         if (tracked and stamp == getattr(game, '_presented_hurt_stamp', None)
@@ -144,13 +143,13 @@ def wire_client_callbacks(game):
                 state.dx, state.dy = hurt_vector(
                     game.client.x - source_x, game.client.y - source_y)
             game.client.player.hurt_vector_pending = False
-        now = time.monotonic()
+        now = game.clock.frame_now()
         # Spawn floating damage number at player position
         game.damage_numbers.append({
             'x': game.visual_x,
             'y': game.visual_y - 16,
             'damage': damage,
-            'time': time.time(),
+            'time': game.clock.frame_now(),
             'duration': 1.0,
         })
         # Trigger hurt flash
@@ -211,15 +210,10 @@ def wire_client_callbacks(game):
     # gr.getstring()/gettext() reply) - surface it in the chat log like an
     # incoming message so it isn't silently dropped.
     def on_server_text(text: str):
+        # The engine's onReceiveText (Login serverlist chat weapon) is a
+        # separate subscriber: ClientGS2.attach() listens on the same callback.
         if text:
             game._append_chat(f"[server] {text}")
-        # This assignment replaces the hook ClientGS2.attach() installed
-        # (attach runs before _setup_callbacks), so forward the engine
-        # event explicitly: onReceiveText drives the Login serverlist
-        # chat weapon.
-        gs2 = getattr(game, 'gs2', None)
-        if gs2 is not None:
-            gs2.handle_server_text(text)
 
     def on_start_message(text: str):
         """Put up to five non-empty initial-message lines in chat."""
@@ -335,17 +329,14 @@ def wire_client_callbacks(game):
             except Exception:
                 pass
 
-    # Packet hooks run after the inventory handlers. Chain any embedding hook
-    # while forgetting the old VM attempt when a weapon leaves inventory.
-    previous_weapon_del = game.client.on_packet.get(PacketID.PLO_NPCWEAPONDEL)
-
+    # Forget the old VM attempt when a weapon leaves inventory. A packet
+    # listener runs after the inventory handler and before any embedding
+    # on_packet hook, which keeps its own slot.
     def on_weapon_del(data):
         name = parse_npcweapondel(data)
         getattr(game, '_gs2_source_attempts', {}).pop(('weapon', name), None)
-        if previous_weapon_del is not None:
-            previous_weapon_del(data)
 
-    game.client.on_packet[PacketID.PLO_NPCWEAPONDEL] = on_weapon_del
+    game.client.add_packet_listener(PacketID.PLO_NPCWEAPONDEL, on_weapon_del)
 
     def _wire_to_world(x, y):
         # Bomb packets are level-local (PLO_BOMBADD/BOMBDEL/EXPLOSION carry
@@ -353,14 +344,8 @@ def wire_client_callbacks(game):
         # coordinates on a gmap, like local lays and the lift/throw code.
         if not game.client.in_gmap_segment:
             return x, y
-        from reborn_protocol.coords import segment_origin
-        level = game.client._pending_level_name or game.client._current_level_name
-        grid = next((cell for cell, name in game.client.gmap_grid.items()
-                     if name == level), None)
-        if grid is None:
-            return x, y
-        ox, oy = segment_origin(*grid)
-        return x + ox, y + oy
+        level = game.client.pending_level_name or game.client.current_level_name
+        return world_from_local(game.client.gmap_grid, level, x, y)
 
     def on_bomb_add(info):
         wx, wy = _wire_to_world(info.get('x', 0.0), info.get('y', 0.0))
@@ -375,13 +360,11 @@ def wire_client_callbacks(game):
         from ...liftobjects import LIFT_PROBE
         import math
         # GServer-v2 PlayerClientPackets.cpp:251: BOMBDEL only removes.
-        level = game.client._pending_level_name or game.client._current_level_name
-        from reborn_protocol.coords import segment_origin
-        grid = next((cell for cell, name in game.client.gmap_grid.items()
-                     if name == level), None) if game.client.in_gmap_segment else None
-        origin_x, origin_y = segment_origin(*grid) if grid is not None else (0, 0)
-        game.client._remove_bombs_at(level, x, y)
-        position = game.client._bomb_half_tile(x + origin_x, y + origin_y)
+        level = game.client.pending_level_name or game.client.current_level_name
+        origin_x, origin_y = level_origin(
+            game.client.gmap_grid if game.client.in_gmap_segment else None, level)
+        game.client.remove_bombs_at(level, x, y)
+        position = game.client.bomb_half_tile(x + origin_x, y + origin_y)
         for pid, owner in game.client.players.items():
             if owner.get('carry_sprite', -1) not in BOMB_CODES or owner.get('_carried_bomb'):
                 continue
@@ -394,16 +377,16 @@ def wire_client_callbacks(game):
             if not (x + origin_x <= tx < x + origin_x + 2 and y + origin_y <= ty < y + origin_y + 2):
                 continue
             bomb = next((b for b in game.active_bombs
-                         if game.client._bomb_half_tile(b['x'], b['y']) == position
+                         if game.client.bomb_half_tile(b['x'], b['y']) == position
                          and not b.get('exploded')), None)
             if bomb is not None:
-                bomb['fuse_remaining'] = max(.05, bomb['time'] + bomb['fuse_time'] - time.time())
+                bomb['fuse_remaining'] = max(.05, bomb['time'] + bomb['fuse_time'] - game.clock.sim_now())
                 bomb['carried_by'] = pid
                 owner['_carried_bomb'] = bomb
                 break
         game.active_bombs[:] = [bomb for bomb in game.active_bombs
                                if bomb.get('exploded') or bomb.get('carried_by') is not None
-                               or game.client._bomb_half_tile(bomb['x'], bomb['y']) != position]
+                               or game.client.bomb_half_tile(bomb['x'], bomb['y']) != position]
 
     def on_arrow_add(info):
         game._add_remote_arrow(info)
@@ -448,7 +431,7 @@ def wire_client_callbacks(game):
         game.active_projectiles.append({
             'x': x, 'y': y,
             'dx': dx_map.get(direction, 0), 'dy': dy_map.get(direction, 0),
-            'time': time.time(), 'direction': direction, 'gani': 'firespy',
+            'time': game.clock.sim_now(), 'direction': direction, 'gani': 'firespy',
             'max_distance': max(1.0, float(info.get('length', 1) or 1)),
             'start_x': x, 'start_y': y,
         })

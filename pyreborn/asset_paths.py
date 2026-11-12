@@ -34,7 +34,7 @@ neither dedupe works.
 import os
 import logging
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 __all__ = [
     "normalize_asset_name",
@@ -187,3 +187,43 @@ def server_cache_key(host: str, port: int) -> str:
 def server_cache_dir(host: str, port: int) -> Path:
     """Download cache directory for one server. Not created here."""
     return cache_root() / "servers" / server_cache_key(host, port)
+
+
+def strip_tiledef_image(name: str) -> str:
+    """Return the lowercase basename stored for a tile definition. The reference
+    uses the last file separator (TFiles.cpp:392-404,610-620).
+    """
+    return normalize_asset_name(name)
+
+
+_DIRECTORY_NAME_CACHE: Dict[Path, Dict[str, str]] = {}
+
+
+def find_asset_file(
+    search_paths: List[Path], subdirs: List[str], name: str
+) -> Optional[Path]:
+    """Find a normalized asset, with a cached case-insensitive fallback."""
+    name = normalize_asset_name(name)
+    if not name:
+        return None
+    for search_path in search_paths:
+        for subdir in subdirs:
+            directory = search_path / subdir if subdir else search_path
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
+            names = _DIRECTORY_NAME_CACHE.get(directory)
+            if names is None:
+                try:
+                    names = {
+                        entry.name.lower(): entry.name
+                        for entry in directory.iterdir()
+                        if entry.is_file()
+                    }
+                except OSError:
+                    names = {}
+                _DIRECTORY_NAME_CACHE[directory] = names
+            real_name = names.get(name)
+            if real_name is not None:
+                return directory / real_name
+    return None

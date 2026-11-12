@@ -94,8 +94,8 @@ def test_player_image_gui_pass(game, client, monkeypatch):
     draw.assert_called_once_with(client.players[7]['imgs'], over=True, gui=True)
 
 
-def test_move_all_records_run_for_their_duration_in_world_space(client, monkeypatch):
-    monkeypatch.setattr('pyreborn.npc_movement.time.monotonic', lambda: 100.0)
+def test_move_all_records_run_for_their_duration_in_world_space(sim_time, client, monkeypatch):
+    sim_time(lambda: 100.0)
     client.gmap_grid = {(-1, 2): 'a.nw'}
     client.npcs[7] = {'x': 2, 'y': 3, '_level': 'a.nw'}
     version = client.test_version
@@ -117,12 +117,12 @@ def test_move_all_records_run_for_their_duration_in_world_space(client, monkeypa
 
 @pytest.mark.parametrize('options,far,compressed', [(0, False, False), (0, True, True),
                                                    (1, True, False), (2, False, False)])
-def test_move_cache_and_absolute_modes(client, monkeypatch, options, far, compressed):
+def test_move_cache_and_absolute_modes(sim_time, client, monkeypatch, options, far, compressed):
     # FourPlay/quattroplay/src/TServerNPC.cpp addNPCMove: a zero options byte
     # appends relative to the queued deltas and, when the whole queue now
     # spans more than ten tiles, squeezes every pending duration; any non-zero
     # byte keeps the wire position and never rescales.
-    monkeypatch.setattr('pyreborn.npc_movement.time.monotonic', lambda: 10.0)
+    sim_time(lambda: 10.0)
     client.npcs[7] = {'x': 2, 'y': 3}
     version = client.test_version
     packet = 165 if version == '2.22' else 189
@@ -151,12 +151,12 @@ def test_relative_move_ignores_wire_position_but_absolute_keeps_it(client):
 
 
 @pytest.mark.parametrize('options', [16, 20])
-def test_move_options_are_not_client_flags(client, monkeypatch, options):
+def test_move_options_are_not_client_flags(sim_time, client, monkeypatch, options):
     # The reference client queues server moves with a fixed flag value: the
     # apply-direction and block-check bits of the wire byte only mean
     # something to the server, which relays the resulting sprite and
     # position props itself.
-    monkeypatch.setattr('pyreborn.npc_movement.time.monotonic', lambda: 20.0)
+    sim_time(lambda: 20.0)
     wall = Mock(return_value=True)
     client.gs1_host = SimpleNamespace(rt=SimpleNamespace(is_wall=wall))
     client.npcs[7] = {'x': 2, 'y': 3, 'image': '#c#', 'direction': 2}

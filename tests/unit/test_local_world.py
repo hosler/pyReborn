@@ -548,31 +548,22 @@ def test_local_world_live_gamebot_login_and_restore():
         world.close()
 
 
-def test_headless_frame_preserves_order_and_sets_dt():
-    from game_tester.headless_client import FakeKeys, pump_frame
+def test_headless_frame_runs_one_strict_game_step():
+    # The phase order itself is pinned on GameClient.step
+    # (tests/unit/test_frame_pipeline.py); the harness only drives it.
+    import game_tester.headless_client as module
+    from game_tester.headless_client import FakeKeys
+    wrapper = object.__new__(module.HeadlessGameClient)
+    wrapper.pygame = SimpleNamespace(key=SimpleNamespace(get_pressed=lambda: None))
+    wrapper.keys = FakeKeys()
+    wrapper._closed = False
+    wrapper.frame_exceptions = []
     calls = []
-    def method(name):
-        def run(*args, **kwargs):
-            assert game._frame_dt == 0.05
-            calls.append(name)
-        return run
-    names = ("_handle_events", "_handle_input", "_load_new_npcs", "_process_pending_warp",
-             "_process_self_shoots", "_check_scripted_link_warp", "_check_level_change",
-             "_update_swimming_state", "_update_visual_position", "_update_animations", "_render")
-    game = SimpleNamespace(**{name: method(name) for name in names})
-    game.client = SimpleNamespace(update=method("update"))
-    game.gs1 = SimpleNamespace(process_coroutines=method("gs1.coroutines"),
-                               process_timeouts=method("gs1.timeouts"),
-                               advance_input_frame=method("advance"))
-    game.gs2 = SimpleNamespace(process_coroutines=method("gs2.coroutines"),
-                               process_timeouts=method("gs2.timeouts"))
-    pump_frame(game, 0.05, 123)
-    assert calls == ["_handle_events", "_handle_input", "update", "_load_new_npcs",
-                     "_process_pending_warp", "_process_self_shoots", "gs1.coroutines",
-                     "gs1.timeouts", "gs2.coroutines", "gs2.timeouts", "_check_scripted_link_warp",
-                     "advance", "_check_level_change", "_update_swimming_state",
-                     "_update_visual_position", "_update_animations", "_render"]
-    assert game._last_dt == 0.05
+    wrapper.game = SimpleNamespace(
+        step=lambda dt, **kw: calls.append((dt, kw)))
+    wrapper.frame()
+    assert calls == [(0.05, {"strict": True})]
+    assert wrapper.frame_exceptions == []
     keys = FakeKeys()
     keys.set(1073741906, 97)
     assert len(keys) == 512 and keys[1073741906] and keys[97] and not keys[98]
@@ -664,10 +655,10 @@ def test_headless_records_exceptions_and_restores_keyboard(monkeypatch):
     wrapper.game.gs1 = SimpleNamespace(_progs={"w": {"is_weapon": True}, "npc": {}})
     wrapper.game.gs2 = SimpleNamespace(vms={"weapon": {"two": {}, "three": {}}})
     wrapper._warnings = SimpleNamespace(lines=["a script warning"])
-    def broken(*args):
+    def broken(*args, **kwargs):
         assert wrapper.pygame.key.get_pressed() is wrapper.keys
         raise ValueError("frame failure")
-    monkeypatch.setattr(module, "pump_frame", broken)
+    wrapper.game.step = broken
     wrapper.frame()
     assert wrapper.pygame.key.get_pressed is original
     report = wrapper.report()

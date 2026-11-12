@@ -6,7 +6,7 @@ from reborn_protocol.gs2 import GS2Object
 import math
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
-from .registry import GuiControl, _GS2_ANY, _gs2_builtin
+from .registry import is_gui_control, _GS2_ANY, _gs2_builtin
 
 class HostAnyMixin:
 
@@ -39,7 +39,7 @@ class HostAnyMixin:
         if isinstance(target, str) and not target \
                 and rt2.gui._construction_stack:
             target = rt2.gui._construction_stack[-1]
-        if GuiControl is not None and not isinstance(target, GuiControl) \
+        if not is_gui_control(target) \
                 and isinstance(target, GS2Object):
             target.set(event,
                        lambda *a, _o=target, _vm=vm, _h=handler:

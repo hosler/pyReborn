@@ -16,7 +16,6 @@ map). A bounded LRU keeps long exploration sessions from accumulating an
 unbounded number of cached segments.
 """
 
-import time
 from collections import OrderedDict
 from typing import List, Optional, Tuple
 
@@ -28,6 +27,7 @@ from ..tiletypes import TileType, get_tile_type, selection_for
 from . import theme
 from .assets import render_outlined_text
 from .constants import TILE_SIZE
+from .clocked import ClockedMixin
 
 # Key used for a standalone (non-GMAP) level when neither _current_level_name
 # nor _tiles_level_name is set yet (shouldn't normally happen - _render_world
@@ -45,7 +45,7 @@ _STANDALONE_KEY = "__standalone__"
 _MAX_CACHED_SEGMENTS = 25
 
 
-class WorldRenderMixin:
+class WorldRenderMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _render_world(self):
@@ -441,7 +441,7 @@ class WorldRenderMixin:
 
     def _shimmer_ramp_step(self) -> int:
         """Return the current off/half/full/half ramp step at 300ms cadence."""
-        return int(time.time() / self._SHIMMER_PERIOD) % 4
+        return int(self.clock.frame_now() / self._SHIMMER_PERIOD) % 4
 
     def _render_animated_tiles(self):
         """Tier 4a: redraw just the indexed water/lava tiles every ~300ms with
@@ -454,7 +454,59 @@ class WorldRenderMixin:
         # tiles is already culled to the camera's visible tile range (see
         # _refresh_animated_tiles_cache), so no per-tile screen-bounds check
         # is needed here beyond the world->screen conversion for the blit.
-        for (tx, ty, tile_id) in tiles:
-            sx, sy = self.camera.world_to_screen(tx, ty)
-            tile = self._get_shimmer_tile(tile_id, self._shimmer_step_this_frame)
-            self.screen.blit(tile, (int(sx), int(sy)))
+        step = self._shimmer_step_this_frame
+        camera = self.camera
+        scale = camera.scale
+        ox, oy = camera.origin
+        zoom = round(camera.zoom, 6)
+        shimmer_cache = getattr(self, '_shimmer_cache', None)
+        held = getattr(self, '_anim_draw', None)
+        # The surfaces depend on the folded list, the zoom (footprint) and the
+        # tileset (the shimmer cache is emptied when it changes); the screen
+        # positions on the camera origin and scale. Any of them differing
+        # rebuilds that part, so a frame is what the per-tile loop drew.
+        if (held is None or held.tiles is not tiles or held.zoom != zoom
+                or held.scale != scale
+                or held.shimmer_len != len(shimmer_cache or ())):
+            held = self._anim_draw = _AnimatedDraw(tiles, zoom, scale)
+        blits = held.blits_for(self, step, ox, oy)
+        self.screen.blits(blits, False)
+
+
+class _AnimatedDraw:
+    """The shimmer blit list for one folded tile list, kept across frames.
+
+    Holds, per ramp step, the surface of every tile in fold order, and the
+    last (origin, step) positions it computed. Standing still reuses the
+    finished list; scrolling re-does only the position arithmetic, which is
+    the same expression as `camera.world_to_screen` followed by `int`."""
+
+    __slots__ = ('tiles', 'zoom', 'scale', 'shimmer_len', 'surfaces',
+                 'xs', 'ys', 'last_key', 'last_blits')
+
+    def __init__(self, tiles, zoom, scale):
+        self.tiles = tiles
+        self.zoom = zoom
+        self.scale = scale
+        self.shimmer_len = -1
+        self.surfaces = {}
+        self.xs = [t[0] for t in tiles]
+        self.ys = [t[1] for t in tiles]
+        self.last_key = None
+        self.last_blits = None
+
+    def blits_for(self, game, step, ox, oy):
+        key = (step, ox, oy)
+        if key == self.last_key:
+            return self.last_blits
+        surfs = self.surfaces.get(step)
+        if surfs is None:
+            get = game._get_shimmer_tile
+            surfs = self.surfaces[step] = [get(t[2], step) for t in self.tiles]
+            self.shimmer_len = len(game._shimmer_cache)
+        scale = self.scale
+        blits = [(s, (int(x * scale + ox), int(y * scale + oy)))
+                 for s, x, y in zip(surfs, self.xs, self.ys)]
+        self.last_key = key
+        self.last_blits = blits
+        return blits

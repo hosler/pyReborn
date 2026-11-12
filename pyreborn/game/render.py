@@ -2,7 +2,6 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
-import time
 import math
 from typing import Tuple
 
@@ -21,9 +20,10 @@ from .constants import (
     PLAYER_STAND_X, PLAYER_STAND_Y,
 )
 from .frame_context import FrameContextMixin
+from .clocked import ClockedMixin
 
 
-class RenderMixin(FrameContextMixin):
+class RenderMixin(ClockedMixin, FrameContextMixin):
     """Frame orchestration, camera sync, the main _render loop, and debug overlays.
 
     Entity/world/effects/level-object drawing live in the render_* sibling mixins."""
@@ -69,7 +69,7 @@ class RenderMixin(FrameContextMixin):
             requested = getattr(anim, 'requested_name', None)
             if (getattr(self, '_ledge_jump', None) is not None
                     or (getattr(self.client.player, 'hurt', None) is not None
-                        and self.client.player.hurt.input_locked(time.time()))):
+                        and self.client.player.hurt.input_locked(self.clock.sim_now()))):
                 pass  # Keep hurt's last frame throughout the input lock.
             elif (requested and getattr(anim, 'gani', None) is not None
                     and requested != anim.gani.name):
@@ -209,7 +209,7 @@ class RenderMixin(FrameContextMixin):
         # them with the listener in the same local frame.
         level_resolver = getattr(self.client, "get_current_level_from_position", None)
         level_name = (level_resolver() if level_resolver is not None
-                      else getattr(self.client, "_current_level_name", "") or "")
+                      else getattr(self.client, "current_level_name", "") or "")
         baddy_reader = getattr(self.client, "baddies_in_level", None)
         baddies = (baddy_reader(level_name) if baddy_reader is not None
                    else getattr(self.client, "baddies", {}) or {})
@@ -252,51 +252,41 @@ class RenderMixin(FrameContextMixin):
         dy = world_pos[1] - ly
         for sound in sounds:
             self.sound_mgr.play_positional(sound, dx, dy)
-    def _update_visual_position(self, dt: float):
-        """Track the authoritative position tightly.
-
-        The old exponential lerp left a constant steady-state gap of
-        walk_speed/lerp_speed (~0.4 tiles) between where the player actually was
-        and where they were drawn, which reads as floaty/laggy. Instead, chase
-        the target at follow_speed (well above walk_speed) and lock on once
-        within a frame's reach, so during normal movement the camera sits exactly
-        on the player (the C# client snaps its camera to the player every frame) and
-        only a large correction eases in.
-        """
+    def _update_visual_position(self, alpha: float):
+        """Set the local player's draw position (visual_x/visual_y, which the
+        camera follows): the authoritative position interpolated between the
+        last two ticks by `alpha` (clock.alpha). Presentation only: nothing
+        here writes the player, and a teleport (warp, respawn, > SNAP_TILES
+        in one tick) draws where the player is without a slide."""
         # A discrete local level warp changes authoritative x/y before its
         # board arrives.  Keep the last stable view until that board is active.
-        if getattr(self.client, '_local_level_transition', ''):
+        if getattr(self.client, 'local_level_transition', ''):
             return
 
+        interpolator = getattr(self, 'interpolator', None)
         transition_epoch = getattr(
-            self.client, '_local_level_transition_epoch', 0)
+            self.client, 'local_level_transition_epoch', 0)
         seen_epoch = getattr(self, '_seen_level_transition_epoch',
                              transition_epoch)
         if transition_epoch != seen_epoch:
             self.visual_x = self.client.x
             self.visual_y = self.client.y
             self._seen_level_transition_epoch = transition_epoch
+            if interpolator is not None:
+                interpolator.position('local', (self.client.x, self.client.y),
+                                      self.clock.tick, alpha, snap=True)
             return
-
-        target_x = self.client.x
-        target_y = self.client.y
-        dx = target_x - self.visual_x
-        dy = target_y - self.visual_y
-        dist = math.hypot(dx, dy)
-
-        # Warp/teleport: snap so we don't slide across the level.
-        if dist > 2.0:
-            self.visual_x = target_x
-            self.visual_y = target_y
+        if interpolator is None:
+            self.visual_x, self.visual_y = self.client.x, self.client.y
             return
+        interpolator.prune(self.clock.tick)
+        # The local player only moves in ticks; a change between two ticks
+        # came from outside (a server correction, a direct API call) and is
+        # drawn at once.
+        self.visual_x, self.visual_y = interpolator.position(
+            'local', (self.client.x, self.client.y), self.clock.tick, alpha,
+            follow_between_ticks=True)
 
-        step = self.follow_speed * dt
-        if step >= dist:                 # within reach this frame: lock on
-            self.visual_x = target_x
-            self.visual_y = target_y
-        else:
-            self.visual_x += dx / dist * step
-            self.visual_y += dy / dist * step
     # The camera aims at the player's body centre, not the sprite's top-left,
     # so the character sits at screen centre instead of reading low-and-right of
     # it. The sprite is honestly 3 tiles wide, top-left anchored (see
@@ -317,8 +307,8 @@ class RenderMixin(FrameContextMixin):
         Every render method used to recompute this offset inline; now it's set
         once per frame and all world->screen mapping goes through self.camera.
         """
-        frame_ox, frame_oy = segment_origin(self.client._gmap_offset_x,
-                                           self.client._gmap_offset_y)
+        frame_ox, frame_oy = segment_origin(self.client.gmap_offset_x,
+                                           self.client.gmap_offset_y)
         gmap_visual_x = self.visual_x - frame_ox
         gmap_visual_y = self.visual_y - frame_oy
         # Remember the sprite's top-left (render frame) so _render_entities can
@@ -334,7 +324,7 @@ class RenderMixin(FrameContextMixin):
         # already redoes every frame, so only call it again when one of its
         # inputs (level/GMAP switch, zoom, or a window resize) actually changed.
         bounds_key = (self.client.in_gmap_segment, self.client.gmap_width,
-                     self.client.gmap_height, self.client._current_level_name,
+                     self.client.gmap_height, self.client.current_level_name,
                      self.camera.zoom, self.screen_w, self.screen_h)
         if bounds_key != self._camera_bounds_key:
             self._camera_bounds_key = bounds_key
@@ -355,8 +345,8 @@ class RenderMixin(FrameContextMixin):
                                    gmap_visual_y + self.CAMERA_BODY_DY)
         self.camera.set_render_offset()
         started = getattr(self, '_camera_shake_started', None)
-        if started is not None and not getattr(self.client, '_local_level_transition', ''):
-            age = time.monotonic() - started
+        if started is not None and not getattr(self.client, 'local_level_transition', ''):
+            age = self.clock.frame_now() - started
             if age < 0.4:
                 strength = 3.0 * (1.0 - age / 0.4)
                 self.camera.set_render_offset(
@@ -433,7 +423,7 @@ class RenderMixin(FrameContextMixin):
 
     def _render(self):
         """Render the game."""
-        now = time.monotonic()
+        now = self.clock.frame_now()
         if self._draw_transition_slide(now):
             return
         # A held local level transition keeps the LAST COMPLETED frame on
@@ -445,14 +435,14 @@ class RenderMixin(FrameContextMixin):
         # (live-traced: world->local bounds clamp jumped the camera to the
         # 64x64 corner while the hold was engaged, and a cached destination
         # board replaced the world content instantly under the held camera).
-        if getattr(self.client, '_local_level_transition', ''):
+        if getattr(self.client, 'local_level_transition', ''):
             presentation = getattr(self, 'combat_presentation', None)
             if presentation is not None:
                 presentation.sync(
-                    self.client.player.hearts <= 0, True, time.monotonic())
+                    self.client.player.hearts <= 0, True, self.clock.frame_now())
             started = getattr(
-                self.client, '_local_level_transition_started', 0.0)
-            if time.monotonic() - started <= self.TRANSITION_HOLD_MAX_S:
+                self.client, 'local_level_transition_started', 0.0)
+            if self.clock.frame_now() - started <= self.TRANSITION_HOLD_MAX_S:
                 frozen = getattr(self, '_transition_frame', None)
                 if frozen is None:
                     # First held frame: self.screen still holds the last
@@ -464,7 +454,7 @@ class RenderMixin(FrameContextMixin):
                     self.screen.blit(frozen, (0, 0))
                 self.viewport.present()
                 return
-            self.client._release_local_transition()
+            self.client.release_local_transition()
 
         # The slide does NOT need the hold to have engaged first. A
         # destination whose board is already cached releases the hold inside
@@ -477,18 +467,18 @@ class RenderMixin(FrameContextMixin):
         # world-only copy of the last COMPLETED frame, which is the pre-warp
         # scene on both paths.
         direction = getattr(
-            self.client, '_local_level_transition_direction', None)
+            self.client, 'local_level_transition_direction', None)
         source = getattr(self, '_transition_scene_frame', None)
         if source is None:
             source = getattr(self, '_transition_frame', None)
         if source is not None and direction in range(4):
             source = source.copy()
-            self.client._local_level_transition_direction = None
+            self.client.clear_local_transition_direction()
             self._transition_frame = None
             if self._capture_transition_destination(source, direction, now):
                 self._draw_transition_slide(now)
                 return
-        self.client._local_level_transition_direction = None
+        self.client.clear_local_transition_direction()
         self._transition_frame = None
 
         # Position the camera before any world-space drawing.
@@ -530,9 +520,8 @@ class RenderMixin(FrameContextMixin):
         if self.debug_mode:
             self._render_debug_overlay()
         self._render_bombs(frame)
-        self._update_and_render_projectiles(
-            getattr(self, '_last_dt', 0.016), frame)
-        self._update_and_render_thrown(getattr(self, '_last_dt', 0.016), frame)
+        self._render_projectiles(frame)
+        self._render_thrown(frame)
         self._render_server_explosions(frame)
         self._render_entities(frame)                # layer- then depth-sorted entities
         self._render_damage_numbers()
@@ -685,19 +674,11 @@ class RenderMixin(FrameContextMixin):
                 else:
                     self.screen.blit(walkable_color, (screen_x, screen_y))
     def _render_ui(self):
-        """Render the play HUD, then the tile-editor overlay when active."""
+        """Render the play HUD and the overlay stack over it (HUD.draw walks
+        GameClient.overlays bottom-up: inventory, dialogue, ..., the F1
+        readouts, GS2 GUI windows, the server-warp prompt on top)."""
         self.hud.update()
         self.hud.draw()
-
-        if self.debug_mode:
-            self._render_debug_hud()
-
-        # Inventory overlay (drawn on top of everything)
-        self.inventory_ui.render(self.client.player, self.client.weapons)
-
-        # GS2 GUI controls (showgui/GuiControl) draw last: topmost of all.
-        if getattr(self.gs2, "gui", None) is not None:
-            self.gs2.gui.render(self.screen, self.fonts, self.sprite_mgr)
 
     def _render_debug_hud(self):
         """Tile-editor readouts and hover info, shown only in debug mode."""
@@ -708,7 +689,7 @@ class RenderMixin(FrameContextMixin):
         local_x, local_y = world_to_local(self.client.x, self.client.y)
         link_count = sum(len(l) for l in self.client.links.values())
         for line in (
-            f"{self.client._current_level_name}  ({local_x:.1f}, {local_y:.1f})",
+            f"{self.client.current_level_name}  ({local_x:.1f}, {local_y:.1f})",
             f"Sword {player.sword_power}  Shield {player.shield_power}  Glove {player.glove_power}",
             f"NPCs {len(self.client.npcs)}  Links {link_count}",
         ):

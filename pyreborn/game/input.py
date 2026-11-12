@@ -2,27 +2,29 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
-import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 from reborn_protocol import PLPROP, PLSTATUS
 from pygame.locals import (
-    QUIT, KEYDOWN, MOUSEBUTTONDOWN,
-    K_ESCAPE, K_RETURN, K_q, K_a, K_s, K_d, K_SPACE, K_m, K_h, K_n,
-    K_UP, K_DOWN, K_LEFT, K_RIGHT, K_BACKSPACE, K_TAB,
-    K_F1, K_F2, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12, K_PAGEUP, K_PAGEDOWN,
-    K_y,
+    QUIT, KEYDOWN,
+    K_ESCAPE, K_RETURN, K_n,
+    K_UP, K_DOWN, K_BACKSPACE,
 )
 
 from ..hiding import HIDDEN_SPEED, is_hidden
+from . import keymap
+from .keymap import held, pressed_now
+from .overlays import Overlay, build_overlays, find as find_overlay
 from .constants import (
     MOVE_STEP, pygame_key_to_vk, SHIELD_SPEED_MULTIPLIER,
     DEAD_STATUS_DELAY, REVIVAL_INPUT_DELAY,
 )
+from .clocked import ClockedMixin
+from ..clock import sim_passed
 
 
-class InputMixin:
+class InputMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
     # A pending PLO_SERVERWARP offer awaiting the player's answer (see
@@ -37,7 +39,7 @@ class InputMixin:
     HUD_NOTICE_SECONDS = 6.0
 
     def show_hud_notice(self, text: str) -> None:
-        self.hud_notice = (str(text), time.monotonic() + self.HUD_NOTICE_SECONDS)
+        self.hud_notice = (str(text), self.clock.frame_now() + self.HUD_NOTICE_SECONDS)
 
     # -- PLO_SERVERWARP consent ------------------------------------------
     #: The word the player types, then Enter, to follow a server's request.
@@ -66,22 +68,19 @@ class InputMixin:
         if target is None or self.server_warp_prompt is not None:
             return False
         if not self.client.note_server_warp_offer():
-            self.client._note_server_warp_blocked(target['name'])
+            self.client.note_server_warp_blocked(target['name'])
             return False
         host = target['host'].lower()
         target['in_list'] = any(
             str(getattr(entry, 'ip', '')).lower() == host
             and getattr(entry, 'port', None) == target['port']
             for entry in getattr(self, 'servers', ()))
-        target['opened_at'] = time.monotonic()
+        target['opened_at'] = self.clock.frame_now()
         target['typed'] = ''    # the prompt's own input field, starts empty
         self.server_warp_prompt = target
-        self.show_player_list = False
-        self.show_server_list = False
-        self.pm_target_id = None
-        self.typing = False
-        self.chat_input = ""
-        self._ensure_settings_ui().close()
+        self._ensure_settings_ui()
+        self._close_overlays("player_list", "server_list", "pm", "chat",
+                             "settings")
         pygame.event.clear((KEYDOWN, pygame.KEYUP, pygame.TEXTINPUT))
         return True
 
@@ -99,7 +98,7 @@ class InputMixin:
             self._decline_server_warp()
             return
         word = self.SERVER_WARP_CONFIRM_WORD
-        armed = (time.monotonic() - prompt['opened_at']
+        armed = (self.clock.frame_now() - prompt['opened_at']
                  >= self.SERVER_WARP_ARM_SECONDS)
         if event.key == K_RETURN:
             if armed and prompt['typed'] == word:
@@ -109,6 +108,8 @@ class InputMixin:
                     name=target['name'], type_prefix='', language='',
                     description='', url='', version='', player_count=0,
                     ip=target['host'], port=target['port'])
+                # A script moved us: the next server keeps the frame tick.
+                self.switch_frame_tick = self.clock.frame_tick_ms
                 self.running = False
             else:
                 self._decline_server_warp()
@@ -129,7 +130,7 @@ class InputMixin:
             self._death_started = None
             if getattr(player, 'status', 0) & PLSTATUS.DEAD:
                 player.status &= ~PLSTATUS.DEAD
-                self.client._send_appearance_prop(PLPROP.STATUS, player.status)
+                self.client.send_appearance_prop(PLPROP.STATUS, player.status)
             return
         if getattr(self, '_death_started', None) is None:
             self._death_started = current_time
@@ -140,28 +141,28 @@ class InputMixin:
                 self.player_anim.set_animation('dead', player.direction)
                 self.current_anim_name = 'dead'
                 self.sound_mgr.play('dead.wav')
-        if (current_time - self._death_started >= DEAD_STATUS_DELAY
+        # 28 ticks (TPlayer.cpp:2706).
+        if (sim_passed(current_time, self._death_started, DEAD_STATUS_DELAY)
                 and not player.status & PLSTATUS.DEAD):
             player.status |= PLSTATUS.DEAD
-            self.client._send_appearance_prop(PLPROP.STATUS, player.status)
+            self.client.send_appearance_prop(PLPROP.STATUS, player.status)
 
     def _revive_on_input(self, current_time, keys):
         self._update_death_state(current_time)
         player = self.client.player
         if player.hearts > 0:
             return False
-        if current_time - self._death_started < REVIVAL_INPUT_DELAY:
-            return False
+        if not sim_passed(current_time, self._death_started, REVIVAL_INPUT_DELAY):
+            return False   # 30 ticks (TPlayer.cpp:7319)
         # FourPlay TPlayer.cpp:2164
-        if not any(keys[k] for k in (K_UP, K_LEFT, K_DOWN, K_RIGHT,
-                                     K_a, K_s, K_d, K_SPACE)):
+        if not held(keys, *keymap.REVIVE_ACTIONS):
             return False
         player.status &= ~PLSTATUS.DEAD
         # TPlayer.cpp:5581: predict the server's alignment-based restart HP.
         player.hearts = (3.0 if player.ap <= 19 else min(player.max_hearts, 5.0)
                          if player.ap <= 39 else player.max_hearts)
-        self.client._send_appearance_prop(PLPROP.STATUS, player.status)
-        self.client._send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
+        self.client.send_appearance_prop(PLPROP.STATUS, player.status)
+        self.client.send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
         self._death_started = None
         self.player_anim.set_animation("idle", player.direction)
         self.current_anim_name = "idle"
@@ -257,159 +258,162 @@ class InputMixin:
             event = pygame.event.Event(event.type, {**event.dict, 'pos': vpos})
         return mgr.handle_event(event)
 
+    # -- the overlay stack (game/overlays.py) -------------------------------
+    @property
+    def overlays(self) -> List[Overlay]:
+        """Every overlay, topmost first: input priority order, the reverse
+        of draw order. Built on first use; the entries read the UIs' state
+        at call time, so lazily created UIs need no re-registration."""
+        stack = self.__dict__.get('_overlay_stack')
+        if stack is None:
+            stack = self.__dict__['_overlay_stack'] = build_overlays(self)
+        return stack
+
+    def overlay(self, name: str) -> Optional[Overlay]:
+        return find_overlay(self.overlays, name)
+
+    def _close_overlays(self, *names: str) -> None:
+        """Close the named overlays (an F-key closing the panels it replaces,
+        the server-warp prompt clearing the screen)."""
+        for overlay in self.overlays:
+            if overlay.name in names:
+                overlay.close()
+
+    def _overlays_capture_keys(self) -> bool:
+        """True while any overlay keeps held keys from driving gameplay."""
+        return any(overlay.captures_keys for overlay in self.overlays)
+
     def _gs2_gui_captures_keys(self) -> bool:
         """True while a GS2 GUI text edit holds keyboard focus — held-key
         gameplay movement must not run alongside typing into a dialog."""
-        gs2 = getattr(self, 'gs2', None)
-        mgr = getattr(gs2, 'gui', None) if gs2 is not None else None
-        return bool(mgr is not None and mgr.keyboard_captured)
+        return self.overlay("gs2_gui").captures_keys
 
     def _admin_overlay_captures_keys(self) -> bool:
         """True while the F10 RC panel or the F12 dev playground is open.
 
         Those two are modal in `_handle_events`, but movement does not run off
         events - `_handle_input` polls `key.get_pressed()` every frame. Without
-        this the panel ate the KEYDOWN and the player still walked off under
-        it, because the arrow keys that scroll a row are physically held down.
+        the gate the panel ate the KEYDOWN and the player still walked off
+        under it, because the arrow keys that scroll a row are physically held
+        down.
 
         F11 edit mode is deliberately NOT here: it is non-modal by design, so a
         builder walks around with the arrows while painting with the mouse.
         """
-        for name in ('rc_ui', 'dev_ui'):
-            overlay = getattr(self, name, None)
-            if overlay is not None and overlay.visible:
-                return True
-        return False
+        return any(self.overlay(name).captures_keys
+                   for name in ("rc_tools", "dev_tools"))
+
+    def _route_to_overlays(self, event) -> bool:
+        """Offer `event` to the overlays, topmost first; True = one consumed
+        it (it never reaches gameplay)."""
+        return any(overlay.handle_event(event) for overlay in self.overlays)
+
+    # -- edges latched for the next tick ------------------------------------
+    #
+    # A key or click edge that reaches gameplay (no overlay consumed it and
+    # none captures keys) is latched until the next simulation tick, so a tap
+    # between two ticks still acts once. The latches remember the play state
+    # they were made in (`_input_context`): a tick after a warp or a death
+    # does not act on them, and an overlay opening or closing, or the window
+    # losing focus, drops every latch.
+
+    def _input_context(self):
+        client = self.client
+        return (getattr(client, 'plain_level_change_epoch', 0),
+                client.player.hearts > 0)
+
+    def _latch(self, key=None) -> None:
+        """Latch a key edge (or, with no key, a left click) for the tick."""
+        if self._overlays_capture_keys():
+            return
+        context = self._input_context()
+        if getattr(self, '_latch_context', None) != context:
+            self._drop_latched_input()
+            self._latch_context = context
+        if key is None:
+            self._mouse_left_latched = True
+        else:
+            self.key_just_pressed[key] = True
+
+    def _drop_latched_input(self) -> None:
+        getattr(self, 'key_just_pressed', {}).clear()
+        self._mouse_left_latched = False
+        self._latch_context = None
 
     def _handle_events(self):
         """Handle pygame events."""
-        # Make sure the settings overlay exists before the dispatch chain
-        # below checks its .visible flag (see _ensure_settings_ui).
+        # Make sure the lazily built overlays exist before the overlay
+        # entries read their state (see _ensure_settings_ui).
         self._ensure_settings_ui()
         self._ensure_rc_ui()
         self._ensure_dev_ui()
         self._ensure_editor()
 
-        # Reset just-pressed flags
-        self.key_just_pressed.clear()
+        # key_just_pressed is NOT cleared here: an edge stays latched until
+        # the next simulation tick consumes it (`_end_input_tick`), so a key
+        # pressed and released between two ticks still acts, exactly once.
 
-        for event in pygame.event.get():
-            if event.type == QUIT:
-                self.running = False
+        events = pygame.event.get()
+        # Honour a close request up front: a handler raising mid-batch must
+        # not drop a QUIT later in this already-drained batch.
+        if any(e.type == QUIT for e in events):
+            self.running = False
 
-            elif (getattr(self.client, '_local_level_transition', '')
-                  or getattr(self, '_level_transition_input_frozen', False)):
+        captured = self._overlays_capture_keys()
+        for event in events:
+            self._handle_event(event)
+            if self._overlays_capture_keys() != captured:
+                # An overlay opened or closed: nothing typed around it acts.
+                captured = not captured
+                self._drop_latched_input()
+
+    def _handle_event(self, event) -> None:
+        """One pygame event: overlays first, then gameplay."""
+        if event.type == QUIT:
+            self.running = False
+
+        elif event.type == pygame.WINDOWFOCUSLOST:
+            self._drop_latched_input()
+
+        elif (getattr(self.client, 'local_level_transition', '')
+              or getattr(self, '_level_transition_input_frozen', False)):
+            pass
+
+        # The overlays, topmost first (game/overlays.py).
+        elif self._route_to_overlays(event):
+            pass
+
+        elif event.type == KEYDOWN:
+            if getattr(self.client, 'input_frozen', False):
+                # Legacy lock: no packet sets it now (176/177 are server-mode
+                # markers). A host that sets it ignores normal input until
+                # reconnect. The overlays above stay usable so the local
+                # player isn't completely locked out.
                 pass
+            else:
+                self._latch(event.key)
+                self._handle_key_press(event)
+                # GS1 `keypressed` event (weapon scripts, e.g. the sword
+                # emulation in npcserver.md). Only for gameplay input, same
+                # as the overlay guard above — queued and fired from
+                # _handle_input (after keys_dir is refreshed) so a script's
+                # keydown() check sees the key that was just pressed.
+                self._gs1_keypress_queue.append(
+                    (event.key, event.unicode or ""))
 
-            # The server-warp consent prompt outranks everything, GS2 GUI
-            # included: it must not be answerable or dismissable by a script.
-            elif self.server_warp_prompt is not None and event.type in (
-                    KEYDOWN, MOUSEBUTTONDOWN):
-                if event.type == KEYDOWN:
-                    self._handle_server_warp_key(event)
+        elif (event.type == pygame.MOUSEBUTTONDOWN
+              and getattr(event, 'button', 0) == 1):
+            # Latched like a key edge, for the next tick's mouse state.
+            self._latch()
 
-            # GS2 GUI controls are topmost: a consumed event (click inside a
-            # control, keystroke into a focused text edit, Esc on a window)
-            # never reaches the overlays or gameplay below.
-            elif self._gs2_gui_event(event):
-                pass
+        elif event.type == pygame.VIDEORESIZE:
+            # Resizable window: the viewport rescales the fixed virtual canvas.
+            self.viewport.handle_resize(event.w, event.h)
 
-            elif event.type == KEYDOWN:
-                self.key_just_pressed[event.key] = True
+        elif event.type == pygame.MOUSEWHEEL and not self.debug_mode:
+            # Zoom the world layer; the camera clamps to its min/max.
+            self.camera.zoom_by(1.1 ** event.y)
 
-                # Modal overlays consume input while open, in priority order:
-                # RC tools > composing a PM > player list > server list >
-                # settings > map > chat > dialogue > inventory > gameplay.
-                # RC sits on top because it types free text (chat, ban
-                # reasons, file paths) into its own prompt, so no letter of
-                # it may fall through to a gameplay action.
-                if self.rc_ui.visible:
-                    self.rc_ui.handle_key(event)
-                elif self.dev_ui.visible:
-                    self.dev_ui.handle_key(event)
-                # Edit mode is NOT modal: it claims its own tool keys and
-                # lets everything else through, so a builder still walks
-                # around with the arrows and chats while the grid is up.
-                elif self.level_editor.handle_key(event):
-                    pass
-                elif self.pm_target_id is not None:
-                    self._handle_pm_input(event)
-                elif self.show_player_list:
-                    self._handle_player_list_key(event)
-                elif self.show_server_list:
-                    self._handle_server_list_key(event)
-                elif self.settings_ui.visible:
-                    self.settings_ui.handle_key(event)
-                elif getattr(self, 'big_map_visible', False):
-                    if event.key in (K_m, K_ESCAPE):
-                        self.big_map_visible = False
-                elif self.typing:
-                    self._handle_chat_input(event)
-                elif self.dialogue_text is not None:
-                    if event.key in (K_a, K_s, K_SPACE):
-                        self._advance_dialogue()
-                        # This keystroke belongs to the dialog. If it just
-                        # DISMISSED it (last page), dialogue_text is now
-                        # None and _handle_input runs this same frame — a
-                        # leftover just-pressed A would re-fire _try_grab
-                        # and instantly re-open the sign under the player
-                        # (live on bomber v6: the dialog wrapped to page 0
-                        # forever instead of closing).
-                        self.key_just_pressed.pop(event.key, None)
-                    elif event.key in (K_UP, K_DOWN, K_PAGEUP, K_PAGEDOWN):
-                        amount = {
-                            K_UP: -1, K_DOWN: 1,
-                            K_PAGEUP: -self.dialogue_pager.page_size,
-                            K_PAGEDOWN: self.dialogue_pager.page_size,
-                        }[event.key]
-                        self.dialogue_pager.scroll(amount)
-                    elif event.key in (K_F1, K_F2, K_F7, K_F8, K_F9, K_F10,
-                                       K_F11, K_F12):
-                        self._handle_key_press(event)
-                elif self.inventory_ui.visible:
-                    # The inventory owns its opener while visible, plus grid
-                    # navigation/equip keys. Nothing reaches gameplay/GS1.
-                    self.inventory_ui.handle_key(event.key, self.client.weapons)
-                elif getattr(self.client, 'input_frozen', False):
-                    # Legacy lock: no packet sets it now (176/177 are server-mode
-                    # markers). A host that sets it ignores normal input until
-                    # reconnect. Modal overlays above stay usable so the local
-                    # player isn't completely locked out.
-                    pass
-                else:
-                    self._handle_key_press(event)
-                    # GS1 `keypressed` event (weapon scripts, e.g. the sword
-                    # emulation in npcserver.md). Only for gameplay input, same
-                    # as the overlay guard above — queued and fired from
-                    # _handle_input (after keys_dir is refreshed) so a script's
-                    # keydown() check sees the key that was just pressed.
-                    self._gs1_keypress_queue.append(
-                        (event.key, event.unicode or ""))
-
-            elif event.type == pygame.VIDEORESIZE:
-                # Resizable window: the viewport rescales the fixed virtual canvas.
-                self.viewport.handle_resize(event.w, event.h)
-
-            elif getattr(self, 'big_map_visible', False):
-                # The large map is modal; mouse actions must not reach the
-                # inventory, editor, camera zoom, or world underneath it.
-                pass
-
-            # Edit mode owns the mouse over the world: painting, picking,
-            # rectangle drags and the palette. It consumes nothing while off.
-            elif self.level_editor.handle_mouse(event, self.tile_palette):
-                pass
-
-            elif event.type == pygame.MOUSEMOTION and self.inventory_ui.visible:
-                self.inventory_ui.handle_mouse_motion(event.pos)
-
-            elif event.type == MOUSEBUTTONDOWN and self.inventory_ui.visible:
-                if event.button == 1:
-                    self.inventory_ui.handle_click(event.pos, self.client.weapons)
-
-            elif event.type == pygame.MOUSEWHEEL and not self.debug_mode:
-                # Zoom the world layer; the camera clamps to its min/max.
-                self.camera.zoom_by(1.1 ** event.y)
     def _handle_chat_input(self, event):
         """Handle chat input mode."""
         if event.key == K_RETURN:
@@ -427,7 +431,7 @@ class InputMixin:
                     # and is the path that level NPC playerchats handlers see.
                     self.client.send_level_chat(message)
                     self.local_chat_text = message
-                    self.local_chat_time = time.time()
+                    self.local_chat_time = self.clock.sim_now()
                     self._append_chat(f"[You] {message}")
             self.chat_input = ""
             self.typing = False
@@ -462,7 +466,7 @@ class InputMixin:
         return f"{label} [{status}]" if status else label
 
     def _handle_player_list_key(self, event):
-        if event.key in (K_F7, K_ESCAPE):
+        if event.key in keymap.keys_for("player_list", "back"):
             self.show_player_list = False
             return
         players = self._other_players()
@@ -495,7 +499,7 @@ class InputMixin:
 
     # -- F8 server list ---------------------------------------------------
     def _handle_server_list_key(self, event):
-        if event.key in (K_F8, K_ESCAPE):
+        if event.key in keymap.keys_for("server_list", "back"):
             self.show_server_list = False
             return
         if not self.servers:
@@ -509,14 +513,16 @@ class InputMixin:
             # Picked a server: stash it and end the loop; run() returns it and
             # the launcher reconnects.
             self.switch_server = self.servers[self.server_list_sel]
+            self.switch_frame_tick = None
             self.running = False
     def _handle_key_press(self, event):
-        """Handle single key press events."""
-        if event.key == pygame.K_p:
+        """Handle single key press events (the keymap's PRESS_ACTIONS)."""
+        action = keymap.press_action(event.key)
+        if action == "pause":
             from ..pausing import toggle_pause
             toggle_pause(self)
             return
-        if event.key == K_ESCAPE:
+        if action == "back":
             # Consistent with the other modal overlays (PM/player-list/server
             # -list/chat all close on Escape instead of quitting): resume the
             # live chat tail first if scrolled back, then close the
@@ -529,18 +535,18 @@ class InputMixin:
             else:
                 self.running = False
 
-        elif event.key == K_RETURN:
+        elif action == "chat":
             self.typing = True
 
-        elif event.key == K_q:
+        elif action == "inventory":
             # Toggle inventory
             self.inventory_ui.toggle()
 
-        elif event.key == pygame.K_0:
+        elif action == "zoom_reset":
             # Reset zoom to 1:1.
             self.camera.zoom = 1.0
 
-        elif event.key == K_F1:
+        elif action == "debug":
             # Toggle the debug overlay (tile types, collision boxes, hover
             # readouts). It used to double as a tile-type EDITOR that wrote
             # per-install overrides; liftable objects come from the reference
@@ -548,57 +554,52 @@ class InputMixin:
             # left to hand-tag.
             self.debug_mode = not self.debug_mode
 
-        elif event.key == K_F2:
+        elif action == "unstick":
             # Emergency warp to (30, 30) on current level
-            self.client.warp_to_level(self.client._current_level_name, 30, 30)
+            self.client.warp_to_level(self.client.current_level_name, 30, 30)
             self.visual_x = self.client.x
             self.visual_y = self.client.y
-            print(f"Warped to (30, 30) on {self.client._current_level_name}")
+            print(f"Warped to (30, 30) on {self.client.current_level_name}")
 
-        elif event.key == K_F7:
+        elif action == "player_list":
             # Toggle the player list (PM other players from it).
             self.show_player_list = not self.show_player_list
-            self.show_server_list = False
-            self.settings_ui.close()
+            self._close_overlays("server_list", "settings")
             self.player_list_sel = 0
 
-        elif event.key == K_F8:
+        elif action == "server_list":
             # Toggle the server list (connect to a different server).
             self.show_server_list = not self.show_server_list
-            self.show_player_list = False
-            self.settings_ui.close()
+            self._close_overlays("player_list", "settings")
             self.server_list_sel = 0
             # The player is using the browser themselves: script-initiated
             # server warps may be offered again.
             self.client.reset_server_warp_limits()
 
-        elif event.key == K_F9:
+        elif action == "settings":
             # Toggle the settings overlay (sound/music/day-night/minimap/zoom).
             self.settings_ui.toggle()
-            self.show_player_list = False
-            self.show_server_list = False
+            self._close_overlays("player_list", "server_list")
 
-        elif event.key == K_F10:
+        elif action == "rc_tools":
             # Toggle the RC tools overlay. The first press also opens the RC
             # connection, and the panel reports the outcome (connecting, no
             # RC access, or a live session) rather than the key going dead.
             self.rc_ui.toggle()
-            self.settings_ui.close()
-            self.show_player_list = False
-            self.show_server_list = False
+            self._close_overlays("settings", "player_list", "server_list")
 
-        elif event.key == K_F11:
+        elif action == "level_editor":
             # Toggle level edit mode (paint tiles, place objects). Not modal:
             # the world stays live underneath and the player can still walk.
             self.level_editor.toggle()
 
-        elif event.key == K_F12:
+        elif action == "dev_tools":
             # Toggle the dev playground (scripts + console). Opens the NC
             # connection on first use, same contract as F10 and RC.
             self.dev_ui.toggle()
-            self.settings_ui.close()
+            self._close_overlays("settings")
 
-        elif event.key == K_PAGEUP:
+        elif action == "chat_scroll_back":
             # Scroll the chat log backward 5 messages at a time, up to the
             # stored history (CHAT_HISTORY_CAP) -- see hud.py's _draw_chat.
             if self.chat_messages:
@@ -607,23 +608,24 @@ class InputMixin:
                 max_scroll = max(0, len(self.chat_messages) - 5)
                 self.chat_scroll = min(max_scroll, self.chat_scroll + 5)
 
-        elif event.key == K_PAGEDOWN:
+        elif action == "chat_scroll_forward":
             # Scroll forward; hitting the bottom resumes the live tail.
             self.chat_scroll = max(0, self.chat_scroll - 5)
             if self.chat_scroll == 0:
                 self._chat_scroll_baseline = 0
 
-        elif event.key == K_h:
+        elif action == "help":
             # Toggle the controls/help overlay
             self.show_help = not self.show_help
 
-        elif event.key == K_m:
+        elif action == "map":
             self.big_map_visible = True
 
-        elif event.key == K_n:
+        elif action == "noclip":
             # Toggle noclip — walk through walls to escape a bad server spawn.
             self.noclip = not self.noclip
             print(f"Noclip {'ON' if self.noclip else 'OFF'}")
+
     def _clear_gs1_input(self):
         """Drop all held keys from the GS1 engine (input is blocked this frame).
         Also drops any queued `keypressed` fires — a key pressed while an
@@ -658,10 +660,9 @@ class InputMixin:
     def _feed_gs1_input(self, keys):
         """Mirror pygame keyboard/mouse + screen size into the GS1 engine so
         weapon scripts (arenaSYS reads keydown()/playerx, arenaGUI reads the
-        mouse + screen) can drive arena gameplay. keydown indices follow the
-        control-function table in scripting-gs1-functions.md: 0=up 1=left
-        2=down 3=right 4=weapon(D) 5=sword(S/Space) 6=grab(A) 7=map(M)
-        8=chat(Tab) 9=inventory(Q). Index 10 (pause/P) has no bound key here."""
+        mouse + screen) can drive arena gameplay. The keydown indices are the
+        keymap's gs1_index column (control-function table in
+        scripting-gs1-functions.md; see game/keymap.py)."""
         gs1 = getattr(self, 'gs1', None)
         if gs1 is None:
             return
@@ -678,29 +679,9 @@ class InputMixin:
         # as of the moment a script reads it (the camera is synced later in the
         # frame, game/render.py:274 _sync_camera).
         gs1.mouse_world_source = self._gs1_mouse_world
-        gs1.mouse_left = bool(pygame.mouse.get_pressed()[0])
-        d = set()
-        if keys[K_UP]:
-            d.add(0)
-        if keys[K_LEFT]:
-            d.add(1)
-        if keys[K_DOWN]:
-            d.add(2)
-        if keys[K_RIGHT]:
-            d.add(3)
-        if keys[K_d]:
-            d.add(4)
-        if keys[K_s] or keys[K_SPACE]:
-            d.add(5)
-        if keys[K_a]:
-            d.add(6)
-        if keys[K_m]:
-            d.add(7)
-        if keys[K_TAB]:
-            d.add(8)
-        if keys[K_q]:
-            d.add(9)
-        gs1.keys_dir = d
+        gs1.mouse_left = (bool(pygame.mouse.get_pressed()[0])
+                          or getattr(self, '_mouse_left_latched', False))
+        gs1.keys_dir = keymap.gs1_keydown_indices(keys)
         # Translate to VK-style codes (see pygame_key_to_vk) so scripts'
         # keydown2(<Reborn VK code>) calls actually match held keys. Cache the
         # per-key result instead of calling pygame_key_to_vk (which rebuilds a
@@ -717,8 +698,23 @@ class InputMixin:
             raw.add(vk)
         gs1.keys_raw = raw
 
+    def _tick_keys(self) -> "_TickKeys":
+        """This tick's key state: what is held now, plus every key whose
+        press was latched since the previous tick (released already or not)
+        in the play state that still holds."""
+        made = getattr(self, '_latch_context', None)
+        if made is not None and made != self._input_context():
+            self._drop_latched_input()
+        return _TickKeys(pygame.key.get_pressed(),
+                         getattr(self, 'key_just_pressed', {}))
+
+    def _end_input_tick(self) -> None:
+        """A tick consumed the latched edges: clear them."""
+        self._drop_latched_input()
+
     def _handle_input(self, current_time: float):
-        """Handle held key input."""
+        """One tick of held-key input: actions on latched edges, walking on
+        held keys. Runs once per simulation tick, never per frame."""
         if getattr(self, '_ledge_jump', None) is not None:
             self.is_moving = False
             self._clear_gs1_input()
@@ -728,17 +724,10 @@ class InputMixin:
             self.is_moving = False
             self._clear_gs1_input()
             return
-        if (self.typing or self.dialogue_text is not None
-                or self.inventory_ui.visible or self.show_player_list
-                or self.show_server_list or self.pm_target_id is not None
-                or self.server_warp_prompt is not None
-                or getattr(self, 'big_map_visible', False)
-                or self._ensure_settings_ui().visible
-                or getattr(self.client, 'input_frozen', False)
-                or getattr(self.client, '_local_level_transition', '')
+        if (getattr(self.client, 'input_frozen', False)
+                or getattr(self.client, 'local_level_transition', '')
                 or getattr(self, '_level_transition_input_frozen', False)
-                or self._admin_overlay_captures_keys()
-                or self._gs2_gui_captures_keys()):
+                or self._overlays_capture_keys()):
             self._clear_gs1_input()
             self._clear_push_hold()
             return
@@ -748,13 +737,13 @@ class InputMixin:
         # keyboard: classic intro/cutscene NPCs (GTA's splashscreen menu does
         # `freezeplayer 99` then polls keydown(5) for "Press S to Select")
         # freeze the player precisely so the script can own the keys.
-        if current_time < getattr(self, '_frozen_until', 0.0):
+        keys = self._tick_keys()
+        if not sim_passed(current_time, getattr(self, '_frozen_until', 0.0)):
             self.is_moving = False
-            self._feed_gs1_input(pygame.key.get_pressed())
+            self._feed_gs1_input(keys)
             self._fire_gs1_keypress_queue()
             return
 
-        keys = pygame.key.get_pressed()
         # Revival consumes the first gameplay input after the death animation.
         if self._revive_on_input(current_time, keys):
             self._clear_gs1_input()
@@ -792,15 +781,19 @@ class InputMixin:
             # any disabledefmovement level. One-shot on a fresh press only,
             # arrows held or not (walk-into-and-press is the classic sign
             # gesture), same action_delay cooldown as the default path.
-            if keys[K_a] and self.key_just_pressed.get(K_a, False) \
-                    and current_time - self.last_action_time > self.action_delay:
+            if held(keys, "grab") and pressed_now(self.key_just_pressed, "grab") \
+                    and sim_passed(current_time, self.last_action_time, self.action_delay):
                 self._try_grab()
                 self.last_action_time = current_time
             return
 
-        # Check for combined key actions first
-        a_held = keys[K_a]
-        s_held = keys[K_s]
+        # Check for combined key actions first. The S modifier
+        # ("item_combo") is S alone; Space swings the sword but combines
+        # with nothing.
+        jp = self.key_just_pressed
+        a_held = held(keys, "grab")
+        s_held = held(keys, "item_combo")
+        d_held = held(keys, "weapon")
 
         # Grab/pull is an A-held gesture only — anything else (cycling
         # weapons, swinging, shooting) drops it.
@@ -813,7 +806,7 @@ class InputMixin:
         if getattr(self, '_giveaway_item', None) is not None:
             self.is_moving = False
             self._clear_push_hold()
-            if self.key_just_pressed.get(K_a, False):
+            if pressed_now(jp, "grab"):
                 if s_held:
                     self._giveaway_select()
                 else:
@@ -821,17 +814,16 @@ class InputMixin:
                     # A leaves mode 9 even when loseItem fails (:2232-2251).
                     self._giveaway_item = None
                     self.client.player.action_mode = 0
-            elif any(self.key_just_pressed.get(k, False) for k in
-                     (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE, K_s)):
+            elif pressed_now(jp, *keymap.MOVE_NAMES, "weapon", "sword"):
                 self._giveaway_item = None
                 self.client.player.action_mode = 0
             return
 
         # S + D = Cycle weapons (TPlayer.cpp:2297)
-        if s_held and keys[K_d] and not a_held:
+        if s_held and d_held and not a_held:
             self._clear_push_hold()
-            if self.key_just_pressed.get(K_d, False) or self.key_just_pressed.get(K_s, False):
-                if current_time - self.last_action_time > self.action_delay:
+            if pressed_now(jp, "weapon", "item_combo"):
+                if sim_passed(current_time, self.last_action_time, self.action_delay):
                     self._cycle_weapon()
                     self.last_action_time = current_time
             return
@@ -839,7 +831,7 @@ class InputMixin:
         # A press while S is held enters selection (TPlayer.cpp:2272-2281).
         if s_held and a_held:
             self._clear_push_hold()
-            if self.key_just_pressed.get(K_a, False):
+            if pressed_now(jp, "grab"):
                 self._giveaway_select()
                 self.last_action_time = current_time
             return
@@ -850,38 +842,38 @@ class InputMixin:
         # S throws the object instead (you can't swing with a bush overhead).
         # Falls through to movement: the swing itself roots you (see below),
         # but holding S after the swing ends doesn't.
-        if (s_held or keys[K_SPACE]) and not a_held:
-            if self.key_just_pressed.get(K_s, False) or self.key_just_pressed.get(K_SPACE, False):
+        if held(keys, "sword") and not a_held:
+            if pressed_now(jp, "sword"):
                 if self.client.player.is_carrying():
                     self._throw_object()
-                elif current_time - self.last_sword_time > self.sword_delay:
+                elif sim_passed(current_time, self.last_sword_time, self.sword_delay):
                     self._swing_sword()
                     self.last_sword_time = current_time
 
         # Use weapon (D)
-        elif keys[K_d]:
+        elif d_held:
             self._clear_push_hold()
             # D while carrying hides/un-hides instead of firing a weapon
             # (TPlayer.cpp:2121), and never roots movement.
             if getattr(self.client.player, 'carried_object_type', ''):
-                if self.key_just_pressed.get(K_d, False):
+                if pressed_now(jp, "weapon"):
                     self._hide_or_unhide()
             else:
-                if self.key_just_pressed.get(K_d, False):
-                    if current_time - self.last_action_time > self.action_delay:
+                if pressed_now(jp, "weapon"):
+                    if sim_passed(current_time, self.last_action_time, self.action_delay):
                         self._use_weapon()
                         self.last_action_time = current_time
                 return
 
         # Get arrow key directions
         dx, dy = 0, 0
-        if keys[K_UP]:
+        if held(keys, "move_up"):
             dy = -1
-        elif keys[K_DOWN]:
+        elif held(keys, "move_down"):
             dy = 1
-        if keys[K_LEFT]:
+        if held(keys, "move_left"):
             dx = -1
-        elif keys[K_RIGHT]:
+        elif held(keys, "move_right"):
             dx = 1
 
         # A + Arrow, with an established grab already facing a wall (see
@@ -905,9 +897,8 @@ class InputMixin:
             # to face this arrow.
             if self.grab_state is not None:
                 self._clear_grab_state()
-            fresh = any(self.key_just_pressed.get(k, False)
-                        for k in (K_a, K_UP, K_DOWN, K_LEFT, K_RIGHT))
-            if fresh and current_time - self.last_action_time > self.action_delay:
+            fresh = pressed_now(jp, "grab", *keymap.MOVE_NAMES)
+            if fresh and sim_passed(current_time, self.last_action_time, self.action_delay):
                 self._try_pickup(dx, dy)
                 self.last_action_time = current_time
             self._update_grab_pull_state(dx, dy)
@@ -917,17 +908,16 @@ class InputMixin:
         # door/pickup) only fires on a fresh press; the continuous hold-state
         # update runs every frame A is held so a plain wall shows "grab".
         if a_held and dx == 0 and dy == 0:
-            if self.key_just_pressed.get(K_a, False):
-                if current_time - self.last_action_time > self.action_delay:
+            if pressed_now(jp, "grab"):
+                if sim_passed(current_time, self.last_action_time, self.action_delay):
                     self._try_grab()
                     self.last_action_time = current_time
             self._update_grab_pull_state(0, 0)
             return
 
         # Movement (arrow keys only, no A held)
-        held_axes = [delta for key, delta in (
-            (K_UP, (0, -1)), (K_LEFT, (-1, 0)),
-            (K_DOWN, (0, 1)), (K_RIGHT, (1, 0))) if keys[key]]
+        held_axes = [delta for name, delta in keymap.MOVE_ACTIONS
+                     if held(keys, name)]
         if not a_held and held_axes:
             # A sword swing (or lift) roots you for its duration, classic
             # style. Once the gani finishes (setback -> idle) held arrows
@@ -937,16 +927,18 @@ class InputMixin:
                 self.is_moving = False
                 self._clear_push_hold()
                 return
-            # Frame-rate independent movement: accumulate distance at walk_speed
-            # and apply it in MOVE_STEP-sized steps so speed is identical
-            # regardless of frame rate.
+            # One tick of walking: walk_speed * TICK_SECONDS tiles (0.5 at
+            # 10 tiles/s, TPlayer.cpp:807/7436), applied in MOVE_STEP-sized
+            # collision steps; a remainder (shield x1.2) carries over. Per
+            # tick, so a script-changed frame tick changes the walking speed
+            # in real time, as in the reference.
             speed = self.walk_speed
             # FourPlay TPlayer.cpp:7447
             if is_hidden(self.client.player):
                 speed = HIDDEN_SPEED
             elif not self.is_swimming and getattr(self.client.player, 'shield_power', 0) > 2:
                 speed *= SHIELD_SPEED_MULTIPLIER
-            self._move_accum += speed * self._frame_dt
+            self._move_accum += speed * self.clock.TICK_SECONDS
             steps = 0
             while self._move_accum >= MOVE_STEP and steps < 8:
                 for ax, ay in held_axes:
@@ -961,3 +953,26 @@ class InputMixin:
             self.is_moving = False
             self._move_accum = 0.0
             self._clear_push_hold()
+
+
+class _TickKeys:
+    """A key-state sequence for one tick: `pressed[key]` is True when the key
+    is held now or went down since the previous tick. Indexes like
+    pygame.key.get_pressed() (keymap.held, _feed_gs1_input)."""
+
+    __slots__ = ("_pressed", "_latched")
+
+    def __init__(self, pressed, latched) -> None:
+        self._pressed = pressed
+        self._latched = latched
+
+    def __getitem__(self, key):
+        try:
+            if self._pressed[key]:
+                return True
+        except (IndexError, KeyError, TypeError):
+            pass
+        return bool(self._latched.get(key, False))
+
+    def __len__(self) -> int:
+        return len(self._pressed)

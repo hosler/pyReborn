@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pygame
 
+from pyreborn.clock import Clock
 from pyreborn.game.input import InputMixin
 from pyreborn.game.render_entities import EntityRenderMixin
 from pyreborn.player import Player
@@ -19,6 +20,7 @@ class ChatInputHarness(InputMixin):
         self.chat_messages = []
         self.chat_seq = 0
         self.client = SimpleNamespace(
+            clock=Clock(),
             say=Mock(),
             send_level_chat=Mock(),
             player=Player(),
@@ -33,11 +35,11 @@ def enter_event():
     return SimpleNamespace(key=pygame.K_RETURN)
 
 
-def test_enter_routes_normal_typed_chat_to_curchat_once():
+def test_enter_routes_normal_typed_chat_to_curchat_once(sim_time):
     game = ChatInputHarness("hello nearby")
 
-    with patch("pyreborn.game.input.time.time", return_value=12.5):
-        game._handle_chat_input(enter_event())
+    sim_time(12.5)
+    game._handle_chat_input(enter_event())
 
     game.client.send_level_chat.assert_called_once_with("hello nearby")
     game.client.say.assert_not_called()
@@ -58,13 +60,13 @@ def test_toall_prefix_routes_stripped_message_to_global_chat():
     assert game.chat_messages == ["[You] hello everyone"]
 
 
-def test_local_bubble_replaces_old_chat_and_clears_on_expiry():
+def test_local_bubble_replaces_old_chat_and_clears_on_expiry(sim_time):
     game = ChatInputHarness("new chat")
     game.local_chat_text = "old chat"
     game.client.player.chat = "old chat"
 
-    with patch("pyreborn.game.input.time.time", return_value=20.0):
-        game._handle_chat_input(enter_event())
+    sim_time(20.0)
+    game._handle_chat_input(enter_event())
 
     # Client.send_level_chat supplies its optimistic Player.chat echo in the
     # real client; model that state before exercising the render-time clear.
@@ -72,12 +74,12 @@ def test_local_bubble_replaces_old_chat_and_clears_on_expiry():
     game.chat_bubble_duration = 4.0
     game._render_speech_bubble = Mock()
 
-    with patch("pyreborn.game.render_entities.time.time", return_value=23.9):
-        EntityRenderMixin._render_player_chat(game, 10, 20)
+    sim_time(23.9)
+    EntityRenderMixin._render_player_chat(game, 10, 20)
     game._render_speech_bubble.assert_called_once_with(10, 20, "new chat")
 
-    with patch("pyreborn.game.render_entities.time.time", return_value=24.0):
-        EntityRenderMixin._render_player_chat(game, 10, 20)
+    sim_time(24.0)
+    EntityRenderMixin._render_player_chat(game, 10, 20)
     assert game.local_chat_text == ""
     assert game.client.player.chat == ""
 

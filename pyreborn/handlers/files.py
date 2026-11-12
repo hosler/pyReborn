@@ -18,6 +18,7 @@ from ..packets import (
     parse_large_file_marker,
     parse_large_file_size,
 )
+from ..client_callbacks import emit
 from .registry import handles
 
 logger = logging.getLogger(__name__)
@@ -152,8 +153,7 @@ def handle_file(client, data):
                 adopt_gmap(client, filename, file_data)
             if filename.lower().endswith('.gupd'):
                 update_packages.gupd_arrived(client, filename, file_data)
-            if client.on_file:
-                client.on_file(filename, file_data)
+            emit(client, 'on_file', filename, file_data)
 
 
 @handles(PacketID.PLO_FILESENDFAILED)
@@ -177,8 +177,7 @@ def handle_file_send_failed(client, data):
             logger.warning(
                 "Server refused file %r (attempt %d of %d)",
                 filename, attempts, _MAX_FILE_ATTEMPTS)
-        if client.on_file_send_failed:
-            client.on_file_send_failed(filename)
+        emit(client, 'on_file_send_failed', filename)
         if filename.lower().endswith('.gupd'):
             update_packages.gupd_failed(client, filename)
 
@@ -249,8 +248,7 @@ def handle_large_file_end(client, data):
         adopt_gmap(client, filename, file_data)
     if filename.lower().endswith('.gupd'):
         update_packages.gupd_arrived(client, filename, file_data)
-    if client.on_file:
-        client.on_file(filename, file_data)
+    emit(client, 'on_file', filename, file_data)
 
 
 @handles(PacketID.PLO_FILEUPTODATE)
@@ -269,8 +267,7 @@ def handle_file_uptodate(client, data):
         for pending_name in list(client._pending_files):
             if normalize_asset_name(pending_name) == key:
                 client._pending_files.discard(pending_name)
-        if client.on_file_uptodate:
-            client.on_file_uptodate(filename)
+        emit(client, 'on_file_uptodate', filename)
 
 
 @handles(PacketID.PLO_UPDATEPACKAGESIZE)

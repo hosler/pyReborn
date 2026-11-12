@@ -14,12 +14,12 @@ packet_codec/files.py), and MAX_REQUESTED_FILES remembered file requests.
 """
 
 import logging
-import time
 import zlib
 from dataclasses import dataclass, field
 from typing import List, Set
 
 from .asset_paths import normalize_asset_name
+from .client_callbacks import emit
 from .packet_codec.files import (
     UPDATE_PACKAGE_NAME_MAX,
     gupd_name_reserved,
@@ -36,10 +36,6 @@ MAX_REQUESTED_FILES = 4096
 #: written off as failed (expire_stalled). A server that never answers a 159
 #: would otherwise leave the package "downloading" forever.
 PACKAGE_STALL_TIMEOUT = 120.0
-
-
-def _now() -> float:
-    return time.monotonic()
 
 
 @dataclass
@@ -104,10 +100,9 @@ def file_chunk(client, filename: str, length: int) -> None:
     for package in client._update_packages.values():
         if package.downloading and not package.done and key in package.names:
             package.received += length
-            package.last_activity = _now()
-            if client.on_update_package_progress:
-                client.on_update_package_progress(
-                    package.name, package.received, package.size)
+            package.last_activity = client.clock.frame_now()
+            emit(client, 'on_update_package_progress',
+                 package.name, package.received, package.size)
             return
 
 
@@ -121,9 +116,8 @@ def handle_package_size(client, data: bytes) -> None:
         return  # not asked for by us (reference: create=false -> ignored)
     package.size = size
     package.received = 0
-    package.last_activity = _now()
-    if client.on_update_package_progress:
-        client.on_update_package_progress(name, 0, size)
+    package.last_activity = client.clock.frame_now()
+    emit(client, 'on_update_package_progress', name, 0, size)
 
 
 def handle_package_done(client, data: bytes) -> None:
@@ -133,18 +127,15 @@ def handle_package_done(client, data: bytes) -> None:
         return
     package.done = True
     package.downloading = False
-    if client.on_update_package_downloaded:
-        client.on_update_package_downloaded(name)
-    if (not any(p.downloading for p in client._update_packages.values())
-            and client.on_packages_download_complete):
-        client.on_packages_download_complete()
+    emit(client, 'on_update_package_downloaded', name)
+    if not any(p.downloading for p in client._update_packages.values()):
+        emit(client, 'on_packages_download_complete')
 
 
 def _fail(client, package: UpdatePackage) -> None:
     package.failed = True
     package.downloading = False
-    if client.on_update_package_failed:
-        client.on_update_package_failed(package.name)
+    emit(client, 'on_update_package_failed', package.name)
 
 
 def cancel_package(client, name: str) -> bool:
@@ -160,7 +151,7 @@ def cancel_package(client, name: str) -> bool:
 def expire_stalled(client, now: float = None) -> list:
     """Fail every downloading package idle for PACKAGE_STALL_TIMEOUT seconds.
     Client.update() calls this every frame. Returns the names expired."""
-    now = _now() if now is None else now
+    now = client.clock.frame_now() if now is None else now
     candidates = [p for p in client._update_packages.values()
                   if p.downloading
                   and now - p.last_activity >= PACKAGE_STALL_TIMEOUT]
@@ -187,8 +178,7 @@ def gupd_failed(client, filename: str) -> None:
         package.downloading = False
     if any(str(n).lower().endswith('.gupd') for n in client._pending_files):
         return
-    if client.on_update_package_failed:
-        client.on_update_package_failed(filename)
+    emit(client, 'on_update_package_failed', filename)
 
 
 def note_requested(client, filename: str) -> None:

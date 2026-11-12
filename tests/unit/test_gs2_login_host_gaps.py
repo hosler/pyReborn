@@ -60,7 +60,7 @@ def test_gettextheight_uses_the_game_shell_font_metrics_when_present():
     rt = ClientGS2()
     font = pygame.font.Font(None, 24)
     rt.game_shell = SimpleNamespace(
-        _showtext_font=lambda name, size, bold: font)
+        showtext_font=lambda name, size, bold: font)
     assert call(rt, "gettextheight", [1, "friz", "b"]) == float(font.get_height())
 
 
@@ -668,7 +668,7 @@ def test_loadvarsfromarray_populates_from_an_array():
 def test_renderer_and_input_platform_toggles_are_inert():
     rt = ClientGS2()
     for name in ("switchtodirectx", "adventure_setcheatwindows",
-                 "adventure_getframetick", "adventure_invokekeyevent"):
+                 "setframetick", "adventure_invokekeyevent"):
         assert call(rt, name, [1]) == 0.0
     assert call(rt, "getiphonemodel") == ""
 

@@ -38,6 +38,15 @@ dev = [
     "flake8",
     "black",
     "mypy",
+    # The test suite imports these directly: the pygame client and its
+    # offline fixture (pygame-ce; plain pygame has no wheel for current
+    # Pythons and builds without the font module), screenshots (Pillow),
+    # property tests (hypothesis) and async tests (pytest-asyncio).
+    # pygserver is a test dependency too, installed from its checkout.
+    "pygame-ce>=2.4",
+    "Pillow",
+    "hypothesis>=6.0",
+    "pytest-asyncio>=0.21",
 ]
 examples = [
     # No additional dependencies for examples

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pytest
 
+from pyreborn.clock import Clock
 from pyreborn import Client, npc_flags
 from pyreborn.game.callbacks.gs1_callbacks import wire_gs1_callbacks
 from pyreborn.gs1_client import ClientGS1
@@ -47,9 +48,10 @@ def _run(gs1, npc_id, event="playerenters"):
 def _game(**client_attrs):
     """A stand-in GameClient: enough surface for wire_gs1_callbacks and the
     callbacks under test."""
-    client = SimpleNamespace(player=SimpleNamespace(id=1, account="a"), **client_attrs)
+    client = SimpleNamespace(player=SimpleNamespace(id=1, account="a"),
+                             clock=Clock(), **client_attrs)
     game = SimpleNamespace(
-        gs1=ClientGS1(None), client=client, player_anim=SimpleNamespace(),
+        gs1=ClientGS1(None), client=client, clock=client.clock, player_anim=SimpleNamespace(),
         active_bombs=[], thrown_objects=[], other_thrown_objects=[],
         active_projectiles=[])
     wire_gs1_callbacks(game)
@@ -450,7 +452,7 @@ def test_direction_names_and_wrapping():
 
 
 def test_flying_callback_spawns_a_projectile_at_arrow_speed():
-    game = _game(_ARROW_SPEED=20.0, _ARROW_MAX_DISTANCE=128.0)
+    game = _game(ARROW_SPEED=20.0, ARROW_MAX_DISTANCE=128.0)
     game.gs1.on_flying(4.0, 5.0, 3, 2)
     proj = game.active_projectiles[0]
     assert (proj["dx"], proj["dy"], proj["gani"]) == (20.0, 0, "fireblast")
@@ -529,7 +531,7 @@ def test_takeplayerhorse_loop_dismounts_once():
 
 def test_script_spawn_caps_stop_a_runaway_loop_across_events():
     from pyreborn.game.callbacks.gs1_callbacks import MAX_SCRIPT_OBJECTS
-    game = _game(_ARROW_SPEED=20.0, _ARROW_MAX_DISTANCE=128.0)
+    game = _game(ARROW_SPEED=20.0, ARROW_MAX_DISTANCE=128.0)
     for _ in range(MAX_SCRIPT_OBJECTS * 2):
         game.gs1.on_flying(1.0, 1.0, 0, 2)
     assert len(game.active_projectiles) == MAX_SCRIPT_OBJECTS

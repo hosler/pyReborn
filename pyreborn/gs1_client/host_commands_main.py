@@ -6,7 +6,8 @@ import math
 from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.gs1.values import to_num, to_str
 
-from ..sprites import REBORN_PALETTE
+from ..client_callbacks import emit
+from ..palette import REBORN_PALETTE
 from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _current_baddies, _item_ids, _push_dir
 from .registry import _FALL_THROUGH, _GS1_MAIN_COMMANDS, _gs1_command
 
@@ -183,12 +184,10 @@ class MainCommandsMixin:
             except Exception:
                 pass
             player.hearts = new
-            cb = getattr(cl, "on_hurt", None)
-            if cb:
-                try:
-                    cb(0, old - new, 0, from_x or 0, from_y or 0)
-                except Exception:
-                    pass
+            try:
+                emit(cl, "on_hurt", 0, old - new, 0, from_x or 0, from_y or 0)
+            except Exception:
+                pass
         else:
             player.set_hearts(new)
             try:

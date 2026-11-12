@@ -13,7 +13,7 @@ from pyreborn.packets import PacketID, build_claim_pker
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+    monkeypatch.setattr('time.monotonic', lambda: 100.0)
     client = Client('localhost', 14900)
     client.sent = []
     client._protocol = SimpleNamespace(

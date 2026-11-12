@@ -3,6 +3,8 @@
 import math
 from dataclasses import dataclass
 
+from .clock import sim_passed
+
 # TInitStatics.cpp:1554-1559, hurtflyd: three wall probes per edge,
 # in up/left/down/right order. These are collision offsets, not motion deltas.
 HURT_FLY_PROBES = (
@@ -36,10 +38,10 @@ class HurtState:
     generation: int = 0
 
     def immune(self, now):
-        return now < self.until
+        return not sim_passed(now, self.until)
 
     def input_locked(self, now):
-        return now < self.started + INPUT_LOCK_TICKS * TICK_SECONDS
+        return not sim_passed(now, self.started, INPUT_LOCK_TICKS * TICK_SECONDS)
 
     def start(self, dx, dy, now):
         self.started, self.until = now, now + HURT_SECONDS

@@ -14,8 +14,8 @@ from .test_lift_oracle import Game
 
 
 @pytest.fixture
-def game(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def game(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     return Game()
 
 
@@ -59,7 +59,7 @@ def test_held_bomb_detonation_reports_explosion_once(game, in_flight):
         game._render_world_object = Mock()
         game._update_and_render_thrown(.05)
     else:
-        game._render_bombs()
+        game._advance_bombs()
     point = bomb['x'], bomb['y']
     assert game._detonate_bomb(bomb)
     assert not game._detonate_bomb(bomb)
@@ -85,7 +85,7 @@ def test_authoritative_bomb_drop_clears_local_carry_and_registry(game):
     game.bomb()
     assert game._lift_in_front(3)
     game.client.player.update_from_props({'carry_sprite': -1})
-    game._render_bombs()
+    game._advance_bombs()
     assert not game.client.player.is_carrying()
     assert game.active_bombs == []
     assert not game.thrown_objects
@@ -137,12 +137,12 @@ def test_hurt_without_generation_advance_still_presents_and_throws(game, auto, d
     assert len(game.damage_numbers) == 1
 
 
-def test_hurt_dedupes_only_same_advanced_generation_and_timestamp(game, monkeypatch):
+def test_hurt_dedupes_only_same_advanced_generation_and_timestamp(sim_time, game, monkeypatch):
     wire_client_callbacks(game)
     assert game.client.respond_to_hurt(.5)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
     assert len(game.damage_numbers) == 1
-    monkeypatch.setattr('time.time', lambda: 100.5)
+    sim_time(lambda: 100.5)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
     assert len(game.damage_numbers) == 2

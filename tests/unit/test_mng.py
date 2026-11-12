@@ -80,12 +80,16 @@ def test_object_features_fall_back_to_first_frame():
 
 
 def test_sprite_manager_exposes_animation_and_static_frame(monkeypatch):
-    manager = SpriteManager([])
+    # Image animation is presentation: it follows the clock's frame time
+    # (it used to read pygame's get_ticks, which nothing reads any more).
+    from pyreborn.clock import Clock
+    t = [0.0]
+    manager = SpriteManager([], clock=Clock(source=lambda: t[0]))
     first = manager.load_bytes("lamp.mng", _mng())
     animation = manager.get_animation("lamp.mng")
     assert animation is not None and len(animation.frames) == 2
     assert first is manager.get_static_sheet("lamp.mng")
     assert first.get_at((0, 0))[:3] == (255, 0, 0)
 
-    monkeypatch.setattr(pygame.time, "get_ticks", lambda: 150)
+    t[0] = 0.15
     assert manager.load_sheet("lamp.mng").get_at((0, 0))[:3] == (0, 0, 255)

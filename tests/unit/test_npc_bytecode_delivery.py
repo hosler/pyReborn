@@ -113,7 +113,7 @@ def test_plo131_vector_reaches_the_gs2_runtime_for_that_npc(
 
     assert loaded == [('npc', 1234, b'\xde\xad\xbe')]
     assert client.gs2_bytecode['npc'][1234] == b'\xde\xad\xbe'
-    runtime._prev_bytecode_cb.assert_called_once_with(
+    client.on_gs2_bytecode.assert_called_once_with(
         'npc', 1234, b'\xde\xad\xbe')
 
 

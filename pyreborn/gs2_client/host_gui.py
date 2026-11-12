@@ -5,7 +5,7 @@ from __future__ import annotations
 from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
-from .registry import GuiPopUpEditCtrl, _FALL_THROUGH, _GS2_GUI_METHODS, _GS2_POPUP_METHODS, _gs2_builtin
+from .registry import _FALL_THROUGH, _GS2_GUI_METHODS, _GS2_POPUP_METHODS, _gs2_builtin
 
 class HostGuiMixin:
 

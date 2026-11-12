@@ -229,8 +229,7 @@ class PreCommandsMixin:
             to_num(args[0]) if args else 0.5)
         if rt.on_freezeplayer:
             rt.on_freezeplayer(secs)
-        import time as _t
-        rt._freeze_until = _t.monotonic() + max(0.0, secs)
+        rt._freeze_until = rt.clock.sim_now() + max(0.0, secs)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "hitobjects")
     def _cmd_hitobjects(self, name, args, ctx, imgs):

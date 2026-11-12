@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import time
 import logging
 import math
 from typing import Optional
 
 from reborn_protocol import BDMODE, BDPROP, PLPROP, PLSTATUS
-from reborn_protocol.coords import local_coord, segment_at, world_to_local
+from reborn_protocol.coords import local_coord, world_to_local
 
-from .game.constants import BOMB_FUSE_TIME
+from .client_callbacks import emit
+from .constants import BOMB_FUSE_TIME
+from .gmap_coords import level_at
 from .packets import (
     PacketBuilder, PacketID, build_animation, build_arrow_add,
     build_arrow_count, build_attack_player, build_baddy_add,
@@ -173,7 +174,7 @@ class ActionsMixin:
             return False
         if not server_forced and not self.can_receive_local_hit():
             return False
-        now = time.time()
+        now = self.clock.sim_now()
         was_immune = self.player.hurt.immune(now)
         if self.player.hearts > 0:
             self._pker_claimed = False
@@ -346,7 +347,7 @@ class ActionsMixin:
         ticks = int(seconds * self.HIDE_PLAYER_TICKS_PER_SECOND + 0.5)
         # the counter is hidden while >= 0, so n ticks hide for n + 1 ticks
         self.hide_player_until = (
-            time.monotonic() + (ticks + 1) / self.HIDE_PLAYER_TICKS_PER_SECOND)
+            self.clock.sim_now() + (ticks + 1) / self.HIDE_PLAYER_TICKS_PER_SECOND)
         self.hide_player_hearts = self.player.hearts
         status = int(self.player.status)
         if status & PLSTATUS.HIDDEN:
@@ -360,7 +361,7 @@ class ActionsMixin:
         hurt = (self.hide_player_hearts is not None
                 and player.hearts < self.hide_player_hearts)
         self.hide_player_hearts = player.hearts
-        if not hurt and time.monotonic() < self.hide_player_until:
+        if not hurt and not self.clock.passed(self.hide_player_until):
             return
         self.hide_player_until = 0.0
         self.hide_player_hearts = None
@@ -405,14 +406,18 @@ class ActionsMixin:
     def server_warp_allowed(self) -> bool:
         """True while neither the decline cooldown nor the offer cap blocks
         a script-initiated server warp or a new consent prompt."""
-        return (time.monotonic() >= self.server_warp_declined_until
+        return (self.clock.frame_now() >= self.server_warp_declined_until
                 and self.server_warp_offers < self.SERVER_WARP_MAX_OFFERS)
+
+    def note_server_warp_blocked(self, destination: str) -> None:
+        """Public name of _note_server_warp_blocked."""
+        self._note_server_warp_blocked(destination)
 
     def _note_server_warp_blocked(self, destination: str) -> None:
         """Tell the player (log line + on_server_warp_blocked) that a script's
         warp was suppressed by the cooldown or cap, at most once per
         SERVER_WARP_NOTICE_INTERVAL seconds."""
-        now = time.monotonic()
+        now = self.clock.frame_now()
         last = self.server_warp_notice_at
         if last is not None and now - last < self.SERVER_WARP_NOTICE_INTERVAL:
             return
@@ -420,8 +425,7 @@ class ActionsMixin:
         logger.warning("serverwarp(%r) blocked: server-move prompts are "
                        "limited (decline cooldown or per-session cap)",
                        destination[:40])
-        if self.on_server_warp_blocked:
-            self.on_server_warp_blocked(destination)
+        emit(self, 'on_server_warp_blocked', destination)
 
     def note_server_warp_offer(self) -> bool:
         """Count a consent prompt about to open; False when none may."""
@@ -433,7 +437,7 @@ class ActionsMixin:
     def note_server_warp_declined(self) -> None:
         """The player said no: start the global decline cooldown."""
         self.server_warp_declined_until = (
-            time.monotonic() + self.SERVER_WARP_DECLINE_COOLDOWN)
+            self.clock.frame_now() + self.SERVER_WARP_DECLINE_COOLDOWN)
 
     def reset_server_warp_limits(self) -> None:
         """The player used the server browser themselves: lift the offer cap."""
@@ -478,7 +482,7 @@ class ActionsMixin:
         if not self.server_warp_allowed():
             self._note_server_warp_blocked(destination)
             return False
-        now = time.monotonic()
+        now = self.clock.frame_now()
         if (self.last_server_warp_at
                 and now - self.last_server_warp_at < self.SERVER_WARP_MIN_INTERVAL):
             return False
@@ -755,7 +759,7 @@ class ActionsMixin:
         """Level whose board holds world (x, y): its gmap segment, else the
         current level."""
         if self.in_gmap_segment:
-            name = self.gmap_grid.get(segment_at(x, y))
+            name = level_at(self.gmap_grid, x, y)
             if name:
                 return name
         return self.get_current_level_from_position()
@@ -806,7 +810,7 @@ class ActionsMixin:
                 self._level_at_world(x, y), int(lx * 2) / 2.0, int(ly * 2) / 2.0,
                 wx=x, wy=y, owner_id=self.player.id or 0, from_player=from_player,
                 power=power & 0x07, fuse_s=(ticks + 1) * 0.05,
-                placed_at=time.time(), extra={'local': True})
+                placed_at=self.clock.sim_now(), extra={'local': True})
         if ok and consume_ammo:
             self.player.bombs -= 1
             self._protocol.send_packet(PacketID.PLI_PLAYERPROPS,
@@ -880,11 +884,11 @@ class ActionsMixin:
             # broadcast PLI_ARROWADD to the whole level, self included -
             # see _own_recent_arrows) doesn't get simulated as an incoming
             # attack against ourselves.
-            now = time.time()
-            self._own_recent_arrows.append((now, direction, float(x), float(y)))
+            self._own_recent_arrows.append(
+                (self.clock.sim_now(), direction, float(x), float(y)))
             self._own_recent_arrows = [
                 e for e in self._own_recent_arrows
-                if now - e[0] < self._OWN_ARROW_ECHO_WINDOW]
+                if not self.clock.passed(e[0], self._OWN_ARROW_ECHO_WINDOW)]
         return ok
 
     def remove_horse(self, x: float, y: float) -> bool:

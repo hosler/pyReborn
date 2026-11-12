@@ -21,6 +21,7 @@ from ..packets import (
     parse_status_list,
 )
 from ..ground_items import ITEM_NAMES, WEAPON_GRANT_ITEMS
+from ..client_callbacks import emit
 from .registry import handles
 
 
@@ -42,8 +43,7 @@ def handle_disc_message(client, data):
     # Disconnect message (packet 16) - server kicked us / is shutting down
     reason = data.decode('latin-1', errors='replace').strip()
     client.disconnect_reason = reason
-    if client.on_disconnect:
-        client.on_disconnect(reason)
+    client._notify_disconnect(reason)
     client.disconnect()
 
 
@@ -62,8 +62,7 @@ def handle_ghost_mode(client, data):
     if not data:
         return
     client.ghost_mode = data[0] - 32
-    if client.on_ghost_mode:
-        client.on_ghost_mode(client.ghost_mode)
+    emit(client, 'on_ghost_mode', client.ghost_mode)
 
 
 @handles(PacketID.PLO_SIGNATURE)
@@ -77,8 +76,7 @@ def handle_flag_set(client, data):
     # Server flag set/clear (packet 28).
     name, value = parse_flag_set(data)
     client.global_flags[name] = value
-    if client.on_flag:
-        client.on_flag(name, value)
+    emit(client, 'on_flag', name, value)
 
 
 @handles(PacketID.PLO_FLAGDEL)
@@ -86,31 +84,27 @@ def handle_flag_del(client, data):
     # Server-wide flag removed (packet 31).
     name = parse_flag_del(data)
     client.global_flags.pop(name, None)
-    if client.on_flag_del:
-        client.on_flag_del(name)
+    emit(client, 'on_flag_del', name)
 
 
 @handles(PacketID.PLO_FREEZEPLAYER2)
 def handle_freeze_player(client, data):
     # Freeze / unfreeze player (packets 154/155) - empty payloads.
     client.frozen = True
-    if client.on_freeze:
-        client.on_freeze(True)
+    emit(client, 'on_freeze', True)
 
 
 @handles(PacketID.PLO_UNFREEZEPLAYER)
 def handle_unfreeze_player(client, data):
     client.frozen = False
-    if client.on_freeze:
-        client.on_freeze(False)
+    emit(client, 'on_freeze', False)
 
 
 @handles(PacketID.PLO_HIDENPCS)
 def handle_hide_npcs(client, data):
     # Hide all NPCs (packet 151) - empty payload.
     client.npcs_hidden = True
-    if client.on_hide_npcs:
-        client.on_hide_npcs()
+    emit(client, 'on_hide_npcs')
 
 
 @handles(PacketID.PLO_SERVERWARP)
@@ -120,8 +114,7 @@ def handle_server_warp(client, data):
     # The request is answered, so the same destination may be asked again
     # (the reference never needs this: it follows the answer at once).
     client.last_server_warp = ""
-    if client.on_server_warp:
-        client.on_server_warp(client.server_warp_info)
+    emit(client, 'on_server_warp', client.server_warp_info)
 
 
 @handles(PacketID.PLO_KINGDOMSMODE)
@@ -151,8 +144,7 @@ def handle_profile(client, data):
     profile = parse_profile(data)
     if profile.get('account'):
         client.profiles[profile['account']] = profile
-    if client.on_profile:
-        client.on_profile(profile)
+    emit(client, 'on_profile', profile)
 
 
 @handles(PacketID.PLO_NPCSERVERADDR)
@@ -180,8 +172,7 @@ def handle_default_weapon(client, data):
         if weapon is None:
             weapon = client.weapons[name] = {
                 'name': name, 'image': name + '.png', 'script': ''}
-            if client.on_weapon_add:
-                client.on_weapon_add(name, weapon)
+            emit(client, 'on_weapon_add', name, weapon)
 
 
 @handles(PacketID.PLO_STAFFGUILDS)
@@ -198,8 +189,7 @@ def handle_login_complete(client, data):
     # 700-709 ("This seems to inform the client that they have logged
     # in."). No payload to parse; just latch the flag.
     client.login_complete = True
-    if client.on_login_complete:
-        client.on_login_complete()
+    emit(client, 'on_login_complete')
 
 
 @handles(PacketID.PLO_GHOSTICON)

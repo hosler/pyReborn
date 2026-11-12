@@ -7,6 +7,10 @@ Provides static methods for checking various game state issues.
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
+from reborn_protocol.coords import segment_origin
+
+from pyreborn.gmap_coords import grid_of, world_from_wire
+
 
 @dataclass
 class CheckResult:
@@ -38,23 +42,18 @@ class BugDetector:
                      gmap_grid: Optional[Dict[Tuple[int, int], str]]) -> Tuple[float, float]:
         """Convert a level-local (0-63) position to gmap world coords.
 
-        Mirrors the `world = local + grid_position * 64` convention used
-        throughout this codebase - see pyreborn/client.py's
-        `_update_npc_world_coords` and `GameBot._resolve_level_name` for the
-        same lookup (level name -> grid cell in gmap_grid). A value that is
-        already world (>=64 or negative - only possible from a high-precision
-        X2/Y2 prop) is passed through unchanged, so this is safe to call on
-        positions that might already be normalized. Returns (x, y) unchanged
-        if `level` is not in `gmap_grid` (non-gmap, or an unknown segment).
+        The same conversion as the client's NPC path
+        (`pyreborn.gmap_coords.world_from_wire` on the level's segment). A
+        value that is already world (>=64 or negative) is passed through
+        unchanged, so this is safe to call on positions that might already
+        be normalized. Returns (x, y) unchanged if `level` is not in
+        `gmap_grid` (non-gmap, or an unknown segment).
         """
-        if not gmap_grid or not level:
+        cell = grid_of(gmap_grid, level)
+        if cell is None:
             return x, y
-        for (gx, gy), name in gmap_grid.items():
-            if name == level:
-                wx = x if (x >= 64 or x < 0) else x + gx * 64
-                wy = y if (y >= 64 or y < 0) else y + gy * 64
-                return wx, wy
-        return x, y
+        ox, oy = segment_origin(*cell)
+        return world_from_wire(x, ox), world_from_wire(y, oy)
 
     @staticmethod
     def check_position_sync(client, expected_x: float, expected_y: float,

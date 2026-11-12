@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import Callable, List, Optional, Tuple
 
-# Control-function -> bound key display name, matching input.py's
-# _feed_gs1_input mapping (scripting-gs1-functions.md control table):
+# Control-function -> bound key display name, matching the gs1_index column
+# of game/keymap.py (scripting-gs1-functions.md control table):
 # 0=up 1=left 2=down 3=right 4=weapon(D) 5=sword(S) 6=grab(A) 7=map(M)
 # 8=chat(Tab) 9=inventory(Q) 10=pause(P, unbound here).
 _SIGN_KEY_NAMES = {

@@ -141,11 +141,6 @@ def parse_fullstop(data: bytes) -> bool:
     return True
 
 
-def parse_fullstop2(data: bytes) -> bool:
-    """Packet 177 (PLO_NEWWORLDMODE); same bare marker as parse_fullstop."""
-    return parse_fullstop(data)
-
-
 def parse_server_text(data: bytes) -> str:
     """PLO_SERVERTEXT (82): raw text; answer to PLI_REQUESTTEXT/SENDTEXT."""
     return data.decode('latin-1', errors='replace')

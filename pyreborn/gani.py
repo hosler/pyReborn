@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import re
 
 from .asset_paths import normalize_asset_name
-from .sprites import find_asset_file
+from .asset_paths import find_asset_file
 
 # Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
 # per-segment surface cache and sprites.py's sheet/sprite caches. A real

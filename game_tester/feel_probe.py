@@ -157,30 +157,13 @@ class Probe:
             raise TimeoutError("overall --seconds deadline reached")
         game = self.game
         self.frame += 1
-        now = time.monotonic()
-        game._frame_dt = min(1.0 / FPS, 0.1)
-        game._handle_events()
-        game._handle_input(now)
-        self.client.update(timeout=0)
-        game._load_new_npcs()
-        game._process_pending_warp()
-        game._process_self_shoots()
-        game.gs1.process_coroutines(game._frame_dt)
-        game.gs1.process_timeouts(game._frame_dt)
-        game.gs2.process_coroutines(game._frame_dt)
-        game.gs2.process_timeouts(game._frame_dt)
-        game._check_scripted_link_warp()
-        game.gs1.advance_input_frame()
-        game._check_level_change()
-        game._update_swimming_state()
-        game._update_visual_position(game._frame_dt)
-        game._update_animations(game._frame_dt)
-        game._last_dt = game._frame_dt
-        game._render()
-        game.viewport.present()
+        # The real frame; the step reads the game's own clock. The
+        # simulation advances in 50 ms ticks: one on every third frame here.
+        game.step(1.0 / FPS, strict=True)
         gani, gani_frame = self.anim()
         if record:
-            self.emit("frame", x=self.client.x, y=self.client.y,
+            self.emit("frame", tick=game.clock.tick,
+                      x=self.client.x, y=self.client.y,
                       visual_x=getattr(game, "visual_x", None),
                       visual_y=getattr(game, "visual_y", None),
                       direction=self.client.player.direction,
@@ -188,7 +171,7 @@ class Probe:
                       effects=self.effect_rows())
         if capture or self.frame - self._last_capture >= FPS:
             self.capture(capture or "periodic")
-        game.clock.tick(FPS)
+        game.frame_limiter.tick(FPS)
 
     def phase_call(self, name: str, fn) -> Any:
         self.phase = name
@@ -209,13 +192,9 @@ class Probe:
             return None
 
     def settle(self) -> None:
-        # These are the one-time prologue steps from GameClient.run(), kept
-        # here so failures are attributed to SETTLE and still make a summary.
-        self.game._load_npc_scripts()
-        self.game._trigger_playerenters()
-        self.game.npc_handler.update_npcs()
-        self.game._gs1_level = self.client._current_level_name
-        self.game._gs1_visual_level_epoch = self.client._plain_level_change_epoch
+        # GameClient's one-time startup, run here so a failure is attributed
+        # to SETTLE and still makes a summary.
+        self.game.start()
         limit = min(self.deadline, time.monotonic() + 25)
         while time.monotonic() < limit:
             self.pump(record=False)
@@ -353,12 +332,17 @@ class Probe:
         try:
             for _ in range(frames):
                 before = (float(self.client.x), float(self.client.y))
+                visual = (getattr(self.game, "visual_x", 0.0),
+                          getattr(self.game, "visual_y", 0.0))
                 self.pump()
                 gani, gani_frame = self.anim()
-                rows.append({"frame": self.frame, "x": self.client.x,
+                rows.append({"frame": self.frame, "tick": self.game.clock.tick,
+                             "x": self.client.x,
                              "y": self.client.y, "dx": self.client.x - before[0],
-                             "dy": self.client.y - before[1], "gani": gani,
-                             "gani_frame": gani_frame})
+                             "dy": self.client.y - before[1],
+                             "vdx": getattr(self.game, "visual_x", 0.0) - visual[0],
+                             "vdy": getattr(self.game, "visual_y", 0.0) - visual[1],
+                             "gani": gani, "gani_frame": gani_frame})
         finally:
             self.keys.release(*keys)
             self.pump()
@@ -371,8 +355,14 @@ class Probe:
             for row in rows:
                 row["direction"] = direction
             all_rows.extend(rows)
+        # Position changes only in a simulation tick (pyreborn/clock.py), so
+        # these are per-tick steps (0.5 tile walking); the drawn position
+        # (visual_x/y) moves every frame between ticks.
         magnitudes = [math.hypot(r["dx"], r["dy"]) for r in all_rows
                       if r["dx"] or r["dy"]]
+        visual = [math.hypot(r["vdx"], r["vdy"]) for r in all_rows
+                  if r["vdx"] or r["vdy"]]
+        ticks = (all_rows[-1]["tick"] - all_rows[0]["tick"] + 1) if all_rows else 0
         discontinuities = [r for r in all_rows
                            if math.hypot(r["dx"], r["dy"]) > 1.0]
         # "walk" as a substring, not a prefix: a server replaces the built-in
@@ -383,9 +373,18 @@ class Probe:
                    if b["gani_frame"] != a["gani_frame"] and
                    "walk" in b["gani"].lower()]
         cadence = [b - a for a, b in zip(changes, changes[1:])]
+        tick_changes = [b["tick"] for a, b in zip(all_rows, all_rows[1:])
+                        if b["gani_frame"] != a["gani_frame"] and
+                        "walk" in b["gani"].lower()]
         metrics = {
-            "moving_frames": len(magnitudes),
+            "moving_ticks": len(magnitudes),
+            "ticks": ticks,
+            "tiles_per_second": (sum(magnitudes) / (len(magnitudes) * 0.05)
+                                 if magnitudes else 0),
             "mean_delta": statistics.fmean(magnitudes) if magnitudes else 0,
+            "visual_moving_frames": len(visual),
+            "visual_delta_stddev": statistics.pstdev(visual) if len(visual) > 1 else 0,
+            "walk_tick_cadence": [b - a for a, b in zip(tick_changes, tick_changes[1:])],
             "delta_stddev": statistics.pstdev(magnitudes) if len(magnitudes) > 1 else 0,
             "discontinuities": discontinuities,
             "walk_frame_cadence": cadence,
@@ -394,7 +393,7 @@ class Probe:
         self.summary["phases"]["movement_feel"] = metrics
         self.emit("movement_metrics", **metrics)
         if metrics["delta_stddev"] > 0.08:
-            self.summary["notes"].append("Movement per-frame delta is jittery (stddev above 0.08 tile).")
+            self.summary["notes"].append("Movement per-tick delta is jittery (stddev above 0.08 tile).")
         if discontinuities:
             self.summary["notes"].append("Movement contained position discontinuities above one tile.")
 

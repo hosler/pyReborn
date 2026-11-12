@@ -11,6 +11,7 @@ from pyreborn import hiding
 from pyreborn.game import constants as c
 from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.input import InputMixin
+from pyreborn.clock import Clock
 from pyreborn.player import Player
 
 
@@ -113,9 +114,11 @@ def test_hidden_player_cannot_hide_while_swimming():
     assert game.client.player.action_mode == 0
 
 
-@pytest.mark.parametrize("hidden,expected", [(False, 5.0), (True, 1.0)])
+# One tick of held movement: 0.5 tile walking, 0.1 hidden.
+@pytest.mark.parametrize("hidden,expected", [(False, 0.5), (True, 0.1)])
 def test_hidden_crawl_speed(monkeypatch, hidden, expected):
     game = Game()
+    game.client.clock = Clock()
     for attr in ('typing', 'show_player_list', 'show_server_list'):
         setattr(game, attr, False)
     game.dialogue_text = game.pm_target_id = None
@@ -131,7 +134,6 @@ def test_hidden_crawl_speed(monkeypatch, hidden, expected):
     game.key_just_pressed = {}
     game.grab_state = None
     game.walk_speed = c.WALK_SPEED
-    game._frame_dt = .5
     game._move_accum = 0
     if hidden:
         game._hide_or_unhide()

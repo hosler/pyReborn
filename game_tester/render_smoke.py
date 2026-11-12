@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 
 from pyreborn import Client
+from pyreborn.client_callbacks import emit
 from pyreborn.pygame_game import GameClient
 from pyreborn.game.constants import TILE_SIZE
 from game_tester.login import level_ready, login_client
@@ -67,23 +68,11 @@ def check(name):
 
 
 def _pump(game, n=8, dt=0.05):
-    """Advance the game loop's non-pygame-event steps N times (mirrors
-    GameClient.run()'s body minus _handle_events/_handle_input, which need a
-    real display/keyboard)."""
+    """Run N real frames (GameClient.step, the body of GameClient.run)."""
     for _ in range(n):
-        game.client.update(timeout=0.02)
-        game._load_new_npcs()
-        game._process_pending_warp()
-        game._process_self_shoots()
-        game.gs1.process_coroutines(dt)
-        game.gs1.process_timeouts(dt)
-        game.gs1.advance_input_frame()
-        game._check_level_change()
-        game._update_swimming_state()
-        game._update_visual_position(dt)
-        game._update_animations(dt)
-        game._last_dt = dt
-        game._render()
+        # The real frame, packets waited for briefly (net_timeout) since
+        # nothing else paces this loop.
+        game.step(dt, strict=True, net_timeout=0.02)
 
 
 @check("debug_mode_frame_renders")
@@ -458,13 +447,13 @@ def _t3a(game, c1, c2):
 
 @check("tier3b_server_text_and_rpg_window_wired")
 def _t3b(game, c1, c2):
-    game.client.on_server_text("hello from the server")
+    emit(game.client, "on_server_text", "hello from the server")
     assert any("hello from the server" in m for m in game.chat_messages)
     # PLO_RPGWINDOW is the login greeting in practice; it goes to the chat
     # log NON-modally (the real client doesn't gate input on it), so the
     # modal dialogue box must stay untouched (game/setup.py on_rpg_window).
     game.dialogue_text = None
-    game.client.on_rpg_window(["line one", "line two"])
+    emit(game.client, "on_rpg_window", ["line one", "line two"])
     assert game.dialogue_text is None
     assert any("line one" in m for m in game.chat_messages)
     assert any("line two" in m for m in game.chat_messages)
@@ -590,14 +579,14 @@ def _t4c(game, c1, c2):
     try:
         tm.default_tileset = "unit_test_base_sheet.png"
         game.world_surface = "STALE"
-        game.client.on_file("unit_test_base_sheet.png", png)
+        emit(game.client, "on_file", "unit_test_base_sheet.png", png)
         assert game.world_surface is None, (
             "base tileset arrived but the world surface was not invalidated")
 
         # An unrelated image must NOT nuke the cache - that would rebuild the
         # whole world on every downloaded head/body sprite.
         game.world_surface = "STALE"
-        game.client.on_file("unrelated_sprite_98765.png", png)
+        emit(game.client, "on_file", "unrelated_sprite_98765.png", png)
         assert game.world_surface == "STALE", (
             "an unrelated image invalidated the world surface")
     finally:
@@ -779,12 +768,9 @@ def _run_checks(stack: ExitStack) -> int:
 
     game = GameClient(client1)
     game.running = True
-    game.visual_x, game.visual_y = game.client.x, game.client.y
-    game._load_npc_scripts()
-    game._trigger_playerenters()
-    game.npc_handler.update_npcs()
-    game._gs1_level = game.client._current_level_name
-    game.roster_ready_time = time.time()
+    game.start()
+    # Announce joins at once (start() holds them 2 s for the login roster).
+    game.roster_ready_time = game.clock.frame_now()
     _pump(game, 10)
 
     client2 = _login_and_settle(stack, "testbot2")

@@ -2,7 +2,6 @@
 
 Split from pygame_game.py; methods operate on the GameClient instance."""
 
-import time
 import math
 from typing import Optional, Tuple
 
@@ -13,8 +12,8 @@ from pygame.locals import (
 from reborn_protocol.coords import level_index, segment_at, world_to_local
 
 from .. import ground_items
+from ..gmap_coords import origin_at
 from ..gani import direction_from_delta
-from ..hurt import TICK_SECONDS
 from ..ground_effects import (
     BED_TILE_TYPE, LAVA_ANI, LAVA_DAMAGE, LAVA_SWIM_TILE_TYPE, SLEEP_ANI,
     SLEEP_HEAL, SWIM_ACTION_MODE, SWIM_LEAP_OFFSET, SWIM_LEAP_TYPE,
@@ -29,9 +28,10 @@ from ..tiletypes import TileType
 from .constants import (
     MOVE_STEP, PUSH_HOLD_TIME,
 )
+from .clocked import ClockedMixin
 
 
-class ActionsMixin:
+class ActionsMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _move_hurt_step(self, dx, dy):
@@ -57,7 +57,7 @@ class ActionsMixin:
         from ..jumping import JumpState
         player = self.client.player
         if (getattr(self, '_ledge_jump', None) is not None or player.hearts <= 0
-                or self.client.frozen or player.hurt.input_locked(time.time())
+                or self.client.frozen or player.hurt.input_locked(self.clock.sim_now())
                 or getattr(self.client, 'ghost_mode', 0) or player.is_sitting
                 or not self._can_ledge_jump(direction)):
             return False
@@ -134,12 +134,12 @@ class ActionsMixin:
         if getattr(self.client, 'ghost_mode', 0):
             return 0
         client = self.client
-        if not (client.connected and client._authenticated):
+        if not (client.connected and client.authenticated):
             return 0
         level_resolver = getattr(client, "get_current_level_from_position", None)
         level_name = level_resolver() if level_resolver is not None else ""
         items = client.items_in_level(level_name)
-        now = time.monotonic()
+        now = self.clock.sim_now()
         ages = ground_items.item_ages(self, level_name, items, now)
         if not items:
             return 0
@@ -149,10 +149,11 @@ class ActionsMixin:
         for key in ground_items.walkover_takes(local_x, local_y, items, ages):
             if (level_name, key) in sent:
                 continue
+            # Read the kind first: a take drops the item from the local model.
+            item_type = str(items[key]).lower()
             if client.pickup_item(key[0], key[1]):
                 sent.add((level_name, key))
                 count += 1
-                item_type = str(items[key]).lower()
                 self.sound_mgr.play("item2.wav" if any(
                     part in item_type for part in ('heart', 'key')) else "item.wav")
         # The reference deletes the other touched kinds too, but only the
@@ -209,13 +210,13 @@ class ActionsMixin:
         stat, amount = ground_items.GIVEAWAY_COST[index]
         if stat == 'hearts':
             object.__setattr__(player, 'hearts', player.hearts - amount)
-            client._send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
+            client.send_appearance_prop(PLPROP.CURPOWER, int(player.hearts * 2))
         else:
             value = getattr(player, stat) - amount
             setattr(player, stat, value)
             prop = {'rupees': PLPROP.RUPEESCOUNT, 'bombs': PLPROP.BOMBSCOUNT,
                     'arrows': PLPROP.ARROWSCOUNT}[stat]
-            client._send_appearance_prop(prop, value)
+            client.send_appearance_prop(prop, value)
         local_x, local_y = world_to_local(player.x, player.y)
         x, y = ground_items.drop_position(local_x, local_y, player.direction)
         level_name = client.get_current_level_from_position()
@@ -245,6 +246,9 @@ class ActionsMixin:
         """Walk held axes in up, left, down, right order."""
         # TPlayer.cpp:3496 dispatches every held direction in index order.
         for ax, ay in ((0, -1), (-1, 0), (0, 1), (1, 0)):
+            # A warp (a door link, a script warp) ends this tick's walking.
+            if getattr(self.client, 'tick_movement_ended', False):
+                return
             if (ax and ax == dx) or (ay and ay == dy):
                 self._move_axis(ax, ay)
 
@@ -272,7 +276,7 @@ class ActionsMixin:
         The unknown205 no-sound flag is not tracked by this client. The stock
         walk gani already PLAYSOUNDs steps2.wav, so that one is left to it."""
         if tick is None:
-            tick = int(time.time() / TICK_SECONDS)
+            tick = self.clock.tick
         last = getattr(self, '_footstep_tick', None)
         if tick == last:
             return  # two MOVE_STEPs fit in one tick; sound once per tick
@@ -299,7 +303,7 @@ class ActionsMixin:
 
         if getattr(self, '_ledge_jump', None) is not None:
             return
-        if getattr(player, 'hurt', None) is not None and player.hurt.input_locked(time.time()):
+        if getattr(player, 'hurt', None) is not None and player.hurt.input_locked(self.clock.sim_now()):
             return
 
         # Press a direction INTO an adjacent object to interact, the classic
@@ -332,7 +336,7 @@ class ActionsMixin:
             from ..hurt import TICK_SECONDS
             self._update_push_hold(dx, dy)
             started = getattr(self, '_push_hold_start', None)
-            if started is not None and time.time() - started >= JUMP_PUSH_TICKS * TICK_SECONDS:
+            if started is not None and self.clock.passed(started, JUMP_PUSH_TICKS * TICK_SECONDS):
                 self._try_start_ledge_jump(facing)
             return
 
@@ -422,7 +426,7 @@ class ActionsMixin:
         # here would also clobber player_anim.requested_name, killing the
         # on_file re-assert of a still-downloading scripted gani.
         if (self.current_anim_name != move_anim
-                and time.time() >= getattr(self, '_frozen_until', 0.0)):
+                and self.clock.passed(getattr(self, '_frozen_until', 0.0))):
             self.player_anim.set_animation(move_anim, direction)
             self.current_anim_name = move_anim
 
@@ -495,7 +499,7 @@ class ActionsMixin:
             return False
         # Mid level-transition the position/link tables are in flux; let the
         # in-flight warp settle before probing again.
-        if (getattr(self.client, '_local_level_transition', '')
+        if (getattr(self.client, 'local_level_transition', '')
                 or getattr(self, '_level_transition_input_frozen', False)):
             return False
         pos = (self.client.x, self.client.y)
@@ -537,7 +541,7 @@ class ActionsMixin:
         # Unknown cell (hole in the grid, or off its edge): remember it so we
         # don't re-probe every frame, but say nothing to the server.
         self._scripted_gmap_cell = grid
-        if not level or level == client._current_level_name:
+        if not level or level == client.current_level_name:
             return False
         client.send_position()
         return client.enter_gmap_segment(level, *world_to_local(client.x, client.y))
@@ -595,14 +599,14 @@ class ActionsMixin:
         wraps from 38 to 18 at TPlayer.cpp:7558-7561.
         """
         player = self.client.player
-        now = time.time()
+        now = self.clock.sim_now()
         if self._push_hold_dir != (dx, dy) or self._push_hold_start is None:
             self._push_hold_dir = (dx, dy)
             self._push_hold_start = now
             self._push_fired = False
             self._push_fire_cycle = -1
             self.is_pushing = False
-        ticks = int((max(0, now - self._push_hold_start) + 1e-9) / .05)
+        ticks = max(0, self.clock.ticks_since(self._push_hold_start))
         self._push_counter = max(18, 38 - ticks)
         if self._push_counter > 18:
             return
@@ -658,7 +662,7 @@ class ActionsMixin:
         pulling = (dx, dy) == self._facing_delta((direction + 2) & 3)
         state = 'pull' if pulling else 'grab'
         if pulling:
-            now = time.time()
+            now = self.clock.sim_now()
             if self._pull_started is None:
                 self._pull_started = now
             self._pull_counter = min(19, 2 + int((max(0, now - self._pull_started) + 1e-9) / .05))
@@ -773,7 +777,7 @@ class ActionsMixin:
         """Return the sign under the upward wall probe, including its key."""
         if self.client.player.direction != 0:
             return None
-        signs = self.client.signs.get(self.client._current_level_name, {})
+        signs = self.client.signs.get(self.client.current_level_name, {})
         if not signs:
             return None
         # TPlayer.cpp:2849 uses (x+1.5,y+0.5), on a wall; the sign box is
@@ -784,7 +788,7 @@ class ActionsMixin:
         for (sx, sy), text in signs.items():
             if sx <= lx <= sx + 2.0 and sy <= ly <= sy + 1.0:
                 if self._is_blocked_at(x, y, check_players=False):
-                    return (self.client._current_level_name, sx, sy), text
+                    return (self.client.current_level_name, sx, sy), text
         return None
 
     def _walk_sign_contact(self):
@@ -949,7 +953,7 @@ class ActionsMixin:
             return False
         level_name, _ = self._level_tiles_at(tx, ty)
         registry = getattr(self.client, 'bombs', {}).get(level_name, {})
-        ox, oy = ((tx // 64) * 64, (ty // 64) * 64) if self.client.in_gmap_segment else (0, 0)
+        ox, oy = origin_at(tx, ty) if self.client.in_gmap_segment else (0, 0)
         for info in list(registry.values()):
             bx, by = info['x'] + ox, info['y'] + oy
             if not any((b.get('bomb_id') == info['bomb_id'] if 'bomb_id' in info
@@ -961,20 +965,20 @@ class ActionsMixin:
             bx, by = bomb['x'], bomb['y']
             if not (bx <= tx < bx + 2 and by <= ty < by + 2):
                 continue
-            if time.time() >= bomb['time'] + bomb.get('fuse_time', 3.0):
+            if self.clock.passed(bomb['time'], bomb.get('fuse_time', 3.0)):
                 continue
-            sprite = bomb_sprite(bomb, time.time())
+            sprite = bomb_sprite(bomb, self.clock.sim_now())
             self.client.player.pickup_object('bomb', (), (bx, by))
             self.client.player.carried_bomb = bomb
             # TServerLevel.cpp:1310-1340: removed/non-lying bombs do not count down.
-            bomb['fuse_remaining'] = bomb['time'] + bomb.get('fuse_time', 3.0) - time.time()
+            bomb['fuse_remaining'] = bomb['time'] + bomb.get('fuse_time', 3.0) - self.clock.sim_now()
             bomb['carried_by'] = self.client.player.id
             publish_carry(self.client, carry_code(sprite))
             self.client.remove_bomb(bx, by)
-            position = self.client._bomb_half_tile(bx, by)
+            position = self.client.bomb_half_tile(bx, by)
             self.active_bombs[:] = [b for b in self.active_bombs
                                     if b is bomb or b.get('exploded')
-                                    or self.client._bomb_half_tile(b['x'], b['y']) != position]
+                                    or self.client.bomb_half_tile(b['x'], b['y']) != position]
             return True
         return False
 
@@ -1137,7 +1141,7 @@ class ActionsMixin:
             # weapon has no script loaded.
             prog_key = f"weapon_{weapon}"
             gs1 = getattr(self, 'gs1', None)
-            if gs1 is not None and prog_key in getattr(gs1, '_progs', {}):
+            if gs1 is not None and gs1.has_program(prog_key):
                 for ev in ('playerfires', 'weaponfired'):
                     try:
                         gs1.trigger_event(ev, name=prog_key)
@@ -1151,7 +1155,7 @@ class ActionsMixin:
                 # Spawn visual projectile
                 import math
                 direction = self.client.player.direction
-                speed = self.client._ARROW_SPEED  # FourPlay TClient.cpp:3646
+                speed = self.client.ARROW_SPEED  # FourPlay TClient.cpp:3646
                 # Direction to velocity
                 dx_map = {0: 0, 1: -speed, 2: 0, 3: speed}
                 dy_map = {0: -speed, 1: 0, 2: speed, 3: 0}
@@ -1160,10 +1164,10 @@ class ActionsMixin:
                     'y': self.client.player.y,
                     'dx': dx_map.get(direction, 0),
                     'dy': dy_map.get(direction, 0),
-                    'time': time.time(),
+                    'time': self.clock.sim_now(),
                     'direction': direction,
                     'gani': 'arrow',
-                    'max_distance': self.client._ARROW_MAX_DISTANCE,  # GServer Level.cpp:2629
+                    'max_distance': self.client.ARROW_MAX_DISTANCE,  # GServer Level.cpp:2629
                     'start_x': self.client.player.x,
                     'start_y': self.client.player.y,
                 })
@@ -1174,7 +1178,7 @@ class ActionsMixin:
                 self.active_bombs.append({
                     'x': self.client.player.x,
                     'y': self.client.player.y,
-                    'time': time.time(),
+                    'time': self.clock.sim_now(),
                     'fuse_time': self.bomb_fuse_time,
                     'power': self.client.player.bomb_power,
                     'exploded': False,
@@ -1229,7 +1233,7 @@ class ActionsMixin:
         self.client.use_link(door_link)
         # Standalone cross-level warps hold the old visual position until the
         # destination board is active. Same-level and gmap warps still snap now.
-        if not getattr(self.client, '_local_level_transition', ''):
+        if not getattr(self.client, 'local_level_transition', ''):
             self.visual_x = self.client.x
             self.visual_y = self.client.y
         # Force world surface redraw
@@ -1246,7 +1250,7 @@ class ActionsMixin:
         self.npc_handler.update_npcs()
         # Mark this level as the one the GS1 engine is loaded for so the loop's
         # level-change detector doesn't redundantly reload it.
-        self._gs1_level = self.client._current_level_name
+        self._gs1_level = self.client.current_level_name
     def _get_non_edge_door(self) -> Optional[dict]:
         """Get door link at current position, ignoring edge links in GMAP mode."""
         link = self.client.check_link_collision()
@@ -1292,9 +1296,9 @@ class ActionsMixin:
         """testSittingSleeping's bed half. The oracle runs it when a direction
         key is released (:3429) and on level entry (:1041), not every frame."""
         was_moving = getattr(self, '_sleep_was_moving', False)
-        entered = getattr(self, '_sleep_level', None) != self.client._current_level_name
+        entered = getattr(self, '_sleep_level', None) != self.client.current_level_name
         self._sleep_was_moving = self.is_moving
-        self._sleep_level = self.client._current_level_name
+        self._sleep_level = self.client.current_level_name
         if not self.is_moving and (was_moving or entered):
             self._test_sleeping()
 
@@ -1325,7 +1329,7 @@ class ActionsMixin:
             return
         # TPlayer.cpp:5994-5997: frozen, scripted movement and ghosts skip it.
         if (getattr(self.client, 'frozen', False)
-                or time.time() < getattr(self, '_frozen_until', 0.0)
+                or not self.clock.passed(getattr(self, '_frozen_until', 0.0))
                 or not getattr(getattr(self, 'gs1', None), 'default_movement', True)
                 or getattr(self.client, 'ghost_mode', 0)):
             return

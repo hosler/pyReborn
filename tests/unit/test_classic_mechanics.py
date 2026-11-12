@@ -2,6 +2,8 @@
 
 from collections import defaultdict
 from types import SimpleNamespace
+
+from pyreborn.clock import Clock
 from unittest.mock import Mock
 
 import pygame
@@ -47,7 +49,7 @@ def test_default_bomb_sends_counter_59():
 
 class InputHarness(InputMixin):
     def __init__(self):
-        self.client = SimpleNamespace(player=Player(), _send_appearance_prop=Mock())
+        self.client = SimpleNamespace(player=Player(), send_appearance_prop=Mock())
         self.player_anim = Mock()
         self.current_anim_name = "dead"
 
@@ -72,11 +74,11 @@ def test_death_status_and_first_gameplay_input(key):
     assert game._revive_on_input(1.5, keys)  # FourPlay TPlayer.cpp:7319
     assert player.status == PLSTATUS.PAUSED
     assert player.hearts == player.max_hearts
-    game.client._send_appearance_prop.assert_any_call(PLPROP.STATUS, PLSTATUS.PAUSED)
-    game.client._send_appearance_prop.assert_any_call(PLPROP.CURPOWER, int(player.max_hearts * 2))
-    sent = game.client._send_appearance_prop.call_count
+    game.client.send_appearance_prop.assert_any_call(PLPROP.STATUS, PLSTATUS.PAUSED)
+    game.client.send_appearance_prop.assert_any_call(PLPROP.CURPOWER, int(player.max_hearts * 2))
+    sent = game.client.send_appearance_prop.call_count
     assert not game._revive_on_input(2.0, keys)
-    assert game.client._send_appearance_prop.call_count == sent
+    assert game.client.send_appearance_prop.call_count == sent
 
 
 def test_fallback_health_clears_dead_and_resets_timer():
@@ -120,9 +122,11 @@ def test_throw_uses_nine_tile_ground_range_and_nine_ticks():
     assert obj['z'] == obj['z0'] > 0
 
 
-@pytest.mark.parametrize("shield,swimming,expected", [(2, False, 1.0), (3, False, 1.2), (3, True, 1.0)])
+# One tick of held movement: 0.5 tile (TPlayer.cpp:807), x1.2 with a shield.
+@pytest.mark.parametrize("shield,swimming,expected", [(2, False, 0.5), (3, False, 0.6), (3, True, 0.5)])
 def test_shield_multiplier_in_movement_input(monkeypatch, shield, swimming, expected):
     game = InputHarness()
+    game.client.clock = Clock()
     game.client.player.shield_power = shield
     for attr in ('typing', 'show_player_list', 'show_server_list'):
         setattr(game, attr, False)
@@ -141,7 +145,6 @@ def test_shield_multiplier_in_movement_input(monkeypatch, shield, swimming, expe
     game.current_anim_name = "idle"
     game.is_swimming = swimming
     game.walk_speed = c.WALK_SPEED
-    game._frame_dt = .1
     game._move_accum = 0
     monkeypatch.setattr(pygame.key, 'get_pressed', lambda: defaultdict(bool, {pygame.K_RIGHT: True}))
     game._handle_input(10.0)

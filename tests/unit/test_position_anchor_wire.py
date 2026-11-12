@@ -146,6 +146,8 @@ class _FakeClient:
     _note_position_sent = _C._note_position_sent
     position_matches_wire = _C.position_matches_wire
     send_position = _C.send_position
+    _send_position_props = _C._send_position_props
+    tick_movement_ended = _C.tick_movement_ended
     del _C
 
 

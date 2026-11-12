@@ -1,9 +1,8 @@
 """Timed server NPC movement queues."""
 
 import math
-import time
 
-from reborn_protocol.coords import segment_origin
+from .gmap_coords import level_origin
 
 from .attachments import update_attachments
 from .gs1_client.objects import _write_npc_attr
@@ -18,7 +17,7 @@ def queue_moves(client, info):
     npc = client.npcs.get(info['npc_id'])
     if npc is None or not info['records']:
         return
-    now = time.monotonic()
+    now = client.clock.sim_now()
     queue = npc.setdefault('_move_queue', [])
     was_empty = not queue
     for record in info['records']:
@@ -43,9 +42,7 @@ def queue_moves(client, info):
                 move['remaining'] *= factor
         queue.append(move)
     if was_empty:
-        cell = next((cell for cell, name in client.gmap_grid.items()
-                     if name == npc.get('_level')), None)
-        ox, oy = segment_origin(*cell) if cell else (0, 0)
+        ox, oy = level_origin(client.gmap_grid, npc.get('_level'))
         npc.setdefault('world_x', npc.get('x', 0) + ox)
         npc.setdefault('world_y', npc.get('y', 0) + oy)
         _position(npc, queue[0]['x'], queue[0]['y'])
@@ -55,7 +52,7 @@ def queue_moves(client, info):
 
 
 def tick_moves(client, now=None):
-    now = time.monotonic() if now is None else now
+    now = client.clock.sim_now() if now is None else now
     moved = False
     for npc in list(client.npcs.values()):
         queue = npc.get('_move_queue')

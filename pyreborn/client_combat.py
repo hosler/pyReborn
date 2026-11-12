@@ -3,24 +3,26 @@
 from __future__ import annotations
 
 import math
-import time
 from typing import Optional
 
 from reborn_protocol import BDMODE, BDPROP
 from reborn_protocol.coords import level_index, segment_at, segment_origin, world_to_local
 
+from .client_callbacks import emit, has_subscribers
+from .clock import sim_passed
 from .bushcut import (
     BUSH_PROBE, BUSH_REPLACE, EXPLOSION_PROBE, bush_probe, find_bush_block,
 )
 from .explosions import (
-    board_blocks_at, bomb_crosses, cross_cells, explosion_damage, hits_player,
+    EXPLOSION_TICKS, board_blocks_at, bomb_crosses, cross_cells, explosion_damage, hits_player,
     knockback,
 )
-from .game.constants import (
+from .constants import (
     PLAYER_BODY_CENTER_X, PLAYER_BODY_CENTER_Y,
     PLAYER_COLLISION_BOTTOM, PLAYER_COLLISION_LEFT,
     PLAYER_COLLISION_RIGHT, PLAYER_COLLISION_TOP,
 )
+from .gmap_coords import level_origin
 from .packets import PacketID, build_baddy_props, build_sword_attack
 from .sword import SwordState, npc_probe, owns_spin
 from .arrowflight import overlaps_player, shield_blocks, arrow_damage
@@ -85,7 +87,7 @@ class CombatMixin:
             return False
 
         # TPlayer.cpp:2014: ghosts cannot use the sword button.
-        if self.ghost_mode or self.player.hurt.input_locked(time.time()) or self.player.status & 1:
+        if self.ghost_mode or self.player.hurt.input_locked(self.clock.sim_now()) or self.player.status & 1:
             return False
         if (self.player.action_mode in (10, 13)
                 or self.player.animation in ('dead', 'spin')):
@@ -98,7 +100,8 @@ class CombatMixin:
         local_x, local_y = world_to_local(self.player.x, self.player.y)
         old = getattr(self, '_sword_state', None)
         spin = bool(old and self.player.action_mode == 6
-                    and time.time() < old.started + old.duration and owns_spin(self))
+                    and not self.clock.passed(old.started, old.duration)
+                    and owns_spin(self))
         data = build_sword_attack(local_x, local_y, direction)
         sent = self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
@@ -110,14 +113,13 @@ class CombatMixin:
         # `washit` event (bushes/pots/enemies with scripts) and baddies take
         # real damage via PLI_BADDYHURT.
         if sent:
-            self._sword_state = SwordState(time.time(), direction, spin)
+            self._sword_state = SwordState(self.clock.sim_now(), direction, spin)
             # Per-victim report window survives swing restarts: mashing S
             # (or a swing turning into a spin) must not re-report a victim
             # inside its forty-tick hurt immunity.
-            now = time.time()
             self._sword_hit_until = {pid: until for pid, until
                                      in getattr(self, '_sword_hit_until', {}).items()
-                                     if until > now}
+                                     if not self.clock.passed(until)}
             self.player.action_mode = 13 if spin else 6
             self.player.animation = 'spin' if spin else 'sword'
             if spin:
@@ -145,7 +147,7 @@ class CombatMixin:
         state = getattr(self, '_sword_state', None)
         if state is None:
             return
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         if self.player.action_mode not in (6, 13) or self.player.status & 0x09:
             self._sword_state = None
             return
@@ -156,7 +158,7 @@ class CombatMixin:
                 # TGaniObject.cpp:2912-2915: spin old sprite ==9 every 5 steps.
                 if tick and tick % 5 == 0:
                     self._sword_hit_npcs(direction)
-        if now + 1e-9 >= state.started + state.duration:
+        if sim_passed(now, state.started, state.duration):
             self._sword_state = None
             self.player.action_mode = 0
 
@@ -249,11 +251,13 @@ class CombatMixin:
         # Tables are column-major; modify_board's public API is row-major.
         # It also patches both local board caches optimistically.
         self.modify_board(start_x, start_y, 2, 2, [tl, tr, bl, br])
-        if self.on_bush_cut:
-            self.on_bush_cut(ox + start_x, oy + start_y, index)
-        if self.on_leaps:
-            self.on_leaps(index, ox + start_x, oy + start_y)  # TPlayer.cpp:2356-2357
+        emit(self, 'on_bush_cut', ox + start_x, oy + start_y, index)
+        emit(self, 'on_leaps', index, ox + start_x, oy + start_y)  # TPlayer.cpp:2356-2357
         return ox + start_x, oy + start_y
+
+    def blast_board_at(self, x: float, y: float):
+        """Public name of _blast_board_at."""
+        return self._blast_board_at(x, y)
 
     def _blast_board_at(self, x: float, y: float):
         """TServerLevel.cpp:1502-1590: board effects on the active level only."""
@@ -271,18 +275,18 @@ class CombatMixin:
             if self.modify_board(block.start_x, block.start_y, 2, 2, tiles):
                 # TServerLevel.cpp:1582-1583: stones change the board without
                 # debris; notify its painter even when no leap callback fires.
-                if self.on_board_modify:
+                if has_subscribers(self, 'on_board_modify'):
                     info = {'x': block.start_x, 'y': block.start_y,
                             'width': 2, 'height': 2, 'tiles': tiles}
                     if self.in_gmap_segment:
                         info['map_x'], info['map_y'] = segment_at(self.player.x, self.player.y)
-                    self.on_board_modify(info)
+                    emit(self, 'on_board_modify', info)
             wx, wy = ox + block.start_x, oy + block.start_y
             origins.add((wx, wy))
-            if block.bush_index is not None and self.on_bush_cut:
-                self.on_bush_cut(wx, wy, block.bush_index)
-            if block.leap_type is not None and self.on_leaps:
-                self.on_leaps(block.leap_type, wx, wy)
+            if block.bush_index is not None:
+                emit(self, 'on_bush_cut', wx, wy, block.bush_index)
+            if block.leap_type is not None:
+                emit(self, 'on_leaps', block.leap_type, wx, wy)
         return origins
 
     def _cut_bushes_at_explosion(self, x: float, y: float):
@@ -311,10 +315,7 @@ class CombatMixin:
         """World origin of a level's board: its gmap segment, else (0, 0)."""
         if not self.in_gmap_segment:
             return 0, 0
-        for cell, name in self.gmap_grid.items():
-            if name == level:
-                return segment_origin(*cell)
-        return 0, 0
+        return level_origin(self.gmap_grid, level)
 
     def _register_bomb(self, level: str, local_x: float, local_y: float, *,
                        wx: float, wy: float, owner_id: int, from_player: bool,
@@ -330,6 +331,10 @@ class CombatMixin:
         record['bomb_id'] = bomb_id
         self.bombs.setdefault(level, {})[bomb_id] = record
         return record
+
+    def bomb_records(self):
+        """Public name of _bomb_records."""
+        return self._bomb_records()
 
     def _bomb_records(self):
         """Every simulated bomb record, in each level's placement order."""
@@ -347,9 +352,18 @@ class CombatMixin:
         return False
 
     @staticmethod
+    def bomb_half_tile(x: float, y: float):
+        """Public name of _bomb_half_tile."""
+        return math.floor(x * 2 + .5 + .0001), math.floor(y * 2 + .5 + .0001)
+
+    @staticmethod
     def _bomb_half_tile(x: float, y: float):
         """TServerLevel.cpp:213-216 halfTileCoord, including its epsilon."""
         return math.floor(x * 2 + .5 + .0001), math.floor(y * 2 + .5 + .0001)
+
+    def remove_bombs_at(self, level: str, x: float, y: float):
+        """Public name of _remove_bombs_at."""
+        return self._remove_bombs_at(level, x, y)
 
     def _remove_bombs_at(self, level: str, x: float, y: float):
         """Remove every bomb at this level-local half-tile, without a blast."""
@@ -367,7 +381,7 @@ class CombatMixin:
         if not self.bombs:
             return
         if now is None:
-            now = time.time()
+            now = self.clock.sim_now()
         live_levels = {self._current_level_name, self._pending_level_name}
         if self.in_gmap_segment:
             live_levels.update(self.gmap_grid.values())
@@ -376,7 +390,8 @@ class CombatMixin:
                 # The reference frees a level's bombs when the player leaves.
                 self._drop_bomb_record(record)
                 continue
-            if now - record['placed_at'] >= record['fuse_s'] - 1e-9:
+            # N + 1 ticks for wire counter N (TServerLevel.cpp:1322).
+            if sim_passed(now, record['placed_at'], record['fuse_s']):
                 self._explode_bomb(record, now)
 
     def _is_on_bomb(self, x: float, y: float, level: str):
@@ -394,12 +409,11 @@ class CombatMixin:
         its explosion (one cross, or five for a superbomb)."""
         if not self._drop_bomb_record(record):
             return False  # already gone: re-entry from a chain
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         power = record.get('power', 1)
         crosses = bomb_crosses(record['wx'], record['wy'], power)
         groups = [cross_cells(x, y, radius) for x, y, radius in crosses]
-        if self.on_bomb_exploded:
-            self.on_bomb_exploded(record, [cell for group in groups for cell in group])
+        emit(self, 'on_bomb_exploded', record, [cell for group in groups for cell in group])
         owner = record.get('owner_id', 0) if record.get('from_player') else 0
         hit = None
         for cells in groups:
@@ -441,9 +455,8 @@ class CombatMixin:
             return False
         # FourPlay/quattroplay/src/TExplosion.cpp:92-94 claims fatal hits.
         self._claim_pker_if_dead(attacker_id)
-        if self.on_hurt:
-            # damage_type 1 = BOMB, matching pygserver's DamageType.BOMB.
-            self.on_hurt(attacker_id, damage, 1, push[0], push[1])
+        # damage_type 1 = BOMB, matching pygserver's DamageType.BOMB.
+        emit(self, 'on_hurt', attacker_id, damage, 1, push[0], push[1])
         return True
 
     def _apply_explosion(self, x: float, y: float, radius: int, bomb_type: int,
@@ -452,7 +465,7 @@ class CombatMixin:
         """scriptfun_client_addexplosion -> makeExplosion (TClient.cpp:3593-
         3620): the same chain, board and self-damage path a bomb uses.
         x/y are world coordinates. Returns the cells."""
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         cells = cross_cells(x, y, radius)
         level = self.get_current_level_from_position()
         hit = self._explosion_cells(cells, level, now)
@@ -469,16 +482,27 @@ class CombatMixin:
         TServerLevel.cpp:1614-1641 creates cross cells, whose local-player
         damage is resolved by TExplosion.cpp:48-96.
         """
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         cells = self._apply_explosion(
             x, y, radius, power, owner_id, from_player, now)
         for cell in cells:
             self.active_explosions.append({
                 'x': cell.x, 'y': cell.y, 'sprite_row': cell.sprite_row,
                 'order_offset': 0.0, 'type': power, 'time': now,
+                'tick': self.clock.tick,
             })
-        if self.on_explosion:
-            self.on_explosion(x, y, radius, power)
+        emit(self, 'on_explosion', x, y, radius, power)
+
+    def _expire_explosions(self) -> None:
+        """Drop explosion cells after their twelve ticks: the counter starts
+        at 11 and the cell is drawn down to 0 (TServerLevel.cpp:1606,
+        TExplosion.cpp:101-102). Runs once per tick."""
+        if not self.active_explosions:
+            return
+        tick = self.clock.tick
+        self.active_explosions = [
+            exp for exp in self.active_explosions
+            if tick - exp.get('tick', tick) <= EXPLOSION_TICKS]
 
     _SWORD_REACH = 4.0  # FourPlay TInitStatics.cpp:1251
     _SWORD_HALF_WIDTH = 2.0  # FourPlay TInitStatics.cpp:1277
@@ -548,14 +572,13 @@ class CombatMixin:
                     continue
                 # The receiver's hurt window lasts forty ticks. Avoid
                 # duplicate forced hurt relays while still testing each tick.
-                now = time.time()
                 until = getattr(self, '_sword_hit_until', {})
-                if until.get(pid, 0.0) > now:
+                if pid in until and not self.clock.passed(until[pid]):
                     continue
                 self.attack_player(pid, damage=damage,
                                    knockback_x=(px - self.player.x) * 0.5,
                                    knockback_y=(py - self.player.y) * 0.5)
-                until[pid] = now + 2.0
+                until[pid] = self.clock.sim_now() + 2.0
                 self._sword_hit_until = until
 
     def _sword_hit_npcs(self, direction: int):
@@ -566,7 +589,7 @@ class CombatMixin:
         been made invisible, and a dontblock NPC has no collision to hit.
         NPC positions use world_x/world_y (set on PLO_NPCPROPS) since
         self.player.x/y are world coords on a GMAP."""
-        if not self.on_sword_hit_npc:
+        if not has_subscribers(self, 'on_sword_hit_npc'):
             return
         dir_vec = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}.get(direction)
         if not dir_vec:
@@ -585,7 +608,7 @@ class CombatMixin:
                    nx <= probe_x < nx + npc.get('width', 2.0)
                    and ny <= probe_y < ny + npc.get('height', 2.0))
             if hit:
-                self.on_sword_hit_npc(npc_id)
+                emit(self, 'on_sword_hit_npc', npc_id)
 
     def _sword_hit_baddies(self, direction: int):
         """Send PLI_BADDYHURT for every baddy inside the sword arc (same math
@@ -597,12 +620,8 @@ class CombatMixin:
         if not dir_vec:
             return
         fx, fy = dir_vec
-        seg_off_x = seg_off_y = 0
-        if self.gmap_grid:
-            seg = next((g for g, n in self.gmap_grid.items()
-                        if n == self._current_level_name), None)
-            if seg:
-                seg_off_x, seg_off_y = segment_origin(*seg)
+        seg_off_x, seg_off_y = level_origin(self.gmap_grid,
+                                            self._current_level_name)
         # Half a heart per sword power level, matching the classic client.
         damage = 0.5 * max(1, int(getattr(self.player, 'sword_power', 1) or 1))
         baddies = self.baddies_in_level(self._current_level_name)
@@ -689,6 +708,8 @@ class CombatMixin:
 
     _ARROW_SPEED = 20.0  # FourPlay TClient.cpp:3653: DOUBLE_004023d8 = 1 tile/50ms tick
     _ARROW_MAX_DISTANCE = 128.0  # GServer Level.cpp:2629
+    ARROW_SPEED = _ARROW_SPEED              # public names for the game layer
+    ARROW_MAX_DISTANCE = _ARROW_MAX_DISTANCE
     _ARROW_DAMAGE = 1.0    # TServerFlying.cpp:222, default power 1.
     _ARROW_HIT_RADIUS = 1.0  # tiles, AABB half-extent (pygserver _update_arrow)
     _ARROW_STEP = 0.05     # seconds/substep - matches pygserver's 50ms tick;
@@ -716,7 +737,7 @@ class CombatMixin:
     _ARROW_HIT_GRACE = 0.25
     # Suppression window for the double-damage guard - matches pygserver's
     # own post-hit invincibility duration (CombatManager.apply_damage sets
-    # `self._invincible[player.id] = time.time() + 1.0`), so it can't be
+    # `self._invincible[player.id] = self.clock.sim_now() + 1.0`), so it can't be
     # tighter than the window during which a genuine second hit from
     # anywhere wouldn't register server-side there anyway.
     _ARROW_HURT_SUPPRESS_WINDOW = 1.0
@@ -733,10 +754,11 @@ class CombatMixin:
         if dir_vec is None:
             return
         if now is None:
-            now = time.time()
+            now = self.clock.sim_now()
 
         self._own_recent_arrows = [
-            e for e in self._own_recent_arrows if now - e[0] < self._OWN_ARROW_ECHO_WINDOW]
+            e for e in self._own_recent_arrows
+            if not sim_passed(now, e[0], self._OWN_ARROW_ECHO_WINDOW)]
         for i, (fire_time, fdir, fx, fy) in enumerate(self._own_recent_arrows):
             if (fdir == info.get('direction')
                     and abs(fx - info['x']) < 1.0 and abs(fy - info['y']) < 1.0):
@@ -757,10 +779,11 @@ class CombatMixin:
         `now`, sub-stepping at _ARROW_STEP so a low update() call rate cannot
         let the arrow tunnel through the player's hitbox between checks.
         Returns True (and leaves `sim` at the point of impact) on hit."""
+        # Simulation time only moves forward, in whole ticks.
+        if now == sim['last_tick'] or sim['distance'] >= self._ARROW_MAX_DISTANCE:
+            return False
         dt_total = min(now - sim['last_tick'],
                        (self._ARROW_MAX_DISTANCE - sim['distance']) / self._ARROW_SPEED)
-        if dt_total <= 0:
-            return False
         steps = max(1, int(dt_total / self._ARROW_STEP) + 1)
         step_dt = dt_total / steps
         hit = False
@@ -803,8 +826,9 @@ class CombatMixin:
         double-damage guard docs above _ARROW_HIT_GRACE) - in which case
         this is a duplicate and is dropped."""
         owner_id = pending['owner_id']
-        now = time.time()
-        if owner_id in self._arrow_hurt_suppress and now < self._arrow_hurt_suppress[owner_id]:
+        now = self.clock.sim_now()
+        if (owner_id in self._arrow_hurt_suppress
+                and not sim_passed(now, self._arrow_hurt_suppress[owner_id])):
             return
         if not self.can_receive_local_hit(owner_id, pvp=pending.get('pvp', True)):
             return
@@ -817,9 +841,9 @@ class CombatMixin:
         # client-simulated projectile deaths before any server hurt echo.
         self._claim_pker_if_dead(owner_id)
         self._local_arrow_reports[owner_id] = now + self._ARROW_HURT_SUPPRESS_WINDOW
-        if self.on_hurt:
-            # damage_type 2 = ARROW, matching pygserver's DamageType.ARROW.
-            self.on_hurt(owner_id, damage, pending.get('damage_type', 2), pending['dx'], pending['dy'])
+        # damage_type 2 = ARROW, matching pygserver's DamageType.ARROW.
+        emit(self, 'on_hurt', owner_id, damage, pending.get('damage_type', 2),
+                  pending['dx'], pending['dy'])
 
     def hurt_local_by_flying(self, power: int, dx: float, dy: float) -> bool:
         """The local-player half of handleFlyingPlayerCollision
@@ -833,9 +857,8 @@ class CombatMixin:
         if not self.respond_to_hurt(damage, self.hurt_animation,
                                     knockback=(dx, dy)):
             return False
-        if self.on_hurt:
-            # damage_type 2 = ARROW (the reference tags it "arrow", :221).
-            self.on_hurt(0, damage, 2, dx, dy)
+        # damage_type 2 = ARROW (the reference tags it "arrow", :221).
+        emit(self, 'on_hurt', 0, damage, 2, dx, dy)
         return True
 
     def _tick_arrow_sims(self, now: Optional[float] = None):
@@ -845,13 +868,15 @@ class CombatMixin:
         immediately), and resolve anything whose grace period has elapsed.
         Call regularly (update() does this automatically)."""
         if now is None:
-            now = time.time()
+            now = self.clock.sim_now()
 
         if self._arrow_hurt_suppress:
             self._arrow_hurt_suppress = {
-                oid: exp for oid, exp in self._arrow_hurt_suppress.items() if exp > now}
+                oid: exp for oid, exp in self._arrow_hurt_suppress.items()
+                if not sim_passed(now, exp)}
         self._local_arrow_reports = {
-            oid: exp for oid, exp in self._local_arrow_reports.items() if exp > now}
+            oid: exp for oid, exp in self._local_arrow_reports.items()
+            if not sim_passed(now, exp)}
 
         if self._arrow_sims:
             my_x, my_y = world_to_local(self.player.x, self.player.y)
@@ -871,7 +896,7 @@ class CombatMixin:
         if self._pending_arrow_hits:
             still_pending = []
             for pending in self._pending_arrow_hits:
-                if now >= pending['resolve_at']:
+                if sim_passed(now, pending['resolve_at']):
                     self._resolve_pending_arrow_hit(pending)
                 else:
                     still_pending.append(pending)

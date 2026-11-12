@@ -190,7 +190,7 @@ class FileTransferMixin:
         package.done = False
         package.failed = False
         package.downloading = True
-        package.last_activity = _packages._now()
+        package.last_activity = self.clock.frame_now()
         return True
 
     def cancel_update_package(self, name: str) -> bool:

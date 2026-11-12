@@ -101,11 +101,11 @@ def test_trigger_csv_quotes_outbound_and_unquotes_inbound_tolerantly():
 def test_lighting_global_reads_through_after_script_write_and_renderer_toggle():
     client, _ = _client()
     rt2 = ClientGS2(client)
-    rt2.game_shell = SimpleNamespace(_day_night_enabled=False)
+    rt2.game_shell = SimpleNamespace(day_night_enabled=False)
 
     rt2.globals_store["lighteffectsenabled"] = 1
-    assert rt2.game_shell._day_night_enabled is True
-    rt2.game_shell._day_night_enabled = False
+    assert rt2.game_shell.day_night_enabled is True
+    rt2.game_shell.day_night_enabled = False
     assert rt2.globals_store["lighteffectsenabled"] == 0.0
     assert "lighteffectsenabled" not in dict(rt2.globals_store)
 

@@ -55,16 +55,16 @@ class HostObjmethodsMixin:
             return 0.0
         if name in ("showemoticon", "showemoticonbykey"):
             if player is not None:
-                player.emoticon = (int(to_num(args[0])) if name.endswith("bykey")
-                                   else to_str(args[0])) if args else ""
+                player.show_emoticon((int(to_num(args[0])) if name.endswith("bykey")
+                                      else to_str(args[0])) if args else "")
             return 0.0
         if name == "hideemoticon":
             if player is not None:
-                player.emoticon = ""
+                player.show_emoticon("")
             return 0.0
         if name == "hidesign":
-            if game is not None and hasattr(game, "_dismiss_dialogue"):
-                game._dismiss_dialogue()
+            if game is not None and hasattr(game, "dismiss_dialogue"):
+                game.dismiss_dialogue()
             return 0.0
         if game is not None and getattr(game, "dialogue_text", None) is not None:
             pager = getattr(game, "dialogue_pager", None)

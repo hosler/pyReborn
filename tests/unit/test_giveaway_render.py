@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pygame
 import pytest
 
+from pyreborn.clock import Clock
 from pyreborn import ground_items as gi
 from pyreborn.classic_sprites import SPRITE_RECTS
 from pyreborn.game.actions import ActionsMixin
@@ -37,7 +38,7 @@ def _renderer(player, selected, sprite):
     # Like the carry harness, run the real renderer with an offline screen
     # recording blits; unrelated body, chat and swamp passes are stubbed.
     return SimpleNamespace(
-        client=SimpleNamespace(player=player), screen=Mock(),
+        client=SimpleNamespace(player=player), screen=Mock(), clock=Clock(),
         sprite_mgr=SimpleNamespace(get_sprite=Mock(return_value=sprite)),
         _giveaway_item=selected, _PLAYER_ANCHOR_FIX=8, debug_mode=False,
         combat_presentation=SimpleNamespace(player_alpha=lambda now, base: base),

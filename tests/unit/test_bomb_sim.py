@@ -30,9 +30,9 @@ class Clock:
 
 
 @pytest.fixture
-def clock(monkeypatch):
+def clock(sim_time, monkeypatch):
     c = Clock()
-    monkeypatch.setattr('time.time', c)
+    sim_time(c)
     return c
 
 

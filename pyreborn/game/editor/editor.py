@@ -434,7 +434,7 @@ class LevelEditor:
                 scripts,
                 self._baddy_records(level),
                 board_layers=(client.board_layers
-                              if getattr(client, '_board_layers_level_name', '')
+                              if getattr(client, 'board_layers_level_name', '')
                               == level else {}),
             )
         except MissingNpcScriptError as error:

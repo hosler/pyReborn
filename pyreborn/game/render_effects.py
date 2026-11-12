@@ -2,7 +2,6 @@
 
 Split from render.py; methods operate on the GameClient instance."""
 
-import time
 import math
 import random
 from typing import Callable, Optional, Tuple
@@ -23,6 +22,7 @@ from ..tiletypes import TileType
 from .constants import TILE_SIZE, EXPLOSION_DURATION
 from .flying import FlyingObjectsMixin
 from .frame_context import FrameContext, FrameContextMixin
+from .clocked import ClockedMixin
 
 
 def _q_dim(v: int) -> int:
@@ -69,7 +69,7 @@ def day_night_tint(minute_of_day):
     return None
 
 
-class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
+class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
     """Mixin providing the above methods for GameClient."""
 
     def _render_world_object(self, frame: Optional[FrameContext],
@@ -104,9 +104,9 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _render_combat_presentation(self):
         """Composite cached hurt/death effects after the HUD."""
-        now = time.monotonic()
+        now = self.clock.frame_now()
         state = self.combat_presentation
-        warp = bool(getattr(self.client, '_local_level_transition', ''))
+        warp = bool(getattr(self.client, 'local_level_transition', ''))
         state.sync(self.client.player.hearts <= 0, warp, now)
 
         hit_alpha = state.hit_flash_alpha(now)
@@ -210,7 +210,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _render_damage_numbers(self):
         """Render floating damage numbers."""
-        current_time = time.time()
+        current_time = self.clock.frame_now()
 
 
         # Update and render each damage number
@@ -290,7 +290,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                                 elapsed, order_offset):
         # TServerLevel.cpp:1606-1607; TExplosion.cpp:24-46: fixed sprite,
         # top-left draw position, and the time-dependent order point.
-        ticks_left = EXPLOSION_TICKS - int(elapsed / TICK)
+        ticks_left = EXPLOSION_TICKS - int(elapsed / TICK + 1e-9)
         screen_x, screen_y = self.camera.world_to_screen(cell_x, cell_y)
 
         def draw():
@@ -312,9 +312,14 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
             bomb['x'], bomb['y'], bomb.get('power', 1))
                 for cell in cross_cells(x, y, radius)]
 
-    def _render_bombs(self, frame: Optional[FrameContext] = None):
-        """Advance and render the unified local/remote bomb registry."""
-        current_time = time.time()
+    def _advance_bombs(self) -> None:
+        """Simulation, once per tick: carried bombs follow their carrier, a
+        lying bomb the Client does not simulate detonates on the legacy
+        clock, and a finished burst leaves the registry after
+        EXPLOSION_TICKS + 1 ticks (TServerLevel.cpp:1606, TExplosion.cpp:
+        101-102: counter 11 down to 0, all twelve visible). Draws nothing."""
+        current_time = self.clock.sim_now()
+        tick = self.clock.tick
         active_bombs = []
         for bomb in self.active_bombs:
             if bomb.get('discarded'):
@@ -331,11 +336,6 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                     bomb['x'] = (owner.get('x', 0) + ox if bx is None else bx) + .5
                     bomb['y'] = (owner.get('y', 0) + oy if by is None else by) - 1.375
             fuse_time = max(0.05, bomb.get('fuse_time', self.bomb_fuse_time))
-            elapsed = current_time - bomb['time']
-
-            # Convert world position to screen position
-            screen_x, screen_y = self.camera.world_to_screen(bomb['x'], bomb['y'])
-
             # A lying bomb the client simulates detonates when
             # Client._tick_bomb_sims fires (_on_client_bomb_exploded), not by
             # this clock (TServerLevel.cpp:1310-1337 lives in the Client).
@@ -343,12 +343,31 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
             # bomb the client does not know keeps the legacy clock.
             if not bomb.get('exploded') and (
                     carrier is not None or bomb.get('in_flight')
-                    or elapsed < fuse_time
+                    or not self.clock.passed(bomb['time'], fuse_time)
                     or self._client_bomb_record(bomb) is not None):
-                if carrier is not None or bomb.get('in_flight'):
-                    active_bombs.append(bomb)
-                    continue
-                # Bomb is still counting down - render bomb sprite
+                active_bombs.append(bomb)
+                continue
+            if not bomb.get('exploded'):
+                self._detonate_bomb(bomb, current_time)
+            if tick - bomb.get('explosion_tick', tick) > EXPLOSION_TICKS:
+                continue
+            active_bombs.append(bomb)
+        self.active_bombs = active_bombs
+
+    def _render_bombs(self, frame: Optional[FrameContext] = None):
+        """Draw the unified local/remote bomb registry (`_advance_bombs` runs
+        it): lying bombs flash, exploded ones draw their burst cells."""
+        current_time = self.clock.sim_now()
+        tick = self.clock.tick
+        for bomb in self.active_bombs:
+            if bomb.get('discarded'):
+                continue
+            if bomb.get('carried_by') is not None or bomb.get('in_flight'):
+                continue
+            screen_x, screen_y = self.camera.world_to_screen(bomb['x'], bomb['y'])
+            if not bomb.get('exploded'):
+                fuse_time = max(0.05, bomb.get('fuse_time', self.bomb_fuse_time))
+                elapsed = current_time - bomb['time']
                 # Flash faster as fuse runs out
                 flash_rate = 5 + min(1.0, elapsed / fuse_time) * 10
                 if int(elapsed * flash_rate) % 2 == 0:
@@ -357,26 +376,19 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                         lambda screen_x=screen_x, screen_y=screen_y,
                         elapsed=elapsed: self._render_bomb_ticking(
                             screen_x, screen_y, elapsed))
-                active_bombs.append(bomb)
-
-            else:
-                if not bomb.get('exploded'):
-                    self._detonate_bomb(bomb, current_time)
-                explosion_elapsed = current_time - bomb['explosion_time']
-                if explosion_elapsed >= self.explosion_duration:
-                    continue
-                if 'cells' not in bomb:
-                    bomb['cells'] = self._bomb_explosion_cells(bomb)
-                for cell in bomb['cells']:
-                    self._render_explosion_cell(frame, cell.x, cell.y, cell.sprite_row,
-                                                explosion_elapsed, 0.0)
-                active_bombs.append(bomb)
-
-        self.active_bombs = active_bombs
+                continue
+            age = tick - bomb.get('explosion_tick', tick)
+            if age > EXPLOSION_TICKS:
+                continue
+            if 'cells' not in bomb:
+                bomb['cells'] = self._bomb_explosion_cells(bomb)
+            for cell in bomb['cells']:
+                self._render_explosion_cell(frame, cell.x, cell.y, cell.sprite_row,
+                                            age * TICK, 0.0)
 
     def _add_remote_bomb(self, info: dict, now: Optional[float] = None):
         """Insert a wire bomb into the same registry used by local bombs."""
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         x, y = info.get('x', 0.0), info.get('y', 0.0)
         bomb = {
             'x': x, 'y': y, 'time': info.get('placed_at', now),
@@ -391,7 +403,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _detonate_bomb_at(self, x: float, y: float, now: Optional[float] = None):
         """Honor a removal packet immediately, without starting a second burst."""
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         matches = []
         for bomb in self.active_bombs:
             tolerance = .51 if bomb.get('carried_by') is not None or bomb.get('in_flight') else .01
@@ -408,7 +420,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _client_bomb_record(self, bomb: dict):
         """The Client simulation's record for a lying registry bomb, if any."""
-        records = getattr(self.client, '_bomb_records', None)
+        records = getattr(self.client, 'bomb_records', None)
         if records is None:
             return None
         if 'bomb_id' in bomb:
@@ -425,7 +437,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
     def _on_client_bomb_exploded(self, record: dict, cells, now: Optional[float] = None):
         """Present a detonation the Client simulation already resolved (board
         blast, chain, damage): sound, shake and the cell animation."""
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         bomb = next((b for b in self.active_bombs
                      if not b.get('exploded') and not b.get('discarded')
                      and b.get('carried_by') is None and not b.get('in_flight')
@@ -447,9 +459,10 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         simulation already applied to the board, so it is not blasted again."""
         if bomb.get('exploded'):
             return False
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         bomb['exploded'] = True
         bomb['explosion_time'] = now
+        bomb['explosion_tick'] = self.clock.tick
         own_carry = (getattr(self.client.player, 'carried_bomb', None) is bomb
                      or any(obj.get('bomb') is bomb and not obj.get('remote')
                             for obj in getattr(self, 'thrown_objects', ())))
@@ -476,7 +489,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
             return True
         bomb['cells'] = self._bomb_explosion_cells(bomb)
         for cell in bomb['cells']:
-            self.client._blast_board_at(cell.x, cell.y)
+            self.client.blast_board_at(cell.x, cell.y)
         return True
 
     def _start_camera_shake(self, x: float, y: float,
@@ -485,7 +498,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         player = self.client.player
         if math.hypot(float(x) - player.x, float(y) - player.y) > 8.0:
             return False
-        now = time.monotonic() if now is None else now
+        now = self.clock.frame_now() if now is None else now
         started = getattr(self, '_camera_shake_started', None)
         if started is None or now - started >= 0.4:
             self._camera_shake_started = now
@@ -493,7 +506,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _break_bushes_in_blast(self, x: float, y: float, power: int):
         """Compatibility alias for one cell's board effects."""
-        return self.client._blast_board_at(x, y)
+        return self.client.blast_board_at(x, y)
     # Fallback triangle colors, keyed by the projectile's 'gani' name -
     # 'arrow' (the default, matching the classic brown arrow it replaces)
     # and 'firespy' (a distinct fire-orange, so a fireball doesn't look like
@@ -530,15 +543,19 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         pygame.draw.polygon(self.screen, fill, points)
         pygame.draw.polygon(self.screen, outline, points, 1)
 
-    def _update_and_render_projectiles(self, dt: float,
-                                       frame: Optional[FrameContext] = None):
-        """Advance all arrows and stop them briefly at the first solid tile."""
-        current_time = time.time()
+    #: How long an arrow's impact spark lives after it stops at a wall.
+    ARROW_HIT_SPARK_SECONDS = 0.12
+
+    def _update_projectiles(self, dt: float) -> None:
+        """Simulation: advance all arrows and flying objects by `dt`, stop an
+        arrow at the first solid tile, and drop the ones that flew their
+        maximum distance or whose impact spark is over. Draws nothing; see
+        `_render_projectiles`."""
+        current_time = self.clock.sim_now()
         active_projectiles = []
         for proj in self.active_projectiles:
             if 'hit_time' in proj:
-                if current_time - proj['hit_time'] < 0.12:
-                    self._render_arrow_hit_spark(proj, current_time)
+                if not self.clock.passed(proj['hit_time'], self.ARROW_HIT_SPARK_SECONDS):
                     active_projectiles.append(proj)
                 continue
 
@@ -546,8 +563,8 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                 # Script-fired fireblast/nuke: 20 Hz hit rules (flying.py).
                 if not self._advance_flying(proj, dt):
                     continue
-                self._keep_or_expire_projectile(proj, current_time, frame,
-                                                active_projectiles)
+                if self._projectile_in_range(proj):
+                    active_projectiles.append(proj)
                 continue
 
             old_x, old_y = proj['x'], proj['y']
@@ -565,27 +582,36 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                     proj['hit_time'] = current_time
                     hit = True
                     break
-            if hit:
-                self._render_arrow_hit_spark(proj, current_time)
+            if hit or self._projectile_in_range(proj):
                 active_projectiles.append(proj)
-                continue
-
-            self._keep_or_expire_projectile(proj, current_time, frame,
-                                            active_projectiles)
 
         self.active_projectiles = active_projectiles
 
-    def _keep_or_expire_projectile(self, proj: dict, current_time: float,
-                                   frame: Optional[FrameContext],
-                                   active_projectiles: list) -> None:
-        """Draw `proj` and keep it, unless it has flown its maximum distance."""
+    @staticmethod
+    def _projectile_in_range(proj: dict) -> bool:
+        """True while `proj` has not flown its maximum distance."""
         dist_x = proj['x'] - proj['start_x']
         dist_y = proj['y'] - proj['start_y']
-        distance = (dist_x ** 2 + dist_y ** 2) ** 0.5
+        return (dist_x ** 2 + dist_y ** 2) ** 0.5 < proj['max_distance']
 
-        if distance < proj['max_distance']:
-            screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
+    def _interpolated_object(self, kind: str, obj: dict, x: float, y: float):
+        """Draw position of a simulated object between the last two ticks
+        (presentation only, game/interpolation.py)."""
+        interpolator = getattr(self, 'interpolator', None)
+        if interpolator is None:
+            return x, y
+        return interpolator.position((kind, id(obj)), (x, y), self.clock.tick,
+                                     self.clock.alpha, owner=obj)
 
+    def _render_projectiles(self, frame: Optional[FrameContext] = None) -> None:
+        """Draw every live arrow, flying object and impact spark."""
+        current_time = self.clock.sim_now()
+        for proj in self.active_projectiles:
+            if 'hit_time' in proj:
+                self._render_arrow_hit_spark(proj, current_time)
+                continue
+            draw_x, draw_y = self._interpolated_object('proj', proj, proj['x'], proj['y'])
+            screen_x, screen_y = self.camera.world_to_screen(draw_x, draw_y)
             self._render_world_object(
                 frame, proj['y'],
                 lambda proj=proj, screen_x=screen_x, screen_y=screen_y,
@@ -594,7 +620,11 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                     proj['direction'],
                     current_time - proj.get('time', current_time)))
 
-            active_projectiles.append(proj)
+    def _update_and_render_projectiles(self, dt: float,
+                                       frame: Optional[FrameContext] = None):
+        """Update then draw, for a harness that renders outside `step()`."""
+        self._update_projectiles(dt)
+        self._render_projectiles(frame)
 
     def _render_arrow_hit_spark(self, proj: dict, now: float):
         screen_x, screen_y = self.camera.world_to_screen(proj['x'], proj['y'])
@@ -604,14 +634,19 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                            (int(screen_x), int(screen_y)), radius, 1)
 
     def _add_remote_arrow(self, info: dict, now: Optional[float] = None):
-        now = time.time() if now is None else now
+        now = self.clock.sim_now() if now is None else now
         direction = info.get('direction', 2)
         vx, vy = self._ARROW_DIRECTION_VECTOR.get(direction, (0, 1))
         x, y = info.get('x', 0.0), info.get('y', 0.0)
+        # 1 tile per tick (TClient.cpp:3646), flying until a wall or the
+        # server's 2-level cap, like our own arrows and the Client's
+        # victim-side simulation (it used to fly 8 tiles/s for 10 tiles).
+        speed = getattr(self.client, 'ARROW_SPEED', 20.0)
         arrow = {
-            'x': x, 'y': y, 'dx': vx * 8.0, 'dy': vy * 8.0,
+            'x': x, 'y': y, 'dx': vx * speed, 'dy': vy * speed,
             'time': now, 'direction': direction, 'gani': 'arrow',
-            'max_distance': 10.0, 'start_x': x, 'start_y': y,
+            'max_distance': getattr(self.client, 'ARROW_MAX_DISTANCE', 128.0),
+            'start_x': x, 'start_y': y,
             'source': 'remote',
         }
         self.active_projectiles.append(arrow)
@@ -626,19 +661,15 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         'sign': ((174, 132, 72), (103, 70, 36)),
     }
 
-    def _update_and_render_thrown(self, dt: float,
-                                  frame: Optional[FrameContext] = None):
-        self.thrown_objects = self._advance_and_render_throws(
-            self.thrown_objects, dt, frame)
-        self._update_and_render_other_thrown(dt, frame)
+    def _update_thrown(self, dt: float) -> None:
+        """Simulation: advance our own and other players' thrown objects by
+        `dt`, then the pushaway knockback. Draws nothing."""
+        self.thrown_objects = self._advance_throws(self.thrown_objects, dt)
+        self.other_thrown_objects = self._advance_throws(
+            self.other_thrown_objects, dt, remote=True)
         self._apply_pushaway(dt)
 
-    def _update_and_render_other_thrown(self, dt: float,
-                                        frame: Optional[FrameContext] = None):
-        self.other_thrown_objects = self._advance_and_render_throws(
-            self.other_thrown_objects, dt, frame, remote=True)
-
-    def _advance_and_render_throws(self, objects, dt, frame, remote=False):
+    def _advance_throws(self, objects, dt, remote=False):
         survivors = []
         for obj in objects:
             bomb = obj.get('bomb')
@@ -649,26 +680,52 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                 continue
             if bomb is not None:
                 bomb['x'], bomb['y'] = obj['x'], obj['y'] - obj['z']
+            survivors.append(obj)
+        return survivors
 
-            def draw_thrown(obj=obj):
+    def _render_thrown(self, frame: Optional[FrameContext] = None) -> None:
+        """Draw our own, then other players', thrown objects."""
+        self._render_throws(self.thrown_objects, frame)
+        self._render_throws(self.other_thrown_objects, frame)
+
+    def _render_throws(self, objects, frame) -> None:
+        for obj in objects:
+            bomb = obj.get('bomb')
+            if bomb is not None and (bomb.get('exploded') or bomb.get('discarded')):
+                continue
+
+            ox, oy = self._interpolated_object('thrown', obj, obj['x'], obj['y'])
+            oz = self._interpolated_object('thrown_z', obj, obj['z'], 0.0)[0]
+
+            def draw_thrown(obj=obj, ox=ox, oy=oy, oz=oz):
                 # TServerCarry.cpp:86-97: shadow stays on the ground track.
-                sx, sy = self.camera.world_to_screen(obj['x'] + .25, obj['y'] + 2.5)
+                sx, sy = self.camera.world_to_screen(ox + .25, oy + 2.5)
                 scale = getattr(self.camera, 'scale', TILE_SIZE)
                 pygame.draw.ellipse(self.screen, (25, 25, 30),
                                     (sx, sy, max(1, 1.5 * scale), max(1, .4 * scale)))
                 if obj.get('type') == 'bomb':
-                    px, py = self.camera.world_to_screen(obj['x'], obj['y'] - obj['z'])
+                    px, py = self.camera.world_to_screen(ox, oy - oz)
                     self._render_carried_bomb(px, py, obj.get('bomb'))
                     return
                 for i, (dx, dy) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
                     px, py = self.camera.world_to_screen(
-                        obj['x'] + dx, obj['y'] - obj['z'] + dy)
+                        ox + dx, oy - oz + dy)
                     self.screen.blit(self.tileset_mgr.get_tile_or_color(obj['tiles'][i]),
                                      (px, py))
 
             self._render_world_object(frame, obj['y'], draw_thrown, height_tiles=2.0)
-            survivors.append(obj)
-        return survivors
+
+    def _update_and_render_thrown(self, dt: float,
+                                  frame: Optional[FrameContext] = None):
+        """Update then draw, for a harness that renders outside `step()`."""
+        self._update_thrown(dt)
+        self._render_thrown(frame)
+
+    def _update_and_render_other_thrown(self, dt: float,
+                                        frame: Optional[FrameContext] = None):
+        self.other_thrown_objects = self._advance_throws(
+            self.other_thrown_objects, dt, remote=True)
+        self._render_throws(self.other_thrown_objects, frame)
 
     PUSHAWAY_DECAY = 6.0  # velocity damping per second; settles in well under a second
 
@@ -699,7 +756,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         """Queue the existing weapon-hit spark burst at its reported point."""
         self.break_effects.append({
             'x': x, 'y': y,
-            'time': time.time(),
+            'time': self.clock.frame_now(),
             'colors': self.BREAK_COLORS['bush'],
         })
         self.sound_mgr.play("crush.wav")
@@ -718,7 +775,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                 bomb['x'], bomb['y'] = obj['x'], obj['y'] - obj['z'] + 1.5
                 bomb['in_flight'] = False
                 remaining = max(50, round(bomb.get('fuse_remaining', bomb['fuse_time']) * 1000))
-                bomb['time'], bomb['fuse_time'] = time.time(), remaining / 1000
+                bomb['time'], bomb['fuse_time'] = self.clock.sim_now(), remaining / 1000
                 bomb.pop('fuse_remaining', None)
                 bomb.pop('bomb_id', None)
                 if not obj.get('remote'):
@@ -731,7 +788,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                 return
             self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
         self.break_effects.append({
-            'x': obj['x'], 'y': obj['y'], 'time': time.time(),
+            'x': obj['x'], 'y': obj['y'], 'time': self.clock.frame_now(),
             'leap_type': leap_type, 'tiles': obj.get('tiles', ()),
         })
         # TServerLevel.cpp:2850-2866: only landing plays the object sound.
@@ -743,7 +800,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _spawn_leaf_particles(self, x: float, y: float, now=None, count=None):
         """Add a small capped spray of procedural vegetation fragments."""
-        now = time.time() if now is None else now
+        now = self.clock.frame_now() if now is None else now
         count = random.randint(4, 6) if count is None else max(0, int(count))
         particles = getattr(self, 'leaf_particles', None)
         if particles is None:
@@ -763,7 +820,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _expire_leaf_particles(self, now=None):
         """Discard expired fragments and return the remaining registry."""
-        now = time.time() if now is None else now
+        now = self.clock.frame_now() if now is None else now
         self.leaf_particles[:] = [
             leaf for leaf in self.leaf_particles
             if now - leaf['time'] < self.LEAF_DURATION - 1e-9
@@ -876,7 +933,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
                 self.screen.blit(surf, (int(sx), int(sy)))
 
     def _render_leaf_particles(self):
-        now = time.time()
+        now = self.clock.frame_now()
         self._expire_leaf_particles(now)
         colors = ((72, 164, 62), (38, 112, 45))
         for leaf in self.leaf_particles:
@@ -907,7 +964,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         burst at level coords (x, y) and play its spawn sound."""
         if not 0 <= int(leap_type) <= 5:
             return
-        now = time.time() if now is None else now
+        now = self.clock.frame_now() if now is None else now
         bursts = getattr(self, 'leap_bursts', None)
         if bursts is None:
             bursts = self.leap_bursts = []
@@ -925,7 +982,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         bursts = getattr(self, 'leap_bursts', None)
         if not bursts:
             return
-        now = time.time()
+        now = self.clock.frame_now()
         sheet = self._get_effect_sprite('sprites.png')
         alive = []
         for burst in bursts:
@@ -961,11 +1018,11 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
         return surface
 
     def _render_water_ripples(self):
-        now = time.time()
+        now = self.clock.frame_now()
         ripples = getattr(self, 'water_ripples', None)
         if ripples is None:
             ripples = self.water_ripples = []
-        if self.is_swimming and now - getattr(self, '_last_ripple_time', 0.0) >= 0.5:
+        if self.is_swimming and now - getattr(self, '_last_ripple_time', float('-inf')) >= 0.5:
             feet_x, feet_y = self._player_feet()
             ripples.append({'x': feet_x, 'y': feet_y, 'time': now})
             self._last_ripple_time = now
@@ -981,7 +1038,7 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _render_break_effects(self):
         """Draw thrown-object leap frames and the existing weapon-hit sparks."""
-        now = time.time()
+        now = self.clock.frame_now()
         active = []
         for eff in self.break_effects:
             if 'leap_type' in eff:
@@ -1111,26 +1168,19 @@ class EffectsRenderMixin(FlyingObjectsMixin, FrameContextMixin):
 
     def _render_server_explosions(self,
                                   frame: Optional[FrameContext] = None):
-        """Render explosions received from server (PLO_EXPLOSION packets)."""
-        current_time = time.time()
-        explosion_duration = EXPLOSION_DURATION
-
-
-        # Clean up expired explosions and render active ones
-        active = []
+        """Draw the client's explosion cells (Client.make_explosion). The
+        Client drops each after EXPLOSION_TICKS + 1 ticks
+        (Client._expire_explosions); this only draws."""
+        tick = self.clock.tick
         for exp in self.client.active_explosions:
-            elapsed = current_time - exp['time']
-            if elapsed < explosion_duration:
-                if 'sprite_row' in exp:
+            elapsed = (tick - exp.get('tick', tick)) * TICK
+            if 'sprite_row' in exp:
+                self._render_explosion_cell(
+                    frame, exp['x'], exp['y'], exp['sprite_row'], elapsed,
+                    exp.get('order_offset', 0.0))
+            else:
+                # Legacy script bursts store a whole cross in one entry.
+                for cell in cross_cells(exp['x'], exp['y'], exp.get('radius', 2)):
                     self._render_explosion_cell(
-                        frame, exp['x'], exp['y'], exp['sprite_row'], elapsed,
+                        frame, cell.x, cell.y, cell.sprite_row, elapsed,
                         exp.get('order_offset', 0.0))
-                else:
-                    # Legacy script bursts store a whole cross in one entry.
-                    for cell in cross_cells(exp['x'], exp['y'], exp.get('radius', 2)):
-                        self._render_explosion_cell(
-                            frame, cell.x, cell.y, cell.sprite_row, elapsed,
-                            exp.get('order_offset', 0.0))
-                active.append(exp)
-
-        self.client.active_explosions = active

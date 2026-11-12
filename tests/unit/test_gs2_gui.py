@@ -455,10 +455,9 @@ def test_nested_translucent_subtrees_render_without_sharing_a_layer():
 def test_headless_without_pygame_gui_is_none(monkeypatch):
     """gs2_client.py must degrade gracefully (gui=None, no crash) when the
     GS2GuiManager import fails -- the game_tester headless path."""
-    # ClientGS2 reads GS2GuiManager from gs2_client/runtime.py; the package root
-    # re-exports it by value, so patching there would not reach the constructor.
-    from pyreborn.gs2_client import runtime as gs2_runtime
-    monkeypatch.setattr(gs2_runtime, "GS2GuiManager", None)
+    # ClientGS2 reads the manager class from the registry's GUI layer.
+    from pyreborn.gs2_client.registry import gui_layer
+    monkeypatch.setattr(gui_layer(), "manager", None)
     rt2 = ClientGS2()
     assert rt2.gui is None
     # builtins must no-op, not raise, with gui unavailable

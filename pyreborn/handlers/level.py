@@ -26,6 +26,7 @@ from ..packets import (
     parse_playerwarp2,
     parse_set_active_level,
 )
+from ..client_callbacks import emit
 from .registry import handles
 
 logger = logging.getLogger(__name__)
@@ -260,8 +261,7 @@ def handle_board_packet(client, data):
         client.tiles = tiles
         client._tiles_level_name = level_for_tiles
         client._maybe_release_local_transition()
-    if client.on_level:
-        client.on_level(tiles)
+    emit(client, 'on_level', tiles)
 
 
 @handles(PacketID.PLO_PLAYERWARP)
@@ -377,8 +377,7 @@ def handle_level_chest(client, data):
             client.chest_items.setdefault(lvl, {})[key] = chest['item']
         if 'sign' in chest:
             client.chest_signs.setdefault(lvl, {})[key] = chest['sign']
-        if client.on_chest:
-            client.on_chest(chest['x'], chest['y'], chest['opened'])
+        emit(client, 'on_chest', chest['x'], chest['y'], chest['opened'])
 
 
 @handles(PacketID.PLO_LEVELSIGN)
@@ -395,8 +394,7 @@ def handle_level_sign(client, data):
         # above collapses coordinate collisions (see client_state.py).
         client.sign_lists.setdefault(lvl, []).append(
             (sign['x'], sign['y'], sign['text']))
-        if client.on_sign:
-            client.on_sign(sign['x'], sign['y'], sign['text'])
+        emit(client, 'on_sign', sign['x'], sign['y'], sign['text'])
 
 
 @handles(PacketID.PLO_MINIMAP)
@@ -407,8 +405,8 @@ def handle_minimap(client, data):
         # PlayerClient.cpp:489-516); each keeps its own configuration so the
         # second packet does not replace the first.
         client.minimap_info = mm
-    elif mm and client.on_minimap:
-        client.on_minimap(mm['data'])
+    elif mm:
+        emit(client, 'on_minimap', mm['data'])
 
 
 @handles(PacketID.PLO_BIGMAP)
@@ -435,8 +433,7 @@ def handle_board_layer(client, data):
             client.board_layers.clear()
             client._board_layers_level_name = level_name
         client.board_layers[layer['layer']] = layer['tiles']
-        if client.on_board_layer:
-            client.on_board_layer(layer['layer'], layer['x'], layer['y'], layer['tiles'])
+        emit(client, 'on_board_layer', layer['layer'], layer['x'], layer['y'], layer['tiles'])
 
 
 @handles(PacketID.PLO_BOARDMODIFY)
@@ -454,8 +451,7 @@ def handle_board_modify(client, data):
                   or client._current_level_name)
     if level_name:
         client._apply_board_modify(level_name, info)
-    if client.on_board_modify:
-        client.on_board_modify(info)
+    emit(client, 'on_board_modify', info)
 
 
 @handles(PacketID.PLO_BOARDMODIFY2)
@@ -469,8 +465,7 @@ def handle_board_modify2(client, data):
         level_name = client._pending_level_name or client._current_level_name
     if level_name:
         client._apply_board_modify(level_name, info)
-    if client.on_board_modify:
-        client.on_board_modify(info)
+    emit(client, 'on_board_modify', info)
 
 
 @handles(PacketID.PLO_BOARDHEIGHTS)
@@ -514,8 +509,7 @@ def handle_level_board(client, data):
                     'height': h, 'tiles': tiles}
             if level_name:
                 client._apply_board_modify(level_name, info)
-            if client.on_board_modify:
-                client.on_board_modify(info)
+            emit(client, 'on_board_modify', info)
 
 
 @handles(PacketID.PLO_ISLEADER)

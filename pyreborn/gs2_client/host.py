@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from typing import Dict
 from reborn_protocol.gs2 import GS2Host
 from reborn_protocol.gs2 import GS2Object
@@ -14,7 +14,7 @@ from ..particles import ParticleEmitter
 from ..particles import ParticleModifier
 from reborn_protocol.gs1.runtime import UNSET
 from .objects_player import _CanvasObject, _EngineObject
-from .registry import GS2GuiManager, GuiControl, GuiPopUpEditCtrl, _FALL_THROUGH, _GS1_COMMANDS, _GS1_FUNCTIONS, _GS1_LEVEL_PROBES, _GS2_ANY, _GS2_BARE, _GS2_BARE_GUI, _GS2_ENGINE_METHODS, _GS2_GUI_METHODS, _GS2_LIST_METHODS, _GS2_OBJECTS, _GS2_OBJ_METHODS, _GS2_PARTICLE_METHODS, _GS2_POPUP_METHODS, _GS2_STR_METHODS, _GS2_TABLES, _GS2_VARS_METHODS
+from .registry import gui_layer, is_gui_control, is_gui_popup, _FALL_THROUGH, _GS1_COMMANDS, _GS1_FUNCTIONS, _GS1_LEVEL_PROBES, _GS2_ANY, _GS2_BARE, _GS2_BARE_GUI, _GS2_ENGINE_METHODS, _GS2_GUI_METHODS, _GS2_LIST_METHODS, _GS2_OBJECTS, _GS2_OBJ_METHODS, _GS2_PARTICLE_METHODS, _GS2_POPUP_METHODS, _GS2_STR_METHODS, _GS2_TABLES, _GS2_VARS_METHODS
 from .host_any import HostAnyMixin
 from .host_collections import HostCollectionsMixin
 from .host_engine import HostEngineMixin
@@ -24,6 +24,9 @@ from .host_particles import HostParticlesMixin
 from .host_vars import HostVarsMixin
 from .host_bare import HostBareMixin
 from .host_objects import HostObjectsMixin
+
+if TYPE_CHECKING:
+    from .runtime import ClientGS2
 
 class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGuiMixin, HostObjmethodsMixin, HostParticlesMixin, HostVarsMixin, HostBareMixin, HostObjectsMixin, GS2Host):
     """VM host: GS2-specific builtins first, then the GS1 client host
@@ -162,9 +165,9 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
         # dispatch, but they ARE part of the live host surface). Every
         # control CLASS contributes: a tree view's addNodeByPath is no less
         # implemented than the base class's showTop.
-        if GS2GuiManager is not None:
-            from ..game.gs2_gui import control_method_names
-            names |= control_method_names()
+        layer = gui_layer()
+        if layer.manager is not None:
+            names |= layer.method_names()
         GS2ClientHost._surface_cache = frozenset(names) | GS2ClientHost.stubbed
         return GS2ClientHost._surface_cache
 
@@ -319,7 +322,7 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
                 if result is not _FALL_THROUGH:
                     return result
         if (name == "trigger" and args and isinstance(obj, GS2Object)
-                and not (GuiControl is not None and isinstance(obj, GuiControl))):
+                and not is_gui_control(obj)):
             return rt2.trigger_object_event(vm, obj, str(args[0]), *args[1:])
         if rt2.gui is not None:
             handler = _GS2_GUI_METHODS.get(name)
@@ -332,7 +335,7 @@ class GS2ClientHost(HostAnyMixin, HostCollectionsMixin, HostEngineMixin, HostGui
             result = handler(self, vm, name, args, obj)
             if result is not _FALL_THROUGH:
                 return result
-        if GuiPopUpEditCtrl is not None and isinstance(obj, GuiPopUpEditCtrl):
+        if is_gui_popup(obj):
             handler = _GS2_POPUP_METHODS.get(name)
             if handler is not None:
                 result = handler(self, vm, name, args, obj)

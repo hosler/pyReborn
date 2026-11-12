@@ -411,21 +411,19 @@ def test_hideplayer_sets_status_bit_two_and_tells_the_server(tmp_path):
 def test_hideplayer_converts_and_clamps_seconds_like_the_reference():
     """TInitStatics.cpp:3425-3439: clamp 0-10 s, x60 ticks, +0.5, truncate;
     a counter n is hidden for n+1 ticks."""
-    import time
     client, _rt = online_runtime()
-    now = time.monotonic()
+    now = client.clock.sim_now()
     client.hide_player(99.0)
     assert 10.0 < client.hide_player_until - now <= 10.1
     client.player.status = 0
     client.hide_player(-5.0)
-    assert 0.0 < client.hide_player_until - time.monotonic() <= 2 / 60.0
+    assert 0.0 < client.hide_player_until - client.clock.sim_now() <= 2 / 60.0
     client.hide_player(float("nan"))
-    assert client.hide_player_until - time.monotonic() <= 2 / 60.0
+    assert client.hide_player_until - client.clock.sim_now() <= 2 / 60.0
     assert client.hide_player("junk") is False
 
 
 def test_hideplayer_ends_on_expiry_and_on_damage():
-    import time
     from reborn_protocol import PLSTATUS
     client, _rt = online_runtime()
     client.player.status = 0
@@ -439,7 +437,7 @@ def test_hideplayer_ends_on_expiry_and_on_damage():
     assert client.hide_player_until == 0.0
 
     client.hide_player(0.0)
-    client.hide_player_until = time.monotonic() - 1.0  # expiry
+    client.hide_player_until = client.clock.sim_now() - 1.0  # expiry
     client._tick_hide_player()
     assert not client.player.status & PLSTATUS.HIDDEN
     status_packets = [p for p in client._protocol.sent

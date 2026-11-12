@@ -1080,7 +1080,7 @@ class GuiTreeViewCtrl(GuiControl):
         manager._set_focus(None)
         node = self.node_at(pos)
         if node is not None:
-            now = pygame.time.get_ticks()
+            now = manager.now_ms()
             last_t, last_node = manager._last_tree_click
             manager._last_tree_click = (now, node)
             if node is last_node and now - last_t <= DOUBLE_CLICK_MS:

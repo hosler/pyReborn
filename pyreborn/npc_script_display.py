@@ -6,7 +6,8 @@ the NPC (TServerNPC::draw, Preagonal/FourPlay/quattroplay/src/TServerNPC.cpp:
 """
 
 import math
-import time
+
+from .clock import sim_passed
 
 
 def timer_text(npc):
@@ -22,7 +23,7 @@ def timer_text(npc):
     return str(int(math.floor(float(remaining) + 0.0001)))
 
 
-def take_display(npc, now=None):
+def take_display(npc, now):
     """(giveitems sprite index, value text or None) while an NPC that has just
     `take`n an item shows it, else None.
 
@@ -32,7 +33,7 @@ def take_display(npc, now=None):
     until = npc.get('take_until')
     if until is None:
         return None
-    if (time.monotonic() if now is None else now) >= until:
+    if sim_passed(now, until):
         return None
     index = int(npc.get('take_item', 0))
     from .ground_items import GIVE_SPRITES

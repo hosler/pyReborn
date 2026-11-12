@@ -7,7 +7,10 @@ from typing import Any
 from .fingerprint import snapshot_and_hash
 
 
-FRAME_DT = 1.0 / 60.0
+# One simulation tick per pumped frame (pyreborn/clock.py): a "stable for N
+# frames" settle check then means N ticks of unchanged GUI, not N frames in
+# which nothing could have changed because no tick ran.
+FRAME_DT = 0.05
 
 
 @dataclass(frozen=True)
@@ -29,26 +32,8 @@ class GamePump:
         self.stable_frames = max(1, stable_frames)
 
     def step(self) -> None:
-        game = self.game
-        client = game.client
-        game._frame_dt = self.frame_dt
-        client.update(timeout=0)
-        for name in ("_load_new_npcs", "_process_pending_warp",
-                     "_process_self_shoots"):
-            getattr(game, name)()
-        game.gs1.process_coroutines(self.frame_dt)
-        game.gs1.process_timeouts(self.frame_dt)
-        game.gs2.process_coroutines(self.frame_dt)
-        game.gs2.process_timeouts(self.frame_dt)
-        for name in ("_check_scripted_link_warp",):
-            getattr(game, name)()
-        game.gs1.advance_input_frame()
-        for name in ("_check_level_change", "_update_swimming_state"):
-            getattr(game, name)()
-        game._update_visual_position(self.frame_dt)
-        game._update_animations(self.frame_dt)
-        game._last_dt = self.frame_dt
-        game._render()
+        """One real frame (GameClient.step)."""
+        self.game.step(self.frame_dt, strict=True)
 
     def _idle(self) -> bool:
         runtime = self.game.gs2

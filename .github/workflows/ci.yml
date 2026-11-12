@@ -10,6 +10,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The pygame client and its offline test fixture run headless.
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
     strategy:
       fail-fast: false
       matrix:
@@ -30,7 +34,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      # pyReborn's [dev] extra carries the test imports (pygame-ce, Pillow,
+      # hypothesis, pytest-asyncio); without them the run fails at collection.
       - run: pip install -e ./reborn-protocol -e ./pygserver -e ".[dev]"
+      # syntax errors, undefined names and bad comparisons only: the cheap
+      # rules that catch a crash no offline test happens to reach
+      - run: flake8 --select=E9,F63,F7,F82 pyreborn game_tester
       # unit + integration; the pygserver fixture self-starts from
       # PYGSERVER_DIR (conftest falls back to the sibling ../pygserver, which
       # doesn't exist in the Actions workspace layout)

@@ -155,16 +155,16 @@ def test_motion_ignores_intermediate_walls_after_landing_check():
     assert (game.client.x, game.client.y) == (26.5, 23)
 
 
-def test_jump_starts_from_held_movement_after_eighteen_ticks(monkeypatch):
+def test_jump_starts_from_held_movement_after_eighteen_ticks(sim_time, monkeypatch):
     game = Game()
     game.plant_ledge(2)
-    monkeypatch.setattr('time.time', lambda: 100.0)
+    sim_time(lambda: 100.0)
     game._move(0, 1)
     assert getattr(game, '_ledge_jump', None) is None
-    monkeypatch.setattr('time.time', lambda: 100.89)
+    sim_time(lambda: 100.89)
     game._move(0, 1)
     assert getattr(game, '_ledge_jump', None) is None
-    monkeypatch.setattr('time.time', lambda: 100.91)
+    sim_time(lambda: 100.91)
     game._move(0, 1)
     assert game._ledge_jump is not None
     assert (game.client.x, game.client.y) == (20, 20)

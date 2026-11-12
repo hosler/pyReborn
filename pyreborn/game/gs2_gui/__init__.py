@@ -42,6 +42,16 @@ for _name in _NAMES:
             globals()[_name] = getattr(_module, _name)
             break
 
+# Hand the classes to the library's GS2 runtime (it never imports this package
+# itself at import time; see gs2_client/registry.py gui_layer()).
+from ...gs2_client.registry import register_gui_layer as _register_gui_layer  # noqa: E402
+
+_register_gui_layer(
+    manager=GS2GuiManager, control=GuiControl, popup=GuiPopUpEditCtrl,  # noqa: F821
+    method_names=control_method_names,  # noqa: F821
+    reset_fonts=_profiles.reset_font_resolution,
+)
+
 __all__ = _NAMES
 _ORIGINAL_DIR = tuple(sorted((*_NAMES, "__annotations__", "__builtins__",
                               "__cached__", "__doc__", "__file__", "__loader__",

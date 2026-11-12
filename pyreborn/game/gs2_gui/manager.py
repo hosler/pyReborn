@@ -26,7 +26,9 @@ from reborn_protocol.gs2 import to_bool  # noqa: F401  - kept: original import b
 # =============================================================================
 
 def _ticks() -> int:
-    """Monotonic ms clock for click counting (tests monkeypatch this)."""
+    """Monotonic ms for a manager with no owning runtime (tests monkeypatch
+    this). A manager whose runtime has a client reads that client's clock
+    instead (`GS2GuiManager.now_ms`)."""
     return pygame.time.get_ticks()
 
 
@@ -748,8 +750,14 @@ class GS2GuiManager:
 
     # -- render ---------------------------------------------------------
 
+    def now_ms(self) -> int:
+        """Milliseconds on the client's clock (the one time source), or on
+        pygame's tick counter for a manager with no runtime clock."""
+        clock = getattr(getattr(self.rt2, 'client', None), 'clock', None)
+        return clock.frame_now_ms() if clock is not None else _ticks()
+
     def tick(self, seconds: Optional[float] = None) -> None:
-        now = _ticks()
+        now = self.now_ms()
         if seconds is None:
             seconds = 0.016 if self._animation_ticks is None else max(
                 0.0, (now - self._animation_ticks) / 1000.0)
@@ -1076,7 +1084,7 @@ class GS2GuiManager:
             return
         pos = event.pos
         if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 3):
-            now = _ticks()
+            now = self.now_ms()
             if (event.button == self._click_button
                     and now - self._click_ticks <= DOUBLE_CLICK_MS):
                 self._click_count += 1

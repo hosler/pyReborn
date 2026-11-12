@@ -7,12 +7,12 @@ Works with pygame.mixer.
 
 import io
 import math
-import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .asset_paths import normalize_asset_name
-from .sprites import find_asset_file
+from .clock import Clock
+from .asset_paths import find_asset_file
 
 # Pygame import is optional - only needed when actually used
 try:
@@ -25,14 +25,18 @@ except ImportError:
 class SoundManager:
     """The sound manager loads and plays sound effects."""
 
-    def __init__(self, search_paths: Optional[List[Path]] = None, enabled: bool = True):
+    def __init__(self, search_paths: Optional[List[Path]] = None, enabled: bool = True,
+                 clock: Optional[Clock] = None):
         """
         Create the sound manager.
 
         Args:
             search_paths: List of paths to search for sound files
             enabled: Whether sound is enabled (can be toggled)
+            clock: The client's clock (the game passes it); a private one
+                when omitted. Times the pending-sample window.
         """
+        self.clock = clock or Clock()
         self.search_paths = search_paths or []
         self.enabled = enabled
         self.volume = 1.0  # Master volume (0.0 - 1.0)
@@ -202,7 +206,7 @@ class SoundManager:
         pending = self._pending_samples.pop(name, None)
         if pending is not None:
             requested_at, kind, args = pending
-            if time.monotonic() - requested_at <= self.pending_sample_ttl:
+            if self.clock.frame_now() - requested_at <= self.pending_sample_ttl:
                 if kind == 'play':
                     self.play(name, *args)
                 else:
@@ -212,7 +216,7 @@ class SoundManager:
     def _remember_pending(self, name: str, kind: str, args: tuple) -> None:
         """Remember only the first recent missed trigger for each filename."""
         name = normalize_asset_name(name)
-        now = time.monotonic()
+        now = self.clock.frame_now()
         pending = self._pending_samples.get(name)
         if pending is None or now - pending[0] > self.pending_sample_ttl:
             self._pending_samples[name] = (now, kind, args)

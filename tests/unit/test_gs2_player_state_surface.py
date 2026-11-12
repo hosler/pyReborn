@@ -60,7 +60,7 @@ def test_player_read_state_tracks_live_client_state():
 def test_player_display_methods_apply_local_effects_only():
     runtime = _runtime()
     game = SimpleNamespace(dialogue_text="page", dialogue_pager=_Pager())
-    game._dismiss_dialogue = lambda: setattr(game, "dialogue_text", None)
+    game.dismiss_dialogue = lambda: setattr(game, "dialogue_text", None)
     runtime.game_shell = game
     player = runtime.player_object
 

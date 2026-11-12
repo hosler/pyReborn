@@ -1155,13 +1155,6 @@ def parse_firespy(data: bytes) -> dict:
     return {'owner_id': owner_id, 'power': length_power & 0x07, 'length': length_power >> 3}
 
 
-def build_firespy(power: int = 1, length: int = 1) -> bytes:
-    """Build PLI_FIRESPY (10) payload: {GCHAR length_power} (length<<3 | power)."""
-    builder = PacketBuilder()
-    builder.write_gchar(((length & 0x1F) << 3) | (power & 0x07))
-    return builder.build()
-
-
 def parse_throwcarried(data: bytes) -> dict:
     """Parse PLO_THROWCARRIED (21). Format: {GSHORT owner_id} - no other payload."""
     reader = PacketReader(data)
@@ -1395,23 +1388,3 @@ def build_profile_get(account: str) -> bytes:
     the C++ serverlist server's ServerConnection::msgSVI_GETPROF).
     """
     return account.encode('latin-1', errors='replace')
-
-
-def build_profile_set(account: str, name: str = '', age: str = '',
-                      gender: str = '', country: str = '', messenger: str = '',
-                      email: str = '', website: str = '', hangout: str = '',
-                      quote: str = '') -> bytes:
-    """
-    Build PLI_PROFILESET (81) payload - update our own profile.
-
-    Format (Player.cpp msgPLI_PROFILESET + the C++ serverlist server's msgSVI_SETPROF):
-        {GCHAR len}{account} then 9 x {GCHAR len}{field}:
-        name, age, gender, country, messenger, email, website, hangout, quote.
-    The server rejects the whole packet if account != our account name.
-    """
-    builder = PacketBuilder()
-    builder.write_gstring(account)
-    for field in (name, age, gender, country, messenger, email, website,
-                  hangout, quote):
-        builder.write_gstring(field)
-    return builder.build()

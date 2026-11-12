@@ -65,7 +65,8 @@ class Game(ActionsMixin, CollisionMixin, EffectsRenderMixin, InputMixin):
 
 @pytest.fixture
 def game(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+    monkeypatch.setattr('time.monotonic', lambda: 100.0)   # the game's clock
+    monkeypatch.setattr('time.time', lambda: 100.0)        # pygserver's
     return Game()
 
 
@@ -336,7 +337,8 @@ def test_shared_render_path_draws_real_tiles_and_ground_shadow(game, monkeypatch
     ellipse = Mock()
     monkeypatch.setattr(pygame.draw, 'ellipse', ellipse)
     obj = make_throw(20, 20, 3, 'sign', (10, 11, 12, 13), owner_id=8 if remote else None)
-    assert game._advance_and_render_throws([obj], 0, None, remote) == [obj]
+    assert game._advance_throws([obj], 0, remote=remote) == [obj]
+    game._render_throws([obj], None)
     assert [c.args[0] for c in game.screen.blit.call_args_list] == [10, 11, 12, 13]
     assert game.screen.blit.call_args_list[0].args[1] == (20.5 * 16, 18.625 * 16)
     assert ellipse.call_args.args[2][:2] == (20.75 * 16, 23.5 * 16)
@@ -349,7 +351,7 @@ def test_burst_uses_each_table_frame_once_and_expires(game, monkeypatch, leap, c
     effect = {'x': 10, 'y': 20, 'time': 100, 'leap_type': leap, 'tiles': (1, 2, 3, 4)}
     game.break_effects = [effect]
     for frame in range(count):
-        monkeypatch.setattr('time.time', lambda: 100 + frame * .05)
+        monkeypatch.setattr('time.monotonic', lambda: 100 + frame * .05)
         game.screen.blit.reset_mock()
         rect.reset_mock()
         game._render_break_effects()
@@ -364,7 +366,7 @@ def test_burst_uses_each_table_frame_once_and_expires(game, monkeypatch, leap, c
         else:
             assert [c.args[0] for c in game.screen.blit.call_args_list] == [1, 2, 3, 4]
             assert [c.args[1] for c in game.screen.blit.call_args_list] == expected
-    monkeypatch.setattr('time.time', lambda: 100 + count * .05)
+    monkeypatch.setattr('time.monotonic', lambda: 100 + count * .05)
     game._render_break_effects()
     assert game.break_effects == []
 

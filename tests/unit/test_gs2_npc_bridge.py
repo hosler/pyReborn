@@ -97,7 +97,14 @@ def _serialize(container: GS2Container) -> bytes:
 # -- fixtures ---------------------------------------------------------------
 
 def _npc_client(level="a.nw", npcs=None):
+    listeners = []
+
+    def add_listener(name, fn):
+        listeners.append((name, fn))
+        return lambda: listeners.remove((name, fn))
+
     return SimpleNamespace(
+        listeners=listeners, add_listener=add_listener,
         player=SimpleNamespace(x=30.0, y=30.0, account="me", nickname="Me",
                                id=1, direction=2, gani="idle"),
         players={}, x=30.0, y=30.0, weapons={}, server_name="probe",
@@ -237,7 +244,8 @@ def test_attach_replays_bytecode_received_before_the_hook():
     client.gs2_bytecode["npc"][5] = _serialize(_timeout_counter_container())
     rt = ClientGS2(client).attach()
     assert 5 in rt.vms["npc"]
-    assert client.on_gs2_bytecode.__func__ is ClientGS2._on_bytecode
+    assert ('on_gs2_bytecode', rt._on_bytecode) in client.listeners
+    assert ('on_server_text', rt.handle_server_text) in client.listeners
     # the replay must not double-load when a live packet then arrives
     rt._on_bytecode("npc", 5, client.gs2_bytecode["npc"][5])
     assert len(rt.vms["npc"]) == 1

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import List, Optional, Tuple
 
 import pygame
@@ -10,6 +9,7 @@ import pygame
 from reborn_protocol.coords import local_to_world, segment_origin
 
 from .. import ground_items
+from ..gmap_coords import grid_index
 from ..attachments import sync_attachment, npc_position, attachment_z
 from ..classic_sprites import draw_sprite
 from ..npc_handler import CHARACTER_IMAGE
@@ -18,6 +18,7 @@ from .frame_context import FrameContext
 from .render_shared import (
     BaddySheet, _BADDY_DEFAULT_IMAGE, _BADDY_IMAGES, _Entity,
 )
+from .clocked import ClockedMixin
 
 
 def _npc_draw_band(draw_layer) -> int:
@@ -35,7 +36,7 @@ def _npc_draw_band(draw_layer) -> int:
     return 1
 
 
-class EntityCollectMixin:
+class EntityCollectMixin(ClockedMixin):
     @staticmethod
     def _depth_sort_key(world_y: float, height_tiles: float) -> float:
         """Bottom edge of an entity image in world-tile coordinates."""
@@ -139,17 +140,14 @@ class EntityCollectMixin:
         """Snapshot the gmap lookups the collectors need: level name -> grid
         cell (which the remote-player loop used to rescan per player), and the
         current segment's world origin (which local-coord entities fold in).
-
-        The two are derived separately on purpose. If one level name occupies
-        two cells of a gmap grid, the name lookup resolves to the LAST and the
-        segment origin to the FIRST - what the inline code did."""
+        A name that occupies two cells resolves to the first, like every
+        other lookup (see gmap_coords.grid_of)."""
         grid = self.client.gmap_grid
         if not grid:
             return
-        frame.level_to_grid = {name: cell for cell, name in grid.items()}
-        seg = next((cell for cell, name in grid.items()
-                    if name == self.client._current_level_name), None)
-        if seg:
+        frame.level_to_grid = grid_index(grid)
+        seg = frame.level_to_grid.get(self.client.current_level_name)
+        if seg is not None:
             frame.segment_offset = segment_origin(*seg)
 
     def _world_pos_for_level(self, local_x: float, local_y: float,
@@ -160,54 +158,52 @@ class EntityCollectMixin:
         the local coords already are world coords."""
         grid = frame.level_to_grid.get(level_name) if level_name else None
         if grid is None:
-            grid = frame.level_to_grid.get(self.client._current_level_name)
+            grid = frame.level_to_grid.get(self.client.current_level_name)
         if grid is None:
             return local_x, local_y
         return local_to_world(local_x, local_y, *grid)
 
-    def _lerp_toward(self, previous, target_x: float, target_y: float,
-                     dt: float):
-        """One frame of the shared remote-entity position chase."""
-        vx, vy = previous
-        lerp = min(1.0, self.lerp_speed * dt)
-        return vx + (target_x - vx) * lerp, vy + (target_y - vy) * lerp
+    def _interpolated(self, key, x: float, y: float, *, snap: bool = False,
+                      owner=None):
+        """Draw position of `key` between the last two ticks (presentation
+        only; game/interpolation.py). Without an interpolator (a light test
+        harness) the live position."""
+        interpolator = getattr(self, 'interpolator', None)
+        if interpolator is None:
+            return x, y
+        return interpolator.position(key, (x, y), self.clock.tick,
+                                     self.clock.alpha, snap=snap, owner=owner)
 
     def _interpolate_other_player(self, pid, world_x: float, world_y: float,
                                   frame: FrameContext):
-        """Smoothed world position of a remote player: chase the authoritative
-        position, or snap the first time this pid is seen."""
-        previous = self.other_player_visual.get(pid)
-        position = (self._lerp_toward(previous, world_x, world_y, frame.dt)
-                    if previous is not None else (world_x, world_y))
+        """Draw position of a remote player between the last two ticks; the
+        first time a pid is seen, where it is."""
+        position = self._interpolated(('player', pid), world_x, world_y)
         self.other_player_visual[pid] = position
         return position
 
     def _interpolate_npc(self, npc_id, npc: dict, nx: float, ny: float,
                          frame: FrameContext):
-        """Smoothed world position of an NPC, EXCEPT when client.py just
-        re-stamped its world_x/world_y for a reason other than it actually
-        moving (gmap re-attribution, cache restore on level re-entry, initial
-        stream - see client.py's _mark_npc_pos_snap/_pos_epoch). Lerping
-        across one of those jumps is what made lights visibly "swoop into
-        position" on level entry; snap instead, same as a brand-new npc_id.
+        """Draw position of an NPC between the last two ticks, EXCEPT when
+        client.py just re-stamped its world_x/world_y for a reason other than
+        it actually moving (gmap re-attribution, cache restore on level
+        re-entry, initial stream - see client.py's _mark_npc_pos_snap/
+        _pos_epoch). Sliding across one of those jumps is what made lights
+        visibly "swoop into position" on level entry; snap instead, same as a
+        brand-new npc_id.
 
-        epoch_seen mirrors npc_visual (same lifetime - both keyed by npc_id
-        and only needing to outlive the NPCs the client knows about), but is
-        lazily created rather than added to pygame_game.py's __init__ since
-        it's purely an implementation detail of this interpolation. A stale
-        leftover entry for a since-removed npc_id is harmless: client.py's
-        epoch counter only increases and is never reused, so it can never
-        collide with a future npc_id's real epoch and suppress a snap."""
+        A stale leftover epoch entry for a since-removed npc_id is harmless:
+        client.py's epoch counter only increases and is never reused, so it
+        can never collide with a future npc_id's real epoch and suppress a
+        snap."""
         if npc_id in frame.npc_positions:
             return frame.npc_positions[npc_id]
         epoch_seen = getattr(self, '_npc_visual_epoch', None)
         if epoch_seen is None:
             epoch_seen = self._npc_visual_epoch = {}
         epoch = npc.get('_pos_epoch')
-        previous = self.npc_visual.get(npc_id)
-        position = (self._lerp_toward(previous, nx, ny, frame.dt)
-                    if previous is not None and epoch == epoch_seen.get(npc_id)
-                    else (nx, ny))
+        snap = npc_id in epoch_seen and epoch != epoch_seen.get(npc_id)
+        position = self._interpolated(('npc', npc_id), nx, ny, snap=snap)
         self.npc_visual[npc_id] = position
         epoch_seen[npc_id] = epoch
         if len(epoch_seen) > 2000:
@@ -246,7 +242,7 @@ class EntityCollectMixin:
         if not items:
             return
         surf_w, surf_h = frame.screen_size
-        ages = ground_items.item_ages(self, level_name, items, time.monotonic())
+        ages = ground_items.item_ages(self, level_name, items, self.clock.sim_now())
         shadow = draw_sprite(self.sprite_mgr, 0x2a)
         # Item keys are level-local while the camera and every depth key use
         # world coordinates. Folding only the blit reproduces the live failure
@@ -291,7 +287,7 @@ class EntityCollectMixin:
         body centre without dragging the sprite off its real position. Never
         culled."""
         # TPlayer.cpp:8097: only mode 2 suppresses the player's draw object.
-        if getattr(self.client, 'ghost_mode', 0) == 2 or getattr(self.client, '_local_level_transition', ''):
+        if getattr(self.client, 'ghost_mode', 0) == 2 or getattr(self.client, 'local_level_transition', ''):
             return
         # Depth-sort key must be in the SAME frame as every other entity
         # (world tiles). visual_y is already world-frame.
@@ -345,7 +341,7 @@ class EntityCollectMixin:
         for npc_id, npc in self.client.npcs.items():
             npc_level = npc.get('_level')
             if (npc_level and not self.client.in_gmap_segment and
-                    npc_level != self.client._current_level_name):
+                    npc_level != self.client.current_level_name):
                 continue
             # Prefer world coords (converted from local + grid offset)
             nx = npc.get('world_x', npc.get('x'))
@@ -382,7 +378,8 @@ class EntityCollectMixin:
             by = baddy.get('y')
             if bx is None or by is None:
                 continue
-            wx, wy = bx + origin_x, by + origin_y
+            wx, wy = self._interpolated(('baddy', level_name, bid),
+                                        bx + origin_x, by + origin_y)
             sx, sy = self.camera.world_to_screen(wx, wy)
             if self._entity_on_screen(sx, sy, screen_size=frame.screen_size):
                 out.append(_Entity('baddy', self._depth_sort_key(
@@ -432,7 +429,7 @@ class EntityCollectMixin:
         for npc in self.client.npcs.values():
             npc_level = npc.get('_level')
             if (npc_level and not self.client.in_gmap_segment and
-                    npc_level != self.client._current_level_name):
+                    npc_level != self.client.current_level_name):
                 continue  # the level filter _collect_npcs applies to bodies
             imgs = npc.get('imgs')
             if imgs and npc.get('visible') is not False:

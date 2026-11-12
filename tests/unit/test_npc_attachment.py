@@ -8,6 +8,7 @@ from reborn_protocol.props import PLAYER_PROPS, encode_value
 
 from pyreborn.attachments import attach, detach, sync_attachment, update_attachments
 from pyreborn.game.frame_context import FrameContext
+from pyreborn.game.interpolation import TickInterpolator
 from pyreborn.game.render_collect import EntityCollectMixin
 from pyreborn.gs2_client import ClientGS2
 from pyreborn.handlers.entities import (
@@ -151,19 +152,24 @@ def test_draw_uses_parent_interpolation_z_and_ground_depth(client):
     game = EntityCollectMixin()
     game.client = client
     game.camera = SimpleNamespace(world_to_screen=lambda x, y: (x * 16, y * 16))
-    game.npc_visual = {9: (8, 18)}
+    game.npc_visual = {}
     game._npc_visual_epoch = {9: None}
-    game.other_player_visual = {7: (0, 0)}
-    game.lerp_speed = 10
+    game.other_player_visual = {}
+    # The parent NPC was at (8, 20) after the previous tick and is at
+    # (10, 20) after this one; half a tick along it draws at (9, 20).
+    game.interpolator = TickInterpolator()
+    game.interpolator.position(('npc', 9), (8, 20), client.clock.tick, 0.0)
+    client.clock.begin_tick()
+    client.clock.accumulator = client.clock.tick_length / 2
     game._entity_on_screen = Mock(return_value=True)
     frame = FrameContext(dt=.05, screen_size=(800, 600))
     out = []
     game._collect_other_players(out, frame)
     entity = out[0]
-    assert (entity.x, entity.y) == (11 * 16, 17 * 16)
-    assert entity.depth == 23
+    assert (entity.x, entity.y) == (11 * 16, 18 * 16)
+    assert entity.depth == 24
     assert entity.z == 3
-    assert game._interpolate_npc(9, client.npcs[9], 10, 20, frame) == (9, 19)
+    assert game._interpolate_npc(9, client.npcs[9], 10, 20, frame) == (9, 20)
     assert player['y'] == 21
 
 

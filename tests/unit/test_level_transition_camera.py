@@ -290,7 +290,7 @@ class _SlideHarness(RenderMixin):
 
 def test_renderer_state_machine_hold_slide_done(monkeypatch):
     clock = [10.0]
-    monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
     client = _client()
     client.player.direction = 3
     assert client.use_link(_edge_link(3))
@@ -325,7 +325,7 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch):
     you came -- so a slide gated on that snapshot fired once per edge link
     per session and then never again."""
     clock = [30.0]
-    monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
     client = _client()
     client.player.direction = 3
     client.levels["next.nw"] = [0] * 4096  # visited earlier this session
@@ -344,7 +344,7 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch):
 
 def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch):
     clock = [20.0]
-    monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
     client = _client()
     client.player.direction = 3
     assert client.use_link(_edge_link(3))

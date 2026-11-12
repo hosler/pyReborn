@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from reborn_protocol.gs2 import GS2Object
 from typing import Optional
 from ..gs1_client import board_tile_read
@@ -14,6 +14,9 @@ from reborn_protocol.gs2 import to_str
 from reborn_protocol.coords import segment_at
 from .helpers import _GANI_TRANSFORM_DEFAULTS
 from .objects_player import _ThisObject, _guild_from_nick
+
+if TYPE_CHECKING:
+    from .runtime import ClientGS2
 
 
 

@@ -2,7 +2,6 @@
 
 Split from render.py; methods operate on the GameClient instance."""
 
-import time
 from typing import List, Optional, Tuple
 
 import pygame
@@ -12,7 +11,6 @@ from ..classic_sprites import draw_sprite, swamp_index, swamp_sprite
 from ..gani import AnimationState
 from ..ground_items import GIVE_SPRITES, giveaway_icon_offset
 from ..npc_script_display import take_display, timer_text
-from ..hurt import TICK_SECONDS
 from ..carrying import BOMB_CODES, carry_position, carry_tiles
 from ..npc_handler import CHARACTER_IMAGE
 from ..player import Player
@@ -130,13 +128,13 @@ class EntityRenderMixin(
             # whatever pace the server animates at); fall back to a local
             # ~4fps clock for servers that never send it.
             ani = baddy.get('animation')
-            row = int(ani) % 2 if ani is not None else int(time.time() * 4) % 2
+            row = int(ani) % 2 if ani is not None else int(self.clock.sim_now() * 4) % 2
 
         frame = sheet.frame(row, direction)
         if frame is not None:
             # Hurt baddies blink so a hit reads even when the mode reverts fast
             # (mirrors the old gani path's behavior).
-            if mode == 3 and int(time.time() * 10) % 2 == 0:
+            if mode == 3 and int(self.clock.sim_now() * 10) % 2 == 0:
                 return
             self.screen.blit(frame, (x, y))
             return
@@ -156,7 +154,7 @@ class EntityRenderMixin(
         anim.set_animation(gani_name, direction)
 
         if anim.gani is not None:
-            if mode == 3 and int(time.time() * 10) % 2 == 0:
+            if mode == 3 and int(self.clock.sim_now() * 10) % 2 == 0:
                 return
             head = _BADDY_HEADS.get(btype, _BADDY_DEFAULT_HEAD)
             # This legacy composite borrows player character ganis (walk/
@@ -240,7 +238,7 @@ class EntityRenderMixin(
             self._swamp_pos = pos
         sprite_index = swamp_sprite(
             self._swamp_slot, getattr(self, '_step_parity', 0),
-            int(time.time() / TICK_SECONDS))
+            self.clock.tick)
         surf = None if sprite_index is None else draw_sprite(
             self.sprite_mgr, sprite_index)
         if surf is not None:
@@ -262,7 +260,7 @@ class EntityRenderMixin(
         base_alpha = 115 if (
             getattr(self.client, 'ghost_mode', 0) == 1
             or int(getattr(player, 'status', 0) or 0) & 0x02) else 255
-        alpha = self.combat_presentation.player_alpha(time.monotonic(), base_alpha)
+        alpha = self.combat_presentation.player_alpha(self.clock.frame_now(), base_alpha)
         equip = {
             'body_image': player.body_image or 'body.png',
             'head_image': player.head_image or 'head0.png',
@@ -411,7 +409,8 @@ class EntityRenderMixin(
         # not echo that lifecycle to the setter, so mirror the clear locally.
         if self.local_chat_text:
             chat_text = self.local_chat_text
-            if time.time() - self.local_chat_time < self.chat_bubble_duration:
+            since = getattr(self, 'local_chat_time', None)
+            if since is not None and not self.clock.passed(since, self.chat_bubble_duration):
                 self._render_speech_bubble(anchor_x, y, chat_text)
             else:
                 self.local_chat_text = ""
@@ -891,13 +890,13 @@ class EntityRenderMixin(
         # Render NPC chat bubble if active (and not timed out)
         if npc_id in self.npc_chat_texts:
             text, chat_time = self.npc_chat_texts[npc_id]
-            if time.time() - chat_time < self.chat_bubble_duration:
+            if not self.clock.passed(chat_time, self.chat_bubble_duration):
                 self._render_speech_bubble(x, y, text)
 
     def _render_npc_script_overlays(self, npc, x, y, nick_anchor):
         """timershow countdown and the `take` pickup icon, one tile above the
         NPC (TServerNPC.cpp:1880-1913); state in npc_script_display."""
-        taken = take_display(npc)
+        taken = take_display(npc, self.clock.sim_now())
         text = None if taken else timer_text(npc)
         if taken is None and text is None:
             return

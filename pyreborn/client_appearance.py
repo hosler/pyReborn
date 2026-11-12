@@ -48,6 +48,10 @@ class AppearanceMixin:
         data = build_player_chat(message)
         return self._protocol.send_packet(PacketID.PLI_PLAYERPROPS, data)
 
+    def send_appearance_prop(self, prop_id: int, value) -> bool:
+        """Public name of _send_appearance_prop (the game layer's entry)."""
+        return self._send_appearance_prop(prop_id, value)
+
     def _send_appearance_prop(self, prop_id: int, value) -> bool:
         """Send one appearance property through the normal player-props path."""
         if not self.connected or not self._authenticated:

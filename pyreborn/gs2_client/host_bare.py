@@ -6,13 +6,12 @@ from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import VMCoroutineWait
 import math
 import random
-import time
 import re
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .helpers import _csv_flatten
 from .objects_player import PLATFORM_NAME, _engine_object
-from .registry import GS2GuiManager, TIMER_RESOLUTION, _GS1_PURE, _GS2_BARE, _GS2_BARE_GUI, _TIMER_CANCEL, _WORD_BORDER, _gs2_builtin, logger
+from .registry import _GS1_PURE, _GS2_BARE, _GS2_BARE_GUI, _TIMER_CANCEL, _WORD_BORDER, _gs2_builtin, logger
 
 class HostBareMixin:
 
@@ -188,7 +187,7 @@ class HostBareMixin:
         game = getattr(self.rt2, "game_shell", None)
         manager = getattr(game, "sprite_mgr", None)
         if manager is not None:
-            from ..sprites import normalize_asset_name
+            from ..asset_paths import normalize_asset_name
             key = normalize_asset_name(to_str(args[0]) if args else "")
             manager.sheet_cache.pop(key, None)
             manager.animation_cache.pop(key, None)
@@ -530,7 +529,7 @@ class HostBareMixin:
     def _bi_enabledefaultcamera(self, vm, name, args, obj):
         game = getattr(self.rt2, "game_shell", None)
         if game is not None:
-            game._camera_enabled = True
+            game.camera_enabled = True
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "setzoom")
@@ -584,16 +583,18 @@ class HostBareMixin:
 
     @_gs2_builtin(_GS2_BARE, "settimer")
     def _bi_settimer(self, vm, name, args, obj):
-        # Floor at the reference client's 120Hz update tick; see
-        # TIMER_RESOLUTION. settimer(0) CANCELS (same rule as
-        # `this.timeout = 0` — see _ThisObject.set and the
-        # TScriptSpace::setTimeout citation there).
+        # Stored as given (TScriptSpace::setTimeout, TScriptSpace.cpp:121-
+        # 129); it fires on the first tick whose script-clock step leaves
+        # less than 0.0001 (process_timeouts), so a short timer fires once
+        # per tick at whatever rate the frame tick sets. settimer(0)
+        # CANCELS (same rule as `this.timeout = 0`, _ThisObject.set).
         rt2 = self.rt2
         v = to_num(args[0]) if args else 0.0
         if v <= _TIMER_CANCEL:
             rt2._timeouts.pop(rt2._timeout_key(vm), None)
             return 0.0
-        rt2._timeouts[rt2._timeout_key(vm)] = max(v, TIMER_RESOLUTION)
+        rt2._timeouts[rt2._timeout_key(vm)] = v
+        rt2._timeout_pass[rt2._timeout_key(vm)] = rt2.clock.script_pass()
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "join")
@@ -714,7 +715,7 @@ class HostBareMixin:
 
     @_gs2_builtin(_GS2_BARE, "timevar2")
     def _bi_timevar2(self, vm, name, args, obj):
-        return time.time()
+        return self.rt2.clock.wall()
 
     @_gs2_builtin(_GS2_BARE, "getimgwidth", "getimgheight", "imgwidth",
                   "imgheight")
@@ -928,9 +929,9 @@ class HostBareMixin:
         text = to_str(args[3]) if len(args) > 3 else ""
         size = max(8, int(16 * (zoom or 1.0)))
         game = getattr(self.rt2, "game_shell", None)
-        if game is not None and hasattr(game, "_showtext_font"):
+        if game is not None and hasattr(game, "showtext_font"):
             try:
-                font = game._showtext_font(fontname or "Arial", size,
+                font = game.showtext_font(fontname or "Arial", size,
                                            "b" in style)
                 return float(font.size(text)[0])
             except Exception:
@@ -950,9 +951,9 @@ class HostBareMixin:
         style = to_str(args[2]) if len(args) > 2 else ""
         size = max(8, int(16 * (zoom or 1.0)))
         game = getattr(self.rt2, "game_shell", None)
-        if game is not None and hasattr(game, "_showtext_font"):
+        if game is not None and hasattr(game, "showtext_font"):
             try:
-                font = game._showtext_font(fontname or "Arial", size,
+                font = game.showtext_font(fontname or "Arial", size,
                                            "b" in style)
                 return float(font.get_height())
             except Exception:
@@ -1233,18 +1234,49 @@ class HostBareMixin:
         key = to_str(args[0]) if args else ""
         return [_engine_object(self.rt2, f"component:{key}".lower())]
 
-    @_gs2_builtin(_GS2_BARE, "setframetick", "adventure_setframetick",
-                  "adventure_getframetick", "switchopengldevicescale",
+    @_gs2_builtin(_GS2_BARE, "adventure_setframetick")
+    def _bi_adventure_setframetick(self, vm, name, args, obj):
+        # TTime::frametick = tick (TTime.cpp:23-26, registered 'v' "i" at
+        # :62): the length of a client tick in ms, for every script and the
+        # whole loop. The 'i' argument is floor(value + 0.0001) as a 32-bit
+        # int (TScriptMachine.cpp:4522-4528; the 0.0001 is DOUBLE_00402440,
+        # TInitStatics.cpp:1266), stored unsigned: 1000/60 ->
+        # 16, 1000/24 -> 41, -1 -> 4294967295. A value a 32-bit int cannot
+        # hold converts to INT_MIN (the x86-64 conversion of an
+        # out-of-range double). No limits, no caller check: any script may
+        # call it. A call without an argument does nothing here (the
+        # reference's handling of a missing 'i' argument is not in the
+        # decompilation).
+        if not args:
+            return 0.0
+        value = to_num(args[0]) + 0.0001
+        if math.isfinite(value) and -2 ** 31 <= value < 2 ** 31:
+            ms = math.floor(value)
+        else:
+            ms = -2 ** 31
+        self.rt2.clock.set_frame_tick(ms)
+        return 0.0
+
+    @_gs2_builtin(_GS2_BARE, "adventure_getframetick", "getframetick")
+    def _bi_getframetick(self, vm, name, args, obj):
+        # TTime.cpp:18-21, registered as adventure_getframetick and
+        # getFrameTick (:61, :63): the frame tick in ms.
+        return float(self.rt2.clock.get_frame_tick())
+
+    @_gs2_builtin(_GS2_BARE, "setframetick", "switchopengldevicescale",
                   "setretinadisplaynoantialias", "switchtodirectx",
                   "adventure_setcheatwindows")
     def _bi_platform_inert(self, vm, name, args, obj):
-        # Frame pacing / GL-scale / retina / renderer-backend / staff
-        # cheat-window toggles for the C# client's renderer (the staff
-        # ones arrive as `quattro::debugtools::*`, matched by prefix in
+        # GL-scale / retina / renderer-backend / staff cheat-window toggles
+        # for the C# client's renderer (the staff ones arrive as
+        # `quattro::debugtools::*`, matched by prefix in
         # _call_bare_builtin). Every observed call discards the result
         # (OP_INDEX_DEC at each site in -System, -System_Preloader,
         # -Zoom, npc 10371, and the live Login -Serverlist) -- inert by
-        # design.
+        # design. A bare `setframetick` is not a reference builtin (TTime.cpp
+        # :60-63 registers only the adventure_ setter); the scripts that
+        # use the name define it themselves (weapon -Adventure), and a
+        # script's own function wins over this entry.
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "adventure_invokekeyevent")

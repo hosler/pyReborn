@@ -331,8 +331,7 @@ Examples:
                 sys.exit(1)
             outcome.client._protocol.outbound_policy = policy
             game = GameClient(outcome.client)
-            game._load_npc_scripts()
-            game._trigger_playerenters()
+            game.start()
             log_capture = _LogCapture()
             warning_samples = writer.warning_handler()
             root_logger = logging.getLogger()

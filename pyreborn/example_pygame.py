@@ -69,6 +69,19 @@ def version_for(server, default):
     return default
 
 
+def session_client(host, port, version, frame_tick=None) -> Client:
+    """The Client for the next server session. Its clock starts at the
+    50 ms frame tick, as a server-list login sets it (TServerList.cpp:376);
+    a script's serverwarp keeps the frame tick the last server's scripts set
+    (TServerList::handleServerWarp, TServerList.cpp:132-167, hands the move
+    to the StartScript_Connector script and does not touch it), so the
+    caller passes that value as ``frame_tick``."""
+    client = Client(host, port, version=version)
+    if frame_tick is not None:
+        client.clock.set_frame_tick(frame_tick)
+    return client
+
+
 def main():
     """Main entry point."""
     logging.basicConfig(
@@ -268,7 +281,7 @@ def main():
 
     def connect_and_login(ver):
         print(f"Connecting to {host}:{port} (version {ver})...")
-        cl = Client(host, port, version=ver)
+        cl = session_client(host, port, ver, frame_tick)
         cl.server_name = server_name_for(host, port)
         if not cl.connect():
             # Don't hard-exit: an unreachable host (e.g. a listserver entry with
@@ -283,6 +296,9 @@ def main():
         return None, reason
 
     # Connect → play → maybe switch servers (F8) → reconnect, until quit.
+    # A script serverwarp carries the frame tick into the next session; a
+    # login or a server the player picks starts at 50 ms (session_client).
+    frame_tick = None
     while True:
         client, reason = connect_and_login(version)
         if client is None and reason and "version" in reason.lower():
@@ -305,9 +321,11 @@ def main():
                     break
                 host, port = pick.ip, pick.port
                 version = version_for(pick, version)
+                frame_tick = None
                 print(f"Trying {pick.display_name} ({host}:{port}, version {version})...")
                 continue
             # Direct connect: back to the login window with the reason.
+            frame_tick = None
             authenticate(fail(f"Login failed: {reason}" if reason else
                               "Login failed! (no response — wrong password or server unreachable)",
                               reason or "No response from server"))
@@ -340,14 +358,25 @@ def main():
         print("\nStarting game client...")
         print("Controls: Arrows=Move, A=Grab, S/Space=Sword, D=Weapon, Q=Inventory, "
               "F7=Players, F8=Servers, F10=RC tools")
-        game = GameClient(client, password=password)
+        try:
+            game = GameClient(client, password=password)
+        except BaseException:
+            client.disconnect()
+            raise
         game.servers = servers      # populate the in-game F8 server switcher
-        switch = game.run()
+        try:
+            # run() ends through game.shutdown() however the loop exits; the
+            # second call here is a no-op, and covers anything that escapes
+            # before run() gets its own try (shutdown is idempotent).
+            switch = game.run()
+        finally:
+            game.shutdown()
 
         if not switch:
             break  # normal quit
 
-        # F8: reconnect to the chosen server.
+        # F8 or a script serverwarp: reconnect to the chosen server.
+        frame_tick = game.switch_frame_tick
         host, port = switch.ip, switch.port
         version = version_for(switch, version)
         print(f"\nSwitching to {switch.display_name} ({host}:{port}, version {version})...")

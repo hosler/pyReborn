@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from reborn_protocol.coords import (
-    LEVEL_SIZE, local_to_world, segment_at, segment_origin,
-)
+from reborn_protocol.coords import local_to_world, segment_at, segment_origin
+
+from .gmap_coords import grid_of, position_is_local, world_from_wire
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +121,7 @@ class GmapMixin:
         # Set current level based on spawn grid position from PLO_PLAYERWARP2
         # (which is received before GMAP file, so we can't use gmap_grid at that time)
         # If we have a spawn grid position, use it; otherwise fall back to calculating from coords
-        spawn_pos = None
-        if spawn_level:
-            for grid_pos, seg in self.gmap_grid.items():
-                if seg == spawn_level:
-                    spawn_pos = grid_pos
-                    break
+        spawn_pos = grid_of(self.gmap_grid, spawn_level)
         if spawn_pos is not None:
             pass
         elif self._gmap_spawn_x != 0 or self._gmap_spawn_y != 0:
@@ -139,7 +134,7 @@ class GmapMixin:
 
             # Convert player coords to world coords if they're still local
             # (PLAYERWARP2 arrives before GMAP, so coords are local at that point)
-            if self.player.x < LEVEL_SIZE and self.player.y < LEVEL_SIZE:
+            if position_is_local(self.player.x, self.player.y):
                 self.player.x, self.player.y = local_to_world(
                     self.player.x, self.player.y, *spawn_pos)
 
@@ -171,15 +166,7 @@ class GmapMixin:
             gy = npc.get('gmaplevely')
             if gx is not None and gy is not None and (gx, gy) in self.gmap_grid:
                 npc['_level'] = self.gmap_grid[(gx, gy)]
-                seg_ox, seg_oy = segment_origin(gx, gy)
-                if 'x' in npc:
-                    raw_x = npc['x']
-                    npc['world_x'] = (raw_x if (raw_x >= LEVEL_SIZE or raw_x < 0)
-                                       else raw_x + seg_ox)
-                if 'y' in npc:
-                    raw_y = npc['y']
-                    npc['world_y'] = (raw_y if (raw_y >= LEVEL_SIZE or raw_y < 0)
-                                       else raw_y + seg_oy)
+                self._npc_world_from_wire(npc, (gx, gy))
                 # Re-attribution, not movement: the NPC didn't actually walk,
                 # we just learned its real world position now that the grid
                 # is built. Snap the renderer's visual position (see
@@ -190,27 +177,27 @@ class GmapMixin:
             npc_level = npc.get('_level')
             if not npc_level:
                 continue  # No level info
-            # Find the level's grid position
-            for (gx, gy), level_name in self.gmap_grid.items():
-                if level_name == npc_level:
-                    # Same guard as the PLO_NPCPROPS handler (BUG 4): only
-                    # fold in the segment offset for a still-local value, so
-                    # a re-run of this (e.g. gmap grid arriving/reloading
-                    # after an NPC's coords were already normalized to
-                    # world) can't double-offset it.
-                    seg_ox, seg_oy = segment_origin(gx, gy)
-                    if 'x' in npc:
-                        raw_x = npc['x']
-                        npc['world_x'] = (raw_x if (raw_x >= LEVEL_SIZE or raw_x < 0)
-                                           else raw_x + seg_ox)
-                    if 'y' in npc:
-                        raw_y = npc['y']
-                        npc['world_y'] = (raw_y if (raw_y >= LEVEL_SIZE or raw_y < 0)
-                                           else raw_y + seg_oy)
-                    # Re-attribution, not movement - see the snap comment on
-                    # the gmaplevelx/y branch above.
-                    self._mark_npc_pos_snap(npc)
-                    break
+            cell = grid_of(self.gmap_grid, npc_level)
+            if cell is not None:
+                # Same guard as the PLO_NPCPROPS handler (BUG 4): only fold
+                # in the segment offset for a still-local value, so a re-run
+                # of this (e.g. gmap grid arriving/reloading after an NPC's
+                # coords were already normalized to world) can't
+                # double-offset it.
+                self._npc_world_from_wire(npc, cell)
+                # Re-attribution, not movement - see the snap comment on
+                # the gmaplevelx/y branch above.
+                self._mark_npc_pos_snap(npc)
+
+    @staticmethod
+    def _npc_world_from_wire(npc: dict, cell) -> None:
+        """Set an NPC's world_x/world_y from its wire x/y on segment
+        `cell`, per axis, with `world_from_wire`'s frame tolerance."""
+        seg_ox, seg_oy = segment_origin(*cell)
+        if 'x' in npc:
+            npc['world_x'] = world_from_wire(npc['x'], seg_ox)
+        if 'y' in npc:
+            npc['world_y'] = world_from_wire(npc['y'], seg_oy)
 
     def get_adjacent_levels(self, level_name: str) -> List[str]:
         """
@@ -222,14 +209,8 @@ class GmapMixin:
         Returns:
             List of adjacent level names
         """
-        # Find current level's grid position
-        current_pos = None
-        for pos, name in self.gmap_grid.items():
-            if name == level_name:
-                current_pos = pos
-                break
-
-        if not current_pos:
+        current_pos = grid_of(self.gmap_grid, level_name)
+        if current_pos is None:
             return []
 
         # Get all 8 adjacent positions

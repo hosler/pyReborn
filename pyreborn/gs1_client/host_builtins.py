@@ -6,6 +6,7 @@ from reborn_protocol.gs1.runtime import UNSET
 from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import tokens_count
 
+from ..clock import world_timevar
 from ..script_player_props import sync_script_player_stat
 from ..tiletypes import selection_for
 
@@ -160,10 +161,9 @@ class BuiltinsMixin:
         if attr == "time":
             # seconds until it explodes. Shell bombs carry a placement stamp
             # + fuse; a wire-echo dict only has the total timer.
-            import time as _t
             if "fuse_time" in b:
                 return max(0.0, float(b.get("time", 0))
-                           + float(b.get("fuse_time", 0)) - _t.time())
+                           + float(b.get("fuse_time", 0)) - self.rt.clock.sim_now())
             return float(b.get("timer_ms", 0)) / 1000.0
         if attr in ("x", "y", "power"):
             return to_num(b.get(attr, 0))
@@ -241,9 +241,9 @@ class BuiltinsMixin:
     def _pb_freezetime(self, name, indices, ctx):
         # seconds left on the last `freezeplayer` call (rt._freeze_until is
         # armed in _dispatch, same duration the input layer locks movement for)
-        import time as _t
-        remaining = self.rt._freeze_until - _t.monotonic()
-        return remaining if remaining > 0 else -1.0
+        if self.rt.clock.passed(self.rt._freeze_until):
+            return -1.0
+        return self.rt._freeze_until - self.rt.clock.sim_now()
 
     @_gs1_builtin(_GS1_PLAYER_BUILTINS, "carrying", "carriesbush",
                   "carriesstone", "carriesvase", "carriessign",
@@ -351,17 +351,18 @@ class BuiltinsMixin:
 
     @_gs1_builtin(_GS1_BUILTINS, "timevar")
     def _gb_timevar(self, name, indices, ctx):
-        # Reborn server clock (GServer-v2 Server::calculateNWTime): integer
-        # ticks of 5 seconds since 2001-02-01 17:33:34 UTC. The bomber room
-        # timers (server.bombrm_NN) are in this scale; raw unix seconds were
-        # out of scale + decimal, which broke the room-timer comparisons.
-        import time as _t
-        return float(int((_t.time() - 981048814) / 5))
+        # TTime.cpp:10-16: with a session, the value the server last sent
+        # (PLO_NEWWORLDTIME stores TTime::timevar, TClient.cpp:5062; nothing
+        # local advances it). Without one, calcTimeVar (TTime.cpp:116-120):
+        # 5-second ticks since 2001-02-01 17:33:34 UTC, the scale the bomber
+        # room timers (server.bombrm_NN) compare against.
+        return float(world_timevar(self.rt.client, self.rt.clock))
 
     @_gs1_builtin(_GS1_BUILTINS, "timevar2")
     def _gb_timevar2(self, name, indices, ctx):
-        import time as _t
-        return float(_t.monotonic() * 1000.0)
+        # TTime.cpp:57: timevar2 is getTime(), the time of day in seconds
+        # with fractions (gettimeofday, TTime.cpp:68-74).
+        return float(self.rt.clock.wall())
 
     # arena GUI/screen + game-role builtins (read-only)
 
@@ -504,6 +505,8 @@ class BuiltinsMixin:
             t = to_num(value)
             if isinstance(npc, dict):
                 npc["_timeout"] = None if t <= _TIMEOUT_CANCEL else t
+                # Counts down from the next script pass (Clock.script_pass).
+                npc["_timeout_pass"] = self.rt.clock.script_pass()
                 if t <= _TIMEOUT_CANCEL:
                     # TScriptSpace::setTimeout also drops the timershow
                     # display (TScriptSpace.cpp:121-125)
@@ -517,6 +520,7 @@ class BuiltinsMixin:
                     self.rt._weapon_timeouts.pop(key, None)
                 else:
                     self.rt._weapon_timeouts[key] = t
+                    self.rt._weapon_timeout_pass[key] = self.rt.clock.script_pass()
                 return True
             return False
         # playerx/playery: the arena weapons drive movement by assigning these.

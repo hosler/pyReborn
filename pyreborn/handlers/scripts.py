@@ -19,6 +19,7 @@ from ..packets import (
     parse_weapon_bytecode_v4,
     parse_weapon_hash_v4,
 )
+from ..client_callbacks import emit
 from .registry import handles
 
 
@@ -31,8 +32,7 @@ def handle_npc_weapon_add(client, data):
         weapon.setdefault('script', '')
         client.weapons[weapon['name']] = weapon
         # Callback for weapon added
-        if client.on_weapon_add:
-            client.on_weapon_add(weapon['name'], weapon)
+        emit(client, 'on_weapon_add', weapon['name'], weapon)
 
 
 @handles(PacketID.PLO_TRIGGERACTION)
@@ -40,8 +40,7 @@ def handle_triggeraction(client, data):
     # Inbound triggeraction (packet 48) - from serverside scripts
     # (triggerClient) or relayed from other players.
     info = parse_triggeraction_in(data)
-    if client.on_triggeraction:
-        client.on_triggeraction(info)
+    emit(client, 'on_triggeraction', info)
     # Route into the GS1 host (if attached) so clientside scripts with
     # a matching `if (action<name>)` handler run, mirroring the real
     # client. Action name = first CSV token.
@@ -65,8 +64,7 @@ def handle_npc_bytecode(client, data):
     # Compiled NPC script (packet 131, arrives via RAWDATA).
     info = parse_npc_bytecode(data)
     client.gs2_bytecode['npc'][info['npc_id']] = info['bytecode']
-    if client.on_gs2_bytecode:
-        client.on_gs2_bytecode('npc', info['npc_id'], info['bytecode'])
+    emit(client, 'on_gs2_bytecode', 'npc', info['npc_id'], info['bytecode'])
 
 
 @handles(PacketID.PLO_GANISCRIPT)
@@ -74,8 +72,7 @@ def handle_gani_script(client, data):
     # Compiled gani script (packet 134, arrives via RAWDATA).
     info = parse_gani_script(data)
     client.gs2_bytecode['gani'][info['gani']] = info['bytecode']
-    if client.on_gs2_bytecode:
-        client.on_gs2_bytecode('gani', info['gani'], info['bytecode'])
+    emit(client, 'on_gs2_bytecode', 'gani', info['gani'], info['bytecode'])
 
 
 @handles(PacketID.PLO_WEAPONBYTECODE2)
@@ -103,8 +100,7 @@ def _store_script_bytecode(client, info):
     if info['name']:
         client.gs2_bytecode[kind][info['name']] = info['bytecode']
         client.gs2_script_headers[info['name']] = info
-    if client.on_gs2_bytecode:
-        client.on_gs2_bytecode(kind, info['name'], info['bytecode'])
+    emit(client, 'on_gs2_bytecode', kind, info['name'], info['bytecode'])
 
 
 @handles(PacketID.PLO_LOADGANI)
@@ -138,8 +134,7 @@ def _receive_script_header(client, info):
                         info['name'], info['bytecode'])
                 except Exception:
                     pass
-            if client.on_gs2_bytecode:
-                client.on_gs2_bytecode(kind, info['name'], info['bytecode'])
+            emit(client, 'on_gs2_bytecode', kind, info['name'], info['bytecode'])
         elif info['type'] == 'weapon':
             # Header-only announcement (Weapon.cpp
             # registerWeaponWithPlayer): the server waits for the

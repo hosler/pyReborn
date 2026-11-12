@@ -13,12 +13,17 @@ pyreborn/
 ├── client.py             # Client facade - session, state components, dispatch
 ├── client_actions.py     # Outbound action mixin
 ├── client_appearance.py  # Chat and player-appearance mixin
+├── client_callbacks.py   # emit() + add_listener(): many subscribers per on_* slot
 ├── client_combat.py      # Sword and arrow simulation mixin
 ├── client_files.py       # File-transfer and board-modification mixin
 ├── client_gmap.py        # Multi-level map loading and adjacency mixin
 ├── client_movement.py    # Movement and position synchronization mixin
 ├── client_warp.py        # Warp and level-link transition mixin
 ├── client_state.py       # Client's state components (level/gmap/entities/...)
+├── clock.py              # Clock: frame tick (50 ms default), sim_now() / script_now() / frame_now() / wall()
+├── constants.py          # Simulation constants shared by library and game layers
+├── gmap_coords.py        # Gmap grid lookups and wire-to-world conversion
+├── palette.py            # Pygame-free player-colour palette (PLPROP_COLORS indices)
 ├── handlers/             # Packet handlers, one module per domain
 │   ├── registry.py       # @handles(<PLO id>) table. Grep it to find a handler
 │   ├── level.py          # level/board/warp        session.py  # handshake/auth
@@ -58,6 +63,7 @@ pyreborn/
 │   ├── host.py           # GS2ClientHost composition + call_builtin/get_object
 │   ├── host_objects.py   # @_gs2_object factories
 │   ├── host_*.py         # One mixin per builtin table
+│   ├── game_shell.py     # GameShell protocol: what GS2 reads from the hosting game
 │   └── runtime.py        # ClientGS2
 ├── tiletypes.py          # Tile collision data
 ├── liftobjects.py        # Liftable/cuttable 2x2 tile patterns
@@ -76,12 +82,16 @@ pyreborn/
     │   ├── client_callbacks.py  # Client (network) callbacks
     │   └── gs1_callbacks.py     # GS1 engine callbacks
     ├── camera.py         # Camera/viewport tracking
+    ├── clocked.py        # ClockedMixin: game mixins read self.clock (the client's)
     ├── collision.py      # Tile/entity collision
     ├── constants.py      # Screen/tile size constants
     ├── frame_context.py  # FrameContext - per-frame state shared across passes
     ├── hud.py            # HUD rendering
-    ├── input.py          # Keyboard/input handling
+    ├── input.py          # Keyboard/input handling (edges latched until a tick)
+    ├── interpolation.py  # Draw positions between the last two ticks
+    ├── keymap.py         # Gameplay keys in one table (help rows, dispatch, GS1 keydown)
     ├── minimap.py        # GMAP minimap
+    ├── overlays.py       # Ordered overlay stack (input priority, topmost first)
     ├── rc_ui.py          # F10 RC tools overlay (staff admin panel)
     ├── render.py         # Core render loop
     ├── render_collect.py # Entity collection, sorting, and interpolation
@@ -901,6 +911,22 @@ PLI_TOALL = 24           # Send chat
 PLI_LEVELWARP = 29       # Warp request
 ```
 
+## Client callbacks
+
+`client.on_x = fn` is still how an app installs its hook (a slot holds one
+function). To subscribe beside it, call `client.add_listener('on_x', fn)`; it
+returns a remover and rejects names that are not slots. Every emission goes
+through `emit` (`pyreborn/client_callbacks.py`): the slot first, then
+listeners in registration order, the slot's return value comes back, and
+exceptions propagate (the per-packet guard logs them). Library code that fires a
+callback calls `emit(client, 'on_x', ...)`, never `client.on_x(...)`, or
+listeners are skipped. `add_packet_listener(packet_id, fn)` is the same for
+`on_packet`: it runs after the built-in handler, before `on_packet[id]`.
+`ClientGS2.attach()` subscribes this way (`detach()` undoes it), so assigning or
+clearing `on_gs2_bytecode` / `on_server_text` no longer unhooks the engine.
+RC/NC-specific slots (`on_rc_chat`, `on_weapon_list`, ...) are plain attributes
+and not covered.
+
 ## Debugging Tips
 
 ### Run Automated Tests First
@@ -1076,6 +1102,165 @@ Both CLIs default to 120 seconds for startup; use `--startup-timeout SECONDS` wi
 Logout every client before `world.snapshot("start")` / `world.restore("start")`; registered connected bots are rejected.
 Snapshots copy account JSON; restore restarts a running server to clear caches. Server flags and transient world state are not persisted.
 `world.stop()` retains `server_dir`/`log_path`; `world.close()` and context exit remove them. Bare `--gmap` keeps the existing QA suite.
+
+## Offline game fixture
+
+`make_game(**knobs)` (conftest.py over `tests/offline_game.py`) is the one
+supported way to get a pygame `GameClient` with no socket. The knobs become a
+pygserver world held in-process (level files, NPCs, items, other players); a
+real pygserver `Player` logs in through `complete_login` and is warped by
+`Player.warp`, and its bytes reach `Client._handle_packet` through the
+client's own framing. Client replies (gmap file, adjacent segments) go back to
+that player. So the stream is what pygserver sends, in its order, and cannot
+drift from it. `game.server.run(coro_fn)` / `.send(builder_bytes)` drive the
+server afterwards (a warp, a say2, an explosion); `game.feed(id, data)` is only
+for packets pygserver never builds (the relayed PLO_SERVERWARP, raw minimap
+data). `make_client` is the same world without a window.
+
+Knobs: `level`, `player_xy`, `hearts`, `me` (our pygserver Character
+attributes), `tiles(tx, ty)`, `extra_levels`, `npcs` (NPC_PROPS-name dicts
+applied by pygserver's own prop rules; `script` is the clientside half,
+`level` another segment), `chests`, `items`, `players`, `baddies`, `bombs`,
+`arrows`, `flying`, `signs`, `links`, `gmap`/`gmap_segment`, `server_options`.
+
+A frame is identical on every machine:
+- **Clock.** `client.clock` (pyreborn/clock.py) is handed a per-game fixture
+  frame-time source; `frames(n, dt)` advances it, a `clock.sleep` or a
+  `recv_packets(timeout)` wait advances it instead of blocking. Simulation
+  time is the tick count: at the default `dt=1/60` a tick runs on every third
+  frame. `game.ticks(n)` runs exactly n ticks (n frames of one tick length).
+  `time.time/monotonic` are NOT patched: pyreborn/ reads time only through the
+  clock (tests/unit/test_clock_discipline.py enforces it and classifies every
+  `frame_now()` read). Only `pygame.time.get_ticks` is patched, for the
+  allowlisted caret-blink widgets. `random` is seeded per game. A unit test of
+  one simulation function at chosen times pins `Clock.sim_now` with the
+  `sim_time` fixture (conftest.py); a test of tick counts runs real ticks.
+- **Assets.** Synthetic art (tileset, pics1, body/body2/body3, head0/1/2,
+  sword, shield, sprites, player ganis) is drawn at runtime into the content
+  tier; the bundled tier is pinned to the git-tracked files. Every `$HOME` path
+  variable is pinned too (`HERMETIC_DIRS` in conftest.py). **Every cell of every
+  sheet has its own colour** (`cell_color`; `tile_color(id)` for the tileset), so
+  a pixel on screen says which tile id or sprite cell was blitted there. Own
+  player, other players (`OTHER_LOOK`) and NPC characters use different
+  body/head sheets.
+
+**Assert content with a probe, never "the frame is not flat".** Build the scene
+twice, with and without the thing, run the same frames, and compare:
+`region_differs(subject, baseline, world=(x, y, w, h))` (or `screen=Rect`).
+`tests/unit/test_offline_render.py` holds the `SCENES` table and
+`PASS_SCENES`: each render pass mapped to the check that must go blind when
+that pass is a no-op (`test_probe_goes_blind_without_its_pass`). A new pass
+gets a row there. `pass_contributes(game, target, name)` re-renders one frame
+with one pass suppressed, for a pass no scene pair can isolate.
+
+**Where, what, in which order: colour at a position.** A probe only says
+"something changed here". `tests/offline_checks.py` (run by
+`tests/unit/test_offline_positions.py`) asserts the exact colour at the exact
+pixel: tiles across the viewport (centre and outline pixel), the own player
+and the camera (unclamped, clamped at a level edge, gmap x clamps), image NPC,
+gani NPC and other player, sprite cells for four directions and walk/sword
+frames, z-order of overlapping entities in both orders and against
+over/under-player NPCs, hearts (full/half/empty cells), nameplate text pixels,
+the F1 tile tint. Expected pixels come from `tests/offline_expect.py`, which
+uses the canvas size, 16 px tiles and the documented camera rule, never
+`world_to_screen` or an entity's own blit math. The mutation self-check in
+test_offline_render.py (`MUTATIONS`) breaks the renderer on purpose (NPC / other-player blit +16 px, camera +16 px, tile id +1,
+sprite rect x+8, nameplate text, heart count -1, negated depth key, no-op debug
+overlay) and requires the named checks to fail: a new position check gets a
+mutation row.
+
+**Overlay scenes compare their own rect**, worked out from the overlay's
+layout constants (`list_overlay_rect`, `rc_panel_rect`, ...), never the whole
+frame. `Scene.outside="same"` demands nothing else changes (`allow` lists the
+legitimate extras, e.g. the editor grid and cursor); `"dim"` is for the big
+map (outside it is the baseline under the theme's shade); `verify` adds
+colour assertions (palette cells, big-map frame).
+
+**Adding a scene**: a `Scene(...)` row in `SCENES` (knobs, baseline, inputs,
+region as a world rect, a screen `Rect` or `fn(game) -> Rect`, `outside`), a
+`PASS_SCENES` row for any new render pass, and an `OVERLAYS` entry for a keyed
+overlay. A position check is a `check_x(make_game)` in offline_checks.py
+registered in `POSITION_CHECKS`; call `settle(game)` (or `capture(game,
+label)`) so the frame baseline sees it.
+
+**Frame baselines for refactors** (off by default, nothing committed):
+`pytest --frame-baseline-record=DIR tests/unit/test_offline_*.py` before a
+behaviour-preserving refactor, `--frame-baseline-check=DIR` after. Record
+hashes (sha256 of the RGB bytes) every frame captured at `capture(game,
+label)` points (every scene's first/input/mid/end frames, the position checks,
+level change, the gmap seam walk, death/respawn, resize) into
+`DIR/manifest.json` plus a PNG each. Check fails the test with the capture key,
+the bounding box of the differing pixels and writes `<key>.actual/.expected/
+.diff.png` into DIR. The hashes depend on the machine's SDL/pygame/font
+versions, so the manifest holds them and a check from another environment
+refuses to run; record again there. Record replaces the manifest (about 360
+frames, 21 s); check costs nothing extra. See tests/frame_baseline.py.
+
+## Timing model
+
+The simulation runs in ticks of the frame tick, like the reference client
+(pyreborn/clock.py; spec and citations in
+scratchpad/pygame-framework-1111/timing-spec.md, implementation notes in
+timing-impl.md there). `GameClient.step(dt)` is one display frame: events
+(key and click edges are latched until a tick consumes them), network
+(packets apply as they arrive), then at most `Clock.MAX_TICKS_PER_FRAME` (1)
+`_simulation_tick`s, then the render. Time beyond one tick is dropped, never
+caught up, so a stall cannot burst movement packets. A tick runs in the
+reference's order (TPlayer::timer, TPlayer.cpp:7211-7379): the Client's own
+`run_tick` (NPC moves, items, sword, arrows, bombs, emoticon, explosions),
+death state, one gani step and the combat objects; then held-key movement
+(0.5 tile); then GS1/GS2 with one step of the script clock
+(`clock.script_dt`; timeouts fire below 0.0001 left); then a script's warp,
+the link checks and level change. It sends at most ONE position packet
+(`Client.movement_batch`): `move()`/`send_position()` build their packet when
+called (frame, seam crossing and its PLI_LEVELWARP, attachment), the batch
+only holds the finished props and merges them, any other packet sends them
+first, and a warp ends the tick's movement. Never make a flush re-read the
+player.
+
+A script timer counts from the script pass after the one it belongs to
+(`clock.script_pass`/`timer_counts`): the reference queues every event into
+the tick's script pass and stamps setTimeout with that pass's time
+(TScriptSpace.cpp:134-135, :459), so `timeout = 0.05` armed while walking,
+by a packet or by a script fires on the next pass. A key or click edge is
+latched only when it reaches gameplay; an overlay opening or closing, focus
+loss, a level change or a death drops the latches.
+
+The frame tick (`clock.frame_tick_ms`, TTime::frametick) is session state:
+50 ms when a Client is built (the reference sets it at server-list login,
+TServerList.cpp:376), and any script may change it with
+`adventure_setframetick(ms)` (TTime.cpp:23-26; read back with
+`adventure_getframetick`/`getFrameTick`). The argument is floor(v + 0.0001)
+as an int32 stored unsigned, no clamp: 1000/60 gives 16, -1 gives
+4294967295 (no ticks at all), 0 gives one tick per frame. It changes how
+often ticks run, never what a tick does: every per-tick mechanic (walking,
+arrows, fuses, gani steps, death, NPC moves) runs faster in real time with
+a shorter tick, as in the reference. A bare `setframetick` is not a
+reference builtin and stays inert. A login, a server picked from a list
+or F8 gets a new clock at 50 ms; a script serverwarp carries the frame tick
+into the next session (`GameClient.switch_frame_tick`,
+`example_pygame.session_client`; TServerList.cpp:132-167 does not reset it).
+
+Three reads: `clock.sim_now()` (tick count in fixed 0.05 s units,
+`Clock.TICK_SECONDS`; anything that affects state or packets),
+`clock.script_now()` (the script universe's clock, TScriptUniverse.cpp:
+226-231: +frametick/1000 per tick at 50 ms or more, real time below that,
+never backwards) and `clock.frame_now()` (monotonic; presentation and
+real-world waits only). There is no timer floor: a self-rearming
+`setTimer(0.01)` fires once per tick, 20 times a second at the default and
+about 60 after `Adventure_setFrameTick(1000/60)` on a 60 Hz display (the v6
+bomber cogs and -Test/Movement). The render interpolates moving things between the last two
+ticks with `clock.alpha` (game/interpolation.py); that never writes state.
+Without a GameClient, `Client.update()` runs the due ticks itself from frame
+time, waiting in slices that end on tick boundaries, so bots keep a real-time
+simulation. Compare simulation time with a duration or deadline only through
+`clock.passed(stamp, seconds)` / `clock.sim_passed(now, stamp, seconds)`
+(exact in ticks) or count with `clock.ticks_since`, never a bare `<`/`>=` on
+sim_now() values (tests/unit/test_clock_discipline.py refuses it). The
+offline fixture's frame time starts far from simulation time, so a stamp
+mixed between the two fails a test. Per-tick amounts use
+`Clock.TICK_SECONDS`, never `clock.tick_length` (that is the real pacing
+length and changes with the frame tick).
 
 ## Running the tests
 

@@ -12,7 +12,7 @@ import sys
 import random
 import zlib
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import TYPE_CHECKING, Optional, List, Tuple
 
 from reborn_protocol.codec import Gen2Codec, Gen5Codec, PacketBuffer
 from reborn_protocol.codec import PacketReader as _SharedPacketReader
@@ -22,6 +22,9 @@ from reborn_protocol.encryption import (
     RebornEncryption,  # noqa: F401 - re-exported; this module used to define it
     decompress_data,
 )
+
+if TYPE_CHECKING:
+    from .client import Client
 
 # Browser detection
 IS_BROWSER = sys.platform == "emscripten"

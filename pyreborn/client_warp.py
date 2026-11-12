@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from typing import Optional, Tuple
 
-from reborn_protocol.coords import (
-    local_to_world, world_to_local,
-)
+from reborn_protocol.coords import world_to_local
 
+from .gmap_coords import local_from_world, world_from_local
 from .packets import PacketID, build_level_warp
 
 logger = logging.getLogger(__name__)
@@ -112,10 +110,8 @@ class WarpMixin:
         self.player.x = x
         self.player.y = y
         if self.gmap_width > 0:
-            for (gx, gy), seg in self.gmap_grid.items():
-                if seg == level_name:
-                    self.player.x, self.player.y = local_to_world(x, y, gx, gy)
-                    break
+            self.player.x, self.player.y = world_from_local(
+                self.gmap_grid, level_name, x, y)
         # Leaving a standalone (non-GMAP) level: drop the other players from it.
         # The server streams the new level's players fresh; without this, players
         # from old levels linger and inflate playerscount (e.g. the Bomber arena
@@ -170,7 +166,7 @@ class WarpMixin:
             self._warp_fallback = pre_warp_state
             if level_name != pre_warp_state[0]:
                 self._local_level_transition = level_name
-                self._local_level_transition_started = time.monotonic()
+                self._local_level_transition_started = self.clock.frame_now()
                 if self.player.hearts > 0 and transition_direction in range(4):
                     self._local_level_transition_direction = transition_direction
 
@@ -180,6 +176,8 @@ class WarpMixin:
         if not sent:
             self._restore_failed_warp("send_failed")
             return False
+        # The warp ends this tick's movement (see Client.movement_batch).
+        self.end_tick_movement()
         self.note_client_warp(level_name)
         # Everything the renderer needs may already be in hand: a destination
         # we've visited this session had its board re-pointed synchronously
@@ -191,6 +189,14 @@ class WarpMixin:
         # an immediate cut to a view we could already draw.
         self._maybe_release_local_transition()
         return True
+
+    def release_local_transition(self) -> None:
+        """Public name of _release_local_transition (the renderer's fail-open)."""
+        self._release_local_transition()
+
+    def clear_local_transition_direction(self) -> None:
+        """The renderer consumed the slide direction; forget it."""
+        self._local_level_transition_direction = None
 
     def _release_local_transition(self) -> None:
         """Unconditionally end a held local level transition (rollback,
@@ -265,7 +271,7 @@ class WarpMixin:
         and 3.3 tiles / 53 px walking out of a door. See
         handlers/level.handle_player_warp2.
         """
-        self._warp_echo = (level_name, time.monotonic())
+        self._warp_echo = (level_name, self.clock.frame_now())
 
     #: How long a recorded client warp stays eligible to absorb the server's
     #: echo. Comfortably above any playable round trip, far below the interval
@@ -296,7 +302,7 @@ class WarpMixin:
         if not matched:
             return False
         self._warp_echo = None
-        return time.monotonic() - sent_at <= self.WARP_ECHO_MAX_AGE_S
+        return self.clock.frame_now() - sent_at <= self.WARP_ECHO_MAX_AGE_S
 
     def _restore_failed_warp(self, reason: str) -> None:
         """Roll back the optimistic state flip from warp_to_level after the
@@ -437,11 +443,9 @@ class WarpMixin:
         dx, dy = LINK_PROBE_OFFSETS[int(self.player.direction) & 3]
         # Use a signed offset from this level's origin: a probe across a
         # seam must not wrap onto a link at the opposite side of this board.
-        origin = next((grid for grid, name in self.gmap_grid.items()
-                       if name == self._current_level_name), (0, 0)) \
-            if self.in_gmap_segment else (0, 0)
-        tile_x = px + dx - origin[0] * 64
-        tile_y = py + dy - origin[1] * 64
+        tile_x, tile_y = local_from_world(
+            self.gmap_grid if self.in_gmap_segment else None,
+            self._current_level_name, px + dx, py + dy)
 
         for link in links:
             lx = link.get('x', 0)

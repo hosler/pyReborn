@@ -125,7 +125,7 @@ def test_coordinates_map_music_camera_and_nearest_players():
     assert call(rt, "getnearestplayers", [131.5, 67]) == [0.0, 2.0, 1.0]
     call(rt, "setzoom", [1.75])
     call(rt, "enabledefaultcamera")
-    assert camera.zoom == 1.75 and rt.game_shell._camera_enabled is True
+    assert camera.zoom == 1.75 and rt.game_shell.camera_enabled is True
 
 
 def test_stopmusic_routes_to_streaming_music_callback():
@@ -334,12 +334,12 @@ def test_options_dialog_is_pre_registered_and_pushes_and_pops():
 
 def test_lighting_global_write_updates_renderer_flag():
     rt = ClientGS2()
-    rt.game_shell = SimpleNamespace(_day_night_enabled=False)
+    rt.game_shell = SimpleNamespace(day_night_enabled=False)
     rt.globals_store["lighteffectsenabled"] = 1.0
-    assert rt.game_shell._day_night_enabled is True
+    assert rt.game_shell.day_night_enabled is True
     assert rt.globals_store["lighteffectsenabled"] == 1.0
     rt.globals_store["lighteffectsenabled"] = 0.0
-    assert rt.game_shell._day_night_enabled is False
+    assert rt.game_shell.day_night_enabled is False
 
 
 def test_update_package_queries_return_stable_shaped_objects():

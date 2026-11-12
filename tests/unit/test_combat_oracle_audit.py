@@ -18,8 +18,8 @@ from pyreborn.tiletypes import TILE_TYPES
 
 
 @pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def client(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     c = Client('localhost', 14900)
     c._authenticated = True
     c._protocol = SimpleNamespace(connected=True, send_packet=Mock(return_value=True),
@@ -31,7 +31,7 @@ def client(monkeypatch):
     return c
 
 
-def test_sword_tests_all_five_ticks_and_late_entry(client, monkeypatch):
+def test_sword_tests_all_five_ticks_and_late_entry(sim_time, client, monkeypatch):
     client.players[7] = {'x': 40, 'y': 30}
     probe = Mock(wraps=client._sword_hit_players)
     client._sword_hit_players = probe
@@ -40,8 +40,8 @@ def test_sword_tests_all_five_ticks_and_late_entry(client, monkeypatch):
     client.players[7]['x'] = 33
     client.players[7]['y'] = 31
     for now in (100.05, 100.1, 100.15, 100.2, 100.25):
-        monkeypatch.setattr('time.time', lambda: now)
-        client.update(0)
+        sim_time(lambda: now)
+        client.run_tick()   # one simulation tick of the library
     assert probe.call_count == 5
     assert client.player.action_mode == 0
     hits = [call for call in client._protocol.send_packet.call_args_list

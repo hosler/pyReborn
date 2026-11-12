@@ -1,7 +1,9 @@
 """game/editor — the in-game level editor for staff.
 
-`LevelEditor` is the entry point: `game/input.py` offers it every event while
-edit mode is on, and `game/hud.py` draws its overlay and palette last.
+`LevelEditor` is the entry point. Its two entries in the overlay stack
+(game/overlays.py: `LevelEditorKeys` above the panels, `LevelEditorPointer`
+below the big map) offer it keys and mouse events while edit mode is on, and
+the keyboard entry draws its overlay and palette under the panels.
 
     state.py    tools, brush geometry, undo/redo, selection (pure, testable)
     editor.py   the wire: board edits, object commands, save/reload, input

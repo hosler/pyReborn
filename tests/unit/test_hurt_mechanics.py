@@ -19,8 +19,8 @@ from pyreborn.tiletypes import TILE_TYPES
 
 
 @pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def client(sim_time, monkeypatch):
+    sim_time(lambda: 100.0)
     c = Client('localhost', 14900)
     c.sent = []
     c._protocol = SimpleNamespace(connected=True, send_packet=lambda p, d=b'': c.sent.append((p, d)) or True)
@@ -58,7 +58,7 @@ def presentation(client):
 
 
 @pytest.mark.parametrize('mode', [10, 5, 1, 2, 4, 14])
-def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(
+def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time, 
         client, presentation, monkeypatch, mode):
     # TPlayer.cpp:5743-5753: clear action/counter, dead ani, NPC event 5.
     game = presentation
@@ -92,7 +92,7 @@ def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(
     assert not game.gs1._progs['weapon_probe']['scopes']['this']
 
     client.on_hurt(99, 3, 0, 0, 0)
-    monkeypatch.setattr('time.time', lambda: 100.5)
+    sim_time(lambda: 100.5)
     client.on_hurt(99, 3, 0, 0, 0)
     for npc_id in (1, 2):
         assert game.gs1._progs[f'npc_{npc_id}']['scopes']['this']['deaths'] == 1
@@ -168,14 +168,14 @@ def test_fixed_ticks_independent_of_render_rate():
     assert moves_a == moves_b == [(1, 0)] * 5
 
 
-def test_immunity_and_input_lock_have_distinct_lengths(client, monkeypatch):
+def test_immunity_and_input_lock_have_distinct_lengths(sim_time, client, monkeypatch):
     client.respond_to_hurt(0.5)
     assert HURT_SECONDS == 2.0
     assert client.player.hurt.input_locked(100.54)
     assert not client.player.hurt.input_locked(100.55)
     assert not client.respond_to_hurt(0.5)
     assert client.player.hearts == 2.5
-    monkeypatch.setattr('time.time', lambda: 102.0)
+    sim_time(lambda: 102.0)
     assert client.respond_to_hurt(0.5)
     assert client.player.hearts == 2.0
 

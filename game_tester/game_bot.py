@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyreborn import Client
 from pyreborn.client_warp import LINK_PROBE_OFFSETS
+from pyreborn.gmap_coords import grid_index, grid_of, local_from_world
 from pyreborn.game.constants import (
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
@@ -744,7 +745,7 @@ class GameBot:
     def _travel_targets(self, hop: Hop):
         """Standable trigger positions, or crossing points along a seam."""
         c = self.client
-        cells = {name.casefold(): cell for cell, name in c.gmap_grid.items()}
+        cells = grid_index(c.gmap_grid, casefold=True)
         cell = cells.get(hop.source_level.casefold()) if c.in_gmap_segment else None
         ox, oy = local_to_world(0, 0, *cell) if cell is not None else (0, 0)
         if hop.seam:
@@ -777,8 +778,7 @@ class GameBot:
     def _travel_hop(self, hop, deadline):
         c = self.client
         source = self.level.casefold()
-        cells = {name.casefold(): cell for cell, name in c.gmap_grid.items()}
-        cell = cells.get(source) if c.in_gmap_segment else None
+        cell = grid_of(c.gmap_grid, source, casefold=True) if c.in_gmap_segment else None
         origin = local_to_world(0, 0, *cell) if cell is not None else (0, 0)
         # Reuse walk_to's targeted-link exemption even when the standable
         # approach lies just outside a solid door's rectangle.
@@ -834,7 +834,7 @@ class GameBot:
         others = []
         c = self.client
         grid = c.gmap_grid if c.in_gmap_segment else {}
-        cells = {name: cell for cell, name in grid.items()}
+        cells = grid_index(grid)
         for pid, player in list(c.players.items()):
             if pid == c.player.id or player.get('x') is None or player.get('y') is None:
                 continue
@@ -876,7 +876,7 @@ class GameBot:
         c = self.client
         goal_x, goal_y = getattr(self, '_travel_link_goal', (goal_x, goal_y))
         grid = c.gmap_grid if c.in_gmap_segment else {}
-        cells = {name: cell for cell, name in grid.items()}
+        cells = grid_index(grid)
         for level, links in c.links.items():
             if level != self.level and level not in cells:
                 continue
@@ -1092,10 +1092,8 @@ class GameBot:
         # Keep the client probe geometry in the position-derived level frame.
         px, py = c.x, c.y
         dx, dy = LINK_PROBE_OFFSETS[c.player.direction & 3]
-        cell = next((grid for grid, name in c.gmap_grid.items()
-                     if name == level_name), (0, 0)) if c.in_gmap_segment else (0, 0)
-        tile_x = px + dx - cell[0] * 64
-        tile_y = py + dy - cell[1] * 64
+        tile_x, tile_y = local_from_world(
+            c.gmap_grid if c.in_gmap_segment else None, level_name, px + dx, py + dy)
 
         for link in links:
             lx = link.get('x', 0)

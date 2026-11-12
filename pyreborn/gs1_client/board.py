@@ -6,6 +6,8 @@ import math
 from reborn_protocol.coords import level_index, segment_at, world_to_local
 from reborn_protocol.gs1.values import to_num
 
+from ..client_callbacks import emit
+
 
 
 logger = logging.getLogger(__name__)
@@ -149,9 +151,7 @@ def board_tile_write(client, x, y, tile_id) -> bool:
     if grid is not None:
         info["map_x"], info["map_y"] = grid
     client._apply_board_modify(level, info)
-    cb = getattr(client, "on_board_modify", None)
-    if cb:
-        cb(info)
+    emit(client, "on_board_modify", info)
     return True
 
 
@@ -170,7 +170,6 @@ def board_update_region(client, x, y, w, h) -> None:
     """
     if client is None:
         return
-    cb = getattr(client, "on_board_modify", None)
     x0 = max(0, int(math.floor(x)))
     y0 = max(0, int(math.floor(y)))
     ww, wh = board_world_dims(client)
@@ -206,8 +205,7 @@ def board_update_region(client, x, y, w, h) -> None:
                 "width": lx1 - lx0, "height": ly1 - ly0, "tiles": tiles}
         if grid is not None:
             info["map_x"], info["map_y"] = grid
-        if cb:
-            cb(info)
+        emit(client, "on_board_modify", info)
         sender_level = (client.get_current_level_from_position()
                         if hasattr(client, "get_current_level_from_position")
                         else getattr(client, "_current_level_name", ""))

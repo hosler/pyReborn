@@ -4,10 +4,15 @@ pyreborn - Inventory UI overlay.
 Provides a simple inventory/equipment management UI for the pygame client.
 """
 
-from typing import List, Mapping, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Mapping, Optional, Tuple, Union
 
+from .clock import Clock
 from .game import theme
 from .sprites import PLAYER_EQUIPMENT_PREVIEW_RECTS
+
+if TYPE_CHECKING:
+    from .player import Player
+    from .sprites import SpriteManager
 
 try:
     import pygame
@@ -52,18 +57,21 @@ class InventoryUI:
     WEAPON_SLOT = 58
     WEAPON_GAP = 8
 
-    def __init__(self, screen: 'pygame.Surface', sprite_mgr: Optional['SpriteManager'] = None):
+    def __init__(self, screen: 'pygame.Surface', sprite_mgr: Optional['SpriteManager'] = None,
+                 clock: Optional[Clock] = None):
         """
         Create the inventory UI.
 
         Args:
             screen: Pygame screen surface
             sprite_mgr: Sprite manager for loading equipment images
+            clock: The client's clock; times the double-click window.
         """
         if not PYGAME_AVAILABLE:
             raise RuntimeError("pygame is required for InventoryUI")
 
         self.screen = screen
+        self.clock = clock or Clock()
         self.sprite_mgr = sprite_mgr
         self.visible = False
         # selected_weapon_idx is the equipped/D-key index.  The cursor is
@@ -472,7 +480,7 @@ class InventoryUI:
         if idx is None:
             return None
         self.cursor_weapon_idx = idx
-        now = pygame.time.get_ticks()
+        now = self.clock.frame_now_ms()
         if idx == self._last_click_idx and now - self._last_click_time <= 400:
             result = self.equip_cursor(weapons)
         else:

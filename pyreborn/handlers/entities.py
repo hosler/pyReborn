@@ -4,8 +4,9 @@ These packets contain local player properties, other-player rosters, NPCs,
 baddies, and ground items.
 """
 
-from reborn_protocol.coords import (LEVEL_SIZE, local_to_world,
-                                    segment_at, segment_origin)
+from reborn_protocol.coords import local_to_world, segment_origin
+
+from ..gmap_coords import grid_of, level_origin, origin_at, world_from_wire
 
 from ..packets import (
     PacketID,
@@ -25,6 +26,7 @@ from ..packets import (
 )
 from reborn_protocol import PLPROP, PLSTATUS
 
+from ..client_callbacks import emit
 from .registry import STOP, handles
 from ..colors_width import colors_width_policy
 from ..attachments import (apply_attachment_props, update_attachments,
@@ -107,8 +109,8 @@ def _update_global_roster(client, player_id, props):
     if props.get('disconnect'):
         record = roster.pop(player_id, None)
         left_level = client.players.pop(player_id, None) is not None
-        if left_level and client.on_player_left:
-            client.on_player_left(player_id)
+        if left_level:
+            emit(client, 'on_player_left', player_id)
         if record is not None and host is not None:
             host.roster_player_removed(player_id, record)
         return True
@@ -159,11 +161,9 @@ def handle_player_props(client, data):
     # not in the grid even though a gmap is loaded, so they stay local.
     attached = apply_attachment_props(client, client.player, props)
     if not attached and ('x' in props or 'y' in props):
-        grid = None
-        if client.gmap_width > 0:
-            grid = next((cell for cell, name in client.gmap_grid.items()
-                         if name == client._current_level_name), None)
-        if grid:
+        grid = (grid_of(client.gmap_grid, client._current_level_name)
+                if client.gmap_width > 0 else None)
+        if grid is not None:
             # world = local + segment origin (the reference client's
             # local + (mapX << 6)). The wire value is level-local even
             # outside 0-63: a local just past the edge (70.25, -1.5) is
@@ -222,8 +222,7 @@ def handle_item_add(client, data):
         # The reference starts a fresh lifetime on receipt (putExtra 0xa4,
         # TClient.cpp:3685), including for items already lying there on entry.
         client.item_stamps[(level_name, (x, y))] = client.item_clock()
-        if client.on_item:
-            client.on_item(x, y, item_type, True)
+        emit(client, 'on_item', x, y, item_type, True)
 
 
 @handles(PacketID.PLO_ITEMDEL)
@@ -250,8 +249,8 @@ def handle_add_player(client, data):
         pid = info['id']
         is_new = pid not in client.player_list
         client.player_list.setdefault(pid, {}).update(info)
-        if is_new and client.on_add_player:
-            client.on_add_player(pid, client.player_list[pid])
+        if is_new:
+            emit(client, 'on_add_player', pid, client.player_list[pid])
 
 
 @handles(PacketID.PLO_DELPLAYER)
@@ -259,8 +258,8 @@ def handle_del_player(client, data):
     # PLO_DELPLAYER (56) - player left the server
     pid = parse_rc_del_player(data)
     info = client.player_list.pop(pid, None)
-    if info is not None and client.on_del_player:
-        client.on_del_player(pid, info)
+    if info is not None:
+        emit(client, 'on_del_player', pid, info)
     # Some server paths announce a logout only this way (the RC-flavored
     # roster); if the id is also in the global allplayers roster, that is a
     # logout there too. GServer-v2's client path sends the DISCONNECT prop
@@ -288,8 +287,7 @@ def handle_baddy_props(client, data):
             # and use the genuine transfer/current level only for a new id.
             level_name = client._pending_level_name or client._current_level_name
             client.baddies.setdefault(level_name, {})[baddy_id] = props
-        if client.on_baddy:
-            client.on_baddy(baddy_id, props)
+        emit(client, 'on_baddy', baddy_id, props)
 
 
 @handles(PacketID.PLO_NPCPROPS)
@@ -322,10 +320,7 @@ def handle_npc_props(client, data):
             if (known is not None and known.get('_level')
                     and gx is None and gy is None):
                 npc_level = known['_level']
-            if client.gmap_grid and npc_level:
-                grid_cell = next(
-                    (cell for cell, name in client.gmap_grid.items()
-                     if name == npc_level), None)
+            grid_cell = grid_of(client.gmap_grid, npc_level)
         props['_level'] = npc_level
 
         # Convert NPC local coords to world coords if in GMAP.
@@ -343,13 +338,9 @@ def handle_npc_props(client, data):
         if grid_cell is not None:
             seg_ox, seg_oy = segment_origin(*grid_cell)
             if 'x' in props:
-                raw_x = props['x']
-                props['world_x'] = (raw_x if (raw_x >= LEVEL_SIZE or raw_x < 0)
-                                     else raw_x + seg_ox)
+                props['world_x'] = world_from_wire(props['x'], seg_ox)
             if 'y' in props:
-                raw_y = props['y']
-                props['world_y'] = (raw_y if (raw_y >= LEVEL_SIZE or raw_y < 0)
-                                     else raw_y + seg_oy)
+                props['world_y'] = world_from_wire(props['y'], seg_oy)
         elif not client.gmap_grid:
             # Not in GMAP - local coords are world coords
             if 'x' in props:
@@ -404,10 +395,8 @@ def _showimg_origin(client, owner):
         return segment_origin(gx, gy)
     wx, wy = owner.get('world_x'), owner.get('world_y')
     if wx is not None and wy is not None and getattr(client, 'is_gmap', False):
-        return segment_origin(*segment_at(wx, wy))
-    cell = next((cell for cell, name in client.gmap_grid.items()
-                 if name == owner.get('level')), None)
-    return segment_origin(*cell) if cell else (0, 0)
+        return origin_at(wx, wy)
+    return level_origin(client.gmap_grid, owner.get('level'))
 
 
 def apply_showimgs(owner, info, client=None):
@@ -458,8 +447,7 @@ def handle_npc_del(client, data):
             cached = client._npc_cache.get(level) if level else None
             if cached is not None:
                 cached.pop(npc_id, None)
-            if client.on_npc_del:
-                client.on_npc_del(npc_id)
+            emit(client, 'on_npc_del', npc_id)
 
 
 @handles(PacketID.PLO_NPCDEL2)
@@ -476,8 +464,7 @@ def handle_npc_del2(client, data):
     _drop_npc_bytecode(client, npc_id)
     if npc_id in client.npcs:
         del client.npcs[npc_id]
-        if client.on_npc_del:
-            client.on_npc_del(npc_id)
+        emit(client, 'on_npc_del', npc_id)
     cached = client._npc_cache.get(level)
     if cached is not None:
         cached.pop(npc_id, None)
@@ -508,8 +495,7 @@ def handle_other_player_props(client, data):
         # (they'd otherwise linger as a ghost at their last position).
         if props.get('joinleave') == 0:
             client.players.pop(player_id, None)
-            if client.on_player_left:
-                client.on_player_left(player_id)
+            emit(client, 'on_player_left', player_id)
             return STOP
         # gs2emu (unlike pygserver) keeps sending cross-level updates
         # for players AFTER their leave notification, with CURLEVEL
@@ -527,8 +513,8 @@ def handle_other_player_props(client, data):
         # A non-empty CURCHAT prop is another player's chat bubble — the
         # primary in-level chat path. Surface it through on_chat.
         chat = props.get('chat')
-        if chat and client.on_chat:
-            client.on_chat(player_id, chat)
+        if chat:
+            emit(client, 'on_chat', player_id, chat)
         # X/Y (15/16) and X2/Y2 (78/79) are both LEVEL-LOCAL: the reference
         # server stores the received pixel value unchanged and relays it
         # verbatim (GServer-v2 beta4 PlayerProps.cpp X2/Y2 setters store
@@ -569,11 +555,7 @@ def _player_segment(client, record):
     gx, gy = record.get('gmaplevelx'), record.get('gmaplevely')
     if gx is not None and gy is not None:
         return gx, gy
-    level = record.get('level')
-    if level:
-        return next((cell for cell, name in client.gmap_grid.items()
-                     if name == level), None)
-    return None
+    return grid_of(client.gmap_grid, record.get('level'))
 
 
 def _resolve_player_world(client, record):
@@ -626,24 +608,20 @@ def handle_npc_moved(client, data):
         npc['visible'] = bool(level) and bool(npc.get('visflags', 1) & 1)
         if level:
             npc['x'], npc['y'] = info['x'], info['y']
-        cell = next((cell for cell, name in client.gmap_grid.items()
-                     if name == level), None)
-        ox, oy = segment_origin(*cell) if cell else (0, 0)
+        ox, oy = level_origin(client.gmap_grid, level)
         if level:
             npc['world_x'], npc['world_y'] = info['x'] + ox, info['y'] + oy
         npc.pop('_move_queue', None)
         client._mark_npc_pos_snap(npc)
         update_attachments(client)
-    if client.on_npc_moved:
-        client.on_npc_moved(info)
+    emit(client, 'on_npc_moved', info)
 
 
 def _handle_moves(client, info):
     from ..npc_movement import queue_moves
     queue_moves(client, info)
     client.npc_moves[info['npc_id']] = info
-    if client.on_npc_move:
-        client.on_npc_move(info)
+    emit(client, 'on_npc_move', info)
 
 
 @handles(PacketID.PLO_MOVE2)

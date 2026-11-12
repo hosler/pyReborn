@@ -67,8 +67,8 @@ class Game(ThrowGame, EntityRenderMixin, RenderMixin):
 
 
 @pytest.fixture
-def game(monkeypatch):
-    monkeypatch.setattr('time.time', lambda: 100.0)
+def game(sim_time):
+    sim_time(100.0)
     return Game()
 
 
@@ -228,7 +228,7 @@ def test_carrying_refuses_sit_sleep_and_bomb_hiding(game):
 
 
 @pytest.mark.parametrize('sprite,wire', [(0x41, 32), (0x42, 232)])
-def test_bomb_pickup_and_landing_preserve_fuse(game, monkeypatch, sprite, wire):
+def test_bomb_pickup_and_landing_preserve_fuse(game, sim_time, sprite, wire):
     bomb = game.bomb(sprite)
     assert game._lift_in_front(3)
     assert game.client.player.carried_bomb is bomb
@@ -238,7 +238,7 @@ def test_bomb_pickup_and_landing_preserve_fuse(game, monkeypatch, sprite, wire):
     assert any(c.args == (PacketID.PLI_BOMBDEL, build_bomb_del(10, 10)) for c in calls)
     assert any(c.args == (PacketID.PLI_PLAYERPROPS, bytes([51, wire])) for c in calls)
     game._throw_object()
-    monkeypatch.setattr('time.time', lambda: 100.45)
+    sim_time(100.45)
     game._update_and_render_thrown(.45)
     assert not game.thrown_objects
     assert (bomb['x'], bomb['y']) == pytest.approx((29.5, 21.925))
@@ -248,11 +248,11 @@ def test_bomb_pickup_and_landing_preserve_fuse(game, monkeypatch, sprite, wire):
     assert game.break_effects == []
 
 
-def test_bomb_fuse_pauses_while_carried(game, monkeypatch):
+def test_bomb_fuse_pauses_while_carried(game, sim_time):
     bomb = game.bomb(fuse=1.1)
     assert game._lift_in_front(3)
-    monkeypatch.setattr('time.time', lambda: 100.11)
-    game._render_bombs()
+    sim_time(100.11)
+    game._advance_bombs()
     assert not bomb['exploded']
     assert game.client.player.is_carrying()
     assert bomb['fuse_remaining'] == pytest.approx(.1)
