@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections import Counter
 from types import SimpleNamespace
 
 import pygame
+
+from reborn_protocol.gs2.compiler import find_compiler
 
 from game_tester.gs2_ui_explorer.capture import CaptureWriter
 from game_tester.gs2_ui_explorer.actions import ActionKind, UIAction
@@ -417,11 +418,10 @@ def test_gui_profile_warning_sample_is_formatted(tmp_path):
 
 
 def test_compiled_gs2_local_transition_with_send_gate(tmp_path):
-    compiler = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "../../../reborn-protocol/tests/tools/gs2test"))
-    if not os.path.isfile(compiler):
+    compiler = find_compiler()
+    if compiler is None:
         import pytest
-        pytest.skip("local GS2 compiler is unavailable")
+        pytest.skip("gs2test compiler not built")
     source = tmp_path / "explorer.gs2"
     bytecode = tmp_path / "explorer.gs2bc"
     source.write_text("""
@@ -463,11 +463,10 @@ function onCreated() {
 
 
 def test_explorer_idles_through_compiled_loading_menu_and_clicks(tmp_path):
-    compiler = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "../../../reborn-protocol/tests/tools/gs2test"))
-    if not os.path.isfile(compiler):
+    compiler = find_compiler()
+    if compiler is None:
         import pytest
-        pytest.skip("local GS2 compiler is unavailable")
+        pytest.skip("gs2test compiler not built")
     source = tmp_path / "loading_menu.gs2"
     bytecode = tmp_path / "loading_menu.gs2bc"
     source.write_text("""

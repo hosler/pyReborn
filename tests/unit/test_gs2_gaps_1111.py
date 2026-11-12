@@ -16,15 +16,12 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pytest
 
+from reborn_protocol.gs2.compiler import find_compiler
 from pyreborn.client import Client, PacketID
 from pyreborn.gs1_client import ClientGS1
 from pyreborn.gs2_client import ClientGS2
 
-GS2TEST = next((str(path) for path in (
-    os.environ.get("GS2TEST_BIN"),
-    Path(__file__).parents[3] / "reborn-protocol/tests/tools/gs2test",
-    shutil.which("gs2test"),
-) if path and Path(path).is_file() and os.access(path, os.X_OK)), None)
+GS2TEST = find_compiler()
 
 needs_compiler = pytest.mark.skipif(
     GS2TEST is None, reason="gs2test compiler binary not built")

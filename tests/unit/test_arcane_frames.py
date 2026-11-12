@@ -1,16 +1,16 @@
 """Arcane flight stays in world space while reports use level-local points."""
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from pyreborn.gs1_client import ClientGS1
 
+from .sibling_repos import require_workspace_dir
+
 
 KEY = "weapon_ArcaneBolt"
-WEAPON = (Path(__file__).resolve().parents[3] / "funtimes-pygserver"
-          / "weapons/weapon-ArcaneBolt.txt")
+WEAPON = require_workspace_dir("funtimes-pygserver") / "weapons/weapon-ArcaneBolt.txt"
 
 
 def bolt_runtime(x=84, y=84, direction=3):

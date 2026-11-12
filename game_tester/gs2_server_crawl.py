@@ -157,7 +157,8 @@ def write_reports(out_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any
         lines += ["", f"## {title}", "", "| Gap | Servers | Total | Server names |",
                   "|---|---:|---:|---|"]
         for gap in gaps[key]:
-            lines.append(f"| {gap['name'].replace('|', '\\|')} | {gap['server_count']} | "
+            gap_name = gap['name'].replace('|', '\\|')
+            lines.append(f"| {gap_name} | {gap['server_count']} | "
                          f"{gap['total_count']} | {', '.join(gap['servers'])} |")
     (out_dir / "crawl_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report

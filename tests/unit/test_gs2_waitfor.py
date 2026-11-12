@@ -1,6 +1,5 @@
 """Event waits share the runtime's cooperative sleep scheduler."""
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +8,9 @@ from reborn_protocol.gs2 import GS2Object
 from pyreborn.gs2_client import ClientGS2
 import pyreborn.gs2_client.runtime as runtime_module
 
-VECTOR = (Path(__file__).parents[3] / "reborn-protocol/tests/fixtures/gs2/vm/08_waitfor.gs2bc")
+from .sibling_repos import PROTOCOL_FIXTURES
+
+VECTOR = PROTOCOL_FIXTURES / "gs2" / "vm" / "08_waitfor.gs2bc"
 
 
 def _runtime():

@@ -1,10 +1,8 @@
-import os
-from pathlib import Path
-import shutil
 import subprocess
 
 import pytest
 
+from reborn_protocol.gs2.compiler import find_compiler
 from pyreborn.gs2_client import ClientGS2
 
 
@@ -13,14 +11,7 @@ def _call(rt, name, args=(), obj=None):
 
 
 def _compiler():
-    candidates = (
-        os.environ.get("GS2TEST_BIN"),
-        Path(__file__).parents[3] / "reborn-protocol/tests/tools/gs2test",
-        shutil.which("gs2test"),
-    )
-    return next((str(path) for path in candidates
-                 if path and Path(path).is_file() and os.access(path, os.X_OK)),
-                None)
+    return find_compiler()
 
 
 GS2TEST = _compiler()

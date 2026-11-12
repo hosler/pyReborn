@@ -18,9 +18,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../reborn-prot
 from pyreborn.game.gs2_gui import GuiWindowCtrl
 from pyreborn.gs2_client import ClientGS2
 
+from .gs2_compiler import require_compiler
 
-COMPILER = (Path(__file__).parents[3] / "reborn-protocol" / "tests" /
-            "tools" / "gs2test")
+
+COMPILER = require_compiler()
 
 
 def _compile(source):

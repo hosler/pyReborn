@@ -149,7 +149,7 @@ def test_reset_account_position_rewrites_an_existing_account(tmp_path,
 
     assert reset_account_position("testbot1", "onlinestartlocal.nw", 30, 30.5,
                                   mp=7) is True
-    written = account.read_text(newline="")
+    written = account.read_bytes().decode()
     assert "LEVEL onlinestartlocal.nw" in written
     assert "X 30\r\n" in written and "Y 30.5\r\n" in written
     assert "MP 7" in written and "NICK testbot1" in written

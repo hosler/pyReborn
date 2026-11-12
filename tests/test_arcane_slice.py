@@ -21,6 +21,9 @@ from pygserver.tiletypes import get_tile_type
 
 
 WORLD = ROOT / "funtimes-pygserver"
+if not WORLD.is_dir():
+    pytest.skip("funtimes-pygserver/ is not checked out next to pyReborn "
+                "(developer-workspace data; absent in CI)", allow_module_level=True)
 WEAPON = WORLD / "weapons/weapon-ArcaneBolt.txt"
 GENERATOR = WORLD / "tools/gen_dungeon.py"
 DUNGEON = WORLD / "world/arcane_dungeon.nw"

@@ -15,11 +15,18 @@ from pyreborn.game.setup import SetupMixin
 from pyreborn.client import Client
 from pyreborn.packets import PacketID
 
-WORKSPACE = Path(__file__).resolve().parents[3]
-PROTOCOL_FIXTURES = WORKSPACE / 'reborn-protocol' / 'tests' / 'fixtures'
-SERVER = WORKSPACE / 'pygserver'
+from .sibling_repos import PROTOCOL_FIXTURES, pygserver_root
+
+SERVER = pygserver_root()
 GS2_SOURCE = 'function onCreated() { player.chat = "ready"; }'
 GS1_SOURCE = 'if (playerenters) { message ready; }'
+
+
+def path_root(path):
+    for root in (PROTOCOL_FIXTURES.parents[1], SERVER, Path(__file__).resolve().parents[2]):
+        if root in path.parents:
+            return root.parent
+    return path.anchor and Path(path.anchor)
 
 
 def corpus_cases():
@@ -27,7 +34,7 @@ def corpus_cases():
     cases = []
     for path in sorted(PROTOCOL_FIXTURES.rglob('*.gs2')):
         cases.append(pytest.param(path.read_text(), True,
-                                 id=str(path.relative_to(WORKSPACE))))
+                                 id=str(path.relative_to(path_root(path)))))
     # These fixture weapons/classes are explicitly GS2 QA scripts.
     for directory in ('weapons', 'scripts'):
         for path in sorted((SERVER / directory).glob('*.txt')):
@@ -35,7 +42,7 @@ def corpus_cases():
             if directory == 'weapons':
                 source = re.search(r'(?ms)^SCRIPT\n(.*?)^SCRIPTEND', source)[1]
             cases.append(pytest.param(source, True,
-                                     id=str(path.relative_to(WORKSPACE))))
+                                     id=str(path.relative_to(path_root(path)))))
     # Level NPC blocks and animation SCRIPT blocks contain source, not the
     # surrounding level/animation metadata. Empty blocks have no language.
     for root in (SERVER / 'levels', Path(__file__).resolve().parents[1] / 'fixtures'):
@@ -53,7 +60,7 @@ def corpus_cases():
                 if script.strip():
                     cases.append(pytest.param(
                         script, False,
-                        id=f'{path.relative_to(WORKSPACE)}#{index}'))
+                        id=f'{path.relative_to(path_root(path))}#{index}'))
     return cases
 
 

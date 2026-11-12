@@ -18,7 +18,6 @@ Two layers of coverage:
    reborn-protocol/tests/test_gs2_compiler.py).
 """
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 import pygame
 import pytest
 
+from reborn_protocol.gs2.compiler import find_compiler
 from reborn_protocol.gs2 import GS2VM
 from pyreborn.gs2_client import ClientGS2
 from pyreborn.game.gs2_gui import (
@@ -472,15 +472,7 @@ def test_headless_without_pygame_gui_is_none(monkeypatch):
 # =============================================================================
 
 def _find_gs2test():
-    candidates = [
-        os.environ.get("GS2TEST_BIN"),
-        str(Path(__file__).parent / "../../../reborn-protocol/tests/tools/gs2test"),
-        shutil.which("gs2test"),
-    ]
-    for c in candidates:
-        if c and Path(c).is_file() and os.access(c, os.X_OK):
-            return str(c)
-    return None
+    return find_compiler()
 
 
 GS2TEST = _find_gs2test()

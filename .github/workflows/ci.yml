@@ -22,25 +22,28 @@ jobs:
       - uses: actions/checkout@v4
       # siblings are not on PyPI; install by path. pygserver is needed at
       # runtime by conftest.py's server fixture (integration tests spawn it).
+      # They go under deps/, not the workspace root: a root-level `pygserver`
+      # directory is importable from the repo root as a namespace package and
+      # shadows the installed pygserver (ImportError on pygserver.config).
       - uses: actions/checkout@v4
         with:
           repository: hosler/reborn-protocol
-          path: reborn-protocol
+          path: deps/reborn-protocol
       - uses: actions/checkout@v4
         with:
           repository: hosler/pygserver
-          path: pygserver
+          path: deps/pygserver
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       # pyReborn's [dev] extra carries the test imports (pygame-ce, Pillow,
       # hypothesis, pytest-asyncio); without them the run fails at collection.
-      - run: pip install -e ./reborn-protocol -e ./pygserver -e ".[dev]"
+      - run: pip install -e ./deps/reborn-protocol -e ./deps/pygserver -e ".[dev]"
       # syntax errors, undefined names and bad comparisons only: the cheap
       # rules that catch a crash no offline test happens to reach
       - run: flake8 --select=E9,F63,F7,F82 pyreborn game_tester
       # unit + integration; the pygserver fixture self-starts from
       # PYGSERVER_DIR (conftest falls back to the sibling ../pygserver, which
       # doesn't exist in the Actions workspace layout)
-      - run: PYGSERVER_DIR="$GITHUB_WORKSPACE/pygserver" pytest -q
+      - run: PYGSERVER_DIR="$GITHUB_WORKSPACE/deps/pygserver" pytest

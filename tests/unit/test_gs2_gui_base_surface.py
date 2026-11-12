@@ -1,20 +1,14 @@
 """Reference-pinned GuiControl base property and method surface."""
 
-import os
-from pathlib import Path
-import shutil
 import subprocess
 
 import pytest
 
+from reborn_protocol.gs2.compiler import find_compiler
 from pyreborn.gs2_client import ClientGS2
 
 
-GS2TEST = next((str(path) for path in (
-    os.environ.get("GS2TEST_BIN"),
-    Path(__file__).parents[3] / "reborn-protocol/tests/tools/gs2test",
-    shutil.which("gs2test"),
-) if path and Path(path).is_file() and os.access(path, os.X_OK)), None)
+GS2TEST = find_compiler()
 
 
 def control(rt, name):
