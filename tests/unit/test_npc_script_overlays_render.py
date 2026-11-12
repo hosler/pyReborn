@@ -3,7 +3,6 @@ NPC go through the real NPC renderer (offline, SDL dummy)."""
 
 import os
 import sys
-import time
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -74,7 +73,7 @@ def test_take_icon_and_total_replace_the_timer(game, monkeypatch):
     game.screen.fill((0, 0, 0))
     texts = _draw(game, {'x': 32.0, 'y': 32.0, 'image': 'sign.png',
                          'timershow': True, '_timeout': 4.6, 'take_item': 0,
-                         'take_until': time.monotonic() + 1.0,
+                         'take_until': game.clock.sim_now() + 1.0,
                          'take_value': 12.0}, at=(20.0, 40.0))
     assert texts == ['12'] and asked == [136]        # giveitems[0], green rupee
     # the icon sits one tile above the NPC, centred on x + 1 tile
