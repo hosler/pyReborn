@@ -12,6 +12,7 @@ import pytest
 
 from pyreborn.client import Client
 from pyreborn.game.callbacks import client_callbacks
+from pyreborn.game.callbacks.client_callbacks import Gs2SourceRouter
 from pyreborn.gs2_client import ClientGS2
 from pyreborn.packets import PacketID
 
@@ -39,8 +40,8 @@ def _stub_game(client, log):
         client=client, gs1=Mock(scripts={}), sound_mgr=SimpleNamespace(),
         _request_asset=Mock(), _gs1_level='test.nw', npc_handler=Mock(),
         _append_chat=lambda text: log.append(('game', 'chat', text)))
-    game._gs2_source_attempts = _RecordingAttempts(log)
-    game._gs2_source_warned = set()
+    game.gs2_sources = Gs2SourceRouter()
+    game.gs2_sources.attempts = _RecordingAttempts(log)
     return game
 
 

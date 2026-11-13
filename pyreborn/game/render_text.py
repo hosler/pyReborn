@@ -8,7 +8,6 @@ import pygame
 
 from .assets import render_outlined_text
 from .frame_context import FrameContext
-from ..lru import LruCache
 from .host import GameHost
 
 
@@ -117,9 +116,9 @@ class RenderTextMixin(GameHost):
         """The spatial index over this frame's placed plates. It is tied to
         the frame's own `nameplate_rects` list (identity and length), so a new
         frame, or a plate appended behind its back, rebuilds it."""
-        held = getattr(self, '_nameplate_grid', None)
+        held = self.render_cache.nameplate_grid
         if held is None or held.rects is not rects or held.count != len(rects):
-            held = self._nameplate_grid = _NameplateGrid(rects)
+            held = self.render_cache.nameplate_grid = _NameplateGrid(rects)
         return held
 
     def _render_text_cached(self, font: pygame.font.Font, text: str,
@@ -131,9 +130,7 @@ class RenderTextMixin(GameHost):
         doesn't leak memory. Fine as-is for bubble text, which already sits on
         a solid white plate -- text drawn straight over the level (nameplates,
         showtext) wants `_render_text_outlined_cached` instead, below."""
-        cache = getattr(self, '_text_surf_cache', None)
-        if cache is None:
-            cache = self._text_surf_cache = LruCache(500)
+        cache = self.render_cache.text_surf
         key = (id(font), text, color)
         surf = cache.get(key)
         if surf is None:
@@ -149,9 +146,7 @@ class RenderTextMixin(GameHost):
         solid-colour bubble/box -- a flat fill (even with a 1px drop shadow)
         all but vanishes against busy/dark level art. See
         assets.render_outlined_text for the actual stamping."""
-        cache = getattr(self, '_text_outline_cache', None)
-        if cache is None:
-            cache = self._text_outline_cache = LruCache(500)
+        cache = self.render_cache.text_outline
         key = (id(font), text, color, outline_color)
         surf = cache.get(key)
         if surf is None:
@@ -163,9 +158,7 @@ class RenderTextMixin(GameHost):
         Recomputing this (with a font.render() per word) every frame for the
         same message is wasteful, so cache the wrap result keyed by the full
         text - messages are static once received."""
-        cache = getattr(self, '_wrap_cache', None)
-        if cache is None:
-            cache = self._wrap_cache = LruCache(300)
+        cache = self.render_cache.wrap
         lines = cache.get(text)
         if lines is not None:
             return lines

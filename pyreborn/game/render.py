@@ -146,17 +146,17 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # movement key let go (or carrying/sitting took over) clears the
         # state but doesn't itself touch the gani, so fall back to idle here
         # instead of leaving "push"/"grab"/"pull" stuck on screen.
-        if self.grab_state and self.current_anim_name != self.grab_state:
-            self.player_anim.set_animation(self.grab_state, self._grab_direction, force=True)
-            self.current_anim_name = self.grab_state
-        elif not self.grab_state and self.current_anim_name in ("grab", "pull"):
+        if self.push.grab and self.current_anim_name != self.push.grab:
+            self.player_anim.set_animation(self.push.grab, self.push.grab_direction, force=True)
+            self.current_anim_name = self.push.grab
+        elif not self.push.grab and self.current_anim_name in ("grab", "pull"):
             self.player_anim.set_animation("idle", self.client.player.direction)
             self.current_anim_name = "idle"
 
-        if self.is_pushing and self.current_anim_name != "push":
+        if self.push.pushing and self.current_anim_name != "push":
             self.player_anim.set_animation("push", self.client.player.direction, force=True)
             self.current_anim_name = "push"
-        elif not self.is_pushing and self.current_anim_name == "push":
+        elif not self.push.pushing and self.current_anim_name == "push":
             self.player_anim.set_animation("idle", self.client.player.direction)
             self.current_anim_name = "idle"
 

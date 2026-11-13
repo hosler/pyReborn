@@ -74,7 +74,7 @@ def test_all_held_keys_are_dispatched_including_opposites(new_game, monkeypatch)
     game = new_game()
     moves = spy(monkeypatch, game, '_move')
     game.key_just_pressed = {}
-    game.grab_state = None
+    game.push.grab = None
     game.current_anim_name = 'idle'
     game.walk_speed, game._frame_dt, game._move_accum = 10, .05, 0
     keys = defaultdict(bool, {key: True for key in

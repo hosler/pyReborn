@@ -56,21 +56,21 @@ def test_push_countdown_and_repeated_directional_event(sim_time, monkeypatch, fa
     client, game = facing_wall()
     client.triggeraction = Mock()
     game._update_push_hold(0, -1)
-    assert game._push_counter == 38
+    assert game.push.counter == 38
     now[0] += .999
     game._update_push_hold(0, -1)
-    assert game._push_counter == 19 and not game.is_pushing
+    assert game.push.counter == 19 and not game.push.pushing
     client.triggeraction.assert_not_called()
     now[0] = 101
     game._update_push_hold(0, -1)
-    assert game._push_counter == 18 and game.current_anim_name == 'push'
+    assert game.push.counter == 18 and game.current_anim_name == 'push'
     client.triggeraction.assert_called_once_with('push,0', 31.5, 20.0)
     now[0] += 1
     game._update_push_hold(0, -1)
     assert client.triggeraction.call_count == 2  # TPlayer.cpp:7558-7561
     game._clear_push_hold()
     game._update_push_hold(0, -1)
-    assert game._push_counter == 38
+    assert game.push.counter == 38
 
 
 def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch, facing_wall):
@@ -82,15 +82,15 @@ def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch, faci
     game.gs1.load_script('pullable', 'if (actionpull) { this.hits++; this.dir=#p(0); }', npc_id=10001)
     client.triggeraction = Mock()
     game._update_grab_pull_state(0, 0)
-    assert game._pull_counter == 1 and client.player.action_mode == 5
+    assert game.push.pull_counter == 1 and client.player.action_mode == 5
     game._update_grab_pull_state(0, 1)
-    assert game._pull_counter == 2 and game.current_anim_name == 'pull'
+    assert game.push.pull_counter == 2 and game.current_anim_name == 'pull'
     now[0] += .849
     game._update_grab_pull_state(0, 1)
     client.triggeraction.assert_not_called()
     now[0] = 100.85
     game._update_grab_pull_state(0, 1)
-    assert game._pull_counter == 19 and game._grab_direction == 0
+    assert game.push.pull_counter == 19 and game.push.grab_direction == 0
     client.triggeraction.assert_called_once_with('pull,2', 31.5, 19.5)
     entry = game.gs1._progs['pullable']
     assert entry['scopes']['this']['hits'] == 1

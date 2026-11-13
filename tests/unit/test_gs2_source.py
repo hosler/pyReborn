@@ -114,7 +114,8 @@ def game(monkeypatch):
     client.current_level_name = 'test.nw'
     game = SimpleNamespace(
         client=client, gs1=Mock(scripts={}), sound_mgr=SimpleNamespace(),
-        _request_asset=Mock(), _gs1_level='test.nw', npc_handler=Mock())
+        _request_asset=Mock(), _gs1_level='test.nw', npc_handler=Mock(),
+        gs2_sources=client_callbacks.Gs2SourceRouter())
     game.previous_weapon_del = Mock()
     client.on_packet[PacketID.PLO_NPCWEAPONDEL] = game.previous_weapon_del
     client_callbacks.wire_client_callbacks(game)
@@ -213,7 +214,7 @@ def test_weapon_delete_forgets_attempt_and_identical_readd_loads_vm(game):
 
     Client._handle_packet(game.client, PacketID.PLO_NPCWEAPONDEL, b'source')
     assert 'source' not in game.client.weapons
-    assert ('weapon', 'source') not in game._gs2_source_attempts
+    assert ('weapon', 'source') not in game.gs2_sources.attempts
     game.previous_weapon_del.assert_called_once_with(b'source')
 
     game.client.weapons['source'] = weapon

@@ -10,6 +10,7 @@ import pygame
 import pytest
 
 from pyreborn.gani import Gani, GaniFrame, GaniSprite
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_entities import EntityRenderMixin
 
 
@@ -55,14 +56,14 @@ def test_gani_layer_cache_rejects_a_different_source_gani():
     key = (id(source), 0, 0, ())
     stale_result = [("shadow", 99, 99)]
     harness = SimpleNamespace(
-        _gani_layer_cache={key: (stale_source, stale_result)},
+        render_cache=RenderCache(gani_layer={key: (stale_source, stale_result)}),
     )
 
     resolved = EntityRenderMixin._resolve_gani_layers(
         harness, anim, frame, {},
     )
 
-    cached_source, cached_result = harness._gani_layer_cache[key]
+    cached_source, cached_result = harness.render_cache.gani_layer[key]
     assert cached_source is source
     assert cached_result is resolved
     assert resolved == [("sprite", "body.png", sprite, 3, 4, False)]

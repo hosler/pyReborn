@@ -48,13 +48,13 @@ def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time, clie
     game = presentation
     player = client.player
     player.action_mode = mode
-    game._push_hold_dir = (1, 0)
-    game._push_hold_start = 99.0
-    game._push_counter = 18
-    game.is_pushing = True
-    game.grab_state = 'pull'
-    game._pull_started = 99.0
-    game._pull_fired = True
+    game.push.hold_dir = (1, 0)
+    game.push.hold_start = 99.0
+    game.push.counter = 18
+    game.push.pushing = True
+    game.push.grab = 'pull'
+    game.push.pull_started = 99.0
+    game.push.pull_fired = True
     game._ledge_jump = object()
     clears = (spy(monkeypatch, game, '_clear_push_hold'),
               spy(monkeypatch, game, '_clear_grab_state'))
@@ -62,9 +62,9 @@ def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time, clie
     client.on_hurt(99, 3, 0, 0, 0)
 
     assert player.action_mode == 0
-    assert game.grab_state is None and game._pull_started is None
-    assert not game._pull_fired
-    assert game._push_hold_start is None and not game.is_pushing
+    assert game.push.grab is None and game.push.pull_started is None
+    assert not game.push.pull_fired
+    assert game.push.hold_start is None and not game.push.pushing
     assert game._ledge_jump is None
     assert [len(c) for c in clears] == [1, 1]
     assert game.current_anim_name == 'dead'

@@ -12,6 +12,7 @@ import pygame
 import pytest
 from hypothesis import given, settings, strategies as st
 
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_text import RenderTextMixin
 
 SCREEN_W, SCREEN_H = 1920, 1080
@@ -33,6 +34,7 @@ def reference_place(rects, name_x, name_y, size):
 
 class Placer(RenderTextMixin):
     def __init__(self):
+        self.render_cache = RenderCache()
         self.frame = SimpleNamespace(nameplate_rects=[])
 
     def _frame_context(self):

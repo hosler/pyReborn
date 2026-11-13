@@ -881,8 +881,8 @@ class InputMixin(ClockedMixin):
         # is "pull", not a fresh lift/pickup attempt in a new direction —
         # skip _try_pickup entirely so an active grab isn't reinterpreted as
         # "turn and lift/throw", and keep facing pinned on the grabbed wall.
-        if a_held and self.grab_state is not None and self._grab_direction is not None \
-                and (dx, dy) == self._facing_delta({0: 2, 1: 3, 2: 0, 3: 1}[self._grab_direction]):
+        if a_held and self.push.grab is not None and self.push.grab_direction is not None \
+                and (dx, dy) == self._facing_delta({0: 2, 1: 3, 2: 0, 3: 1}[self.push.grab_direction]):
             self._update_grab_pull_state(dx, dy)
             return
 
@@ -895,7 +895,7 @@ class InputMixin(ClockedMixin):
             # attempt in a new direction, not a continuation of the old
             # grab — drop the stale pinned facing before _try_pickup turns
             # to face this arrow.
-            if self.grab_state is not None:
+            if self.push.grab is not None:
                 self._clear_grab_state()
             fresh = pressed_now(jp, "grab", *keymap.MOVE_NAMES)
             if fresh and sim_passed(current_time, self.last_action_time, self.action_delay):

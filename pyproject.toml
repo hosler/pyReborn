@@ -97,10 +97,15 @@ extend-exclude = '''
 '''
 
 [tool.mypy]
-python_version = "3.8"
-warn_return_any = true
+# Non-blocking report on the game layer (the CI "typecheck" job). The library
+# layer is type-used, not reported: follow_imports = "silent".
+python_version = "3.11"            # the CI floor; mypy >= 2 rejects 3.8
+files = ["pyreborn/game", "pyreborn/pygame_game.py"]
+follow_imports = "silent"
+ignore_missing_imports = true
 warn_unused_configs = true
-disallow_untyped_defs = true
+check_untyped_defs = false         # the next ratchet step turns this on
+show_error_codes = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"

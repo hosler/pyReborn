@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1
 from pyreborn.gs2_client import ClientGS2
+from pyreborn.game.callbacks.client_callbacks import Gs2SourceRouter
 from pyreborn.game.setup import SetupMixin
 from pyreborn.packets import PacketID, build_baddy_hurt
 from reborn_protocol import PacketBuilder
@@ -165,6 +166,7 @@ def test_level_npc_toweapons_copies_runs_and_notifies_server():
     game = type("_Game", (SetupMixin,), {})()
     game.client = client
     game.gs1 = gs1
+    game.gs2_sources = Gs2SourceRouter()
     game.player_anim = type("_Animation", (), {})()
     game._setup_gs1_callbacks()
 

@@ -22,46 +22,55 @@ SAMPLE_EXTS = ('wav', 'aiff', 'aif', 'flac')
 logger = logging.getLogger(__name__)
 
 
-def route_gs2_source(game, kind, key, script):
-    """Consume GS2 text through the existing bytecode arrival callback.
+class Gs2SourceRouter:
+    """Per-game record of GS2 source compile attempts and their warnings."""
 
-    True means bytecode is available, so GS1 must skip this source. Failed
-    attempts retain their False result so repeated scans still fall back.
-    NPC identity permits reloading on respawn.
-    """
-    identity = (kind, key)
-    owner = game.client.npcs.get(key) if kind == 'npc' else None
-    previous = getattr(game, '_gs2_source_attempts', {}).get(identity)
-    if previous is not None and previous[0] == script and previous[1] is owner:
-        return previous[2]
-    if not looks_like_gs2(script):
+    def __init__(self):
+        self.attempts = {}
+        self.warned = set()
+        self.compiler = None
+
+    def route(self, game, kind, key, script):
+        """Consume GS2 text through the existing bytecode arrival callback.
+
+        True means bytecode is available, so GS1 must skip this source. Failed
+        attempts retain their False result so repeated scans still fall back.
+        NPC identity permits reloading on respawn.
+        """
+        identity = (kind, key)
+        owner = game.client.npcs.get(key) if kind == 'npc' else None
+        previous = self.attempts.get(identity)
+        if previous is not None and previous[0] == script and previous[1] is owner:
+            return previous[2]
+        if not looks_like_gs2(script):
+            return False
+        source = re.split(r'(?m)^\s*//#CLIENTSIDE[^\n]*(?:\n|$)',
+                          script.replace('\xa7', '\n'), maxsplit=1)[-1]
+        self.attempts[identity] = (script, owner, False)
+        if os.environ.get('PYREBORN_GS2_SOURCE') == '0':
+            error = 'source compilation disabled by PYREBORN_GS2_SOURCE=0'
+        else:
+            compiler = self.compiler
+            if compiler is None:
+                compiler = self.compiler = Gs2Compiler()
+            blob = compiler.compile(source, str(key))
+            if blob is not None:
+                self.attempts[identity] = (script, owner, True)
+                # Match handlers/scripts.py: retain the blob for runtime startup
+                # replay, then let ClientGS2._on_bytecode queue it for load_bytecode.
+                game.client.gs2_bytecode[kind][key] = blob
+                emit(game.client, 'on_gs2_bytecode', kind, key, blob)
+                return True
+            error = getattr(compiler, 'last_error', '') or 'compilation failed'
+        if identity not in self.warned:
+            self.warned.add(identity)
+            logger.warning('GS2-looking %s %s: %s; running it in the GS1 engine', kind, key,
+                           error.splitlines()[0])
         return False
-    source = re.split(r'(?m)^\s*//#CLIENTSIDE[^\n]*(?:\n|$)',
-                      script.replace('\xa7', '\n'), maxsplit=1)[-1]
-    if not hasattr(game, '_gs2_source_attempts'):
-        game._gs2_source_attempts = {}
-        game._gs2_source_warned = set()
-    game._gs2_source_attempts[identity] = (script, owner, False)
-    if os.environ.get('PYREBORN_GS2_SOURCE') == '0':
-        error = 'source compilation disabled by PYREBORN_GS2_SOURCE=0'
-    else:
-        compiler = getattr(game, '_gs2_source_compiler', None)
-        if compiler is None:
-            compiler = game._gs2_source_compiler = Gs2Compiler()
-        blob = compiler.compile(source, str(key))
-        if blob is not None:
-            game._gs2_source_attempts[identity] = (script, owner, True)
-            # Match handlers/scripts.py: retain the blob for runtime startup
-            # replay, then let ClientGS2._on_bytecode queue it for load_bytecode.
-            game.client.gs2_bytecode[kind][key] = blob
-            emit(game.client, 'on_gs2_bytecode', kind, key, blob)
-            return True
-        error = getattr(compiler, 'last_error', '') or 'compilation failed'
-    if identity not in game._gs2_source_warned:
-        game._gs2_source_warned.add(identity)
-        logger.warning('GS2-looking %s %s: %s; running it in the GS1 engine', kind, key,
-                       error.splitlines()[0])
-    return False
+
+
+def route_gs2_source(game, kind, key, script):
+    return game.gs2_sources.route(game, kind, key, script)
 
 
 def append_start_message(chat_messages: list, text: str) -> int:
@@ -128,13 +137,13 @@ def wire_client_callbacks(game):
         was_dead = game.current_anim_name == 'dead'
         state = game.client.player.hurt
         stamp = (state.generation, game.clock.sim_now())
-        advanced = state.generation > getattr(game, '_presented_hurt_generation', 0)
+        advanced = state.generation > game.combat_presentation.presented_hurt_generation
         tracked = state.generation > 0 and game.client.auto_respond_hurt and damage > 0
-        if (tracked and stamp == getattr(game, '_presented_hurt_stamp', None)
+        if (tracked and stamp == game.combat_presentation.presented_hurt_stamp
                 and (game.client.player.hearts > 0 or game.current_anim_name == 'dead')):
             return
-        game._presented_hurt_stamp = stamp if advanced and tracked else None
-        game._presented_hurt_generation = state.generation
+        game.combat_presentation.presented_hurt_stamp = stamp if advanced and tracked else None
+        game.combat_presentation.presented_hurt_generation = state.generation
         # TPlayer.cpp:5771-5779,6574: hurt/death release through the normal throw path.
         if game.client.player.is_carrying():
             game._throw_object()
@@ -335,7 +344,7 @@ def wire_client_callbacks(game):
     # on_packet hook, which keeps its own slot.
     def on_weapon_del(data):
         name = parse_npcweapondel(data)
-        getattr(game, '_gs2_source_attempts', {}).pop(('weapon', name), None)
+        game.gs2_sources.attempts.pop(('weapon', name), None)
 
     game.client.add_packet_listener(PacketID.PLO_NPCWEAPONDEL, on_weapon_del)
 

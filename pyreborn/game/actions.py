@@ -338,7 +338,7 @@ class ActionsMixin(ClockedMixin):
             from ..jumping import JUMP_PUSH_TICKS
             from ..hurt import TICK_SECONDS
             self._update_push_hold(dx, dy)
-            started = getattr(self, '_push_hold_start', None)
+            started = self.push.hold_start
             if started is not None and self.clock.passed(started, JUMP_PUSH_TICKS * TICK_SECONDS):
                 self._try_start_ledge_jump(facing)
             return
@@ -603,32 +603,30 @@ class ActionsMixin(ClockedMixin):
         """
         player = self.client.player
         now = self.clock.sim_now()
-        if self._push_hold_dir != (dx, dy) or self._push_hold_start is None:
-            self._push_hold_dir = (dx, dy)
-            self._push_hold_start = now
-            self._push_fired = False
-            self._push_fire_cycle = -1
-            self.is_pushing = False
-        ticks = max(0, self.clock.ticks_since(self._push_hold_start))
-        self._push_counter = max(18, 38 - ticks)
-        if self._push_counter > 18:
+        if self.push.hold_dir != (dx, dy) or self.push.hold_start is None:
+            self.push.hold_dir = (dx, dy)
+            self.push.hold_start = now
+            self.push.fire_cycle = -1
+            self.push.pushing = False
+        ticks = max(0, self.clock.ticks_since(self.push.hold_start))
+        self.push.counter = max(18, 38 - ticks)
+        if self.push.counter > 18:
             return
         # The countdown itself is shared with the ledge jump and runs for
         # everyone; only the push pose and its NPC event need a free-handed,
         # standing, non-ghost player.
         if getattr(self.client, 'ghost_mode', 0) or player.is_carrying() or player.is_sitting:
-            self.is_pushing = False
+            self.push.pushing = False
             return
-        self.is_pushing = True
+        self.push.pushing = True
         direction = direction_from_delta(dx, dy)
         self.player_anim.set_direction(direction)
         if self.current_anim_name != 'push':
             self._play_action_animation('push')
         # TPlayer.cpp:7558-7561: each subsequent cycle takes 20 ticks (1 s).
         cycle = (ticks - 20) // 20
-        if cycle > getattr(self, '_push_fire_cycle', -1):
-            self._push_fired = True
-            self._push_fire_cycle = cycle
+        if cycle > self.push.fire_cycle:
+            self.push.fire_cycle = cycle
             self._stone_action('push', direction)
             # TPlayer.cpp:7535-7542: default movement owns this sound. As with
             # footsteps, leave an animation's own PLAYSOUND to that animation.
@@ -637,12 +635,7 @@ class ActionsMixin(ClockedMixin):
                 self.sound_mgr.play('stonemove.wav')
 
     def _clear_push_hold(self):
-        self._push_hold_dir = None
-        self._push_hold_start = None
-        self._push_counter = 38
-        self._push_fired = False
-        self._push_fire_cycle = -1
-        self.is_pushing = False
+        self.push.clear_push()
 
     def _update_grab_pull_state(self, dx: int, dy: int):
         """Grab at counter 1; an opposite-direction hold advances 2 to 19."""
@@ -651,34 +644,34 @@ class ActionsMixin(ClockedMixin):
                 or self.is_swimming):
             self._clear_grab_state()
             return
-        direction = self._grab_direction if self.grab_state is not None else player.direction
+        direction = self.push.grab_direction if self.push.grab is not None else player.direction
         if not self._pull_wall_before(direction):
             self._clear_grab_state()
             return
-        if self.grab_state is None:
+        if self.push.grab is None:
             # TPlayer.cpp:2058: A enters action mode 5 with counter 1.
-            self._grab_direction = direction
-            self._pull_started = None
-            self._pull_fired = False
-            self._pull_counter = 1
+            self.push.grab_direction = direction
+            self.push.pull_started = None
+            self.push.pull_fired = False
+            self.push.pull_counter = 1
             player.action_mode = 5
         pulling = (dx, dy) == self._facing_delta((direction + 2) & 3)
         state = 'pull' if pulling else 'grab'
         if pulling:
             now = self.clock.sim_now()
-            if self._pull_started is None:
-                self._pull_started = now
-            self._pull_counter = min(19, 2 + int((max(0, now - self._pull_started) + 1e-9) / .05))
+            if self.push.pull_started is None:
+                self.push.pull_started = now
+            self.push.pull_counter = min(19, 2 + int((max(0, now - self.push.pull_started) + 1e-9) / .05))
             # TPlayer.cpp:7475: dispatch when the pull counter reaches 19.
-            if self._pull_counter == 19 and not self._pull_fired:
-                self._pull_fired = True
+            if self.push.pull_counter == 19 and not self.push.pull_fired:
+                self.push.pull_fired = True
                 self._stone_action('pull', direction)
         else:
-            self._pull_started = None
-            self._pull_fired = False
-            self._pull_counter = 1
-        if self.grab_state != state:
-            self.grab_state = state
+            self.push.pull_started = None
+            self.push.pull_fired = False
+            self.push.pull_counter = 1
+        if self.push.grab != state:
+            self.push.grab = state
             self.player_anim.set_animation(state, direction, force=True)
             self.current_anim_name = state
             self.client.set_animation(state)
@@ -687,11 +680,7 @@ class ActionsMixin(ClockedMixin):
     def _clear_grab_state(self):
         if self.client.player.action_mode == 5:
             self.client.player.action_mode = 0
-        self.grab_state = None
-        self._grab_direction = None
-        self._pull_started = None
-        self._pull_fired = False
-        self._pull_counter = 1
+        self.push.clear_grab()
 
     def _swing_sword(self):
         """Swing sword attack."""

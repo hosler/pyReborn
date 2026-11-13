@@ -5,7 +5,6 @@ from __future__ import annotations
 import pygame
 
 from ..gani import AnimationState
-from ..lru import LruCache
 from .host import GameHost
 
 
@@ -30,9 +29,7 @@ class GaniRenderMixin(GameHost):
           as a plain get_sprite lookup and avoids ever holding a stale
           reference to an old colors list).
         """
-        cache = getattr(self, '_gani_layer_cache', None)
-        if cache is None:
-            cache = self._gani_layer_cache = LruCache(2000)
+        cache = self.render_cache.gani_layer
 
         # A hashable snapshot of the equipment dict - small (a handful of
         # keys), so building this every call is cheap; it's re-walking
@@ -230,9 +227,7 @@ class GaniRenderMixin(GameHost):
         surface's address for a new same-size sprite."""
         if alpha >= 255:
             return sprite
-        cache = getattr(self, '_entity_alpha_cache', None)
-        if cache is None:
-            cache = self._entity_alpha_cache = LruCache(600)
+        cache = self.render_cache.entity_alpha
         key = (id(sprite), alpha)
         entry = cache.get(key)
         if entry is not None and entry[0] is sprite:

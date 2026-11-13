@@ -97,7 +97,6 @@ from .render_layers import LayerRenderMixin
 from .render_text import RenderTextMixin
 import logging
 from ..logutil import log_swallowed
-from ..lru import LruCache
 logger = logging.getLogger(__name__)
 
 
@@ -117,10 +116,10 @@ class EntityRenderMixin(
         btype = baddy.get('type', 0)
         image = baddy.get('image') or _BADDY_IMAGES.get(btype, _BADDY_DEFAULT_IMAGE)
 
-        sheet = self.baddy_sheets.get(image)
+        sheet = self.render_cache.baddy_sheets.get(image)
         if sheet is None:
             sheet = BaddySheet(self.sprite_mgr, image)
-            self.baddy_sheets[image] = sheet
+            self.render_cache.baddy_sheets[image] = sheet
 
         if mode in _BADDY_DEAD_MODES:
             row = _BADDY_ROW_DEAD
@@ -389,9 +388,7 @@ class EntityRenderMixin(
         frame per remote player (the original inline code here) is wasted
         work at any real player count; re-parse only when the raw string
         actually changes."""
-        cache = getattr(self, '_other_anim_split_cache', None)
-        if cache is None:
-            cache = self._other_anim_split_cache = LruCache(300)
+        cache = self.render_cache.other_anim_split
         result = cache.get(player_anim)
         if result is None:
             if ',' in player_anim:
@@ -565,9 +562,7 @@ class EntityRenderMixin(
         """
         try:
             name = getattr(gani, 'name', None)
-            prefetched = getattr(self, '_prefetched_gani_names', None)
-            if prefetched is None:
-                prefetched = self._prefetched_gani_names = set()
+            prefetched = self.render_cache.prefetched_gani_names
             guardable_name = isinstance(name, str)
             if guardable_name and name in prefetched:
                 return
@@ -672,9 +667,7 @@ class EntityRenderMixin(
         (name, params), memoized on the raw string - same rationale as
         _split_other_player_anim, mirrored here since a level can carry
         dozens of NPCs re-splitting the same static string every frame."""
-        cache = getattr(self, '_npc_gani_split_cache', None)
-        if cache is None:
-            cache = self._npc_gani_split_cache = LruCache(300)
+        cache = self.render_cache.npc_gani_split
         result = cache.get(gani_name)
         if result is None:
             parts = [p.strip() for p in gani_name.split(',')]
@@ -825,9 +818,7 @@ class EntityRenderMixin(
                 # rectangle of ambience instead.
                 zoom = npc.get('zoom_effect', effects.get('zoom'))
                 if zoom and zoom > 0 and zoom != 1.0:
-                    zcache = getattr(self, '_npc_zoom_cache', None)
-                    if zcache is None:
-                        zcache = self._npc_zoom_cache = LruCache(100)
+                    zcache = self.render_cache.npc_zoom
                     zkey = (image_name, part, zoom)
                     zoomed = zcache.get(zkey)
                     if zoomed is None:

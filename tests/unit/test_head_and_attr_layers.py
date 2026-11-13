@@ -32,6 +32,7 @@ from pathlib import Path
 import pygame
 
 from pyreborn.gani import GaniParser, AnimationState
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_entities import EntityRenderMixin
 from pyreborn.packets import parse_other_player, parse_player_props
 from pyreborn.player import Player
@@ -93,6 +94,7 @@ def _attr_images(equipment):
     frame = anim.get_frame()
 
     mixin = EntityRenderMixin.__new__(EntityRenderMixin)
+    mixin.render_cache = RenderCache()
     resolved = EntityRenderMixin._resolve_gani_layers(mixin, anim, frame,
                                                       dict(equipment))
     return [entry[1] for entry in resolved

@@ -47,3 +47,24 @@ jobs:
       # PYGSERVER_DIR (conftest falls back to the sibling ../pygserver, which
       # doesn't exist in the Actions workspace layout)
       - run: PYGSERVER_DIR="$GITHUB_WORKSPACE/deps/pygserver" pytest
+
+  # Report-only: the error count shows in the job summary and never fails the
+  # workflow (continue-on-error). One Python version; pygserver is not needed.
+  typecheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hosler/reborn-protocol
+          path: deps/reborn-protocol
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ./deps/reborn-protocol -e ".[dev]"
+      # configuration comes from [tool.mypy] in pyproject.toml
+      - run: |
+          mypy | tee mypy.txt || true
+          echo "### mypy: $(tail -1 mypy.txt)" >> "$GITHUB_STEP_SUMMARY"

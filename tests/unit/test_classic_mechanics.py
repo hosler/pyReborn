@@ -124,7 +124,7 @@ def test_shield_multiplier_in_movement_input(make_game, monkeypatch, shield, swi
     game.client.player.shield_power = shield
     moves = spy(monkeypatch, game, '_move')
     game.key_just_pressed = {}
-    game.grab_state = None
+    game.push.grab = None
     game.current_anim_name = "idle"
     game.is_swimming = swimming
     game.walk_speed = c.WALK_SPEED

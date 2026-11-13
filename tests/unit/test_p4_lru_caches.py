@@ -44,7 +44,7 @@ def test_the_text_cache_keeps_a_hot_entry_past_its_cap(make_game):
     for i in range(1200):
         game._render_text_cached(font, f"filler {i}", (0, 0, 0))
         assert game._render_text_cached(font, "hot", (0, 0, 0)) is hot
-    assert len(game._text_surf_cache) <= 500
+    assert len(game.render_cache.text_surf) <= 500
 
 
 def test_one_class_serves_the_client_caches_and_the_render_caches():

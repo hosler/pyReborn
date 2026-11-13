@@ -34,9 +34,12 @@ from .game.constants import (
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
+from .game.push_grab import PushGrab
 from .game.assets import FontManager
 from .game.hud import HUD
 from .game.combat_presentation import CombatPresentation
+from .game.render_cache import RenderCache
+from .game.callbacks.client_callbacks import Gs2SourceRouter
 from .game.setup import SetupMixin
 from .game.minimap import MinimapMixin
 from .game.collision import CollisionMixin
@@ -44,7 +47,7 @@ from .game.input import InputMixin
 from .game.actions import ActionsMixin
 from .game.render import RenderMixin
 from .game.render_world import WorldRenderMixin
-from .game.render_entities import EntityRenderMixin, BaddySheet
+from .game.render_entities import EntityRenderMixin
 from .game.render_effects import EffectsRenderMixin
 from .game.render_objects import LevelObjectsRenderMixin
 from .logutil import log_swallowed
@@ -233,9 +236,9 @@ class GameClient(
         # Animation states for NPCs
         self.npc_anims: Dict[int, AnimationState] = {}
         self.baddy_anims: Dict[int, AnimationState] = {}
-        # Classic baddy sprite sheets (baddygray.png, baddyoctopus.png, ...),
-        # cached per image name - see game/render_entities.py's BaddySheet.
-        self.baddy_sheets: Dict[str, BaddySheet] = {}
+        # Derived render state (text/gani/baddy-sheet caches, ...), see
+        # game/render_cache.py. Baddy sprite sheets live in it as `baddy_sheets`.
+        self.render_cache = RenderCache()
         # Assets (NPC/player images) already requested from the server.
         self._requested_assets: set = set()
         # Visual positions for NPCs (for smooth interpolation)
@@ -327,11 +330,7 @@ class GameClient(
         self.is_swimming = False  # Track if player is in water
 
         # Built-in push/grab/pull prediction; actions dispatch NPC triggers.
-        self._push_hold_dir = None    # (dx, dy) of the currently-blocked held direction
-        self._push_hold_start = None  # clock.sim_now() the block started, None when not holding
-        self.is_pushing = False       # True when the push countdown reaches 18
-        self.grab_state = None        # None | "grab" | "pull"
-        self._grab_direction = None   # facing direction pinned for the current grab
+        self.push = PushGrab()
         # Link-warp guards. `_was_on_link`: True while standing on a warp link, so
         # links only fire on the rising edge (stepping ON) — no bounce across
         # overlapping links. `_link_arrival`: the spot a warp last dropped us;
@@ -361,6 +360,7 @@ class GameClient(
         # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
         self.damage_numbers: List[dict] = []
         self.combat_presentation = CombatPresentation()
+        self.gs2_sources = Gs2SourceRouter()
 
         # Unified local/remote bomb registry.
         self.active_bombs: List[dict] = []

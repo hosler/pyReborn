@@ -1,6 +1,7 @@
 """Render-only timing state for hurt, death, and respawn presentation."""
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -19,6 +20,8 @@ class CombatPresentation:
     death_started: float | None = None
     respawn_started: float | None = None
     warp_started: bool = False
+    presented_hurt_stamp: Any = None
+    presented_hurt_generation: int = 0
 
     def hurt(self, now: float, dead: bool = False) -> None:
         self.hurt_started = now

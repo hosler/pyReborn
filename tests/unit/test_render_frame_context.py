@@ -29,6 +29,7 @@ import pytest
 
 from pyreborn import Client
 from pyreborn.game.frame_context import FrameContext
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_entities import EntityRenderMixin
 from pyreborn.pygame_game import GameClient
 
@@ -268,6 +269,9 @@ class TestEntityPass:
 
 class _BareHarness(EntityRenderMixin):
     """Just enough for _place_nameplate / the frame lifecycle."""
+
+    def __init__(self):
+        self.render_cache = RenderCache()
 
 
 class TestNameplateStaggering:
