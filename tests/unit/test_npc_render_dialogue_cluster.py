@@ -71,6 +71,8 @@ def _gs1_game():
     game.player_anim = _AnimRecorder()
     game.current_anim_name = "idle"
     game.npc_chat_texts = {}
+    game.sprite_mgr = None
+    game.npc_handler = None
     game._setup_gs1_callbacks()
     return client, gs1, game
 
@@ -250,6 +252,8 @@ def test_setup_on_say_clears_the_bubble_on_empty_text():
     game.gs1 = ClientGS1(game.client)
     game.player_anim = _AnimRecorder()
     game.npc_chat_texts = {}
+    game.sprite_mgr = None
+    game.npc_handler = None
     game._setup_gs1_callbacks()
 
     game.gs1.on_say(4, "hi there")

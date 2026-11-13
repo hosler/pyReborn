@@ -59,7 +59,7 @@ class ActionsMixin(ClockedMixin):
     def _try_start_ledge_jump(self, direction):
         from ..jumping import JumpState
         player = self.client.player
-        if (getattr(self, '_ledge_jump', None) is not None or player.hearts <= 0
+        if (self._ledge_jump is not None or player.hearts <= 0
                 or self.client.frozen or player.hurt.input_locked(self.clock.sim_now())
                 or getattr(self.client, 'ghost_mode', 0) or player.is_sitting
                 or not self._can_ledge_jump(direction)):
@@ -77,7 +77,7 @@ class ActionsMixin(ClockedMixin):
         return True
 
     def _advance_ledge_jump(self, dt):
-        jump = getattr(self, '_ledge_jump', None)
+        jump = self._ledge_jump
         if jump is None:
             return
         player = self.client.player
@@ -185,7 +185,7 @@ class ActionsMixin(ClockedMixin):
                 stats['hearts'])
 
         self._giveaway_item = ground_items.next_give_item(
-            available, getattr(self, '_giveaway_item', None))
+            available, self._giveaway_item)
         if self._giveaway_item < 0:
             self._giveaway_item = None
             if self.client.player.action_mode == 9:
@@ -200,7 +200,7 @@ class ActionsMixin(ClockedMixin):
         """Bare A press: loseItem + putExtra + PLI_ITEMADD (TPlayer.cpp:2232-2247)."""
         if getattr(self.client, 'ghost_mode', 0):
             return False
-        index = getattr(self, '_giveaway_item', None)
+        index = self._giveaway_item
         if index is None or index not in ground_items.GIVEAWAY_COST:
             return False
         stats = self._giveaway_stats()
@@ -280,12 +280,12 @@ class ActionsMixin(ClockedMixin):
         walk gani already PLAYSOUNDs steps2.wav, so that one is left to it."""
         if tick is None:
             tick = self.clock.tick
-        last = getattr(self, '_footstep_tick', None)
+        last = self._footstep_tick
         if tick == last:
             return  # two MOVE_STEPs fit in one tick; sound once per tick
         self._footstep_tick = tick
         # serverMoved flips the swamp sprite parity every step (TServerPlayer.cpp:1468).
-        self._step_parity = 1 - getattr(self, '_step_parity', 0)
+        self._step_parity = 1 - self._step_parity
         if getattr(self.client, 'ghost_mode', 0):
             return
         on_water = self._effective_tile_type(
@@ -304,7 +304,7 @@ class ActionsMixin(ClockedMixin):
         """Apply one cardinal sub-step, retaining its facing even if blocked."""
         player = self.client.player
 
-        if getattr(self, '_ledge_jump', None) is not None:
+        if self._ledge_jump is not None:
             return
         if getattr(player, 'hurt', None) is not None and player.hurt.input_locked(self.clock.sim_now()):
             return
@@ -416,7 +416,7 @@ class ActionsMixin(ClockedMixin):
         # animate instead of resetting to frame 0 every step. (Sword/lift
         # can't be active here — those root the player in _handle_input.)
         if self.is_swimming:
-            move_anim = LAVA_ANI if getattr(self, '_swim_in_lava', False) else "swim"
+            move_anim = LAVA_ANI if self._swim_in_lava else "swim"
         elif self._is_hidden():
             move_anim = HIDDEN_MOVE_ANI
         elif self.client.player.is_carrying():
@@ -429,7 +429,7 @@ class ActionsMixin(ClockedMixin):
         # here would also clobber player_anim.requested_name, killing the
         # on_file re-assert of a still-downloading scripted gani.
         if (self.current_anim_name != move_anim
-                and self.clock.passed(getattr(self, '_frozen_until', 0.0))):
+                and self.clock.passed(self._frozen_until)):
             self.player_anim.set_animation(move_anim, direction)
             self.current_anim_name = move_anim
 
@@ -453,7 +453,7 @@ class ActionsMixin(ClockedMixin):
         player leaves a shape — so a later re-push re-fires (the counter
         NPC's handlePlayer TOGGLES queue membership; re-fire must require
         walking away first, which the touched-set gives us for free)."""
-        handler = getattr(self, 'npc_handler', None)
+        handler = self.npc_handler
         if handler is None:
             return
         dx = dy = 0
@@ -497,7 +497,7 @@ class ActionsMixin(ClockedMixin):
         (Sibling gap: NPC touch under scripted movement is handled by
         _scripted_movement_touch above — that one is key-gesture-driven,
         while links are pure position overlap.)"""
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         if gs1 is None or gs1.default_movement:
             return False
         # Mid level-transition the position/link tables are in flux; let the
@@ -551,7 +551,7 @@ class ActionsMixin(ClockedMixin):
 
     def _stone_npcs_at(self, x, y):
         """NPC footprints at a point, including nonblocking NPCs."""
-        runtime = getattr(self, 'gs1', None)
+        runtime = self.gs1
         shapes = getattr(runtime, 'shapes', {})
         for npc_id, npc in self.client.npcs.items():
             if not npc.get('visible', True):
@@ -587,7 +587,7 @@ class ActionsMixin(ClockedMixin):
             return
         # TPlayer.cpp:5858: pull supplies the opposite direction.
         param = (direction + 2) & 3 if action == 'pull' else direction
-        runtime = getattr(self, 'gs1', None)
+        runtime = self.gs1
         if runtime is not None:
             wx, wy = self.client.x + 1.5 + reach * dx, self.client.y + 2 + reach * dy
             for npc_id in list(self._stone_npcs_at(wx, wy)):
@@ -630,7 +630,7 @@ class ActionsMixin(ClockedMixin):
             self._stone_action('push', direction)
             # TPlayer.cpp:7535-7542: default movement owns this sound. As with
             # footsteps, leave an animation's own PLAYSOUND to that animation.
-            if (getattr(getattr(self, 'gs1', None), 'default_movement', True)
+            if (getattr(self.gs1, 'default_movement', True)
                     and not self._gani_plays_sound('stonemove.wav')):
                 self.sound_mgr.play('stonemove.wav')
 
@@ -789,7 +789,7 @@ class ActionsMixin(ClockedMixin):
             self._sign_contact_key = None
             return False
         key, text = contact
-        if key != getattr(self, '_sign_contact_key', None):
+        if key != self._sign_contact_key:
             self._sign_contact_key = key
             self._show_dialogue(text, classic_font=True)
         return True
@@ -820,7 +820,7 @@ class ActionsMixin(ClockedMixin):
         box_width = min(self.screen_w - 40, 400) - 20
         measure = lambda value: font.size(value)[0]
         if classic_font:
-            sprite_mgr = getattr(self, 'sprite_mgr', None)
+            sprite_mgr = self.sprite_mgr
             for image in text.images.values():
                 if image.load(sprite_mgr) is None and hasattr(self, '_request_asset'):
                     self._request_asset(image.name)
@@ -902,7 +902,7 @@ class ActionsMixin(ClockedMixin):
             return False
         player = self.client.player
         if (player.is_carrying() or player.action_mode in (4, 5, 10)
-                or getattr(self, 'is_swimming', False)):
+                or self.is_swimming):
             return False
 
         match = match_lift_object(self._get_tile_at,
@@ -940,7 +940,7 @@ class ActionsMixin(ClockedMixin):
         from ..carrying import bomb_sprite, publish_carry
         from ..throwing import carry_code
         tx, ty = self._lift_probe_tile(direction)
-        bombs = getattr(self, 'active_bombs', [])
+        bombs = self.active_bombs
         if not bombs and not getattr(self.client, 'bombs', {}):
             return False
         level_name, _ = self._level_tiles_at(tx, ty)
@@ -1132,7 +1132,7 @@ class ActionsMixin(ClockedMixin):
             # weapons play. Fall through to the built-in actions only if the
             # weapon has no script loaded.
             prog_key = f"weapon_{weapon}"
-            gs1 = getattr(self, 'gs1', None)
+            gs1 = self.gs1
             if gs1 is not None and gs1.has_program(prog_key):
                 for ev in ('playerfires', 'weaponfired'):
                     try:
@@ -1268,7 +1268,7 @@ class ActionsMixin(ClockedMixin):
         """Lava damage and the sleeping heal, both on the 20 Hz tick
         (TPlayer.cpp:5887-5912 testForLava, :7350-7362 sleep heal)."""
         player = self.client.player
-        if getattr(self, '_ground_ticks', None) is None:
+        if self._ground_ticks is None:
             self._ground_ticks = (TickCounter(), TickCounter())
         lava_ticks, sleep_ticks = self._ground_ticks
         alive = player.hearts > 0
@@ -1287,8 +1287,8 @@ class ActionsMixin(ClockedMixin):
     def _update_sleeping_state(self):
         """testSittingSleeping's bed half. The oracle runs it when a direction
         key is released (:3429) and on level entry (:1041), not every frame."""
-        was_moving = getattr(self, '_sleep_was_moving', False)
-        entered = getattr(self, '_sleep_level', None) != self.client.current_level_name
+        was_moving = self._sleep_was_moving
+        entered = self._sleep_level != self.client.current_level_name
         self._sleep_was_moving = self.is_moving
         self._sleep_level = self.client.current_level_name
         if not self.is_moving and (was_moving or entered):
@@ -1316,13 +1316,13 @@ class ActionsMixin(ClockedMixin):
         """Update swimming state based on current position."""
         player = self.client.player
         # TPlayer.cpp:5990: jumping (2) and the rooted action (6) skip water.
-        if (getattr(self, '_ledge_jump', None) is not None
+        if (self._ledge_jump is not None
                 or player.action_mode in (2, 6)):
             return
         # TPlayer.cpp:5994-5997: frozen, scripted movement and ghosts skip it.
         if (getattr(self.client, 'frozen', False)
-                or not self.clock.passed(getattr(self, '_frozen_until', 0.0))
-                or not getattr(getattr(self, 'gs1', None), 'default_movement', True)
+                or not self.clock.passed(self._frozen_until)
+                or not getattr(self.gs1, 'default_movement', True)
                 or getattr(self.client, 'ghost_mode', 0)):
             return
         was_swimming = self.is_swimming

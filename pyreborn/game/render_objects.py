@@ -125,9 +125,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
         """Start a reveal when a known chest changes from closed to open."""
         level_name = self.client.current_level_name
         chests = self.client.chests_in_level(level_name)
-        snapshots = getattr(self, "_chest_reveal_snapshots", None)
-        if snapshots is None:
-            snapshots = self._chest_reveal_snapshots = {}
+        snapshots = self._chest_reveal_snapshots
         previous = snapshots.get(level_name)
         current = dict(chests)
         snapshots[level_name] = current
@@ -138,9 +136,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
             return
 
         level_items = getattr(self.client, "chest_items", {}).get(level_name, {})
-        reveals = getattr(self, "_chest_reveals", None)
-        if reveals is None:
-            reveals = self._chest_reveals = []
+        reveals = self._chest_reveals
         for position, opened in current.items():
             if not opened or previous.get(position, False):
                 continue
@@ -169,7 +165,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
         if now_ms is None:
             now_ms = self.clock.frame_now_ms()
         self._sync_chest_reveals(now_ms)
-        reveals = getattr(self, "_chest_reveals", [])
+        reveals = self._chest_reveals
         if not reveals:
             return
 
@@ -244,7 +240,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
         # The A-read dialogue box supersedes the proximity popup: drawing
         # both at once double-displayed the same sign text (live: bomber v6
         # piano sign showed the parchment popup AND the dialogue pager).
-        if getattr(self, 'dialogue_text', None) is not None:
+        if self.dialogue_text is not None:
             return
         signs = self.client.signs.get(self.client.current_level_name)
         if not signs:
@@ -299,7 +295,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
         # with the bundled face and only add wrapping when a decoded line would
         # exceed the available screen width.
         max_text_width = max(1, self.screen_w - 60)
-        sprite_mgr = getattr(self, 'sprite_mgr', None)
+        sprite_mgr = self.sprite_mgr
         measure = lambda line: text.measure(
             line, lambda segment: font.size(segment)[0], sprite_mgr)
         lines = wrap_dialogue(text, measure, max_text_width)

@@ -58,13 +58,13 @@ class LevelEditor:
     @property
     def rc(self):
         """The RC link, if the RC panel has one and it is live."""
-        rc_ui = getattr(self.game, 'rc_ui', None)
+        rc_ui = self.game.rc_ui
         link = getattr(rc_ui, 'link', None)
         return link if link is not None and link.available else None
 
     @property
     def nc(self):
-        dev_ui = getattr(self.game, 'dev_ui', None)
+        dev_ui = self.game.dev_ui
         link = getattr(dev_ui, 'nc_link', None)
         return link if link is not None and link.available else None
 

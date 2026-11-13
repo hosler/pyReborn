@@ -42,7 +42,7 @@ def test_classic_font_falls_back_when_asset_is_missing(monkeypatch, tmp_path):
 def test_sign_popup_render_smoke_with_classic_font():
     game = SimpleNamespace(
         screen=pygame.Surface((640, 480)), screen_w=640, screen_h=480,
-        fonts=FontManager(),
+        fonts=FontManager(), sprite_mgr=None,
     )
     game.hud = HUD.__new__(HUD)
     game.hud.game = game
@@ -116,7 +116,7 @@ def test_classic_dialogue_inline_image_render_smoke():
 def test_nonclassic_dialogue_keeps_image_syntax_as_text():
     font = _DialogueFont()
     game = SimpleNamespace(screen_w=640, screen_h=480, font_small=font,
-                           dialogue_pager=DialoguePager())
+                           dialogue_pager=DialoguePager(), sprite_mgr=None)
     ActionsMixin._show_dialogue(game, "plain #i(icon.png)")
     hud = HUD.__new__(HUD)
     hud.game = game

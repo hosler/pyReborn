@@ -56,7 +56,7 @@ def stats_mask(game) -> int:
     """The active showstats bitmask (ALLSTATS when no script ever called
     showstats). Reads ClientGS1.stats_mask — the single store both GS1 and
     GS2 scripts write through."""
-    mask = getattr(getattr(game, "gs1", None), "stats_mask", None)
+    mask = getattr(game.gs1, "stats_mask", None)
     return ALLSTATS if mask is None else int(mask)
 
 
@@ -347,7 +347,7 @@ class HUD:
             self.badge_sit.text = "Sitting (press A to stand)"
 
         self.badge_noclip.text = "NOCLIP (N)"
-        self.badge_noclip.visible = getattr(g, "noclip", False)
+        self.badge_noclip.visible = g.noclip
 
         self.ghost.visible = bool(g.ghost_mode)
 
@@ -377,7 +377,7 @@ class HUD:
         a full stop (`input_frozen`) hides the HUD widgets and minimap, and
         the HUD entries hide their own parts (see ChatInput, Dialogue, Help)."""
         surf = self.game.screen
-        presentation = getattr(self.game, 'combat_presentation', None)
+        presentation = self.game.combat_presentation
         dead = presentation is not None and presentation.death_started is not None
         if not dead and not getattr(self.game.client, 'input_frozen', False):
             self.ui.draw(surf)
@@ -405,13 +405,13 @@ class HUD:
         alpha = 255
 
         box_w = min(g.screen_w - 40, 400)
-        font = g.fonts.classic() if getattr(g, 'dialogue_classic_font', False) \
+        font = g.fonts.classic() if g.dialogue_classic_font \
             else g.font_small
         lines = g.dialogue_pager.visible_lines
-        sign_text = g.dialogue_text if getattr(g, 'dialogue_classic_font', False) \
+        sign_text = g.dialogue_text if g.dialogue_classic_font \
             and isinstance(g.dialogue_text, SignText) else None
         rows = [layout_dialogue_line(line, font, theme.TEXT, sign_text,
-                                     getattr(g, 'sprite_mgr', None))
+                                     g.sprite_mgr)
                 for line in lines]
         box_h = max(60, sum(height for _, _, height in rows) + 20)
         box_x = (g.screen_w - box_w) // 2

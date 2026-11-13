@@ -68,7 +68,7 @@ class CollisionMixin(GameHost):
         room with `setshape2 64,64,obj`, so a placed chair is a type-3 cell in
         that array and NOTHING on the board says chair. Reading the board
         alone is why walking onto your own furniture did nothing."""
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         npc_type = gs1.npc_tile_type(x, y) if gs1 is not None else 0
         level, *_ = _board_locate(self.client, x, y)
         selection = selection_for(self.client)
@@ -310,7 +310,7 @@ class CollisionMixin(GameHost):
         a door while a GMAP is still loaded.
         """
         # Noclip escape hatch: nothing blocks (used to walk out of a bad spawn).
-        if getattr(self, "noclip", False):
+        if self.noclip:
             return False
 
         if self.client.in_gmap_segment:
@@ -336,7 +336,7 @@ class CollisionMixin(GameHost):
         # cells with their published geometry. The full oracle-derived rule
         # (visibility, dontblock/blockagain, setimgpart, pixel-transparency
         # refinement) lives in gs1_client.ClientGS1.npc_blocks_at.
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         if gs1 is not None:
             try:
                 if gs1.npc_blocks_at(x, y):
@@ -401,7 +401,7 @@ class CollisionMixin(GameHost):
     def _bomb_blocks(self, x: float, y: float) -> bool:
         # TServerLevel.cpp:2666 tests active lying bombs in
         # [bx+.25,bx+3) by [by,by+2), without an owner/contact gate.
-        active = [bomb for bomb in getattr(self, 'active_bombs', ())
+        active = [bomb for bomb in self.active_bombs
                   if bomb.get('carried_by') is None and not bomb.get('in_flight')]
         for bomb in active:
             bx, by = bomb['x'], bomb['y']

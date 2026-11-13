@@ -228,6 +228,8 @@ def test_local_draw_uses_same_parent_position_and_inherited_z(client):
     game.client = client
     game.camera = SimpleNamespace(world_to_screen=lambda x, y: (x * 16, y * 16))
     game.npc_visual = {}
+    game._npc_visual_epoch = None
+    game.interpolator = None
     game.visual_y = 5
     out = []
     game._collect_local_player(out, FrameContext())

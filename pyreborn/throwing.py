@@ -179,7 +179,7 @@ def advance_throw(game, obj, dt, remote=False):
             kind = obj.get('type', 'bush')
             npc['pelt_kind'] = {'pot': 'vase', 'rock': 'stone'}.get(kind, kind)
             npc['protected_object'] = 0xf  # TServerCarry.cpp:174.
-            gs1, gs2 = getattr(game, 'gs1', None), getattr(game, 'gs2', None)
+            gs1, gs2 = game.gs1, game.gs2
             if gs1 is not None:
                 gs1.trigger_npc_event(npc_id, 'waspelt')
             if gs2 is not None:

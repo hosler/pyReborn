@@ -76,9 +76,8 @@ class SettingsOverlay:
         g._low_hearts_warning_enabled = p.low_hearts_warning
         g.minimap_visible = p.minimap_visible
         g.camera.zoom = p.zoom
-        # Mirrors render_effects.py's own lazy `_day_night_enabled` cache
-        # (see _render_screen_tint) -- setting it here means that lazy
-        # Prefs.load() never has to fire since it's already populated.
+        # The day/night tint switch render_effects.py reads; this is where
+        # the game's value comes from (GameClient.__init__ calls this).
         g._day_night_enabled = p.day_night
 
     def toggle(self) -> None:
@@ -118,20 +117,20 @@ class SettingsOverlay:
             self._save(music_enabled=v)
 
         def low_hearts_text():
-            return "On" if getattr(g, '_low_hearts_warning_enabled', True) else "Off"
+            return "On" if g._low_hearts_warning_enabled else "Off"
 
         def low_hearts_toggle():
-            v = not getattr(g, '_low_hearts_warning_enabled', True)
+            v = not g._low_hearts_warning_enabled
             g._low_hearts_warning_enabled = v
             if not v:
                 g._low_hearts_next_beep = 0.0
             self._save(low_hearts_warning=v)
 
         def day_night_text():
-            return "On" if getattr(g, '_day_night_enabled', True) else "Off"
+            return "On" if g._day_night_enabled else "Off"
 
         def day_night_toggle():
-            v = not getattr(g, '_day_night_enabled', True)
+            v = not g._day_night_enabled
             g._day_night_enabled = v
             self._save(day_night=v)
 

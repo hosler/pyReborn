@@ -127,6 +127,8 @@ def test_say2_uses_sign_dialogue_path_and_formats_escapes():
     game.gs1 = ClientGS1(client=None)
     game.player_anim = SimpleNamespace()
     game.client = SimpleNamespace()
+    game.sprite_mgr = None
+    game.npc_handler = None
     game._show_dialogue = lambda text, classic_font=False: shown.append(
         format_sign_text(text) if classic_font else text)
     game._setup_gs1_callbacks()

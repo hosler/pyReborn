@@ -81,7 +81,7 @@ class FrameContextMixin(GameHost):
         """Open a frame. Its context replaces the previous frame's, so nothing
         a pass queued and failed to flush can leak into the next one."""
         ctx = self._frame_ctx = FrameContext(
-            dt=getattr(self, '_frame_dt', 0.0), in_frame=True)
+            dt=self._frame_dt, in_frame=True)
         return ctx
 
     def _frame_context(self) -> FrameContext:
@@ -90,8 +90,8 @@ class FrameContextMixin(GameHost):
         context is remembered rather than rebuilt per call, so nameplate
         staggering still accumulates across such calls the way the old
         lazily-created ``_frame_nameplate_rects`` list did."""
-        ctx = getattr(self, '_frame_ctx', None)
+        ctx = self._frame_ctx
         if ctx is None:
             ctx = self._frame_ctx = FrameContext(
-                dt=getattr(self, '_frame_dt', 0.0))
+                dt=self._frame_dt)
         return ctx

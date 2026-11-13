@@ -113,7 +113,7 @@ def wire_gs1_callbacks(game):
                 'name': name, 'image': image or '', 'script': script,
             }
             if (script and not route_gs2_source(game, 'weapon', name, script)
-                    and getattr(game, 'gs1', None) is not None):
+                    and game.gs1 is not None):
                 is_new = game.gs1.load_weapon(name, script)
                 try:
                     if is_new:
@@ -185,8 +185,6 @@ def wire_gs1_callbacks(game):
         # the GS1 engine mid-shoot.
         me = str(getattr(game.client.player, 'id', '') or
                  getattr(game.client.player, 'account', ''))
-        if not hasattr(game, '_pending_self_shoots'):
-            game._pending_self_shoots = []
         game._pending_self_shoots.append([me, gani] + list(shoot_params))
         try:
             game.client.shoot(gani=gani, params=','.join(shoot_params))
@@ -413,7 +411,7 @@ def wire_gs1_callbacks(game):
     # our live logical anim name; and our anim state + outgoing gani prop
     # substitute any `replaceani` mapping (walk -> eye_bomber_walk0 etc.)
     # like the real client does.
-    game.gs1.player_ani_source = lambda: getattr(game, "current_anim_name", "")
+    game.gs1.player_ani_source = lambda: game.current_anim_name
     game.player_anim.name_resolver = game.gs1.resolve_ani
     game.client.ani_resolver = game.gs1.resolve_ani
 
@@ -429,7 +427,7 @@ def wire_gs1_callbacks(game):
     # loaded — see gs1_client.ClientGS1.npc_blocks_at for the
     # oracle-derived rule. Without the opaque probe a mostly-transparent
     # decoration (glows, lamp halos) would wall off its whole rect.
-    sprite_mgr = getattr(game, "sprite_mgr", None)
+    sprite_mgr = game.sprite_mgr
     if sprite_mgr is not None:
         def _npc_image_size(name, _sm=sprite_mgr):
             sheet = _sm.load_sheet(name)
@@ -461,13 +459,13 @@ def wire_gs1_callbacks(game):
     # Route NPC touch events through the shared GS1 engine, which runs the
     # script (including its `play`/`triggeraction`/etc. side effects via the
     # gs1.on_* callbacks above). The handler only does collision detection.
-    if getattr(game, "npc_handler", None) is not None:
+    if game.npc_handler is not None:
         def _route_touch(npc_id, npc_data):
             game.gs1.trigger_npc_event(npc_id, "playertouchsme")
             # GS2 NPCs (v6 servers stream bytecode) take the same touch.
             # gs2 is created after this callback is wired (GameClient
-            # __init__ order), hence the getattr.
-            gs2 = getattr(game, "gs2", None)
+            # __init__ order), so it is read here, at touch time.
+            gs2 = game.gs2
             if gs2 is not None:
                 gs2.trigger_npc_event(npc_id, "onPlayerTouchsMe")
         game.npc_handler.on_playertouchsme = _route_touch

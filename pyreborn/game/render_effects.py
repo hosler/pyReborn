@@ -16,7 +16,6 @@ from ..explosions import (
     EXPLOSION_TICKS, bomb_crosses, cross_cells, explosion_sound,
     explosion_sprite, order_point_y,
 )
-from ..prefs import Prefs
 from ..throwing import LEAP_FRAMES, TICK, advance_throw, landing_type
 from ..tiletypes import TileType
 from .constants import TILE_SIZE, EXPLOSION_DURATION
@@ -466,7 +465,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         bomb['explosion_tick'] = self.clock.tick
         own_carry = (getattr(self.client.player, 'carried_bomb', None) is bomb
                      or any(obj.get('bomb') is bomb and not obj.get('remote')
-                            for obj in getattr(self, 'thrown_objects', ())))
+                            for obj in self.thrown_objects))
         if own_carry:
             # TClient.cpp:1386-1414: report the blast through PLI_EXPLOSION.
             self.client.send_explosion(2, bomb['x'], bomb['y'], bomb.get('power', 1))
@@ -500,7 +499,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         if math.hypot(float(x) - player.x, float(y) - player.y) > 8.0:
             return False
         now = self.clock.frame_now() if now is None else now
-        started = getattr(self, '_camera_shake_started', None)
+        started = self._camera_shake_started
         if started is None or now - started >= 0.4:
             self._camera_shake_started = now
         return True
@@ -598,7 +597,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
     def _interpolated_object(self, kind: str, obj: dict, x: float, y: float):
         """Draw position of a simulated object between the last two ticks
         (presentation only, game/interpolation.py)."""
-        interpolator = getattr(self, 'interpolator', None)
+        interpolator = self.interpolator
         if interpolator is None:
             return x, y
         return interpolator.position((kind, id(obj)), (x, y), self.clock.tick,
@@ -1082,8 +1081,6 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         allocate or refill a full-screen surface every frame."""
         frame = self._frame_context() if frame is None else frame
         size = self.screen.get_size()
-        if not hasattr(self, '_day_night_enabled'):
-            self._day_night_enabled = Prefs.load().day_night
         server_time = getattr(self.client, 'server_time', 0)
         if self._day_night_enabled and server_time:
             minute_of_day = ((server_time * 5) // 60) % 1440

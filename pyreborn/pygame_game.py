@@ -91,7 +91,7 @@ class GameClient(
 
     @property
     def day_night_enabled(self) -> bool:
-        return getattr(self, '_day_night_enabled', False)
+        return self._day_night_enabled
 
     @day_night_enabled.setter
     def day_night_enabled(self, value: bool) -> None:
@@ -99,7 +99,7 @@ class GameClient(
 
     @property
     def camera_enabled(self) -> bool:
-        return getattr(self, '_camera_enabled', False)
+        return self._camera_enabled
 
     @camera_enabled.setter
     def camera_enabled(self, value: bool) -> None:
@@ -267,12 +267,14 @@ class GameClient(
 
         # GS2 bytecode VM (weapons/classes/ganis compiled by the server);
         # builtins route through the same GS1 client host surface, so both
-        # engines drive the same rendering/callback paths.
-        self.gs2 = ClientGS2(self.client, self.gs1).attach()
+        # engines drive the same rendering/callback paths. It is attached
+        # (and so runs the bytecode that arrived during login) only at the
+        # end of __init__: see there.
+        self.gs2 = ClientGS2(self.client, self.gs1)
         self.gs2.game_shell = self
         # The touch handler consults GS2 VMs for its event gate (bytecode
         # NPCs have no GS1 script text to sniff).
-        if getattr(self, "npc_handler", None) is not None:
+        if self.npc_handler is not None:
             self.npc_handler.gs2 = self.gs2
 
         # UI components
@@ -486,6 +488,18 @@ class GameClient(
         # initial transform before the preferred zoom invalidated it.
         self._ensure_settings_ui()
 
+        # LAST: attach the GS2 runtime. Every launcher builds the game after
+        # login, so the bytecode of every granted weapon is already waiting,
+        # and attach() runs each weapon's top level and onCreated now. They
+        # reach the game through the callbacks wired above, so every
+        # attribute has to exist first, and what they set must not be reset
+        # by a later line. The reference runs a delivered weapon script
+        # only against an existing active player and weapon object, and
+        # runs it at once (FourPlay quattroplay/src/TClient.cpp:2266,
+        # TServerWeapon.cpp:20-31), so what it sets persists.
+        # tests/unit/test_game_init_order.py pins this.
+        self.gs2.attach()
+
     # Live canvas dimensions. With native rendering the window is the canvas, so
     # all layout/centering reads these instead of the fixed SCREEN_WIDTH/HEIGHT.
     @property
@@ -505,12 +519,12 @@ class GameClient(
         # keep the script engines' canvas dims live (screenwidth/
         # GUIContainer reads; the GS2 GUI manager additionally propagates
         # Torque horizSizing/vertSizing deltas itself at render time)
-        if getattr(self, "gs1", None) is not None:
+        if self.gs1 is not None:
             self.gs1.screen_w = w
             self.gs1.screen_h = h
-        if getattr(self, "hud", None) is not None:
+        if self.hud is not None:
             self.hud.ui.resize(w, h)
-        if getattr(self, "inventory_ui", None) is not None:
+        if self.inventory_ui is not None:
             self.inventory_ui.screen = self.screen
 
     # ------------------------------------------------------------------
@@ -628,11 +642,11 @@ class GameClient(
 
         # Behavioral heartbeat (PYREBORN_DEBUG=1): every ~2s log what the
         # player is actually doing, to diagnose "stuff stopped working".
-        if getattr(self, '_dbg', False) and self._frame_count % 120 == 0:
+        if self._dbg and self._frame_count % 120 == 0:
             p = self.client.player
             print(f"[hb] f={self._frame_count} t={clock.tick} lvl={self.client.current_level_name} "
                   f"pos=({self.client.x:.1f},{self.client.y:.1f}) dir={p.direction} "
-                  f"moving={getattr(self,'is_moving',None)} sitting={getattr(p,'is_sitting',None)} "
+                  f"moving={self.is_moving} sitting={getattr(p,'is_sitting',None)} "
                   f"hearts={p.hearts} npcs={len(self.client.npcs)} scripts={len(self.gs1.scripts)}",
                   file=sys.stderr)
 
@@ -688,7 +702,7 @@ class GameClient(
                     # Death state and respawn (the timer's HP check comes
                     # before keyCheck, TPlayer.cpp:7223-7226).
                     self._update_death_state(now)
-                    if getattr(self, '_was_dead', False) and self.client.player.hearts > 0:
+                    if self._was_dead and self.client.player.hearts > 0:
                         # We respawned! Reset animation to idle
                         self.player_anim.set_animation("idle", self.client.player.direction)
                         self._was_dead = False
@@ -826,7 +840,7 @@ class GameClient(
             ui = getattr(self, name, None)
             if ui is not None:
                 attempt(f"{name} shutdown", ui.shutdown)
-        sound_mgr = getattr(self, 'sound_mgr', None)
+        sound_mgr = self.sound_mgr
         if sound_mgr is not None:
             attempt("stopping sounds", sound_mgr.stop_all)
             attempt("stopping music", sound_mgr.stop_music)
@@ -841,7 +855,7 @@ class GameClient(
         self.fonts.close()
         self.font = self.font_small = None
         self.render_cache.showtext_fonts.clear()
-        inventory = getattr(self, 'inventory_ui', None)
+        inventory = self.inventory_ui
         if inventory is not None:
             inventory.release_fonts()
         gc.collect()

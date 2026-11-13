@@ -168,7 +168,7 @@ class EntityCollectMixin(ClockedMixin):
         """Draw position of `key` between the last two ticks (presentation
         only; game/interpolation.py). Without an interpolator (a light test
         harness) the live position."""
-        interpolator = getattr(self, 'interpolator', None)
+        interpolator = self.interpolator
         if interpolator is None:
             return x, y
         return interpolator.position(key, (x, y), self.clock.tick,
@@ -198,7 +198,7 @@ class EntityCollectMixin(ClockedMixin):
         snap."""
         if npc_id in frame.npc_positions:
             return frame.npc_positions[npc_id]
-        epoch_seen = getattr(self, '_npc_visual_epoch', None)
+        epoch_seen = self._npc_visual_epoch
         if epoch_seen is None:
             epoch_seen = self._npc_visual_epoch = {}
         epoch = npc.get('_pos_epoch')

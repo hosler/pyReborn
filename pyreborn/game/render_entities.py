@@ -234,13 +234,13 @@ class EntityRenderMixin(
         if getattr(self.client, 'ghost_mode', 0):
             return
         pos = (self.client.x, self.client.y)
-        last = getattr(self, '_swamp_pos', None)
+        last = self._swamp_pos
         if last is None or abs(last[0] - pos[0]) >= 0.5 or abs(last[1] - pos[1]) > 0.5:
             self._swamp_slot = swamp_index(
                 self._effective_tile_type(*self._player_ground()))
             self._swamp_pos = pos
         sprite_index = swamp_sprite(
-            self._swamp_slot, getattr(self, '_step_parity', 0),
+            self._swamp_slot, self._step_parity,
             self.clock.tick)
         surf = None if sprite_index is None else draw_sprite(
             self.sprite_mgr, sprite_index)
@@ -280,7 +280,7 @@ class EntityRenderMixin(
         if getattr(self.client, 'ghost_mode', 0) == 2:
             return
         frame = self._frame_context() if frame is None else frame
-        z_offset = 0 if getattr(player, '_attachment', None) else getattr(player, 'z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        z_offset = 0 if getattr(player, '_attachment', None) else getattr(player, 'z', 0) * getattr(self.camera, 'scale', TILE_SIZE)
         y -= z_offset
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
         # A hideplayer() hide (STATUS bit 2) draws like other players' hidden
@@ -310,7 +310,7 @@ class EntityRenderMixin(
         if player.is_carrying():
             self._render_carried_object(x, y, player)
 
-        item = getattr(self, '_giveaway_item', None)
+        item = self._giveaway_item
         if item is not None and 0 <= item < len(GIVE_SPRITES):
             # The custom shield branch is omitted: item 9 is never offered.
             # Preagonal/FourPlay/quattroplay/src/TPlayer.cpp:4004-4027.
@@ -371,7 +371,7 @@ class EntityRenderMixin(
                     grid_rect = pygame.Rect(grid_x, grid_y, TILE_SIZE, TILE_SIZE)
                     pygame.draw.rect(self.screen, (255, 255, 255, 128), grid_rect, 1)
     def _render_carried_object(self, x: float, y: float, player: Player):
-        anim = getattr(self, 'player_anim', None)
+        anim = self.player_anim
         counter = self._lift_subframe(anim) if self.current_anim_name == 'lift' else None
         self._draw_carried_object(x, y, player.carry_sprite, player.direction,
                                   player.carried_tile_ids, counter, player.carried_bomb)
@@ -424,7 +424,7 @@ class EntityRenderMixin(
         # not echo that lifecycle to the setter, so mirror the clear locally.
         if self.local_chat_text:
             chat_text = self.local_chat_text
-            since = getattr(self, 'local_chat_time', None)
+            since = self.local_chat_time
             if since is not None and not self.clock.passed(since, self.chat_bubble_duration):
                 self._render_speech_bubble(anchor_x, y, chat_text)
             else:
@@ -437,7 +437,7 @@ class EntityRenderMixin(
                              frame: Optional[FrameContext] = None):
         """Render another player."""
         frame = self._frame_context() if frame is None else frame
-        z_offset = 0 if pdata.get('_attachment') else pdata.get('z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        z_offset = 0 if pdata.get('_attachment') else pdata.get('z', 0) * getattr(self.camera, 'scale', TILE_SIZE)
         y -= z_offset
         imgs = pdata.get('imgs')
         if imgs:
@@ -690,7 +690,7 @@ class EntityRenderMixin(
         if npc.get('visible') is False:
             return
 
-        z_offset = npc.get('z', 0) * getattr(getattr(self, 'camera', None), 'scale', TILE_SIZE)
+        z_offset = npc.get('z', 0) * getattr(self.camera, 'scale', TILE_SIZE)
         y -= z_offset
         frame = self._frame_context() if frame is None else frame
         nick_anchor = None  # set below when the NPC actually draws a body/sprite

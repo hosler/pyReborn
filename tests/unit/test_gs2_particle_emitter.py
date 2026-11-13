@@ -442,6 +442,8 @@ class _RenderHarness(EntityRenderMixin, EffectsRenderMixin):
             get_sprite=lambda name, *part: sheet)
         self.requested = []
         self.render_cache = RenderCache()
+        self._frame_ctx = None
+        self._frame_dt = 0.0
 
     def _request_asset(self, name):
         self.requested.append(name)

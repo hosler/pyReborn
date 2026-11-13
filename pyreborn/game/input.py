@@ -27,15 +27,7 @@ from ..clock import sim_passed
 class InputMixin(ClockedMixin):
     """Mixin providing the above methods for GameClient."""
 
-    # A pending PLO_SERVERWARP offer awaiting the player's answer (see
-    # offer_server_warp). Class-level default so a GameClient built without
-    # going through __init__ paths still reads None.
-    server_warp_prompt = None
-
     # -- short HUD notice --------------------------------------------------
-    #: (text, monotonic expiry) of the one-line notice at the top of the
-    #: screen, or None. Class-level default for the same reason as the prompt.
-    hud_notice = None
     HUD_NOTICE_SECONDS = 6.0
 
     def show_hud_notice(self, text: str) -> None:
@@ -74,7 +66,7 @@ class InputMixin(ClockedMixin):
         target['in_list'] = any(
             str(getattr(entry, 'ip', '')).lower() == host
             and getattr(entry, 'port', None) == target['port']
-            for entry in getattr(self, 'servers', ()))
+            for entry in self.servers)
         target['opened_at'] = self.clock.frame_now()
         target['typed'] = ''    # the prompt's own input field, starts empty
         self.server_warp_prompt = target
@@ -132,12 +124,12 @@ class InputMixin(ClockedMixin):
                 player.status &= ~PLSTATUS.DEAD
                 self.client.send_appearance_prop(PLPROP.STATUS, player.status)
             return
-        if getattr(self, '_death_started', None) is None:
+        if self._death_started is None:
             self._death_started = current_time
             if player.is_carrying():
                 self._throw_object()
             # An authoritative HP=0 may arrive without PLO_HURTPLAYER.
-            if getattr(self, 'current_anim_name', None) != 'dead':
+            if self.current_anim_name != 'dead':
                 self.player_anim.set_animation('dead', player.direction)
                 self.current_anim_name = 'dead'
                 self.sound_mgr.play('dead.wav')
@@ -193,7 +185,7 @@ class InputMixin(ClockedMixin):
         Like the RC panel, building it opens no connection: the NC login
         happens on the first F12 press.
         """
-        dev = getattr(self, 'dev_ui', None)
+        dev = self.dev_ui
         if dev is None:
             from .dev_ui import DevOverlay
             dev = self.dev_ui = DevOverlay(self)
@@ -205,7 +197,7 @@ class InputMixin(ClockedMixin):
         Lazy like the other overlays, and inert until edit mode is toggled on:
         constructing it opens no connection and draws nothing.
         """
-        editor = getattr(self, 'level_editor', None)
+        editor = self.level_editor
         if editor is None:
             from .editor import EditorOverlay, LevelEditor, TilePalette
             editor = self.level_editor = LevelEditor(self)
@@ -220,7 +212,7 @@ class InputMixin(ClockedMixin):
         open the RC connection. That only happens on the first F10 press, so
         players without RC rights never make a second login.
         """
-        rc = getattr(self, 'rc_ui', None)
+        rc = self.rc_ui
         if rc is None:
             from .rc_ui import RCOverlay
             rc = self.rc_ui = RCOverlay(self)
@@ -230,7 +222,7 @@ class InputMixin(ClockedMixin):
         """Offer an event to the GS2 GUI layer (topmost overlay). True =
         consumed. Mouse positions are remapped to virtual-canvas coordinates
         first, per gs2_gui.handle_event's contract."""
-        gs2 = getattr(self, 'gs2', None)
+        gs2 = self.gs2
         mgr = getattr(gs2, 'gui', None) if gs2 is not None else None
         if mgr is None:
             return False
@@ -251,9 +243,9 @@ class InputMixin(ClockedMixin):
         """Every overlay, topmost first: input priority order, the reverse
         of draw order. Built on first use; the entries read the UIs' state
         at call time, so lazily created UIs need no re-registration."""
-        stack = self.__dict__.get('_overlay_stack')
+        stack = self._overlay_stack
         if stack is None:
-            stack = self.__dict__['_overlay_stack'] = build_overlays(self)
+            stack = self._overlay_stack = build_overlays(self)
         return stack
 
     def overlay(self, name: str) -> Optional[Overlay]:
@@ -314,7 +306,7 @@ class InputMixin(ClockedMixin):
         if self._overlays_capture_keys():
             return
         context = self._input_context()
-        if getattr(self, '_latch_context', None) != context:
+        if self._latch_context != context:
             self._drop_latched_input()
             self._latch_context = context
         if key is None:
@@ -323,7 +315,7 @@ class InputMixin(ClockedMixin):
             self.key_just_pressed[key] = True
 
     def _drop_latched_input(self) -> None:
-        getattr(self, 'key_just_pressed', {}).clear()
+        self.key_just_pressed.clear()
         self._mouse_left_latched = False
         self._latch_context = None
 
@@ -618,7 +610,7 @@ class InputMixin(ClockedMixin):
         Also drops any queued `keypressed` fires — a key pressed while an
         overlay/chat box consumed it, or while frozen/dead, shouldn't reach
         weapon scripts (matches keys_dir being cleared the same frames)."""
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         if gs1 is not None:
             gs1.keys_dir = set()
             gs1.keys_raw = set()
@@ -628,7 +620,7 @@ class InputMixin(ClockedMixin):
         """Deliver queued GS1 `keypressed` events (see _handle_events)."""
         if not self._gs1_keypress_queue:
             return
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         queued, self._gs1_keypress_queue = self._gs1_keypress_queue, []
         if gs1 is not None:
             for pygame_key, ch in queued:
@@ -650,7 +642,7 @@ class InputMixin(ClockedMixin):
         mouse + screen) can drive arena gameplay. The keydown indices are the
         keymap's gs1_index column (control-function table in
         scripting-gs1-functions.md; see game/keymap.py)."""
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         if gs1 is None:
             return
         gs1.screen_w = self.screen.get_width()
@@ -667,7 +659,7 @@ class InputMixin(ClockedMixin):
         # frame, game/render.py:274 _sync_camera).
         gs1.mouse_world_source = self._gs1_mouse_world
         gs1.mouse_left = (bool(pygame.mouse.get_pressed()[0])
-                          or getattr(self, '_mouse_left_latched', False))
+                          or self._mouse_left_latched)
         gs1.keys_dir = keymap.gs1_keydown_indices(keys)
         # Translate to VK-style codes (see pygame_key_to_vk) so scripts'
         # keydown2(<Reborn VK code>) calls actually match held keys. Cache the
@@ -689,11 +681,11 @@ class InputMixin(ClockedMixin):
         """This tick's key state: what is held now, plus every key whose
         press was latched since the previous tick (released already or not)
         in the play state that still holds."""
-        made = getattr(self, '_latch_context', None)
+        made = self._latch_context
         if made is not None and made != self._input_context():
             self._drop_latched_input()
         return _TickKeys(pygame.key.get_pressed(),
-                         getattr(self, 'key_just_pressed', {}))
+                         self.key_just_pressed)
 
     def _end_input_tick(self) -> None:
         """A tick consumed the latched edges: clear them."""
@@ -702,7 +694,7 @@ class InputMixin(ClockedMixin):
     def _handle_input(self, current_time: float):
         """One tick of held-key input: actions on latched edges, walking on
         held keys. Runs once per simulation tick, never per frame."""
-        if getattr(self, '_ledge_jump', None) is not None:
+        if self._ledge_jump is not None:
             self.is_moving = False
             self._clear_gs1_input()
             return
@@ -725,7 +717,7 @@ class InputMixin(ClockedMixin):
         # `freezeplayer 99` then polls keydown(5) for "Press S to Select")
         # freeze the player precisely so the script can own the keys.
         keys = self._tick_keys()
-        if not sim_passed(current_time, getattr(self, '_frozen_until', 0.0)):
+        if not sim_passed(current_time, self._frozen_until):
             self.is_moving = False
             self._feed_gs1_input(keys)
             self._fire_gs1_keypress_queue()
@@ -790,7 +782,7 @@ class InputMixin(ClockedMixin):
         # Mode 9 handles presses, never releases: TPlayer.cpp:2218-2253.
         # The decompile falls through to NONE even after cycling (:2251);
         # real-client play keeps selection up between S-held A taps.
-        if getattr(self, '_giveaway_item', None) is not None:
+        if self._giveaway_item is not None:
             self.is_moving = False
             self._clear_push_hold()
             if pressed_now(jp, "grab"):

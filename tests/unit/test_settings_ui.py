@@ -43,6 +43,9 @@ def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
         client=SimpleNamespace(input_frozen=True), screen=object(), chat=SimpleNamespace(typing=True),
         show_player_list=True, show_server_list=True,
         settings_ui=SimpleNamespace(visible=True),
+        combat_presentation=SimpleNamespace(death_started=None),
+        inventory_ui=None, level_editor=None, editor_overlay=None,
+        hud=None,
     )
     hud.ui = Mock()
     hud._draw_dialogue = Mock()

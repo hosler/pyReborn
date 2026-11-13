@@ -74,7 +74,7 @@ class Overlay:
     # helpers for the adapters
     @property
     def hud(self):
-        return self._hud or getattr(self.game, 'hud', None)
+        return self._hud or self.game.hud
 
     def _hud_shown(self) -> bool:
         """The parts of the HUD a full stop (`client.input_frozen`) hides."""
@@ -271,7 +271,7 @@ class LevelEditorKeys(Overlay):
 
     @property
     def editor(self):
-        return getattr(self.game, 'level_editor', None)
+        return self.game.level_editor
 
     @property
     def visible(self) -> bool:
@@ -291,7 +291,7 @@ class LevelEditorKeys(Overlay):
     def draw(self, surface) -> None:
         # Edit mode decorates the WORLD, so it sits under the panels: grid,
         # object markers and toolbar first, then the palette it opens.
-        overlay = getattr(self.game, 'editor_overlay', None)
+        overlay = self.game.editor_overlay
         if overlay is None:
             return
         overlay.draw(surface)
@@ -349,7 +349,7 @@ class PlayerList(_KeyPanel):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'show_player_list', False))
+        return bool(self.game.show_player_list)
 
     def handle_key(self, event) -> None:
         self.game._handle_player_list_key(event)
@@ -369,7 +369,7 @@ class ServerList(_KeyPanel):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'show_server_list', False))
+        return bool(self.game.show_server_list)
 
     def handle_key(self, event) -> None:
         self.game._handle_server_list_key(event)
@@ -511,7 +511,7 @@ class Inventory(Overlay):
 
     @property
     def ui(self):
-        return getattr(self.game, 'inventory_ui', None)
+        return self.game.inventory_ui
 
     @property
     def visible(self) -> bool:

@@ -38,13 +38,13 @@ class SetupMixin(ClockedMixin):
         """Play the low-health reminder at most once per second."""
         now = self.clock.frame_now() if now is None else now
         player = self.client.player
-        active = (getattr(self, '_low_hearts_warning_enabled', True)
+        active = (self._low_hearts_warning_enabled
                   and self.client.connected and 0 < player.hearts <= 1.0
                   and player.max_hearts > 1)
         if not active:
             self._low_hearts_next_beep = 0.0
             return False
-        if now < getattr(self, '_low_hearts_next_beep', 0.0):
+        if now < self._low_hearts_next_beep:
             return False
         self._low_hearts_next_beep = now + 1.0
         self.sound_mgr.play("beep.wav", volume=0.35)
@@ -73,7 +73,7 @@ class SetupMixin(ClockedMixin):
         if not name:
             return
         if self.sound_mgr.is_music(name):
-            if name == getattr(self, '_current_music_name', None):
+            if name == self._current_music_name:
                 return  # already playing/queued this track
             self._current_music_name = name
             if self.sound_mgr.play_music(name):       # on disk already
@@ -92,13 +92,13 @@ class SetupMixin(ClockedMixin):
         wire_gs1_callbacks(self)
 
     def _on_npc_del(self, npc_id: int):
-        if getattr(self, "npc_handler", None) is not None:
+        if self.npc_handler is not None:
             self.npc_handler.forget_npc(npc_id)
         for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual'):
             cache = getattr(self, attr, None)
             if isinstance(cache, dict):
                 cache.pop(npc_id, None)
-        interpolator = getattr(self, 'interpolator', None)
+        interpolator = self.interpolator
         if interpolator is not None:
             interpolator.forget(('npc', npc_id))
 
@@ -195,7 +195,7 @@ class SetupMixin(ClockedMixin):
         """Fire actionprojectile2 for projectiles WE shot (the shooter handles
         its own projectile; the server relay only reaches other players). Done
         between events so we never re-enter the GS1 engine mid-shoot."""
-        pending = getattr(self, '_pending_self_shoots', None)
+        pending = self._pending_self_shoots
         if not pending:
             return
         self._pending_self_shoots = []
@@ -204,7 +204,7 @@ class SetupMixin(ClockedMixin):
                 self.gs1.fire_projectile(params)
             except Exception:
                 log_swallowed(logger)
-            gs2 = getattr(self, 'gs2', None)
+            gs2 = self.gs2
             if gs2 is not None:
                 try:
                     gs2.trigger_event("onActionProjectile2", *params)
@@ -299,7 +299,7 @@ class SetupMixin(ClockedMixin):
         sleeps 1s right after its setshape2) blocks any replay via the
         active-coroutine guard. Net effect live: no NPC touch, and scripted
         movement walked straight through the counter."""
-        gs2 = getattr(self, 'gs2', None)
+        gs2 = self.gs2
         keep = {}
         if gs2 is None:
             return keep
@@ -331,7 +331,7 @@ class SetupMixin(ClockedMixin):
             if not isinstance(npc, dict):
                 continue  # despawned between snapshot and restore
             self.gs1.shapes[nid] = geom
-            if nid in getattr(self, '_gs2_shape1_npcs', ()):
+            if nid in self._gs2_shape1_npcs:
                 self.gs1.shape1_npcs.add(nid)
             w, h, flags = geom
             self.gs1.update_shape_blocks(nid, npc, w, h, flags)
@@ -365,7 +365,7 @@ class SetupMixin(ClockedMixin):
                 cache.clear()
         # Draw positions of the old level's things: the new level's start
         # where they are, not sliding from an old entity with the same id.
-        interpolator = getattr(self, 'interpolator', None)
+        interpolator = self.interpolator
         if interpolator is not None:
             local = interpolator.current('local')
             interpolator.reset()

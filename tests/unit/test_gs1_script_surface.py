@@ -53,7 +53,7 @@ def _game(**client_attrs):
     game = SimpleNamespace(
         gs1=ClientGS1(None), client=client, clock=client.clock, player_anim=SimpleNamespace(),
         active_bombs=[], thrown_objects=[], other_thrown_objects=[],
-        active_projectiles=[])
+        active_projectiles=[], sprite_mgr=None, npc_handler=None)
     wire_gs1_callbacks(game)
     return game
 

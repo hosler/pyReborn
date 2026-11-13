@@ -89,7 +89,8 @@ def append_start_message(messages: list, text: str) -> int:
 
 def wire_client_callbacks(game):
     # State for the newer render_effects visuals below - initialized here
-    # (this runs once, at the end of GameClient.__init__) rather than in
+    # (this runs once, from GameClient.__init__, before the GS2 runtime
+    # attaches) rather than in
     # pygame_game.py, which owns the rest of the render-state init.
     game.other_thrown_objects = []   # PLO_THROWCARRIED arcs (other players)
     game._pushaway_velocity = (0.0, 0.0)   # PLO_PUSHAWAY knockback, tiles/sec
@@ -106,9 +107,9 @@ def wire_client_callbacks(game):
     def send_level_chat_with_events(message):
         sent = send_level_chat(message)
         if sent:
-            if getattr(game, 'gs1', None) is not None:
+            if game.gs1 is not None:
                 game.gs1.trigger_event('playerchats')
-            if getattr(game, 'gs2', None) is not None:
+            if game.gs2 is not None:
                 game.gs2.trigger_event("onPlayerChats")
         return sent
     game.client.send_level_chat = send_level_chat_with_events
@@ -174,8 +175,7 @@ def wire_client_callbacks(game):
                 callback = getattr(game, clear, None)
                 if callback is not None:
                     callback()
-            if hasattr(game, '_ledge_jump'):
-                game._ledge_jump = None
+            game._ledge_jump = None
             # Play death sound
             game.sound_mgr.play("dead.wav")
             # Set death animation
@@ -183,7 +183,7 @@ def wire_client_callbacks(game):
             game.current_anim_name = "dead"
             # TPlayer.cpp:5753: playerdies runs on NPCs
             # (GServer-v2/bin/docs/scripting-gs1-events.md:196-204).
-            gs1 = getattr(game, 'gs1', None)
+            gs1 = game.gs1
             if not was_dead and gs1 is not None:
                 for npc_id in list(game.client.npcs):
                     gs1.trigger_npc_event(npc_id, 'playerdies')
@@ -302,7 +302,7 @@ def wire_client_callbacks(game):
             # the pose pops in on arrival (NPCs get this for free from
             # the per-frame render re-assert; the player path is
             # transition-driven).
-            anim = getattr(game, 'player_anim', None)
+            anim = game.player_anim
             if (anim is not None and anim.requested_name == name
                     and (anim.gani is None or anim.gani.name != name)):
                 try:
@@ -311,7 +311,7 @@ def wire_client_callbacks(game):
                 except Exception:
                     log_swallowed(logger)
         elif game.sound_mgr.is_music(filename):
-            if filename == getattr(game, '_pending_music', None):
+            if filename == game._pending_music:
                 game._pending_music = None
                 game.sound_mgr.play_music(filename, data=data)
         elif ext in SAMPLE_EXTS:
@@ -330,7 +330,7 @@ def wire_client_callbacks(game):
         script = weapon.get('script', '')
         if script and route_gs2_source(game, 'weapon', name, script):
             return
-        if script and getattr(game, 'gs1', None) is not None:
+        if script and game.gs1 is not None:
             is_new = game.gs1.load_weapon(name, script)
             try:
                 if is_new:
@@ -465,7 +465,7 @@ def wire_client_callbacks(game):
         target = validate_server_warp_target(info)
         if target is None:
             return
-        gs2 = getattr(game, 'gs2', None)
+        gs2 = game.gs2
         if gs2 is not None:
             gs2.trigger_weapon_event(
                 'StartScript_Connector', 'onServerWarp',
@@ -526,7 +526,7 @@ def wire_client_callbacks(game):
     # and gani. NOTE: this prefix is inferred, not yet confirmed against a
     # real 2-player relayed packet — tune once one is captured.
     def on_projectile(info):
-        if getattr(game, 'gs1', None) is None:
+        if game.gs1 is None:
             return
         csv = info.get('params', '') or ''
         params = csv.split(',') if csv else []
@@ -537,7 +537,7 @@ def wire_client_callbacks(game):
         # GS2 weapons take the same event; params[i] == GS1's #p(i)
         # (verified against Bomber v6's -validation: params[2] is the
         # Bomb.Queue tag, params[3] the room+account).
-        gs2 = getattr(game, 'gs2', None)
+        gs2 = game.gs2
         if gs2 is not None:
             gs2.trigger_event("onActionProjectile2", *args)
 
@@ -546,14 +546,14 @@ def wire_client_callbacks(game):
     # (PetSys's client.pet chocobo/squirrel selection), the rest are
     # globals (bomber's room roster server.bombrm_NN).
     def on_flag(name, value):
-        gs1 = getattr(game, 'gs1', None)
+        gs1 = game.gs1
         if gs1 is not None:
             gs1.recv_flag(name, value)
 
     # PLO_FLAGDEL: the server unsets flags too (bomber empties its queue
     # roster this way) — without this, scripts keep reading stale values.
     def on_flag_del(name):
-        gs1 = getattr(game, 'gs1', None)
+        gs1 = game.gs1
         if gs1 is not None:
             gs1.recv_flag_del(name)
 
@@ -563,6 +563,6 @@ def wire_client_callbacks(game):
     game.client.on_flag = on_flag
     game.client.on_flag_del = on_flag_del
     # flags received before the GS1 engine existed
-    if getattr(game, 'gs1', None) is not None:
+    if game.gs1 is not None:
         for _fn, _fv in (game.client.global_flags or {}).items():
             game.gs1.recv_flag(_fn, _fv)

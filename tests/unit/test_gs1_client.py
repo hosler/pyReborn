@@ -168,6 +168,8 @@ def test_level_npc_toweapons_copies_runs_and_notifies_server():
     game.gs1 = gs1
     game.gs2_sources = Gs2SourceRouter()
     game.player_anim = type("_Animation", (), {})()
+    game.sprite_mgr = None
+    game.npc_handler = None
     game._setup_gs1_callbacks()
 
     gs1.load_script("npc_321", script, npc_id=npc_id, x=4, y=5)

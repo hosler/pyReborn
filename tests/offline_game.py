@@ -62,6 +62,20 @@ GANI_NPC = {"id": 102, "x": 34.0, "y": 24.0, "gani": "idle",
 NAMED_NPC = {"id": 103, "x": 28.0, "y": 34.0, "gani": "idle",
              "nickname": "Offline Guard", "bodyimage": "body3.png",
              "headimage": "head2.png", "message": "hello there"}
+# -- weapon specs for the ``weapons`` knob ------------------------------------
+# ``{"name": "-w", "script": "...", "engine": "gs1" | "gs2", "image": ""}``.
+# Each becomes a GRAWP001 file in the world's weapons/ directory, loaded by
+# pygserver's own GS2ScriptManager and granted to our account, so login
+# streams it exactly as a live server does: a GS2 weapon as PLO_NPCWEAPONADD
+# plus the PLO_LOADSCRIPT header whose bytecode the client then pulls with
+# PLI_UPDATESCRIPT, a GS1 weapon as PLO_NPCWEAPONADD text. A GS1 script must
+# be ONE line (pygserver's build_npc_weapon_add sends the text unmangled, so
+# the client cuts it at the first newline) and gets an empty .gs2bc cache
+# beside it, so a GS2 compiler never turns it into bytecode (see
+# game_tester/gs1_client_conformance.py generate_fixtures). A GS2 script is
+# the clientside half; the knob adds the //#CLIENTSIDE marker. Compiling it
+# needs the gs2test binary (tests/unit/gs2_compiler.py require_compiler).
+
 #: A look for another player that no other character shares, so its colours
 #: say whose pixels they are (own player: body.png/head0.png, NPC characters:
 #: body3.png/head2.png). ``players`` specs take these as PLAYER_PROPS names.
@@ -561,7 +575,7 @@ def _new_player(server, player_id: int, account: str):
 async def _build_server(world: ServerWorld, *, levels: Dict[str, Any],
                         gmap: bool, start: str, player_xy, hearts: float,
                         me: Dict[str, Any], npcs, chests, items, players,
-                        baddies, signs, links, options) -> None:
+                        baddies, signs, links, options, weapons=()) -> None:
     from pygserver.baddy import BaddyManager
     from pygserver.combat import CombatManager
     from pygserver.config import ServerConfig
@@ -655,7 +669,50 @@ async def _build_server(world: ServerWorld, *, levels: Dict[str, Any],
     for attr, value in {**DEFAULT_ME, **me}.items():
         setattr(me_player, attr, value)
     me_player.hearts = hearts
+    if weapons:
+        _install_weapons(server, root, me_player, weapons)
     await me_player.login_service.complete_login()
+
+
+def _install_weapons(server, root: Path, me_player, weapons) -> None:
+    """Write the ``weapons`` knob's specs as weapon files, load them through
+    pygserver's GS2ScriptManager (GameServer.start() builds it; the fixture
+    does not run start()) and grant them to our account."""
+    from pygserver.gs2 import GS2ScriptManager
+    weapons_dir = Path(server.config.weapons_dir)
+    weapons_dir.mkdir(parents=True, exist_ok=True)
+    for spec in weapons:
+        name = spec["name"]
+        engine = spec.get("engine", "gs1")
+        script = spec["script"]
+        stem = name.lstrip("-*") or "weapon"
+        if engine == "gs2":
+            script = "//#CLIENTSIDE\n" + script
+        elif engine == "gs1":
+            if "\n" in script.strip():
+                raise ValueError(f"GS1 weapon {name}: one line only "
+                                 "(pygserver sends weapon text unmangled)")
+        else:
+            raise ValueError(f"weapon {name}: engine must be gs1 or gs2")
+        source = weapons_dir / f"{stem}.txt"
+        source.write_text(f"GRAWP001\nREALNAME {name}\nIMAGE "
+                          f"{spec.get('image', '')}\nSCRIPT\n{script}\n"
+                          "SCRIPTEND\n", encoding="latin-1")
+        if engine == "gs1":
+            cache = source.with_suffix(".gs2bc")
+            cache.write_bytes(b"")
+            stamp = source.stat().st_mtime + 60
+            os.utime(cache, (stamp, stamp))
+    server.gs2_manager = GS2ScriptManager(server, str(root))
+    server.gs2_manager.load()
+    for spec in weapons:
+        me_player.add_weapon(spec["name"])
+        script = server.gs2_manager.get_weapon(spec["name"])
+        if script is None:
+            raise ValueError(f"pygserver did not load weapon {spec['name']}")
+        if spec.get("engine") == "gs2" and not script.bytecode:
+            raise ValueError(f"GS2 weapon {spec['name']} did not compile: "
+                             f"{server.gs2_manager.compiler.last_error!r}")
 
 
 async def _peers_chat(world: "ServerWorld") -> None:
@@ -704,6 +761,7 @@ def build_client(*,
                  gmap: bool = False,
                  gmap_segment: Tuple[int, int] = (0, 0),
                  server_options: Optional[Dict[str, Any]] = None,
+                 weapons: Iterable[Dict[str, Any]] = (),
                  root: Optional[Path] = None,
                  defer_events: bool = False) -> "Client":
     """A populated ``Client`` with no game: the world half of build_game.
@@ -729,6 +787,10 @@ def build_client(*,
     gmap                2x2 gmap (GMAP_SEGMENTS); the player starts in
                         ``gmap_segment`` (grid x, y) at ``player_xy``.
     server_options      ServerConfig attributes (``{"bigmap": "..."}``).
+    weapons             weapon specs granted to us and streamed at login,
+                        before any GameClient exists (see the comment above
+                        DEFAULT_ME); a GS2 one runs its top level and
+                        onCreated when the game attaches its GS2 runtime.
 
     ``client.feed(packet_id, data)`` pushes one hand-built packet through the
     handler table; ``client.server`` is the ServerWorld (``.send(raw)``,
@@ -766,7 +828,7 @@ def build_client(*,
                 player_xy=player_xy, hearts=hearts, me=me or {},
                 npcs=npcs, chests=chests, items=items, players=players,
                 baddies=baddies, signs=signs, links=links,
-                options=server_options or {}))
+                options=server_options or {}, weapons=list(weapons)))
             if defer_events:
                 client._fixture_events = (list(bombs), list(arrows))
             else:

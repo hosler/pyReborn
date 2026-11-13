@@ -130,7 +130,7 @@ class RCOverlay:
                 self.link.start()
             return
         client = self.game.client
-        password = getattr(self.game, 'rc_password', None)
+        password = self.game.rc_password
         if not password:
             self.message = ("No password in this session — start the client "
                             "with a login to use RC tools.")

@@ -272,6 +272,8 @@ class _BareHarness(EntityRenderMixin):
 
     def __init__(self):
         self.render_cache = RenderCache()
+        self._frame_ctx = None
+        self._frame_dt = 0.0
 
 
 class TestNameplateStaggering:
@@ -317,6 +319,8 @@ class _LightHarness(EntityRenderMixin):
             get_sprite=lambda name, *part: sheet,
         )
         self.render_cache = RenderCache()
+        self._frame_ctx = None
+        self._frame_dt = 0.0
 
     def _request_asset(self, name):
         pass

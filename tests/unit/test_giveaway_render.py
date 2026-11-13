@@ -41,6 +41,7 @@ def _renderer(player, selected, sprite):
         client=SimpleNamespace(player=player), screen=Mock(), clock=Clock(),
         sprite_mgr=SimpleNamespace(get_sprite=Mock(return_value=sprite)),
         _giveaway_item=selected, _PLAYER_ANCHOR_FIX=8, debug_mode=False,
+        camera=SimpleNamespace(),
         combat_presentation=SimpleNamespace(player_alpha=lambda now, base: base),
         _attr_equipment=EntityRenderMixin._attr_equipment,
         _render_animated_entity=Mock(), _render_swamp_overlay=Mock(),

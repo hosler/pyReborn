@@ -91,7 +91,7 @@ class FlyingObjectsMixin(GameHost):
         return overlaps_player(x, y, proj['direction'], player.x, player.y)
 
     def _flying_npc_at(self, cx: float, cy: float):
-        handler = getattr(self, 'npc_handler', None)
+        handler = self.npc_handler
         if handler is None:
             return None
         return handler.npc_at_point(cx, cy)
@@ -99,10 +99,10 @@ class FlyingObjectsMixin(GameHost):
     def _flying_shot_npc(self, npc_id, by_player: bool) -> None:
         # TServerFlying.cpp:252-253 is a mislabelled setter in the decompilation;
         # event 14 is `wasshot` (TInitStatics.cpp:308-309): the mapping is an inference.
-        gs1 = getattr(self, 'gs1', None)
+        gs1 = self.gs1
         if gs1 is not None:
             gs1.trigger_npc_wasshot(npc_id, by_player)
-        gs2 = getattr(self, 'gs2', None)
+        gs2 = self.gs2
         if gs2 is not None:
             gs2.trigger_npc_wasshot(npc_id, by_player)
 

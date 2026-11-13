@@ -65,7 +65,7 @@ class LayerRenderMixin(GameHost):
             frame.gui_pass = False
 
     def _render_gui_layers_inner(self):
-        client = getattr(self, 'client', None)
+        client = self.client
         npcs = getattr(client, 'npcs', {}) if client else {}
         for npc_id in sorted(npcs):
             npc = npcs[npc_id]
@@ -343,7 +343,7 @@ class LayerRenderMixin(GameHost):
             if last is not None and tick > last:
                 anim.update((tick - last) * clock.TICK_SECONDS)
         else:
-            anim.update(getattr(self, '_frame_dt', 0.05))
+            anim.update(self._frame_dt)
         sx, sy = self._layer_pos(rec)
         equip = self._showani_param_equip(rec.get('params'))
         self._render_animated_entity(int(sx), int(sy), anim, equip)
@@ -379,7 +379,7 @@ class LayerRenderMixin(GameHost):
             on = 0.0
         if on <= 0:
             return
-        t = rec['_fx_t'] = rec.get('_fx_t', 0.0) + getattr(self, '_frame_dt', 0.05)
+        t = rec['_fx_t'] = rec.get('_fx_t', 0.0) + self._frame_dt
         LIFE = 0.6  # matches the script's explosion burn timer
         if t >= LIFE:
             return

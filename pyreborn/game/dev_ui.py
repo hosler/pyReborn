@@ -90,7 +90,7 @@ class DevOverlay:
                 self.nc_link.start()
             return
         client = self.game.client
-        password = getattr(self.game, 'rc_password', None)
+        password = self.game.rc_password
         if not password:
             self.message = ("No password in this session — start the client "
                             "with a login to use the dev tools.")
@@ -107,7 +107,7 @@ class DevOverlay:
     @property
     def rc(self):
         """The RC link the F10 panel owns; the console and save go through it."""
-        rc_ui = getattr(self.game, 'rc_ui', None)
+        rc_ui = self.game.rc_ui
         link = getattr(rc_ui, 'link', None)
         return link if link is not None and link.available else None
 

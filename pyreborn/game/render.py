@@ -37,10 +37,10 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             self._advance_hurt(dt)
         if hasattr(self, '_advance_ground_effects'):
             self._advance_ground_effects(dt)
-        if getattr(self, '_ledge_jump', None) is not None:
+        if self._ledge_jump is not None:
             self._advance_ledge_jump(dt)
         # Walk-on sitting: derive seated state from the tile under the feet.
-        if getattr(self, '_ledge_jump', None) is None:
+        if self._ledge_jump is None:
             self._update_sitting_state()
             if hasattr(self, '_update_sleeping_state'):
                 self._update_sleeping_state()
@@ -53,7 +53,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # held arrow key changes mid-walk. The real client re-reads
         # player.dir every frame for the local sprite; mirror that here.
         # (int() — the engines may hand back a float dir.)
-        if not getattr(getattr(self, "gs1", None), "default_movement", True):
+        if not getattr(self.gs1, "default_movement", True):
             try:
                 self.player_anim.set_direction(
                     int(self.client.player.direction) & 3)
@@ -70,7 +70,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             setback = self.player_anim.get_setback()
             anim = self.player_anim
             requested = getattr(anim, 'requested_name', None)
-            if (getattr(self, '_ledge_jump', None) is not None
+            if (self._ledge_jump is not None
                     or (getattr(self.client.player, 'hurt', None) is not None
                         and self.client.player.hurt.input_locked(self.clock.sim_now()))):
                 pass  # Keep hurt's last frame throughout the input lock.
@@ -87,7 +87,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
                 pass  # sleep holds its pose until a move or another action
             elif (not setback
                   and self.current_anim_name ==
-                      getattr(self, '_scripted_player_ani', None)):
+                      self._scripted_player_ani):
                 # A script-set player gani with no SETBACKTO holds its final
                 # frame until the script (or real movement) changes it —
                 # bomber's piano seats you in sen_piano_idle, a single-frame
@@ -165,13 +165,13 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # only set by the built-in input path, so this stomped the script's
         # setani("walk") back to idle every frame — the script sets idle
         # itself when the keys are released (ReturnIdle).
-        if (getattr(getattr(self, "gs1", None), "default_movement", True)
-                and getattr(self, '_ledge_jump', None) is None
+        if (getattr(self.gs1, "default_movement", True)
+                and self._ledge_jump is None
                 and not self.is_moving
                 and self.current_anim_name in ("walk", "swim", "lava", "hidden")):
             if self.is_swimming:
                 # Use swim idle animation (or swim if no swim_idle exists)
-                swim = "lava" if getattr(self, '_swim_in_lava', False) else "swim"
+                swim = "lava" if self._swim_in_lava else "swim"
                 self.player_anim.set_animation(swim, self.client.player.direction)
                 self.current_anim_name = swim
             elif self._is_hidden():
@@ -266,7 +266,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         if getattr(self.client, 'local_level_transition', ''):
             return
 
-        interpolator = getattr(self, 'interpolator', None)
+        interpolator = self.interpolator
         transition_epoch = getattr(
             self.client, 'local_level_transition_epoch', 0)
         if transition_epoch != self.transition.seen_epoch:
@@ -335,7 +335,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             else:
                 self.camera.set_bounds(0, 0, LEVEL_SIZE, LEVEL_SIZE)
 
-        focus = getattr(self, '_camera_focus', None)
+        focus = self._camera_focus
         if focus is not None:
             # A GS1 `setfocus x,y` aims the camera at a level position (the
             # splash/cutscene NPCs park the player off-level and stage the
@@ -345,7 +345,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             self.camera.set_center(gmap_visual_x + self.CAMERA_BODY_DX,
                                    gmap_visual_y + self.CAMERA_BODY_DY)
         self.camera.set_render_offset()
-        started = getattr(self, '_camera_shake_started', None)
+        started = self._camera_shake_started
         if started is not None and not getattr(self.client, 'local_level_transition', ''):
             age = self.clock.frame_now() - started
             if age < 0.4:
@@ -438,7 +438,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # 64x64 corner while the hold was engaged, and a cached destination
         # board replaced the world content instantly under the held camera).
         if getattr(self.client, 'local_level_transition', ''):
-            presentation = getattr(self, 'combat_presentation', None)
+            presentation = self.combat_presentation
             if presentation is not None:
                 presentation.sync(
                     self.client.player.hearts <= 0, True, self.clock.frame_now())

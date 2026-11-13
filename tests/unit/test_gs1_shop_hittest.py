@@ -305,6 +305,7 @@ class _FeedHarness(InputMixin):
         self.viewport = _ScaledViewport()
         self.camera = Camera2D(320, 240, 16)
         self._vk_cache = {}
+        self._mouse_left_latched = False
 
 
 def _feed(gs1, window_pos):

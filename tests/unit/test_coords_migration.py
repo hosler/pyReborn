@@ -69,6 +69,9 @@ def _gmap_client():
 class _Harness(CollisionMixin, LevelObjectsRenderMixin):
     def __init__(self, client):
         self.client = client
+        self.noclip = False
+        self.active_bombs = []
+        self.gs1 = None
 
 
 # =============================================================================

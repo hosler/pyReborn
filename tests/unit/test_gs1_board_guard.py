@@ -26,6 +26,7 @@ from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1, GS1NoBoard
 from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.setup import SetupMixin
+from pyreborn.game.interpolation import TickInterpolator
 from pyreborn.game.level_arrival import LevelArrival
 from pyreborn.game.particles_state import Particles
 
@@ -174,6 +175,8 @@ class _EnterHarness(SetupMixin):
     def __init__(self, client, gs1):
         self.client = client
         self.gs1 = gs1
+        self.gs2 = None
+        self.interpolator = TickInterpolator()
         self.tileset_mgr = SimpleNamespace(set_current_level=lambda name: None)
         self.npc_handler = SimpleNamespace(update_npcs=lambda: None)
         self.visual_x = self.visual_y = 0.0

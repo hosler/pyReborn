@@ -2,6 +2,7 @@ import pygame
 import pytest
 
 from pyreborn.game import render as render_module
+from pyreborn.game.combat_presentation import CombatPresentation
 from pyreborn.game.render import RenderMixin
 from pyreborn.game.transition import TransitionState
 from pyreborn.packets import PacketID
@@ -260,6 +261,7 @@ class _SlideHarness(RenderMixin):
         self.viewport = _ViewportStub()
         self.camera = type("Camera", (), {"zoom": 1.0})()
         self.scene_renders = 0
+        self.combat_presentation = CombatPresentation()
 
     def _sync_camera(self):
         pass
