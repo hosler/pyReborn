@@ -266,4 +266,5 @@ def test_public_names_delegate_to_the_private_ones():
     assert client.local_level_transition == ""
     gs1 = ClientGS1(None)
     assert gs1.shape1_npcs is gs1._shape1_npcs
+    assert gs1.weapon_imgs is gs1._weapon_imgs
     assert gs1.has_program("weapon_x") is False

@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 import pygame.locals as pgl
 import pytest
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 from pyreborn.game.camera import Camera2D
@@ -37,24 +36,20 @@ class _Key:
         self.key = key
 
 
-def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
-    hud = HUD.__new__(HUD)
-    hud.game = SimpleNamespace(
-        client=SimpleNamespace(input_frozen=True), screen=object(), chat=SimpleNamespace(typing=True),
-        show_player_list=True, show_server_list=True,
-        settings_ui=SimpleNamespace(visible=True),
-        combat_presentation=SimpleNamespace(death_started=None),
-        inventory_ui=None, level_editor=None, editor_overlay=None,
-        hud=None,
-    )
-    hud.ui = Mock()
-    hud._draw_dialogue = Mock()
-    hud._draw_chat = Mock()
-    hud._draw_minimap = Mock()
-    hud._draw_help_overlay = Mock()
-    hud._draw_player_list = Mock()
-    hud._draw_server_list = Mock()
-    hud._draw_settings = Mock()
+def test_frozen_hud_draws_modal_overlays_and_chat_compose_only(
+        make_game, monkeypatch):
+    game = make_game()
+    hud = game.hud
+    game.client.input_frozen = True
+    game.chat.typing = True
+    game.show_player_list = True
+    game.show_server_list = True
+    game.settings_ui.visible = True
+    assert game.combat_presentation.death_started is None
+    for name in ("ui", "_draw_dialogue", "_draw_chat", "_draw_minimap",
+                 "_draw_help_overlay", "_draw_player_list",
+                 "_draw_server_list", "_draw_settings"):
+        monkeypatch.setattr(hud, name, Mock())
 
     hud.draw()
 
@@ -62,10 +57,10 @@ def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
     hud._draw_dialogue.assert_not_called()
     hud._draw_minimap.assert_not_called()
     hud._draw_help_overlay.assert_not_called()
-    hud._draw_chat.assert_called_once_with(hud.game.screen, show_log=False)
-    hud._draw_player_list.assert_called_once_with(hud.game.screen)
-    hud._draw_server_list.assert_called_once_with(hud.game.screen)
-    hud._draw_settings.assert_called_once_with(hud.game.screen)
+    hud._draw_chat.assert_called_once_with(game.screen, show_log=False)
+    hud._draw_player_list.assert_called_once_with(game.screen)
+    hud._draw_server_list.assert_called_once_with(game.screen)
+    hud._draw_settings.assert_called_once_with(game.screen)
 
 
 @pytest.fixture

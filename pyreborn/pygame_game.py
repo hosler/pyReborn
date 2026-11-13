@@ -43,6 +43,7 @@ from .game.assets import FontManager
 from .game.hud import HUD
 from .game.combat_presentation import CombatPresentation
 from .game.render_cache import RenderCache
+from .game.settings_ui import SettingsOverlay
 from .game.callbacks.client_callbacks import Gs2SourceRouter
 from .game.setup import SetupMixin
 from .game.minimap import MinimapMixin
@@ -486,7 +487,8 @@ class GameClient(
         # Apply saved live settings during construction. Leaving this until
         # the first event pass allowed other callers to consume the camera's
         # initial transform before the preferred zoom invalidated it.
-        self._ensure_settings_ui()
+        self.settings_ui = SettingsOverlay(self)
+        self.settings_ui.apply_saved_prefs()
 
         # LAST: attach the GS2 runtime. Every launcher builds the game after
         # login, so the bytecode of every granted weapon is already waiting,

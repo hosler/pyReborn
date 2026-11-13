@@ -82,18 +82,27 @@ pyreborn/
     │   ├── client_callbacks.py  # Client (network) callbacks
     │   └── gs1_callbacks.py     # GS1 engine callbacks
     ├── camera.py         # Camera/viewport tracking
+    ├── chat_state.py     # ChatState: chat log, input, scrollback, PM composer (self.chat)
     ├── clocked.py        # ClockedMixin: game mixins read self.clock (the client's)
     ├── collision.py      # Tile/entity collision
+    ├── combat_presentation.py # Hurt/death/respawn presentation timing
     ├── constants.py      # Screen/tile size constants
+    ├── dev_ui.py         # F12 dev playground panel
+    ├── flying.py         # Script-fired flying objects (shootfireblast/shootnuke)
     ├── frame_context.py  # FrameContext - per-frame state shared across passes
+    ├── host.py           # GameHost: every GameClient attribute declared once, plus method stubs
     ├── hud.py            # HUD rendering
     ├── input.py          # Keyboard/input handling (edges latched until a tick)
     ├── interpolation.py  # Draw positions between the last two ticks
     ├── keymap.py         # Gameplay keys in one table (help rows, dispatch, GS1 keydown)
+    ├── level_arrival.py  # LevelArrival: arrival/link-warp bookkeeping (self.arrival)
     ├── minimap.py        # GMAP minimap
     ├── overlays.py       # Ordered overlay stack (input priority, topmost first)
+    ├── particles_state.py # Particles: presentation particle lists (self.particles)
+    ├── push_grab.py      # PushGrab: push/grab/pull hold state (self.push)
     ├── rc_ui.py          # F10 RC tools overlay (staff admin panel)
     ├── render.py         # Core render loop
+    ├── render_cache.py   # RenderCache: derived render state only (self.render_cache)
     ├── render_collect.py # Entity collection, sorting, and interpolation
     ├── render_effects.py # Particle/effect rendering
     ├── render_entities.py # Player/NPC/baddy rendering
@@ -103,8 +112,10 @@ pyreborn/
     ├── render_shared.py  # Shared entity-rendering definitions
     ├── render_text.py    # Entity text and speech-bubble rendering
     ├── render_world.py   # Tile/level rendering
+    ├── settings_ui.py    # F9 settings overlay
     ├── setup.py          # GameClient init/setup
     ├── theme.py          # UI palette + emblem/panel helpers (reskin here)
+    ├── transition.py     # TransitionState: level-transition slide/hold (self.transition)
     ├── ui.py             # Menus/dialogs
     └── viewport.py       # Viewport sizing/scaling
 
@@ -1195,6 +1206,31 @@ the bounding box of the differing pixels and writes `<key>.actual/.expected/
 versions, so the manifest holds them and a check from another environment
 refuses to run; record again there. Record replaces the manifest (about 360
 frames, 21 s); check costs nothing extra. See tests/frame_baseline.py.
+
+## GameClient state
+
+Where state lives, and the rules `tests/unit/test_game_state_declared.py`
+enforces (it fails with the fix named):
+
+- A cluster of state is an owned object: `push`, `arrival`, `transition`,
+  `render_cache` (derived state only), `particles`, `chat`, `gs2_sources`.
+  Everything else is a plain attribute assigned in `GameClient.__init__` and
+  annotated once in `game/host.py` (`GameHost`). A new attribute needs both.
+- No `getattr`/`hasattr` guard on a declared attribute, and no lazily created
+  attribute: a value that fills later starts as `None` or empty in
+  `__init__`. A test double that lacks an attribute is replaced by
+  `make_game`, never accommodated with a guard in the game layer. The test has
+  no allowlist and no ceiling.
+- Methods one mixin calls on another get a stub in `host.py` under
+  `TYPE_CHECKING`; `tests/unit/test_game_host_stubs.py` compares each stub's
+  signature to the real method.
+- The GS2 runtime attaches LAST in `__init__`: on attach it runs the bytecode
+  of every weapon granted at login against the game, so every attribute must
+  exist first and what a script sets must not be reset by a later line
+  (`tests/unit/test_game_init_order.py`).
+- The fixture's `weapons=` knob streams GS1/GS2 weapons at login, before the
+  `GameClient` exists, so a test of load-time script code uses it instead of
+  loading the script afterwards.
 
 ## Timing model
 

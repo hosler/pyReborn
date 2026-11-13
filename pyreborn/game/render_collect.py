@@ -437,7 +437,7 @@ class EntityCollectMixin(ClockedMixin):
         for player in self.client.players.values():
             if player.get('imgs') and player.get('level', self.client.level) == self.client.level:
                 stores.append(player['imgs'])
-        weapon_imgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        weapon_imgs = self.gs1.weapon_imgs
         if weapon_imgs:
             stores.extend(list(weapon_imgs.values()))
 
@@ -526,7 +526,7 @@ class EntityCollectMixin(ClockedMixin):
         weapons, which have no NPC/player anchor. Draw the under-player band,
         then the over-player band (vis>=2), so vis 0 stays below and the HUD
         stays on top. Vis 1 is drawn by the entity depth sort."""
-        wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        wimgs = self.gs1.weapon_imgs
         if not wimgs:
             return
         for store in list(wimgs.values()):

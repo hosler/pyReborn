@@ -11,15 +11,16 @@ need a ``self: GameHost`` annotation on every method.
 
 * every store to a game attribute in the game layer names an annotation here
   (or a method/property);
-* the annotations equal ``vars(game)`` after ``__init__``, plus the names the
-  test's ``LAZY_ALLOWED`` and ``CLASS_LEVEL`` lists carry.
+* the annotations equal ``vars(game)`` after ``__init__``, plus the test's
+  ``CLASS_LEVEL`` names; nothing is assigned later, and no ``getattr`` /
+  ``hasattr`` guard reads a declared name.
 
 Editing rules (the sections below follow the cluster plan, one section per
 owned object, so a cluster step edits only its own section):
 
 * add an attribute to ``GameClient.__init__`` and to its section here in the
-  same change; a name the game creates lazily goes in ``LAZY_ALLOWED`` too, and
-  leaves it again the moment ``__init__`` assigns it;
+  same change. A value that fills on first use starts as ``None`` or empty in
+  ``__init__``; there is no lazy attribute and no guard on a declared name;
 * a moved cluster replaces its section's lines with ``<object>: "<Class>"``;
 * only data attributes are annotated, never properties (a property that a
   subclass defines over a writeable annotation is a type error).
@@ -301,7 +302,6 @@ class GameHost:
 
         # InputMixin
         def _end_input_tick(self) -> None: ...
-        def _ensure_settings_ui(self): ...
         def _handle_events(self): ...
         def _handle_input(self, current_time: float): ...
         def _update_death_state(self, current_time): ...

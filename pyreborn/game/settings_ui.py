@@ -52,8 +52,8 @@ class _Setting:
 
 class SettingsOverlay:
     """Owns the F9 overlay's state: open/closed, selected row, and the list
-    of adjustable settings. One instance per GameClient (created during setup --
-    see game/input.py's `_ensure_settings_ui`)."""
+    of adjustable settings. One instance per GameClient (built at the end of
+    GameClient.__init__, applying the saved prefs)."""
 
     def __init__(self, game):
         self.game = game

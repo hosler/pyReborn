@@ -70,7 +70,6 @@ class InputMixin(ClockedMixin):
         target['opened_at'] = self.clock.frame_now()
         target['typed'] = ''    # the prompt's own input field, starts empty
         self.server_warp_prompt = target
-        self._ensure_settings_ui()
         self._close_overlays("player_list", "server_list", "pm", "chat",
                              "settings")
         pygame.event.clear((KEYDOWN, pygame.KEYUP, pygame.TEXTINPUT))
@@ -165,19 +164,6 @@ class InputMixin(ClockedMixin):
     # _feed_gs1_input (once per held key, but the whole key range is scanned
     # every frame to find them).
     _vk_cache: Dict[int, int] = {}
-
-    def _ensure_settings_ui(self):
-        """Create the F9 settings overlay and apply its saved live settings.
-
-        GameClient calls this during construction; the guard also keeps the
-        helper safe for lightweight harnesses and older call sites.
-        """
-        su = getattr(self, 'settings_ui', None)
-        if su is None:
-            from .settings_ui import SettingsOverlay
-            su = self.settings_ui = SettingsOverlay(self)
-            su.apply_saved_prefs()
-        return su
 
     def _ensure_dev_ui(self):
         """Create the F12 dev playground panel (script editing + console).
@@ -322,8 +308,7 @@ class InputMixin(ClockedMixin):
     def _handle_events(self):
         """Handle pygame events."""
         # Make sure the lazily built overlays exist before the overlay
-        # entries read their state (see _ensure_settings_ui).
-        self._ensure_settings_ui()
+        # entries read their state.
         self._ensure_rc_ui()
         self._ensure_dev_ui()
         self._ensure_editor()

@@ -588,6 +588,12 @@ class ClientGS1:
         """NPC ids whose setshape is the shape-1 kind (blocks, no tile types)."""
         return self._shape1_npcs
 
+    @property
+    def weapon_imgs(self) -> dict:
+        """prog-key -> showimg/showani layer table; the stores the renderer
+        draws for weapon- and GUI-owned layers."""
+        return self._weapon_imgs
+
     def has_program(self, key: str) -> bool:
         """True when a script program is loaded under this key."""
         return key in self._progs

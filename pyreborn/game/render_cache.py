@@ -2,15 +2,14 @@
 
 Rule for the object: derived state only. Dropping it (assigning a fresh
 ``RenderCache()``) changes performance, never a pixel;
-``tests/unit/test_render_cache_derived.py`` proves that with the frame
-baseline. State that must survive (``_requested_assets``, the sprite
-managers' own caches) does not live here.
+``tests/unit/test_render_cache_derived.py`` checks that dropping it every
+frame changes no frame. State that must survive (``_requested_assets``, the
+sprite managers' own caches) does not live here.
 
-Fields drop the old leading underscore and ``_cache`` suffix. Every group's
-fields are declared up front; a group's attributes on the game itself are
-removed in the step that migrates that group (A: S2, B: S5, C: S6, R: S8),
-and until then the game keeps the old names. Each ``default_factory`` builds
-exactly the container the call site built before the move.
+The fields are grouped by the render module that owns them. A cache with a
+key or an invalidating event has a test that drives the change and asserts
+the new pixels (``test_render_cache_invalidation.py``,
+``test_render_cache_fields_b.py``, ``test_render_cache_fields_r.py``).
 """
 
 from __future__ import annotations

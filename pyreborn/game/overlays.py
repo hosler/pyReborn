@@ -107,7 +107,7 @@ class ServerWarpPrompt(Overlay):
 
     @property
     def visible(self) -> bool:
-        return getattr(self.game, 'server_warp_prompt', None) is not None
+        return self.game.server_warp_prompt is not None
 
     def handle_event(self, event) -> bool:
         if not self.visible or event.type not in (KEYDOWN, MOUSEBUTTONDOWN):
@@ -137,8 +137,7 @@ class GS2Gui(Overlay):
 
     @property
     def manager(self):
-        gs2 = getattr(self.game, 'gs2', None)
-        return getattr(gs2, 'gui', None) if gs2 is not None else None
+        return self.game.gs2.gui
 
     @property
     def visible(self) -> bool:
@@ -174,7 +173,7 @@ class DebugReadouts(Overlay):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'debug_mode', False))
+        return bool(self.game.debug_mode)
 
     @property
     def captures_keys(self) -> bool:
@@ -196,14 +195,14 @@ class HudNotice(Overlay):
 
     @property
     def visible(self) -> bool:
-        return getattr(self.game, 'hud_notice', None) is not None
+        return self.game.hud_notice is not None
 
     @property
     def captures_keys(self) -> bool:
         return False
 
     def draw(self, surface) -> None:
-        notice = getattr(self.game, 'hud_notice', None)
+        notice = self.game.hud_notice
         if notice is None:
             return
         if self.game.clock.frame_now() >= notice[1]:
@@ -224,7 +223,7 @@ class _UIObjectPanel(_KeyPanel):
 
     @property
     def ui(self):
-        return getattr(self.game, self.attr, None)
+        return getattr(self.game, self.attr)
 
     @property
     def visible(self) -> bool:
@@ -402,7 +401,7 @@ class BigMap(Overlay):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'big_map_visible', False))
+        return bool(self.game.big_map_visible)
 
     def handle_event(self, event) -> bool:
         if not self.visible or event.type == pygame.VIDEORESIZE:
@@ -427,7 +426,7 @@ class Help(Overlay):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'show_help', False))
+        return bool(self.game.show_help)
 
     @property
     def captures_keys(self) -> bool:
@@ -476,7 +475,7 @@ class Dialogue(_KeyPanel):
 
     @property
     def visible(self) -> bool:
-        return getattr(self.game, 'dialogue_text', None) is not None
+        return self.game.dialogue_text is not None
 
     def handle_key(self, event) -> None:
         g = self.game

@@ -81,7 +81,7 @@ class LayerRenderMixin(GameHost):
         for player in getattr(client, 'players', {}).values():
             if player.get('imgs') and player.get('level', client.level) == client.level:
                 self._render_npc_layers(player['imgs'], over=True, gui=True)
-        wimgs = getattr(getattr(self, 'gs1', None), '_weapon_imgs', None)
+        wimgs = self.gs1.weapon_imgs
         if wimgs:
             for store in list(wimgs.values()):
                 self._render_npc_layers(store, over=True, gui=True)

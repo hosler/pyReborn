@@ -1,31 +1,25 @@
 """Every attribute a GameClient has is declared once, in game/host.py.
 
-``GameHost`` annotates the whole catalogue. This file enforces it in three
-parts, and two allowlists that may only shrink:
+``GameHost`` annotates the whole catalogue. This file enforces it, strictly:
 
 1. Static. An AST walk over the game layer (``pyreborn/game/**``,
    ``pygame_game.py`` and the four library modules that take the game as an
    argument). Every store to a game attribute (``self.x = ...`` inside a class
    of the GameClient MRO; ``game.x`` / ``g.x`` / ``self.game.x`` elsewhere)
-   must name an annotation or a method/property. Every
+   must name an annotation or a method/property. There is no
    ``getattr(<game>, 'x', default)`` / ``hasattr(<game>, 'x')`` on a declared
-   name must be listed in ``ALLOWED_GUARDS``; the list must match the tree
-   exactly, so removing a guard forces the entry out too.
+   name anywhere: read it directly.
 2. Dynamic. A real offline game is built, then driven through start, frames,
-   chat, overlay keys, a push and two warps. Every attribute it gains after
-   ``__init__`` must be in ``LAZY_ALLOWED`` (or ``CLASS_LEVEL``).
+   chat, overlay keys, a push and two warps. It gains no attribute after
+   ``__init__`` (``CLASS_LEVEL`` names, which exist on the class from the
+   start, are the only exception).
 3. Catalogue equality. The annotations equal ``vars(game)`` after ``__init__``
-   plus ``LAZY_ALLOWED`` and ``CLASS_LEVEL``.
+   plus ``CLASS_LEVEL``.
 
-Allowlists. They start as the measured lists and only shrink:
-
-* a cluster step that makes ``__init__`` assign a lazy attribute deletes its
-  name from ``LAZY_ALLOWED`` (the test fails on a name that is already in
-  ``vars(game)``), and lowers ``LAZY_CEILING`` to the new length;
-* a step that removes a guard lowers its ``ALLOWED_GUARDS`` count (or deletes
-  the entry), and lowers ``GUARD_CEILING`` to the new sum;
-* raising a ceiling to bless a new lazy attribute or a new guard is the thing
-  this test exists to make visible: do not.
+There is no allowlist for guards or lazy attributes. A test double that lacks
+an attribute is fixed by building the real game with ``make_game``
+(tests/offline_game.py), not by adding a guard to the game layer. A cache that
+fills on first use is assigned empty in ``__init__``.
 """
 
 import ast
@@ -50,13 +44,6 @@ FIXTURE_EXTRAS = {"_fixture_clock", "_fixture_rng", "server", "feed",
 #: the library layer and reads its host through the GameShell protocol).
 LIB_GAME_USERS = ("sword.py", "throwing.py", "carrying.py", "pausing.py")
 
-# -- allowlists (only shrink) ----------------------------------------------------
-
-#: Declared names ``__init__`` does not assign. Each is created later by a
-#: store (a lazy cache, a lazy UI, a ``start()``-time value, a ``__dict__``
-#: write). An entry whose name is in ``vars(game)`` after ``__init__`` fails.
-LAZY_ALLOWED = frozenset()
-
 #: Declared names that exist only as a class-level default on the mixins. An
 #: entry that is no longer a class attribute, or that ``__init__`` now sets,
 #: fails.
@@ -64,25 +51,6 @@ CLASS_LEVEL = frozenset({
     "_vk_cache",
     "fullscreen",
 })
-
-#: (file relative to pyreborn/, name) -> number of guard sites. A guard is
-#: ``getattr(<game>, 'name', default)`` or ``hasattr(<game>, 'name')`` on a
-#: declared attribute.
-ALLOWED_GUARDS = {
-    ("game/input.py", "settings_ui"): 1,
-    ("game/overlays.py", "big_map_visible"): 1,
-    ("game/overlays.py", "debug_mode"): 1,
-    ("game/overlays.py", "dialogue_text"): 1,
-    ("game/overlays.py", "gs2"): 1,
-    ("game/overlays.py", "hud_notice"): 2,
-    ("game/overlays.py", "server_warp_prompt"): 1,
-    ("game/overlays.py", "show_help"): 1,
-    ("game/render_collect.py", "gs1"): 2,
-    ("game/render_layers.py", "gs1"): 1,
-}
-
-LAZY_CEILING = 0
-GUARD_CEILING = 12
 
 
 # -- the static walk ---------------------------------------------------------------
@@ -218,36 +186,16 @@ def test_every_store_names_a_declared_attribute():
         + "; ".join("%s at %s:%d" % u for u in undeclared))
 
 
-def test_guards_on_declared_names_are_allowlisted():
+def test_no_getattr_or_hasattr_guard_on_a_declared_attribute():
     measured = measured_guards()
-    new = {k: n for k, n in measured.items() if n > ALLOWED_GUARDS.get(k, 0)}
-    assert not new, (
-        "new getattr/hasattr guard on a declared attribute (assign it in "
-        "__init__ and read it directly instead): "
-        + "; ".join("%s %r x%d" % (k[0], k[1], n) for k, n in sorted(new.items())))
-
-
-def test_guard_allowlist_has_no_stale_entries():
-    measured = measured_guards()
-    stale = {k: n for k, n in ALLOWED_GUARDS.items()
-             if measured.get(k, 0) < n}
-    assert not stale, (
-        "ALLOWED_GUARDS lists guards that no longer exist: lower the count "
-        "or delete the entry, then lower GUARD_CEILING: "
-        + "; ".join("%s %r allows %d, tree has %d"
-                    % (k[0], k[1], n, measured.get(k, 0))
-                    for k, n in sorted(stale.items())))
-
-
-def test_guard_allowlist_only_shrinks():
-    assert sum(ALLOWED_GUARDS.values()) == GUARD_CEILING, (
-        "GUARD_CEILING must equal the sum of ALLOWED_GUARDS, and a step only "
-        "ever lowers both")
-
-
-def test_allowlisted_guard_names_are_declared():
-    unknown = {name for _, name in ALLOWED_GUARDS} - declared()
-    assert not unknown, "ALLOWED_GUARDS names not in GameHost: %s" % sorted(unknown)
+    assert not measured, (
+        "getattr/hasattr guard on a declared game attribute: read it "
+        "directly. If a test double lacks it, build the real game with "
+        "make_game (tests/offline_game.py) instead of guarding in the game "
+        "layer; if it may be absent, assign it (None, empty) in "
+        "GameClient.__init__. Found: "
+        + "; ".join("%s %r x%d" % (k[0], k[1], n)
+                    for k, n in sorted(measured.items())))
 
 
 # -- part 3 first: it needs only an unstarted game ------------------------------------
@@ -261,28 +209,14 @@ def _init_names(game):
     return set(vars(game)) - FIXTURE_EXTRAS
 
 
-def test_annotations_equal_init_attributes_plus_allowlists(unstarted):
+def test_annotations_equal_init_attributes_plus_class_level(unstarted):
     init = _init_names(unstarted)
     names = declared()
-    assert names == init | LAZY_ALLOWED | CLASS_LEVEL, (
-        "undeclared (set in __init__, not annotated): %s; "
-        "declared but absent after __init__ (annotated, not assigned, not "
-        "in LAZY_ALLOWED/CLASS_LEVEL): %s"
-        % (sorted(init - names),
-           sorted(names - init - LAZY_ALLOWED - CLASS_LEVEL)))
-
-
-def test_lazy_allowlist_has_no_stale_entries(unstarted):
-    init = _init_names(unstarted)
-    assert not LAZY_ALLOWED & init, (
-        "now assigned in __init__, delete from LAZY_ALLOWED (and lower "
-        "LAZY_CEILING): %s" % sorted(LAZY_ALLOWED & init))
-    assert not LAZY_ALLOWED - declared(), (
-        "LAZY_ALLOWED names not annotated: %s"
-        % sorted(LAZY_ALLOWED - declared()))
-    assert len(LAZY_ALLOWED) <= LAZY_CEILING
-    assert len(LAZY_ALLOWED) == LAZY_CEILING, (
-        "lower LAZY_CEILING to len(LAZY_ALLOWED)")
+    assert names == init | CLASS_LEVEL, (
+        "undeclared (set in __init__, not annotated in game/host.py): %s; "
+        "declared but absent after __init__ (assign it in "
+        "GameClient.__init__, None or empty if it fills later): %s"
+        % (sorted(init - names), sorted(names - init - CLASS_LEVEL)))
 
 
 def test_class_level_allowlist_has_no_stale_entries(unstarted):
@@ -306,7 +240,7 @@ def _flat(tile):
     return lambda tx, ty: tile
 
 
-def test_a_driven_game_gains_only_allowlisted_attributes(make_game):
+def test_a_driven_game_gains_no_attribute(make_game):
     from pyreborn.tiletypes import is_blocking
     wall = next(t for t in range(4096) if is_blocking(t))
 
@@ -341,10 +275,11 @@ def test_a_driven_game_gains_only_allowlisted_attributes(make_game):
     game.frames(5)
 
     gained = set(vars(game)) - declared_at_init - FIXTURE_EXTRAS
-    stray = gained - LAZY_ALLOWED - CLASS_LEVEL
+    stray = gained - CLASS_LEVEL
     assert not stray, (
-        "attributes created after __init__ that are neither assigned in "
-        "__init__ nor in LAZY_ALLOWED: %s" % sorted(stray))
+        "attributes first assigned after __init__ (a lazily created "
+        "attribute): assign them in GameClient.__init__, None or empty "
+        "until used: %s" % sorted(stray))
     assert gained <= declared(), (
         "created but not annotated: %s" % sorted(gained - declared()))
     assert game.frame_errors == {}
