@@ -17,6 +17,7 @@ context tells the producer to draw immediately instead.
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
+from .host import GameHost
 
 
 @dataclass
@@ -73,7 +74,7 @@ class FrameContext:
         return True
 
 
-class FrameContextMixin:
+class FrameContextMixin(GameHost):
     """Frame-context lifecycle, shared by every render mixin that touches one."""
 
     def _begin_frame(self) -> FrameContext:

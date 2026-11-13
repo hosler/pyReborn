@@ -17,12 +17,13 @@ from ..flyingobjects import (
     NOT_BOUNCING, center, explodes, explosion_origin, hits_walls,
     overlaps_player,
 )
+from .host import GameHost
 
 # A frame hitch must not turn into an unbounded burst of ticks.
 MAX_TICKS_PER_FRAME = 10
 
 
-class FlyingObjectsMixin:
+class FlyingObjectsMixin(GameHost):
     """Needs: client, sound_mgr, npc_handler, gs1, gs2, _is_blocked_at."""
 
     def _advance_flying(self, proj: dict, dt: float) -> bool:

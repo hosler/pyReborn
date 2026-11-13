@@ -27,10 +27,11 @@ from .constants import (
 )
 import logging
 from ..logutil import log_swallowed
+from .host import GameHost
 logger = logging.getLogger(__name__)
 
 
-class CollisionMixin:
+class CollisionMixin(GameHost):
     """Mixin providing the above methods for GameClient."""
 
     def _tile_type(self, tile_id: int) -> int:

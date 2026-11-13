@@ -9,6 +9,7 @@ import pygame
 from .assets import render_outlined_text
 from .frame_context import FrameContext
 from ..lru import LruCache
+from .host import GameHost
 
 
 #: Side of a grid cell, in screen pixels. A plate is roughly 60x14, so a
@@ -81,7 +82,7 @@ class _NameplateGrid:
         return None
 
 
-class RenderTextMixin:
+class RenderTextMixin(GameHost):
     def _place_nameplate(self, name_x: float, name_y: float,
                           size: Tuple[int, int],
                           frame: Optional[FrameContext] = None

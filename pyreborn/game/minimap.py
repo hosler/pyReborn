@@ -9,6 +9,7 @@ import pygame
 from reborn_protocol.coords import LEVEL_SIZE, gmap_extent, local_to_world
 
 from ..gmap_coords import grid_index
+from .host import GameHost
 
 
 def aspect_fit(source_size, bounds):
@@ -48,7 +49,7 @@ def map_entity_positions(client):
         yield (px % span_x) / span_x, (py % span_y) / span_y, (255, 255, 255)
 
 
-class MinimapMixin:
+class MinimapMixin(GameHost):
     """Mixin providing the above methods for GameClient."""
 
     def _build_minimap_surface(self):

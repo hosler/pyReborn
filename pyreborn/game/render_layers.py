@@ -14,10 +14,11 @@ from .render_shared import SUBTRACT_SMOKE_SCALE, _c255, _layer_colors
 import logging
 from ..logutil import log_swallowed
 from ..lru import LruCache
+from .host import GameHost
 logger = logging.getLogger(__name__)
 
 
-class LayerRenderMixin:
+class LayerRenderMixin(GameHost):
     @staticmethod
     def _fade_surface_edges(surf: pygame.Surface, frac: float = 0.35):
         """In-place: multiply RGB toward 0 near the surface's edges, so an

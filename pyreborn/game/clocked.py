@@ -6,8 +6,10 @@ times something (a fuse, a bubble, an animation frame, a hurt window) reads
 one of them and holds a real `Client` gets it for free.
 """
 
+from .host import GameHost
 
-class ClockedMixin:
+
+class ClockedMixin(GameHost):
     @property
     def clock(self):
         """The client's clock (`self.client.clock`)."""

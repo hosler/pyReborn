@@ -6,9 +6,10 @@ import pygame
 
 from ..gani import AnimationState
 from ..lru import LruCache
+from .host import GameHost
 
 
-class GaniRenderMixin:
+class GaniRenderMixin(GameHost):
     def _resolve_gani_layers(self, anim: AnimationState, frame, equipment: dict) -> list:
         """Resolve frame.sprites -> (image, sprite-rect) per layer, memoized
         per (gani, direction, frame, equipment). This is the expensive part
