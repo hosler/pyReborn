@@ -30,7 +30,7 @@ from .prefs import Prefs
 from .tiletypes import TileType
 from .game.constants import (
     TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, WALK_SPEED,
-    BOMB_FUSE_TIME, EXPLOSION_DURATION,
+    BOMB_FUSE_TIME,
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
@@ -348,7 +348,6 @@ class GameClient(
         # Unified local/remote bomb registry.
         self.active_bombs: List[dict] = []
         self.bomb_fuse_time = BOMB_FUSE_TIME
-        self.explosion_duration = EXPLOSION_DURATION
 
         # Active projectiles - each: {'x': float, 'y': float, 'dx': float, 'dy': float, 'time': float, 'gani': str}
         self.active_projectiles: List[dict] = []
@@ -425,8 +424,59 @@ class GameClient(
         # announcements only fire after this time (set when the loop starts).
         self.roster_ready_time = float('inf')
 
-        # Grass/dirt tile ID to replace picked up objects
-        self.grass_tile_id = 0  # Will be detected or default to 0
+        # -- state formerly created lazily (by a getattr guard, in start(), or
+        # as a class-level default). Each value is the one every guard falls
+        # back to, so a game behaves as it did when the name was absent. A
+        # None below is "not seen yet" (a sentinel the guard sites test for),
+        # not a placeholder to replace.
+        # Actions
+        self._ledge_jump = None
+        self._frozen_until = 0.0
+        self._swim_in_lava = False
+        self._step_parity = 0
+        self._footstep_tick = None
+        self._sleep_level = None
+        self._sleep_was_moving = False
+        self._sign_contact_key = None
+        self._ground_ticks = None          # built on first use (actions)
+        self._giveaway_item = None
+        self._found_chest_level = None
+        self._item_take_sent = set()
+        self._item_first_seen = {}
+        self._death_started = None
+        # Input
+        self._latch_context = None
+        self._mouse_left_latched = False
+        self.server_warp_prompt = None
+        self.hud_notice = None
+        self._overlay_stack = None         # built on first use (input)
+        # Script requests and presentation
+        self._pending_self_shoots = []
+        self._scripted_player_ani = None
+        self._camera_focus = None
+        self._camera_shake_started = None
+        self._current_music_name = None
+        self._pending_music = None
+        self._gs2_shape1_npcs = set()
+        self._low_hearts_next_beep = 0.0
+        self._dbg = False                  # start() reads PYREBORN_DEBUG
+        self._was_dead = False
+        self._frame_ctx = None
+        self._swamp_pos = None
+        self._swamp_slot = None
+        self._npc_visual_epoch = None      # built on first use (render_collect)
+        self._chest_reveals = []
+        self._chest_reveal_snapshots = {}
+        # Settings mirrors. SettingsOverlay (below) applies the saved prefs to
+        # _day_night_enabled and _low_hearts_warning_enabled.
+        self._camera_enabled = False
+        # Lazy UI objects: built on first use, so no connection or window
+        # state exists until then.
+        self.rc_ui = None
+        self.dev_ui = None
+        self.level_editor = None
+        self.editor_overlay = None
+        self.tile_palette = None
 
         # Setup callbacks
         self._setup_callbacks()

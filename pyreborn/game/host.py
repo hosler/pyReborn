@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from ..gs1_client.runtime import ClientGS1
     from ..gs2_client import ClientGS2
     from ..inventory_ui import HeartDisplay, InventoryUI
-    from ..lru import LruCache
     from ..npc_handler import NPCHandler
     from ..sounds import SoundManager
     from ..sprites import SpriteManager, TilesetManager
@@ -138,7 +137,7 @@ class GameHost:
     _sleep_level: Optional[str]
     _sleep_was_moving: bool
     _sign_contact_key: Optional[Any]
-    _ground_ticks: Tuple[Any, Any]
+    _ground_ticks: Optional[Tuple[Any, Any]]
     _giveaway_item: Optional[Any]
     _found_chest_level: Optional[str]
     _item_take_sent: Set[Any]
@@ -189,8 +188,6 @@ class GameHost:
 
     # -- particles (Particles, S9) -------------------------------------------
     particles: "Particles"
-    explosion_duration: float
-    grass_tile_id: int
 
     # -- chat (ChatState, S10) -----------------------------------------------
     chat: "ChatState"

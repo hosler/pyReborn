@@ -8,9 +8,7 @@ from typing import List, Optional
 
 from .. import asset_paths
 from .callbacks import wire_client_callbacks, wire_gs1_callbacks
-from .callbacks.client_callbacks import (
-    SAMPLE_EXTS, append_start_message, route_gs2_source,
-)
+from .callbacks.client_callbacks import route_gs2_source
 from .constants import PACKAGE_DIR
 from .clocked import ClockedMixin
 import logging

@@ -49,7 +49,7 @@ def test_removal_detonates_now_and_dedupes(harness):
 def test_distant_explosion_does_not_shake(harness):
     h = harness
     assert h._start_camera_shake(20.0, 20.0, now=3.0) is False
-    assert not hasattr(h, '_camera_shake_started')
+    assert h._camera_shake_started is None
 
 
 def test_active_camera_shake_is_not_restarted(harness):

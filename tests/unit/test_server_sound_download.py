@@ -33,7 +33,7 @@ import pygame
 import pytest
 
 from pyreborn import Client
-from pyreborn.game.setup import SAMPLE_EXTS
+from pyreborn.game.callbacks.client_callbacks import SAMPLE_EXTS
 from pyreborn.pygame_game import GameClient
 from pyreborn.sounds import SoundManager
 

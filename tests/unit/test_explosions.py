@@ -286,7 +286,6 @@ def test_legacy_bomb_computes_cells_lazily_on_render(cell_game):
             'explosion_tick': clock.tick, 'exploded': True, 'power': 2}
     game.active_bombs = [bomb]
     game.bomb_fuse_time = 3
-    game.explosion_duration = .6
     game._render_explosion_cell = Mock()
     clock.begin_tick()
     game._advance_bombs()

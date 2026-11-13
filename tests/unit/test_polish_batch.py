@@ -1,7 +1,7 @@
 """Focused coverage for the deferred client polish features."""
 
 from pyreborn.client import Client
-from pyreborn.game.setup import append_start_message
+from pyreborn.game.callbacks.client_callbacks import append_start_message
 from pyreborn.packets import PacketID, parse_newworldtime
 from pyreborn.player import Player
 

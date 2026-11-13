@@ -55,47 +55,7 @@ LIB_GAME_USERS = ("sword.py", "throwing.py", "carrying.py", "pausing.py")
 #: Declared names ``__init__`` does not assign. Each is created later by a
 #: store (a lazy cache, a lazy UI, a ``start()``-time value, a ``__dict__``
 #: write). An entry whose name is in ``vars(game)`` after ``__init__`` fails.
-LAZY_ALLOWED = frozenset({
-    "_camera_enabled",
-    "_camera_focus",
-    "_camera_shake_started",
-    "_chest_reveal_snapshots",
-    "_chest_reveals",
-    "_current_music_name",
-    "_dbg",
-    "_death_started",
-    "_footstep_tick",
-    "_found_chest_level",
-    "_frame_ctx",
-    "_frozen_until",
-    "_giveaway_item",
-    "_ground_ticks",
-    "_gs2_shape1_npcs",
-    "_item_first_seen",
-    "_item_take_sent",
-    "_latch_context",
-    "_ledge_jump",
-    "_low_hearts_next_beep",
-    "_mouse_left_latched",
-    "_npc_visual_epoch",
-    "_overlay_stack",
-    "_pending_music",
-    "_pending_self_shoots",
-    "_scripted_player_ani",
-    "_sign_contact_key",
-    "_sleep_level",
-    "_sleep_was_moving",
-    "_step_parity",
-    "_swamp_pos",
-    "_swamp_slot",
-    "_swim_in_lava",
-    "_was_dead",
-    "dev_ui",
-    "editor_overlay",
-    "level_editor",
-    "rc_ui",
-    "tile_palette",
-})
+LAZY_ALLOWED = frozenset()
 
 #: Declared names that exist only as a class-level default on the mixins. An
 #: entry that is no longer a class attribute, or that ``__init__`` now sets,
@@ -103,8 +63,6 @@ LAZY_ALLOWED = frozenset({
 CLASS_LEVEL = frozenset({
     "_vk_cache",
     "fullscreen",
-    "hud_notice",
-    "server_warp_prompt",
 })
 
 #: (file relative to pyreborn/, name) -> number of guard sites. A guard is
@@ -235,7 +193,7 @@ ALLOWED_GUARDS = {
     ("throwing.py", "gs2"): 1,
 }
 
-LAZY_CEILING = 39
+LAZY_CEILING = 0
 GUARD_CEILING = 162
 
 
