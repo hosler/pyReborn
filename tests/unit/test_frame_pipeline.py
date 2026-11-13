@@ -163,8 +163,8 @@ def test_start_is_the_one_time_setup_and_idempotent(game):
     assert calls == ["_update_swimming_state", "_load_npc_scripts",
                      "_trigger_playerenters", "update_npcs"]
     assert (game.visual_x, game.visual_y) == (12.0, 18.5)
-    assert game._gs1_level == game.client._current_level_name
-    assert game._gs1_visual_level_epoch == game.client._plain_level_change_epoch
+    assert game.arrival.gs1_level == game.client._current_level_name
+    assert game.arrival.visual_epoch == game.client._plain_level_change_epoch
     assert game.roster_ready_time >= before + 2.0
     game.start()
     assert len(calls) == 4

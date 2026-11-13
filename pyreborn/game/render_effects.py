@@ -25,7 +25,6 @@ from .frame_context import FrameContext, FrameContextMixin
 from .clocked import ClockedMixin
 import logging
 from ..logutil import log_swallowed
-from ..lru import LruCache
 logger = logging.getLogger(__name__)
 
 
@@ -98,9 +97,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
     def _combat_surface(self, name, flags=pygame.SRCALPHA):
         """Return a screen-sized cached effect surface."""
         key = (name, self.screen.get_size())
-        cache = getattr(self, '_combat_surface_cache', None)
-        if cache is None:
-            cache = self._combat_surface_cache = {}
+        cache = self.render_cache.combat_surface
         surf = cache.get(key)
         if surf is None:
             surf = cache[key] = pygame.Surface(self.screen.get_size(), flags)
@@ -116,7 +113,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         hit_alpha = state.hit_flash_alpha(now)
         if hit_alpha:
             vignette = self._combat_surface('hurt-vignette')
-            if not getattr(self, '_hurt_vignette_ready', False):
+            if not self.render_cache.hurt_vignette_ready:
                 vignette.fill((0, 0, 0, 0))
                 w, h = vignette.get_size()
                 edge = max(24, min(w, h) // 7)
@@ -124,7 +121,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                     alpha = round(90 * (1.0 - i / edge) ** 2)
                     pygame.draw.rect(vignette, (150, 0, 0, alpha),
                                      (i, i, w - i * 2, h - i * 2), 1)
-                self._hurt_vignette_ready = True
+                self.render_cache.hurt_vignette_ready = True
             vignette.set_alpha(hit_alpha)
             self.screen.blit(vignette, (0, 0))
 
@@ -833,9 +830,6 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
     # -- GS2 particle emitters (pyreborn/particles.py state model) ----------
 
-    #: cached finished particle surfaces, keyed by everything that changes
-    #: their pixels (quantized tint/alpha/rotation so the key space is small)
-    _PARTICLE_CACHE_CAP = 400
     #: per-emitter draw cap; the SIM cap is particles.SIM_PARTICLE_CAP
     _PARTICLE_DRAW_CAP = 1000
 
@@ -872,9 +866,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         ordered = (particles if emitter.get('firstinfront') != 0.0
                    else list(reversed(particles)))
         frame = self._frame_context()
-        cache = getattr(self, '_particle_surf_cache', None)
-        if cache is None:
-            cache = self._particle_surf_cache = LruCache(self._PARTICLE_CACHE_CAP)
+        cache = self.render_cache.particle_surf
         for p in ordered[:self._PARTICLE_DRAW_CAP]:
             image = p.image
             if not image:
@@ -1007,9 +999,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
     def _ripple_surface(self, radius: int):
         """Return a cached one-pixel ring for a ripple scale."""
-        cache = getattr(self, '_ripple_surface_cache', None)
-        if cache is None:
-            cache = self._ripple_surface_cache = {}
+        cache = self.render_cache.ripple_surface
         surface = cache.get(radius)
         if surface is None:
             side = radius * 2 + 2
@@ -1108,14 +1098,15 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                 # /4 quantization can round 255 up to 256 — clamp back into range.
                 color = tuple(min(255, round(channel / 4) * 4) for channel in ambient)
                 cache_key = (size, color)
-                if cache_key != getattr(self, '_day_night_overlay_key', None):
-                    self._day_night_overlay_key = cache_key
-                    overlay = getattr(self, '_day_night_overlay_surface', None)
+                held = self.render_cache
+                if cache_key != held.day_night_overlay_key:
+                    held.day_night_overlay_key = cache_key
+                    overlay = held.day_night_overlay_surface
                     if overlay is None or overlay.get_size() != size:
-                        overlay = self._day_night_overlay_surface = pygame.Surface(
+                        overlay = held.day_night_overlay_surface = pygame.Surface(
                             size, pygame.SRCALPHA)
                     overlay.fill(color)
-                self._blit_tint_overlay(self._day_night_overlay_surface, size,
+                self._blit_tint_overlay(held.day_night_overlay_surface, size,
                                         frame)
 
         tint = self.screen_tint
@@ -1126,13 +1117,14 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
             return
         color = (tint.get('r', 0), tint.get('g', 0), tint.get('b', 0), a)
         cache_key = (size, color)
-        if cache_key != getattr(self, '_tint_overlay_key', None):
-            self._tint_overlay_key = cache_key
-            overlay = getattr(self, '_tint_overlay_surface', None)
+        held = self.render_cache
+        if cache_key != held.tint_overlay_key:
+            held.tint_overlay_key = cache_key
+            overlay = held.tint_overlay_surface
             if overlay is None or overlay.get_size() != size:
-                overlay = self._tint_overlay_surface = pygame.Surface(size, pygame.SRCALPHA)
+                overlay = held.tint_overlay_surface = pygame.Surface(size, pygame.SRCALPHA)
             overlay.fill(color)
-        self._blit_tint_overlay(self._tint_overlay_surface, size, frame)
+        self._blit_tint_overlay(held.tint_overlay_surface, size, frame)
 
     def _blit_tint_overlay(self, overlay: pygame.Surface, size: Tuple[int, int],
                            frame: Optional[FrameContext] = None):
@@ -1153,9 +1145,10 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         if not lights:
             self.screen.blit(overlay, (0, 0))
             return
-        scratch = getattr(self, '_tint_hole_scratch', None)
+        scratch = self.render_cache.tint_hole_scratch
         if scratch is None or scratch.get_size() != size:
-            scratch = self._tint_hole_scratch = pygame.Surface(size, pygame.SRCALPHA)
+            scratch = self.render_cache.tint_hole_scratch = pygame.Surface(
+                size, pygame.SRCALPHA)
         # An exact copy, not an alpha-composite: overlay's own per-pixel
         # alpha would otherwise get baked into scratch's RGB (premultiplied)
         # by a plain blit, applying it a second time when scratch is later

@@ -45,6 +45,8 @@ def _renderer(player, selected, sprite):
         _attr_equipment=EntityRenderMixin._attr_equipment,
         _render_animated_entity=Mock(), _render_swamp_overlay=Mock(),
         _render_player_chat=Mock(), _status_label=lambda status: '',
+        _hidden_alpha=EntityRenderMixin._hidden_alpha,
+        _nameplate_label=Mock(return_value=''), _draw_nameplate=Mock(),
     )
 
 

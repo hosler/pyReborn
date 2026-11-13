@@ -70,9 +70,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
 
         # Retry the real art before consulting this fallback cache: sprites.png
         # may arrive from the server after the first item has already appeared.
-        cache = getattr(self, "_item_sprite_cache", None)
-        if cache is None:
-            cache = self._item_sprite_cache = {}
+        cache = self.render_cache.item_sprite
         if item_type in cache:
             return cache[item_type]
 
@@ -208,10 +206,7 @@ class LevelObjectsRenderMixin(ClockedMixin):
         composite the chest graphic from the tileset here, using distinct tiles
         for the open vs closed state.
         """
-        cache = getattr(self, "_chest_sprite_cache", None)
-        if cache is None:
-            cache = {}
-            self._chest_sprite_cache = cache
+        cache = self.render_cache.chest_sprite
         if opened in cache:
             return cache[opened]
 

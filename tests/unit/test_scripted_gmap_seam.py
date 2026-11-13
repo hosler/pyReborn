@@ -84,7 +84,7 @@ def test_unknown_cell_says_nothing_and_does_not_re_probe(seam_game):
     h._check_scripted_link_warp()
     assert not warped(c)
     assert c._current_level_name == SPAWN
-    assert h._scripted_gmap_cell == (10, 1)
+    assert h.arrival.scripted_gmap_cell == (10, 1)
 
 
 def test_default_movement_worlds_are_untouched(seam_game):

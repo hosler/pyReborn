@@ -24,7 +24,9 @@ import pytest
 
 from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1, GS1NoBoard
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.setup import SetupMixin
+from pyreborn.game.level_arrival import LevelArrival
 
 from .bomber_room0_fixture import load_script
 
@@ -175,8 +177,8 @@ class _EnterHarness(SetupMixin):
         self.npc_handler = SimpleNamespace(update_npcs=lambda: None)
         self.visual_x = self.visual_y = 0.0
         self.world_surface = None
-        self._gs1_level = None
-        self._level_change_pending = None
+        self.arrival = LevelArrival()
+        self.render_cache = RenderCache()
 
     def _load_npc_scripts(self):
         for npc_id, npc in self.client.npcs.items():
@@ -201,7 +203,7 @@ def test_playerenters_does_not_fire_before_the_board_arrives():
     c, gs1, game = _entering_engine(board_tile=None)
     game._reload_level_scripts("room0.nw")
     assert "entered" not in _probe_scope(gs1)
-    assert game._gs1_playerenters_pending is True
+    assert game.arrival.playerenters_pending is True
 
 
 def test_playerenters_fires_once_the_board_arrives():
@@ -212,12 +214,12 @@ def test_playerenters_fires_once_the_board_arrives():
     c._tiles_level_name = "room0.nw"
     game._check_level_change()
     assert _probe_scope(gs1)["entered"] == 1.0
-    assert game._gs1_playerenters_pending is False
+    assert game.arrival.playerenters_pending is False
 
 
 def test_late_streamed_npcs_do_not_get_a_boardless_playerenters():
     c, gs1, game = _entering_engine(board_tile=None)
-    game._gs1_level = "room0.nw"
+    game.arrival.gs1_level = "room0.nw"
     game._load_new_npcs()
     assert "npc_7" not in gs1.scripts
 

@@ -118,12 +118,12 @@ class TestBoardModifyUpdatesAnimatedIndex:
         key so the per-frame shimmer fold actually re-reads the updated
         animated index."""
         h, tiles = render_game()
-        h._animated_tiles_key = "sentinel"
+        h.render_cache.animated_tiles_key = "sentinel"
         h._get_segment_surface("level1.nw")
         tiles[5 * 64 + 5] = WATER_TILE_ID
         h._patch_world_surface_for_modify({'x': 5, 'y': 5, 'width': 1, 'height': 1, 'layer': 0})
 
-        assert h._animated_tiles_key is None
+        assert h.render_cache.animated_tiles_key is None
 
 
 class TestShimmerRamp:
@@ -144,14 +144,220 @@ class TestShimmerRamp:
         assert half.get_size() == (16, 16)
         assert falling_half is half
         assert full is not half
-        assert len(h._shimmer_cache) == 1
-        assert len(h._shimmer_cache[(WATER_TILE_ID, 1.0)]) == 3
+        assert len(h.render_cache.shimmer) == 1
+        assert len(h.render_cache.shimmer[(WATER_TILE_ID, 1.0)]) == 3
 
         h.camera.zoom = 1.5
         zoomed_half = h._get_shimmer_tile(WATER_TILE_ID, 1)
         assert zoomed_half.get_size() == (24, 24)
         assert zoomed_half is not half
-        assert (WATER_TILE_ID, 1.5) in h._shimmer_cache
+        assert (WATER_TILE_ID, 1.5) in h.render_cache.shimmer
+
+
+# -- every path that drops a RenderCache group-C field, proved by pixels --------
+#
+# Each test draws with the old art, changes the world, and requires the NEW
+# colour at a named screen position (the style of tests/offline_checks.py:
+# synthetic art gives every tile its own colour, so a stale cache entry shows
+# up as the old colour). Mutations are written against the invalidation code,
+# not the tests.
+
+import io
+
+import offline_expect as ex
+import offline_game as og
+import pygame
+from pyreborn.packets import PacketID
+
+SHEET = "dustynewpics1.png"
+RED = (200, 40, 40)
+BUMP_FULL = (18, 26, 34)        # the step-2 shimmer overlay (render_world)
+CHEST_AT = (20, 20)
+CLOSED_TOP_LEFT = 1784          # CHEST_TILES_CLOSED[0][0]
+WATER_AT = (12, 26)
+PROBE = (5, 25)          # a plain floor tile clear of the HUD and the player
+PATCH_AT = (5, 26)
+PLAYER = (30.0, 30.0)
+
+
+def _flat_sheet_png(color=RED):
+    surf = pygame.Surface((2048, 512))
+    surf.fill(color)
+    out = io.BytesIO()
+    pygame.image.save(surf, out, "sheet.png")
+    return out.getvalue()
+
+
+def _floor(tx, ty):
+    return 0
+
+
+def _water_floor(tx, ty):
+    return WATER_TILE_ID if (tx, ty) == WATER_AT else 0
+
+
+def _origin(game):
+    return ex.level_origin(game, PLAYER)
+
+
+def _at(game, tx, ty):
+    return ex.to_screen(_origin(game), tx + 0.5, ty + 0.5)
+
+
+def _shimmered(color):
+    return tuple(min(255, c + b) for c, b in zip(color, BUMP_FULL))
+
+
+def _draw(game, frames=2):
+    game._shimmer_ramp_step = lambda: 2     # the full-bright ramp step
+    game.frames(frames)
+    return game.last_frame
+
+
+def _scene(make_game, **knobs):
+    knobs.setdefault("tiles", _water_floor)
+    knobs.setdefault("player_xy", PLAYER)
+    game = make_game(**knobs)
+    frame = _draw(game)
+    return game, frame
+
+
+def _expect_old_art(game, frame):
+    ex.expect_pixel(frame, _at(game, *PROBE), og.tile_color(0), "old tile 0")
+    ex.expect_pixel(frame, _at(game, *WATER_AT),
+                    _shimmered(og.tile_color(WATER_TILE_ID)), "old shimmer")
+
+
+class TestInvalidationPaths:
+    def test_asset_arrival_of_the_base_sheet_redraws_segment_and_shimmer(
+            self, make_game):
+        """on_file with the base tileset -> _invalidate_tile_derived_caches.
+        Mutations: (a) drop `self.world_surface = None` from that method or
+        make _apply_pending_full_invalidate skip `self._segments().clear()`
+        -> fails 'new tile 0'; (b) drop `render_cache.shimmer.clear()` ->
+        fails 'new shimmer'."""
+        game, frame = _scene(make_game)
+        _expect_old_art(game, frame)
+
+        game.client.emit('on_file', SHEET, _flat_sheet_png())
+        frame = _draw(game)
+
+        ex.expect_pixel(frame, _at(game, *PROBE), RED, "new tile 0")
+        ex.expect_pixel(frame, _at(game, *WATER_AT), _shimmered(RED),
+                        "new shimmer")
+
+    def test_asset_arrival_redraws_the_chest_sprite(self, make_game):
+        """Mutation: drop `render_cache.chest_sprite.clear()` from
+        _invalidate_tile_derived_caches -> fails 'new chest'."""
+        game, frame = _scene(make_game, chests=[(*CHEST_AT, False)])
+        ex.expect_pixel(frame, _at(game, *CHEST_AT),
+                        og.tile_color(CLOSED_TOP_LEFT), "old chest")
+        assert game.render_cache.chest_sprite
+
+        game.client.emit('on_file', SHEET, _flat_sheet_png())
+        frame = _draw(game)
+
+        ex.expect_pixel(frame, _at(game, *CHEST_AT), RED, "new chest")
+
+    def test_tiledef_paste_and_removal_redraw_everything(self, make_game):
+        """on_tiledef (addtiledef2 / removetiledefs). Mutation: as the asset
+        test, applied to either call site -> the 'pasted' or 'restored'
+        assertions fail."""
+        game, frame = _scene(make_game, chests=[(*CHEST_AT, False)])
+        game.sprite_mgr.load_bytes("redsheet.png", _flat_sheet_png())
+
+        game.gs1.on_tiledef("paste", "redsheet.png", "", 0, 0)
+        frame = _draw(game)
+        ex.expect_pixel(frame, _at(game, *PROBE), RED, "pasted tile 0")
+        ex.expect_pixel(frame, _at(game, *WATER_AT), _shimmered(RED),
+                        "pasted shimmer")
+        ex.expect_pixel(frame, _at(game, *CHEST_AT), RED, "pasted chest")
+
+        game.gs1.on_tiledef(None, None)
+        frame = _draw(game)
+        _expect_old_art(game, frame)
+        ex.expect_pixel(frame, _at(game, *CHEST_AT),
+                        og.tile_color(CLOSED_TOP_LEFT), "restored chest")
+
+    def test_level_change_redraws_shimmer_and_chest_from_the_new_tileset(
+            self, make_game):
+        """A level-scoped full tiledef applies only to other.nw. Warping
+        there and back runs _reload_level_scripts -> the invalidation.
+        Mutations: drop shimmer.clear() -> fails 'other shimmer'; skip the
+        segment clear (see the asset test) -> fails 'other tile 0'. The chest
+        sprite is pinned by the two tests above (the chest exists only in
+        the start level)."""
+        game, frame = _scene(make_game, chests=[(*CHEST_AT, False)],
+                             extra_levels={"other.nw": _water_floor})
+        game.sprite_mgr.load_bytes("redsheet.png", _flat_sheet_png())
+        game.tileset_mgr.set_full_tiledef("redsheet.png", "other", 0)
+
+        async def warp(world, level, x, y):
+            await world.me.warp(level, x, y)
+
+        game.server.run(lambda w: warp(w, "other.nw", *PLAYER))
+        frame = _draw(game, 70)
+        assert game.client._current_level_name == "other.nw"
+        ex.expect_pixel(frame, _at(game, *PROBE), RED, "other tile 0")
+        ex.expect_pixel(frame, _at(game, *WATER_AT), _shimmered(RED),
+                        "other shimmer")
+
+        game.server.run(lambda w: warp(w, "fixture.nw", *PLAYER))
+        frame = _draw(game, 70)
+        assert game.client._current_level_name == "fixture.nw"
+        _expect_old_art(game, frame)
+        ex.expect_pixel(frame, _at(game, *CHEST_AT),
+                        og.tile_color(CLOSED_TOP_LEFT), "chest after return")
+
+    def test_board_modify_redraws_tile_and_adds_the_shimmer(self, make_game):
+        """PLO_BOARDMODIFY patches the segment in place and must refold the
+        animated list. Mutations: drop the in-place re-blit in
+        _patch_world_surface_for_modify -> fails 'patched tile'; drop its
+        `render_cache.animated_tiles_key = None` -> also fails 'patched
+        tile' (the shimmer never covers it) and the refold test above."""
+        game, frame = _scene(make_game)
+        gc = lambda v: bytes([v + 32])
+        data = gc(PATCH_AT[0]) + gc(PATCH_AT[1]) + gc(1) + gc(1)
+        data += bytes([(WATER_TILE_ID >> 7) + 32, (WATER_TILE_ID & 127) + 32])
+        game.feed(PacketID.PLO_BOARDMODIFY, data)
+        frame = _draw(game)
+
+        ex.expect_pixel(frame, _at(game, *PATCH_AT),
+                        _shimmered(og.tile_color(WATER_TILE_ID)),
+                        "patched tile")
+        ex.expect_pixel(frame, _at(game, *WATER_AT),
+                        _shimmered(og.tile_color(WATER_TILE_ID)), "new water")
+        assert (*PATCH_AT, WATER_TILE_ID) in game.render_cache.animated_tiles
+
+    def test_a_new_board_list_rebuilds_the_segment(self, make_game):
+        """A board stream assigns a new tiles list (new id()); the segment
+        entry's tiles_id no longer matches. Mutation: make
+        _get_segment_surface return `entry['surface']` without comparing
+        tiles_id -> fails 'streamed tile'."""
+        game, frame = _scene(make_game)
+        level = game.client._current_level_name
+        board = list(game.client.levels[level])
+        board[PATCH_AT[1] * 64 + PATCH_AT[0]] = 2
+        game.client.levels[level] = board
+        if game.client._tiles_level_name == level:
+            game.client.tiles = board
+        frame = _draw(game)
+
+        ex.expect_pixel(frame, _at(game, *PATCH_AT), og.tile_color(2),
+                        "streamed tile")
+
+    def test_replacing_the_cache_object_clears_every_group_c_field(
+            self, make_game):
+        """The group-C fields live only on render_cache: a fresh object is a
+        full invalidation and the frame is unchanged (pixels)."""
+        game, frame = _scene(make_game, chests=[(*CHEST_AT, False)])
+        before = pygame.image.tobytes(frame, "RGB")
+        from pyreborn.game.render_cache import RenderCache
+        game.render_cache = RenderCache()
+        again = _draw(game)
+        assert pygame.image.tobytes(again, "RGB") == before
+        for name in ("segment", "shimmer", "chest_sprite"):
+            assert getattr(game.render_cache, name)
 
 
 if __name__ == '__main__':

@@ -19,14 +19,14 @@ WATER = 264
 
 
 def reference_pass(self):
-    if not self._shimmer_draw_this_frame:
+    if not self.render_cache.shimmer_draw_this_frame:
         return
-    tiles = self._animated_tiles
+    tiles = self.render_cache.animated_tiles
     if not tiles:
         return
     for (tx, ty, tile_id) in tiles:
         sx, sy = self.camera.world_to_screen(tx, ty)
-        tile = self._get_shimmer_tile(tile_id, self._shimmer_step_this_frame)
+        tile = self._get_shimmer_tile(tile_id, self.render_cache.shimmer_step_this_frame)
         self.screen.blit(tile, (int(sx), int(sy)))
 
 
@@ -38,7 +38,7 @@ def draw_frame(game):
     """Step 0.3 s at a time until a frame that draws the shimmer; its pixels."""
     for _ in range(8):
         game.frames(1, dt=0.3)
-        if game._shimmer_draw_this_frame:
+        if game.render_cache.shimmer_draw_this_frame:
             assert game.frame_errors == {}
             return rgb(game.last_frame)
     raise AssertionError("no shimmer frame in 8 steps")
@@ -51,12 +51,12 @@ def reference_frame(game):
         game.frames(1, dt=0.0)
     finally:
         del game._render_animated_tiles
-    assert game._shimmer_draw_this_frame
+    assert game.render_cache.shimmer_draw_this_frame
     return rgb(game.last_frame)
 
 
 def folded(game):
-    return {(x, y) for x, y, _ in game._animated_tiles}
+    return {(x, y) for x, y, _ in game.render_cache.animated_tiles}
 
 
 def check(game, before, cells=None):
@@ -83,15 +83,15 @@ def block(x0, y0, w, h):
 def test_same_frame_matches_reference(make_game):
     game = make_game(tiles=water_at(block(20, 20, 20, 10)))
     assert draw_frame(game) == reference_frame(game)
-    assert game._animated_tiles
+    assert game.render_cache.animated_tiles
 
 
 def same_step_frame(game, dt=0.004):
     """One short frame that stays inside the ramp step of the last shimmer
     frame, so the cached list for that step is what gets reused."""
-    step = game._shimmer_step_this_frame
+    step = game.render_cache.shimmer_step_this_frame
     game.frames(1, dt=dt)
-    assert game._shimmer_step_this_frame == step and game._shimmer_draw_this_frame
+    assert game.render_cache.shimmer_step_this_frame == step and game.render_cache.shimmer_draw_this_frame
     assert game.frame_errors == {}
     return rgb(game.last_frame)
 
@@ -114,9 +114,9 @@ def test_standing_still_reuses_the_list_and_stays_correct(make_game):
     game = make_game(tiles=water_at(block(10, 10, 40, 30)))
     draw_frame(game)
     same_step_frame(game)
-    held = game._anim_draw.last_blits
+    held = game.render_cache.anim_draw.last_blits
     second = same_step_frame(game)
-    assert game._anim_draw.last_blits is held
+    assert game.render_cache.anim_draw.last_blits is held
     assert second == reference_frame(game)
 
 
@@ -140,18 +140,18 @@ def test_gmap_segment_load_and_unload(make_game):
                      extra_levels={GMAP_SEGMENTS[2]: water_at(block(0, 0, 64, 64))})
     c = game.client
     start = draw_frame(game)
-    assert game._animated_tiles == [] and start == reference_frame(game)
+    assert game.render_cache.animated_tiles == [] and start == reference_frame(game)
     for _ in range(90):
         c.move(0, 1, step=0.5)
         game.frames(1)
     near = check(game, start)
-    assert game._animated_tiles
+    assert game.render_cache.animated_tiles
     assert all(y >= 64 for _, y in folded(game))
     for _ in range(90):
         c.move(0, -1, step=0.5)
         game.frames(1)
     check(game, near, set())
-    assert game._animated_tiles == []
+    assert game.render_cache.animated_tiles == []
 
 
 def test_board_modify_adds_and_removes_water(make_game):
@@ -226,12 +226,12 @@ def test_shimmer_cache_cleared_alone_rebuilds(make_game):
     game = make_game(tiles=water_at(block(20, 20, 10, 10)))
     draw_frame(game)
     same_step_frame(game)
-    old = game._anim_draw.last_blits[0][0]
-    game._shimmer_cache.clear()
+    old = game.render_cache.anim_draw.last_blits[0][0]
+    game.render_cache.shimmer.clear()
     same_step_frame(game)
-    assert game._anim_draw.last_blits[0][0] is not old
-    assert game._anim_draw.last_blits[0][0] is game._get_shimmer_tile(
-        game._animated_tiles[0][2], game._shimmer_step_this_frame)
+    assert game.render_cache.anim_draw.last_blits[0][0] is not old
+    assert game.render_cache.anim_draw.last_blits[0][0] is game._get_shimmer_tile(
+        game.render_cache.animated_tiles[0][2], game.render_cache.shimmer_step_this_frame)
 
 
 def test_in_place_board_patch_refolds(make_game):

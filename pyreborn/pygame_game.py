@@ -34,6 +34,7 @@ from .game.constants import (
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
+from .game.level_arrival import LevelArrival
 from .game.push_grab import PushGrab
 from .game.assets import FontManager
 from .game.hud import HUD
@@ -308,16 +309,8 @@ class GameClient(
 
         # World rendering
         self.world_surface: Optional[pygame.Surface] = None
-        # Tier 4a: (world_tx, world_ty, tile_id) for water/lava tiles in the
-        # current world_surface, rebuilt alongside it - see render_world.py
-        # _render_animated_tiles for the shimmer this drives.
-        self._animated_tiles: List[Tuple[int, int, int]] = []
-        # Memoization key for the above (visible segment set + tile data +
-        # camera view) and the current shimmer ramp step, both
-        # set each frame by WorldRenderMixin._render_world - see render_world.py.
-        self._animated_tiles_key = None
-        self._shimmer_step_this_frame = 0
-        self._shimmer_draw_this_frame = False
+        # Tier 4a's animated-tile list, its memo key and the shimmer ramp
+        # flags live in render_cache (animated_tiles*, shimmer_*_this_frame).
 
         # Placeholders
         self.placeholder_sprite = create_placeholder_sprite(32, 32, (200, 50, 200))
@@ -331,17 +324,8 @@ class GameClient(
 
         # Built-in push/grab/pull prediction; actions dispatch NPC triggers.
         self.push = PushGrab()
-        # Link-warp guards. `_was_on_link`: True while standing on a warp link, so
-        # links only fire on the rising edge (stepping ON) — no bounce across
-        # overlapping links. `_link_arrival`: the spot a warp last dropped us;
-        # while within ~1.5 tiles of it, link warps stay suppressed even if the
-        # destination level's links stream in a few frames late — this is what
-        # stops the "warp loop" on downward crossings.
-        self._was_on_link = False
-        self._link_arrival = None
-        # Last position probed by _check_scripted_link_warp (scripted movement
-        # writes x/y from the VM, bypassing _move()'s link check).
-        self._scripted_link_pos = None
+        # Level arrival + link-warp guards (see game/level_arrival.py).
+        self.arrival = LevelArrival()
 
         # Draw position of the local player: the authoritative position
         # interpolated between the last two ticks (_update_visual_position).
@@ -380,7 +364,6 @@ class GameClient(
         self.leaf_particles: List[dict] = []
         self.water_ripples: List[dict] = []
         self._last_ripple_time = float('-inf')
-        self._ripple_surface_cache: Dict[int, pygame.Surface] = {}
 
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
 
@@ -540,8 +523,8 @@ class GameClient(
         self.npc_handler.update_npcs()
         # Remember which level the GS1 engine is loaded for so the loop's
         # level-change detector only re-runs on an actual warp.
-        self._gs1_level = self.client.current_level_name
-        self._gs1_visual_level_epoch = self.client.plain_level_change_epoch
+        self.arrival.gs1_level = self.client.current_level_name
+        self.arrival.visual_epoch = self.client.plain_level_change_epoch
 
         # Let the login roster dump settle before announcing further joins.
         self.roster_ready_time = self.clock.frame_now() + 2.0
@@ -813,7 +796,7 @@ class GameClient(
         just before the quit; the game cannot draw text afterwards."""
         self.fonts.close()
         self.font = self.font_small = None
-        self.__dict__.pop('_showtext_fonts', None)
+        self.render_cache.showtext_fonts.clear()
         inventory = getattr(self, 'inventory_ui', None)
         if inventory is not None:
             inventory.release_fonts()

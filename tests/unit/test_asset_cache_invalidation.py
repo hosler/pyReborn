@@ -77,12 +77,12 @@ def test_tile_derived_helper_clears_all_four_caches(make_game):
     harness = make_game()
     harness.tileset_mgr.tile_cache["tile"] = object()
     harness.world_surface = object()
-    harness._shimmer_cache = {(1, 1.0): object()}
-    harness._chest_sprite_cache = {False: object()}
+    harness.render_cache.shimmer = {(1, 1.0): object()}
+    harness.render_cache.chest_sprite = {False: object()}
 
     harness._invalidate_tile_derived_caches()
 
     assert harness.tileset_mgr.tile_cache == {}
     assert harness.world_surface is None
-    assert harness._shimmer_cache == {}
-    assert harness._chest_sprite_cache == {}
+    assert harness.render_cache.shimmer == {}
+    assert harness.render_cache.chest_sprite == {}

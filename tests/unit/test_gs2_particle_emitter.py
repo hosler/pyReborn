@@ -419,6 +419,7 @@ def test_frozen_emitter_does_not_advance():
 
 import pygame
 
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_effects import EffectsRenderMixin
 from pyreborn.game.render_entities import EntityRenderMixin
 
@@ -440,6 +441,7 @@ class _RenderHarness(EntityRenderMixin, EffectsRenderMixin):
             load_sheet=lambda name: sheet,
             get_sprite=lambda name, *part: sheet)
         self.requested = []
+        self.render_cache = RenderCache()
 
     def _request_asset(self, name):
         self.requested.append(name)

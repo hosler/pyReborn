@@ -248,6 +248,31 @@ class EntityRenderMixin(
             self.screen.blit(surf, (int(x + TILE_SIZE * 0.5),
                                     int(y + TILE_SIZE * 2.0)))
 
+    @staticmethod
+    def _hidden_alpha(status, ghost: bool = False) -> int:
+        """115 for a hidden (STATUS bit 0x02) or ghost-mode-1 entity, else 255."""
+        return 115 if ghost or (int(status or 0) & 0x02) else 255
+
+    def _nameplate_label(self, name: str, paused: bool, status) -> str:
+        """name, " (paused)", " [status-list label]": the player label rules."""
+        if paused:
+            name = f"{name} (paused)"
+        status_label = self._status_label(status)
+        if status_label:
+            name = f"{name} [{status_label}]" if name else f"[{status_label}]"
+        return name
+
+    def _draw_nameplate(self, text: str, color, centre_x: float, top_y: float,
+                        frame: FrameContext) -> None:
+        """Outlined small-font label centred on centre_x, staggered by
+        _place_nameplate, blitted. No-op for empty text."""
+        if not text:
+            return
+        surf = self._render_text_outlined_cached(self.font_small, text, color)
+        x, y = self._place_nameplate(centre_x - surf.get_width() // 2, top_y,
+                                     surf.get_size(), frame)
+        self.screen.blit(surf, (x, y))
+
     def _render_player(self, x: float, y: float, player: Player,
                        anim: AnimationState,
                        frame: Optional[FrameContext] = None):
@@ -260,9 +285,9 @@ class EntityRenderMixin(
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
         # A hideplayer() hide (STATUS bit 2) draws like other players' hidden
         # status does: translucent (see _render_other_player).
-        base_alpha = 115 if (
-            getattr(self.client, 'ghost_mode', 0) == 1
-            or int(getattr(player, 'status', 0) or 0) & 0x02) else 255
+        base_alpha = self._hidden_alpha(
+            getattr(player, 'status', 0),
+            ghost=getattr(self.client, 'ghost_mode', 0) == 1)
         alpha = self.combat_presentation.player_alpha(self.clock.frame_now(), base_alpha)
         equip = {
             'body_image': player.body_image or 'body.png',
@@ -299,22 +324,13 @@ class EntityRenderMixin(
         self._render_player_chat(anchor_x, y)
 
         # Render nickname below local player
-        nickname = player.nickname or player.account
-        if player.status & 1:
-            nickname = f"{nickname} (paused)"
-        status_label = self._status_label(player.status)
-        if status_label:
-            nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
-        if nickname:
-            name_surf = self._render_text_outlined_cached(
-                self.font_small, nickname, alignment_color(getattr(player, 'ap', 0)))
-            # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
-            # (24px) — the sprite is 3 tiles wide, top-left anchored at x.
-            name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
-            name_y = y + 48
-            name_x, name_y = self._place_nameplate(name_x, name_y,
-                                                   name_surf.get_size(), frame)
-            self.screen.blit(name_surf, (name_x, name_y))
+        # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
+        # (24px): the sprite is 3 tiles wide, top-left anchored at x.
+        self._draw_nameplate(
+            self._nameplate_label(player.nickname or player.account,
+                                  bool(player.status & 1), player.status),
+            alignment_color(getattr(player, 'ap', 0)),
+            x + int(TILE_SIZE * 1.5), y + 48, frame)
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
@@ -471,14 +487,13 @@ class EntityRenderMixin(
         for i, p in enumerate(gani_params[:5], start=1):
             if p:
                 equip[f'attr{i}_image'] = p
-        hidden = bool(int(pdata.get('status') or 0) & 0x02)
         # See _render_player's _PLAYER_ANCHOR_FIX comment: other players are
         # the same honestly-3-tile-wide sprite as the local player, so their
         # speech bubble needs the same +8px anchor shift. The sprite itself
         # anchors at raw (x, y) like every other gani entity.
         anchor_x = x + self._PLAYER_ANCHOR_FIX
         self._render_animated_entity(x, y, anim, equip,
-                                     alpha=115 if hidden else 255)
+                                     alpha=self._hidden_alpha(pdata.get('status')))
         counter = self._lift_subframe(anim) if anim.gani and anim.gani.name == 'lift' else None
         self._draw_carried_object(x, y, pdata.get('carry_sprite', -1), direction,
                                   counter=counter, bomb=pdata.get('_carried_bomb'))
@@ -489,23 +504,14 @@ class EntityRenderMixin(
             self._render_speech_bubble(anchor_x, y, chat_text)
 
         # Render nickname below player
-        nickname = pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or ''
-        if pdata.get('status', 0) & 1:
-            nickname = f"{nickname} (paused)"
-        status_label = self._status_label(pdata.get('status'))
-        if status_label:
-            nickname = f"{nickname} [{status_label}]" if nickname else f"[{status_label}]"
-        if nickname:
-            name_surf = self._render_text_outlined_cached(
-                self.font_small, nickname, alignment_color(pdata.get('ap', 0)))
-            # Center name below player (player sprite is ~48 pixels tall).
-            # True horizontal centre is x+1.5 tiles (24px), same as the local
-            # player (see _render_player).
-            name_x = x - name_surf.get_width() // 2 + int(TILE_SIZE * 1.5)
-            name_y = y + 48
-            name_x, name_y = self._place_nameplate(name_x, name_y,
-                                                   name_surf.get_size(), frame)
-            self.screen.blit(name_surf, (name_x, name_y))
+        # True horizontal centre is x+1.5 tiles (24px), same as the local
+        # player (see _render_player).
+        self._draw_nameplate(
+            self._nameplate_label(
+                pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or '',
+                bool(pdata.get('status', 0) & 1), pdata.get('status')),
+            alignment_color(pdata.get('ap', 0)),
+            x + int(TILE_SIZE * 1.5), y + 48, frame)
         if imgs:
             self._render_npc_layers(imgs, over=True)
 
@@ -867,12 +873,8 @@ class EntityRenderMixin(
         # NPCs, so they get no label (matching the classic client).
         nickname = npc.get('nickname')
         if nickname and nick_anchor:
-            name_surf = self._render_text_outlined_cached(
-                self.font_small, nickname, self._NPC_NICK_COLOR)
-            name_x = nick_anchor[0] - name_surf.get_width() // 2
-            name_x, name_y = self._place_nameplate(name_x, nick_anchor[1],
-                                                   name_surf.get_size(), frame)
-            self.screen.blit(name_surf, (name_x, name_y))
+            self._draw_nameplate(nickname, self._NPC_NICK_COLOR,
+                                 nick_anchor[0], nick_anchor[1], frame)
 
         self._render_npc_script_overlays(npc, x, y, nick_anchor)
 

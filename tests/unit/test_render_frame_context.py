@@ -316,6 +316,7 @@ class _LightHarness(EntityRenderMixin):
             load_sheet=lambda name: sheet,
             get_sprite=lambda name, *part: sheet,
         )
+        self.render_cache = RenderCache()
 
     def _request_asset(self, name):
         pass

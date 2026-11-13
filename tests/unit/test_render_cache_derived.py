@@ -1,9 +1,11 @@
-"""RenderCache holds derived state only: dropping it changes no pixel.
+"""Dropping the RenderCache changes no pixel.
 
 Two games run the same scripted scene. One is untouched; the other gets a
-fresh ``RenderCache()`` swapped in before every frame. If a cache carried
-state the frame depended on (a stale surface served for a changed key, a
-latched flag), the frames would differ.
+fresh ``RenderCache()`` swapped in before every frame. This proves that
+discarding the cache is safe: a cache whose loss changed a frame (state the
+frame depended on) would make the two runs differ. It does not prove that a
+cache invalidates correctly or that a live entry is never stale; the
+per-field tests do that.
 """
 
 import os
@@ -14,7 +16,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 
 from offline_game import NAMED_NPC
-from pyreborn.game.render_cache import RenderCache
+from pyreborn.game.render_cache import PARTICLE_CACHE_CAP, RenderCache
 from pyreborn.lru import LruCache
 
 
@@ -61,11 +63,12 @@ def test_default_factories_build_the_call_site_types():
     for name, cap in (("text_surf", 500), ("text_outline", 500), ("wrap", 300),
                       ("gani_layer", 2000), ("entity_alpha", 600),
                       ("npc_gani_split", 300), ("other_anim_split", 300),
-                      ("npc_zoom", 100), ("particle_surf", 400),
+                      ("npc_zoom", 100), ("particle_surf", PARTICLE_CACHE_CAP),
                       ("light_sprite", 300), ("showimg", 300)):
         held = getattr(cache, name)
         assert isinstance(held, LruCache), name
         assert held.max_entries == cap, name
+    assert PARTICLE_CACHE_CAP == 400
     assert cache.prefetched_gani_names == set()
     assert cache.baddy_sheets == {}
     assert cache.nameplate_grid is None

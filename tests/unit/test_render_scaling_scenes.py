@@ -57,7 +57,7 @@ def test_shimmer_on_level_frames(make_game):
     for i in range(5):
         game.frames(1, dt=0.3)
         capture(game, f"level_{i}")
-    assert game._animated_tiles, "scene must contain animated tiles"
+    assert game.render_cache.animated_tiles, "scene must contain animated tiles"
     assert game.frame_errors == {}
 
 
@@ -66,7 +66,7 @@ def test_shimmer_on_gmap_frames(make_game):
     for i in range(5):
         game.frames(1, dt=0.3)
         capture(game, f"gmap_{i}")
-    assert len(game._animated_tiles) > 500
+    assert len(game.render_cache.animated_tiles) > 500
     # walk across the seam so the shimmer list is re-folded mid-run
     for step in range(6):
         game.client.move(1, 0, step=0.5)

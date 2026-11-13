@@ -142,7 +142,7 @@ def wire_gs1_callbacks(game):
     # setlevel2 / serverwarp — authoritative in Reborn. Record it; the game
     # loop performs the warp between events (see _process_pending_warp).
     def on_warp(level, x, y):
-        game._pending_gs1_warp = (level, x, y)
+        game.arrival.pending_warp = (level, x, y)
 
     # triggeraction x,y,action,... — forward to the server. This is how an
     # arena adds its gameplay weapons (gr.addweapon,-arenaSYS,-arenaGUI).

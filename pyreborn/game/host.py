@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from .frame_context import FrameContext
     from .hud import HUD
     from .interpolation import TickInterpolator
+    from .level_arrival import LevelArrival
     from .push_grab import PushGrab
     from .render_cache import RenderCache
     from .settings_ui import SettingsOverlay
@@ -172,16 +173,7 @@ class GameHost:
     push: "PushGrab"
 
     # -- level arrival (LevelArrival, S4) ------------------------------------
-    _gs1_level: Optional[str]
-    _gs1_visual_level_epoch: Optional[int]
-    _gs1_playerenters_pending: bool
-    _level_change_pending: Optional[str]
-    _level_change_at: float
-    _pending_gs1_warp: Optional[Tuple[str, float, float]]
-    _was_on_link: bool
-    _link_arrival: Optional[Any]
-    _scripted_link_pos: Optional[Any]
-    _scripted_gmap_cell: Optional[Any]
+    arrival: "LevelArrival"
 
     # -- level transition (TransitionState, S8) -----------------------------
     _level_transition_slide: Optional[Dict[str, Any]]
@@ -191,34 +183,11 @@ class GameHost:
     _death_base_frame: Optional["pygame.Surface"]
     _seen_level_transition_epoch: int
 
-    # -- render caches (RenderCache; group A moved in S2, B/C/R below) -------
+    # -- render caches (RenderCache; groups A and B moved, C/R below) -------
     render_cache: "RenderCache"
-
-    # -- render caches, group B: effects and layers (RenderCache, S5) --------
-    _combat_surface_cache: Dict[Any, Any]
-    _hurt_vignette_ready: bool
-    _particle_surf_cache: "LruCache"
-    _ripple_surface_cache: Dict[Any, Any]
-    _day_night_overlay_key: Optional[Any]
-    _day_night_overlay_surface: Optional["pygame.Surface"]
-    _tint_overlay_key: Optional[Any]
-    _tint_overlay_surface: Optional["pygame.Surface"]
-    _tint_hole_scratch: Optional["pygame.Surface"]
-    _light_sprite_cache: "LruCache"
-    _showimg_cache: "LruCache"
-    _showtext_fonts: Dict[Any, Any]
 
     # -- render caches, group C: world and objects (RenderCache, S6) ---------
     world_surface: Optional["pygame.Surface"]
-    _segment_cache: Any
-    _shimmer_cache: Dict[Any, Any]
-    _anim_draw: Optional[Any]
-    _animated_tiles: List[Any]
-    _animated_tiles_key: Optional[Any]
-    _shimmer_step_this_frame: int
-    _shimmer_draw_this_frame: bool
-    _chest_sprite_cache: Dict[Any, Any]
-    _item_sprite_cache: Dict[Any, Any]
 
     # -- render caches, group R: render.py (RenderCache, S8) -----------------
     _zoom_scene_key: Optional[Any]

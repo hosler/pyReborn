@@ -197,7 +197,7 @@ def _script_step(game, index):
 def _setlevel2(at):
     def hook(game, index):
         if index == at:
-            game._pending_gs1_warp = ("elsewhere.nw", 10.0, 12.0)
+            game.arrival.pending_warp = ("elsewhere.nw", 10.0, 12.0)
     return hook
 
 

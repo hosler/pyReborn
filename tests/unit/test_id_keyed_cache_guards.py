@@ -32,7 +32,8 @@ def test_light_sprite_cache_rejects_a_different_source_surface(
     key = (id(source), variant, is_light)
     harness = SimpleNamespace(
         screen=pygame.Surface((2, 2)),
-        _light_sprite_cache={key: (stale_source, stale_result)},
+        render_cache=RenderCache(
+            light_sprite={key: (stale_source, stale_result)}),
         _LIGHT_ADDITIVE_ALPHA_CAP=140,
     )
     frame = SimpleNamespace(defer_light=lambda *_args: False)
@@ -41,7 +42,7 @@ def test_light_sprite_cache_rejects_a_different_source_surface(
         harness, source, 0, 0, is_light, coloreffect, frame,
     )
 
-    cached_source, cached_result = harness._light_sprite_cache[key]
+    cached_source, cached_result = harness.render_cache.light_sprite[key]
     assert cached_source is source
     assert cached_result is not stale_result
     assert harness.screen.get_at((0, 0))[:3] != (200, 100, 50)

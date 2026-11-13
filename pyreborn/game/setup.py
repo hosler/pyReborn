@@ -33,10 +33,8 @@ class SetupMixin(ClockedMixin):
             if tile_cache is not None:
                 tile_cache.clear()
         self.world_surface = None
-        for name in ("_shimmer_cache", "_chest_sprite_cache"):
-            cache = getattr(self, name, None)
-            if cache is not None:
-                cache.clear()
+        self.render_cache.shimmer.clear()
+        self.render_cache.chest_sprite.clear()
 
     def _append_chat(self, message: str) -> None:
         """Append one chat-log line, trim to the cap, and advance chat_seq.
@@ -164,9 +162,9 @@ class SetupMixin(ClockedMixin):
         level's destroys the player's room. The retry lives in
         _check_level_change."""
         if not self.gs1.board_ready():
-            self._gs1_playerenters_pending = True
+            self.arrival.playerenters_pending = True
             return
-        self._gs1_playerenters_pending = False
+        self.arrival.playerenters_pending = False
         try:
             self.gs1.trigger_event('playerenters')
         except Exception:
@@ -184,7 +182,7 @@ class SetupMixin(ClockedMixin):
         the arena's control NPC run before the player's -validation weapon
         had set #P2, so it read the room as empty and kicked the host
         (":No Players:") before the match could form."""
-        if self.client.current_level_name != getattr(self, '_gs1_level', None):
+        if self.client.current_level_name != self.arrival.gs1_level:
             return
         if not self.gs1.board_ready():
             return  # same boardless-playerenters rule as _trigger_playerenters
@@ -231,10 +229,10 @@ class SetupMixin(ClockedMixin):
         """Perform a GS1-requested warp (setlevel2/serverwarp) recorded by the
         on_warp callback. Done here, between events, so we never mutate level
         state in the middle of the script that asked for the warp."""
-        warp = getattr(self, '_pending_gs1_warp', None)
+        warp = self.arrival.pending_warp
         if not warp:
             return
-        self._pending_gs1_warp = None
+        self.arrival.pending_warp = None
         level, x, y = warp
         if not level:
             return
@@ -254,7 +252,8 @@ class SetupMixin(ClockedMixin):
         in. warp_to_level clears NPCs, so reloading too early would run nothing."""
         lvl = self.client.current_level_name
         epoch = self.client.plain_level_change_epoch
-        if epoch != getattr(self, '_gs1_visual_level_epoch', epoch):
+        seen = self.arrival.visual_epoch
+        if seen is not None and epoch != seen:
             # NOT a blanket clear: GS2 weapon HUD stores persist across
             # levels (real-client parity — see ClientGS1.drop_level_weapon_
             # layers; the v6 bomber's scripted HUD only repaints on state
@@ -269,7 +268,7 @@ class SetupMixin(ClockedMixin):
             # playerenters right after the reload.
             self.screen_tint = None
             # A confirmed plain level change ALWAYS needs the full engine
-            # reload below. actions.py's _use_door_link pre-stamps _gs1_level
+            # reload below. actions.py's _use_door_link pre-stamps arrival.gs1_level
             # after its own (partial) load — it never calls gs1.clear(), so
             # trusting that stamp left the OLD level's NPC scripts loaded and
             # running with their NPC dicts gone (this_obj=None): their
@@ -278,25 +277,25 @@ class SetupMixin(ClockedMixin):
             # followed you down the stairs and blacked out the spar pit.
             # Clearing the stamp forces _reload_level_scripts (idempotent;
             # weapon/NPC playerenters are re-runnable by design).
-            self._gs1_level = None
+            self.arrival.gs1_level = None
             # A held push/grab belongs to the wall it was aimed at; a new
             # level must start the 38-tick countdown over.
             self._clear_push_hold()
             self.push.pull_fired = False
-        self._gs1_visual_level_epoch = epoch
+        self.arrival.visual_epoch = epoch
         # A reload that had to skip `playerenters` because the board hadn't
         # arrived yet (see _trigger_playerenters) owes the level one: replay
         # the whole reload — it's idempotent by design — now that it has.
-        if getattr(self, '_gs1_playerenters_pending', False) and self.gs1.board_ready():
-            self._gs1_level = None
-        if not lvl or lvl == getattr(self, '_gs1_level', None):
+        if self.arrival.playerenters_pending and self.gs1.board_ready():
+            self.arrival.gs1_level = None
+        if not lvl or lvl == self.arrival.gs1_level:
             return
         now = self.clock.frame_now()
-        if getattr(self, '_level_change_pending', None) != lvl:
-            self._level_change_pending = lvl
-            self._level_change_at = now
+        if self.arrival.change_pending != lvl:
+            self.arrival.change_pending = lvl
+            self.arrival.change_at = now
         # Give NPCs a beat to arrive, but don't hang on a genuinely empty level.
-        if not self.client.npcs and now - self._level_change_at < 0.6:
+        if not self.client.npcs and now - self.arrival.change_at < 0.6:
             return
         self._reload_level_scripts(lvl)
 
@@ -398,5 +397,5 @@ class SetupMixin(ClockedMixin):
                 effects.clear()
         self.visual_x, self.visual_y = self.client.x, self.client.y
         self.world_surface = None
-        self._gs1_level = lvl
-        self._level_change_pending = None
+        self.arrival.gs1_level = lvl
+        self.arrival.change_pending = None

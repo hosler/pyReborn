@@ -91,9 +91,10 @@ class WorldRenderMixin(ClockedMixin):
         # Sample the four-step ramp once so this pass and the later animated
         # draw use the same phase even if the clock crosses a cadence boundary.
         # Phase zero uses the base tile already baked into the segment.
-        self._shimmer_step_this_frame = self._shimmer_ramp_step()
-        self._shimmer_draw_this_frame = self._shimmer_step_this_frame != 0
-        if self._shimmer_draw_this_frame:
+        cache = self.render_cache
+        cache.shimmer_step_this_frame = self._shimmer_ramp_step()
+        cache.shimmer_draw_this_frame = cache.shimmer_step_this_frame != 0
+        if cache.shimmer_draw_this_frame:
             self._refresh_animated_tiles_cache(segments, tile_range)
 
     def _blit_segment(self, level_name: str, grid_ox: int, grid_oy: int):
@@ -104,7 +105,7 @@ class WorldRenderMixin(ClockedMixin):
         self.screen.blit(surf, self.camera.world_to_screen(grid_ox, grid_oy))
 
     def _refresh_animated_tiles_cache(self, segments, tile_range):
-        """Rebuild self._animated_tiles (the per-frame world-coord fold of
+        """Rebuild render_cache.animated_tiles (the per-frame world-coord fold of
         every visible segment's water/lava index) only if the visible segment
         set, the underlying segment surfaces, or the camera's visible tile
         range actually changed since the last rebuild - a no-op while
@@ -119,14 +120,15 @@ class WorldRenderMixin(ClockedMixin):
         """
         min_tx, min_ty, max_tx, max_ty = tile_range
         cache = self._segments()
+        render_cache = self.render_cache
         key = (tile_range, tuple(
             (level_name, grid_ox, grid_oy,
              id(cache[level_name]['surface']) if level_name in cache else None)
             for (level_name, grid_ox, grid_oy) in segments
         ))
-        if key == self._animated_tiles_key:
+        if key == render_cache.animated_tiles_key:
             return
-        self._animated_tiles_key = key
+        render_cache.animated_tiles_key = key
 
         animated = []
         for (level_name, grid_ox, grid_oy) in segments:
@@ -138,7 +140,7 @@ class WorldRenderMixin(ClockedMixin):
             for (tx, ty, tile_id) in entry['animated']:
                 if lo_x <= tx <= hi_x and lo_y <= ty <= hi_y:
                     animated.append((grid_ox + tx, grid_oy + ty, tile_id))
-        self._animated_tiles = animated
+        render_cache.animated_tiles = animated
 
     def _render_level_loading(self):
         """Brief overlay shown while a newly-entered level's board streams in.
@@ -158,16 +160,13 @@ class WorldRenderMixin(ClockedMixin):
     # -- per-segment cache --------------------------------------------------
 
     def _segments(self) -> "OrderedDict[str, dict]":
-        """Lazily-initialized level_name -> segment cache entry map.
+        """The level_name -> segment cache entry map (render_cache.segment).
 
         Each entry: {'surface', 'tiles_id', 'layers_snapshot', 'animated'}.
         An OrderedDict so recently-used segments can be pushed to the end and
         stale ones evicted from the front once _MAX_CACHED_SEGMENTS is exceeded.
         """
-        cache = getattr(self, '_segment_cache', None)
-        if cache is None:
-            cache = self._segment_cache = OrderedDict()
-        return cache
+        return self.render_cache.segment
 
     def _apply_pending_full_invalidate(self):
         """Several call sites (level warps, tile-editor corrections, lift/throw
@@ -352,7 +351,7 @@ class WorldRenderMixin(ClockedMixin):
         # doesn't change for an in-place patch like this one - force it to
         # re-fold so the animated-index edit above actually reaches the
         # per-frame shimmer list instead of being masked by a stale key hit.
-        self._animated_tiles_key = None
+        self.render_cache.animated_tiles_key = None
 
     # Tier 4a: tile types eligible for the water/lava shimmer.
     _ANIMATED_TILE_TYPES = (TileType.WATER, TileType.NEAR_WATER,
@@ -405,9 +404,7 @@ class WorldRenderMixin(ClockedMixin):
         against a live server for this), so per the task's documented
         fallback this uses a palette-shift shimmer instead of guessing real
         alternate-frame tile ids."""
-        cache = getattr(self, '_shimmer_cache', None)
-        if cache is None:
-            cache = self._shimmer_cache = {}
+        cache = self.render_cache.shimmer
         # Normal zoomed rendering uses a 1:1 scratch camera and scales the
         # finished scene, while direct/debug rendering can use a zoomed camera
         # here. Key by the effective camera zoom and make the tile match that
@@ -446,29 +443,30 @@ class WorldRenderMixin(ClockedMixin):
     def _render_animated_tiles(self):
         """Tier 4a: redraw just the indexed water/lava tiles every ~300ms with
         a shimmer variant, on top of the already-composited world_surface."""
-        if not self._shimmer_draw_this_frame:
+        render_cache = self.render_cache
+        if not render_cache.shimmer_draw_this_frame:
             return  # base tile (already baked into world_surface) is frame 0
-        tiles = self._animated_tiles
+        tiles = render_cache.animated_tiles
         if not tiles:
             return
         # tiles is already culled to the camera's visible tile range (see
         # _refresh_animated_tiles_cache), so no per-tile screen-bounds check
         # is needed here beyond the world->screen conversion for the blit.
-        step = self._shimmer_step_this_frame
+        step = render_cache.shimmer_step_this_frame
         camera = self.camera
         scale = camera.scale
         ox, oy = camera.origin
         zoom = round(camera.zoom, 6)
-        shimmer_cache = getattr(self, '_shimmer_cache', None)
-        held = getattr(self, '_anim_draw', None)
+        shimmer_cache = render_cache.shimmer
+        held = render_cache.anim_draw
         # The surfaces depend on the folded list, the zoom (footprint) and the
         # tileset (the shimmer cache is emptied when it changes); the screen
         # positions on the camera origin and scale. Any of them differing
         # rebuilds that part, so a frame is what the per-tile loop drew.
         if (held is None or held.tiles is not tiles or held.zoom != zoom
                 or held.scale != scale
-                or held.shimmer_len != len(shimmer_cache or ())):
-            held = self._anim_draw = _AnimatedDraw(tiles, zoom, scale)
+                or held.shimmer_len != len(shimmer_cache)):
+            held = render_cache.anim_draw = _AnimatedDraw(tiles, zoom, scale)
         blits = held.blits_for(self, step, ox, oy)
         self.screen.blits(blits, False)
 
@@ -503,7 +501,7 @@ class _AnimatedDraw:
         if surfs is None:
             get = game._get_shimmer_tile
             surfs = self.surfaces[step] = [get(t[2], step) for t in self.tiles]
-            self.shimmer_len = len(game._shimmer_cache)
+            self.shimmer_len = len(game.render_cache.shimmer)
         scale = self.scale
         blits = [(s, (int(x * scale + ox), int(y * scale + oy)))
                  for s, x, y in zip(surfs, self.xs, self.ys)]

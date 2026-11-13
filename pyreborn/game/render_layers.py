@@ -13,7 +13,6 @@ from .frame_context import FrameContext
 from .render_shared import SUBTRACT_SMOKE_SCALE, _c255, _layer_colors
 import logging
 from ..logutil import log_swallowed
-from ..lru import LruCache
 from .host import GameHost
 logger = logging.getLogger(__name__)
 
@@ -220,9 +219,7 @@ class LayerRenderMixin(GameHost):
         # is wasted work for a layer that's usually static between server
         # updates - cache the finished (scaled + recolored) surface keyed by
         # everything that can change its pixels.
-        cache = getattr(self, '_showimg_cache', None)
-        if cache is None:
-            cache = self._showimg_cache = LruCache(300)
+        cache = self.render_cache.showimg
         cache_key = (image, part, w, h, colors_key, additive, subtractive)
         out = cache.get(cache_key)
         if out is None:
@@ -437,9 +434,7 @@ class LayerRenderMixin(GameHost):
         self.screen.blit(surf, (int(sx), int(sy)))
 
     def _showtext_font(self, name: str, size: int, bold: bool):
-        cache = getattr(self, '_showtext_fonts', None)
-        if cache is None:
-            cache = self._showtext_fonts = {}
+        cache = self.render_cache.showtext_fonts
         key = (name.lower(), size, bold)
         font = cache.get(key)
         if font is None:
@@ -523,9 +518,7 @@ class LayerRenderMixin(GameHost):
         # copy()+recolor/set_alpha() every frame per light NPC is wasted work
         # since the same (sprite, mult) pair repeats frame to frame - cache
         # the result.
-        cache = getattr(self, '_light_sprite_cache', None)
-        if cache is None:
-            cache = self._light_sprite_cache = LruCache(300)
+        cache = self.render_cache.light_sprite
 
         if is_light:
             # See the class-level comment above: alpha is folded into the RGB

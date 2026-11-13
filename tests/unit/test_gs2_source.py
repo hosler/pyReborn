@@ -12,6 +12,7 @@ from reborn_protocol.gs2.compiler import Gs2Compiler, find_compiler
 from reborn_protocol.gs2.detect import looks_like_gs2
 from pyreborn.game.callbacks import client_callbacks
 from pyreborn.game.setup import SetupMixin
+from pyreborn.game.level_arrival import LevelArrival
 from pyreborn.client import Client
 from pyreborn.packets import PacketID
 
@@ -114,7 +115,7 @@ def game(monkeypatch):
     client.current_level_name = 'test.nw'
     game = SimpleNamespace(
         client=client, gs1=Mock(scripts={}), sound_mgr=SimpleNamespace(),
-        _request_asset=Mock(), _gs1_level='test.nw', npc_handler=Mock(),
+        _request_asset=Mock(), arrival=LevelArrival(gs1_level='test.nw'), npc_handler=Mock(),
         gs2_sources=client_callbacks.Gs2SourceRouter())
     game.previous_weapon_del = Mock()
     client.on_packet[PacketID.PLO_NPCWEAPONDEL] = game.previous_weapon_del

@@ -105,7 +105,7 @@ class TestSwimmingStateRecompute:
         h._update_swimming_state()
         assert h.is_swimming is True
 
-        h._pending_gs1_warp = (OTHER, 24.0, 26.0)
+        h.arrival.pending_warp = (OTHER, 24.0, 26.0)
         h._process_pending_warp()
         assert c._current_level_name == OTHER
         assert h.is_swimming is False

@@ -11,6 +11,7 @@ from pyreborn import ground_items as gi
 from pyreborn.classic_sprites import SPRITE_RECTS
 from pyreborn.game.constants import TILE_SIZE
 from pyreborn.game.frame_context import FrameContext
+from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.render_collect import EntityCollectMixin
 from pyreborn.game.render_objects import LevelObjectsRenderMixin
 from pyreborn.sprites import SpriteManager
@@ -19,6 +20,7 @@ from pyreborn.sprites import SpriteManager
 class _ItemRenderHarness(LevelObjectsRenderMixin):
     def __init__(self, sprite_mgr):
         self.sprite_mgr = sprite_mgr
+        self.render_cache = RenderCache()
 
 
 @pytest.mark.parametrize('item_type', gi.ITEM_NAMES)

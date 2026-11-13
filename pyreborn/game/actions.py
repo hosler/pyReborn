@@ -506,15 +506,15 @@ class ActionsMixin(ClockedMixin):
                 or getattr(self, '_level_transition_input_frozen', False)):
             return False
         pos = (self.client.x, self.client.y)
-        if pos == getattr(self, '_scripted_link_pos', None):
+        if pos == self.arrival.scripted_link_pos:
             return False
-        self._scripted_link_pos = pos
+        self.arrival.scripted_link_pos = pos
         self._check_scripted_gmap_segment()
         warped = self._try_link_warp()
         if warped:
             # Stamp the post-warp position so the next frame's probe only
             # fires again on genuine further movement.
-            self._scripted_link_pos = (self.client.x, self.client.y)
+            self.arrival.scripted_link_pos = (self.client.x, self.client.y)
         return warped
 
     def _check_scripted_gmap_segment(self) -> bool:
@@ -538,12 +538,12 @@ class ActionsMixin(ClockedMixin):
         if not getattr(client, 'in_gmap_segment', False) or not client.gmap_grid:
             return False
         grid = segment_at(client.x, client.y)
-        if grid == getattr(self, '_scripted_gmap_cell', None):
+        if grid == self.arrival.scripted_gmap_cell:
             return False
         level = client.gmap_grid.get(grid)
         # Unknown cell (hole in the grid, or off its edge): remember it so we
         # don't re-probe every frame, but say nothing to the server.
-        self._scripted_gmap_cell = grid
+        self.arrival.scripted_gmap_cell = grid
         if not level or level == client.current_level_name:
             return False
         client.send_position()
@@ -1196,28 +1196,28 @@ class ActionsMixin(ClockedMixin):
         # where the last warp dropped us (distance, NOT link-load state — the new
         # level's links can arrive a few frames late, and clearing on "no link
         # right now" would re-arm a return warp and loop).
-        if self._link_arrival is not None:
-            ax, ay = self._link_arrival
+        if self.arrival.link_arrival is not None:
+            ax, ay = self.arrival.link_arrival
             if abs(self.client.x - ax) >= 1.5 or abs(self.client.y - ay) >= 1.5:
-                self._link_arrival = None
+                self.arrival.link_arrival = None
 
         link = self._get_non_edge_door()
         on_link = link is not None
         if not on_link:
-            self._was_on_link = False
+            self.arrival.on_link = False
             return False
         # Still sitting near a recent warp arrival: don't re-fire (covers the
         # return link, an overlapping link we landed in, and late-loading links).
-        if self._link_arrival is not None:
-            self._was_on_link = True
+        if self.arrival.link_arrival is not None:
+            self.arrival.on_link = True
             return False
-        if not self._was_on_link:
+        if not self.arrival.on_link:
             # Rising edge: stepped onto a link. Mark on-link + record the arrival
             # point BEFORE warping isn't possible (use_link moves us), so set the
             # latch first, then stamp arrival from the post-warp position.
-            self._was_on_link = True
+            self.arrival.on_link = True
             self._use_door_link(link)
-            self._link_arrival = (self.client.x, self.client.y)
+            self.arrival.link_arrival = (self.client.x, self.client.y)
             return True
         return False
     def _use_door_link(self, door_link: dict):
@@ -1242,7 +1242,7 @@ class ActionsMixin(ClockedMixin):
         self.npc_handler.update_npcs()
         # Mark this level as the one the GS1 engine is loaded for so the loop's
         # level-change detector doesn't redundantly reload it.
-        self._gs1_level = self.client.current_level_name
+        self.arrival.gs1_level = self.client.current_level_name
     def _get_non_edge_door(self) -> Optional[dict]:
         """Get door link at current position, ignoring edge links in GMAP mode."""
         link = self.client.check_link_collision()

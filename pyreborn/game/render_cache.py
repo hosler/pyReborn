@@ -21,6 +21,12 @@ from typing import Any, Dict, List, Optional, Set
 
 from ..lru import LruCache
 
+#: capacity of ``RenderCache.particle_surf``: finished particle surfaces,
+#: keyed by everything that changes their pixels (quantized tint, alpha and
+#: rotation, so the key space stays small). render_effects.py reads the
+#: capacity from the field.
+PARTICLE_CACHE_CAP = 400
+
 
 @dataclass
 class RenderCache:
@@ -40,9 +46,8 @@ class RenderCache:
     # -- group B: effects and layers (render_effects / render_layers; S5)
     combat_surface: Dict[Any, Any] = field(default_factory=dict)
     hurt_vignette_ready: bool = False
-    # 400 is EffectsRenderMixin._PARTICLE_CACHE_CAP (a literal here so this
-    # module imports nothing from the render mixins).
-    particle_surf: LruCache = field(default_factory=lambda: LruCache(400))
+    particle_surf: LruCache = field(
+        default_factory=lambda: LruCache(PARTICLE_CACHE_CAP))
     ripple_surface: Dict[Any, Any] = field(default_factory=dict)
     day_night_overlay_key: Optional[Any] = None
     day_night_overlay_surface: Optional[Any] = None

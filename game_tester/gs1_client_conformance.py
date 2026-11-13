@@ -1311,7 +1311,7 @@ def _run_case(env: CaseEnv, case: ClientCase) -> None:
             while time.time() < deadline:
                 _pump(game, 1)
                 if (client._current_level_name == env.level
-                        and getattr(game, "_gs1_level", None) == env.level):
+                        and game.arrival.gs1_level == env.level):
                     break
             else:
                 raise AssertionError(f"never arrived on {env.level} "
