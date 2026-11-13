@@ -29,6 +29,10 @@ from .palette import (  # noqa: F401  (re-exported for existing importers)
 from .asset_paths import (  # noqa: F401
     _DIRECTORY_NAME_CACHE, find_asset_file, strip_tiledef_image,
 )
+import logging
+from .logutil import log_swallowed
+from .lru import LruCache
+logger = logging.getLogger(__name__)
 
 
 # Bounds on the below caches, same LRU-eviction idea as render_world.py's
@@ -99,7 +103,7 @@ class SpriteManager:
         self._recolor_sprite_cache: "OrderedDict[tuple, Optional[pygame.Surface]]" = OrderedDict()
         # normalized-colors-tuple cache for get_sprite_recolored/recolor_body,
         # keyed by id(colors) - see _colors_key().
-        self._colors_key_cache: Dict[int, Tuple[list, Tuple[int, ...]]] = {}
+        self._colors_key_cache: Dict[int, Tuple[list, Tuple[int, ...]]] = LruCache(300)
 
         # Subdirectories to search within each path
         self.subdirs = ['', 'bodies', 'heads', 'swords', 'shields', 'hats',
@@ -200,7 +204,7 @@ class SpriteManager:
                 self._raw8_cache[name] = surface
                 self._evict_lru(self._raw8_cache, _MAX_CACHED_SHEETS)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def get_raw8(self, name: str):
         """The original 8-bit surface for `name` (palette intact), loading the
@@ -364,8 +368,6 @@ class SpriteManager:
         if entry is not None and entry[0] is colors:
             return entry[1]
         key = tuple(int(c) for c in colors[:5])
-        if len(cache) > 300:
-            cache.clear()
         cache[id(colors)] = (colors, key)
         return key
 
@@ -427,6 +429,7 @@ class SpriteManager:
                 return None
             sprite = sheet.subsurface((cx, cy, cw, ch)).copy()
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return None
         self._recolor_sprite_cache[cache_key] = sprite
         self._evict_lru(self._recolor_sprite_cache, _MAX_CACHED_RECOLOR_SPRITES)
@@ -579,6 +582,7 @@ class TilesetManager:
             swapped.set_palette(pal.get_palette())
             return self.sprite_mgr._convert_surface(swapped, True)
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return None
 
     def _get_composed_sheet(self) -> Optional[pygame.Surface]:

@@ -23,6 +23,10 @@ from .constants import TILE_SIZE, EXPLOSION_DURATION
 from .flying import FlyingObjectsMixin
 from .frame_context import FrameContext, FrameContextMixin
 from .clocked import ClockedMixin
+import logging
+from ..logutil import log_swallowed
+from ..lru import LruCache
+logger = logging.getLogger(__name__)
 
 
 def _q_dim(v: int) -> int:
@@ -870,7 +874,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         frame = self._frame_context()
         cache = getattr(self, '_particle_surf_cache', None)
         if cache is None:
-            cache = self._particle_surf_cache = {}
+            cache = self._particle_surf_cache = LruCache(self._PARTICLE_CACHE_CAP)
         for p in ordered[:self._PARTICLE_DRAW_CAP]:
             image = p.image
             if not image:
@@ -912,8 +916,6 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                         surf.set_alpha(_pc255(a))
                 if rot:
                     surf = pygame.transform.rotate(surf, rot)
-                if len(cache) > self._PARTICLE_CACHE_CAP:
-                    cache.clear()
                 cache[key] = surf
             px, py, pz = p.x, p.y, p.z
             if not attach:
@@ -975,7 +977,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         try:
             self._play_audio('water.wav' if int(leap_type) == 5 else 'crush.wav')
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def _render_leaps(self):
         """Draw active putleaps bursts and expire finished ones."""

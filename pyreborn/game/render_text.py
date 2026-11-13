@@ -8,6 +8,7 @@ import pygame
 
 from .assets import render_outlined_text
 from .frame_context import FrameContext
+from ..lru import LruCache
 
 
 #: Side of a grid cell, in screen pixels. A plate is roughly 60x14, so a
@@ -131,12 +132,10 @@ class RenderTextMixin:
         showtext) wants `_render_text_outlined_cached` instead, below."""
         cache = getattr(self, '_text_surf_cache', None)
         if cache is None:
-            cache = self._text_surf_cache = {}
+            cache = self._text_surf_cache = LruCache(500)
         key = (id(font), text, color)
         surf = cache.get(key)
         if surf is None:
-            if len(cache) > 500:
-                cache.clear()
             surf = cache[key] = font.render(text, True, color)
         return surf
 
@@ -151,12 +150,10 @@ class RenderTextMixin:
         assets.render_outlined_text for the actual stamping."""
         cache = getattr(self, '_text_outline_cache', None)
         if cache is None:
-            cache = self._text_outline_cache = {}
+            cache = self._text_outline_cache = LruCache(500)
         key = (id(font), text, color, outline_color)
         surf = cache.get(key)
         if surf is None:
-            if len(cache) > 500:
-                cache.clear()
             surf = cache[key] = render_outlined_text(font, text, color, outline_color)
         return surf
 
@@ -167,7 +164,7 @@ class RenderTextMixin:
         text - messages are static once received."""
         cache = getattr(self, '_wrap_cache', None)
         if cache is None:
-            cache = self._wrap_cache = {}
+            cache = self._wrap_cache = LruCache(300)
         lines = cache.get(text)
         if lines is not None:
             return lines
@@ -188,8 +185,6 @@ class RenderTextMixin:
             lines.append(current_line)
         lines = lines[:3]  # Limit to 3 lines max
 
-        if len(cache) > 300:
-            cache.clear()
         cache[text] = lines
         return lines
 

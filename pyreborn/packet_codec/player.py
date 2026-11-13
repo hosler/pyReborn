@@ -1,5 +1,8 @@
 from .common import *
 from .common import _CARRY_PLAYER_PROPS, _set_carry, _set_z2
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 def parse_rawdata(data: bytes) -> int:
     """
@@ -325,6 +328,7 @@ def _parse_weapon_add_structured(data: bytes):
             result['classes'] = classes
         return result
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return None
 
 
@@ -368,6 +372,7 @@ def parse_shoot(data: bytes, v2: bool) -> dict:
                 'x': x, 'y': y,
                 'sangle': sangle, 'sanglez': sanglez, 'power': power}
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return {}
 
 
@@ -413,6 +418,7 @@ def _parse_weapon_add_text(data: bytes) -> dict:
                 script = ''
         return {'name': name, 'image': image.strip(), 'script': script}
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return {}
 
 

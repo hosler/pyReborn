@@ -21,6 +21,7 @@ from .objects import _BoardTilesColumn, _GaniThisObject, _LevelObject, _NpcThisO
 from .objects_player import _FlagScopeObject, _NameObject, _PlayerAttrObject, _PlayerColorsObject, _PlayerObject, _ThisObject, _guild_from_nick
 from .game_shell import GameShell
 from .registry import gui_layer, is_gui_control, PENDING_EVENT_CAP, SAVE_LINES_CACHE_MAX_BYTES, SAVE_LINES_MAX_CHARS_PER_LINE, SAVE_LINES_MAX_LINES, SCHEDULED_EVENT_CAP, _TIMER_CANCEL, _GS1_TEXT_ARGS, _GlobalsStore, _REMOTE_PLAYER_EMPTY_STRINGS, _REMOTE_PLAYER_STICKY_NUMBERS, logger
+from ..logutil import log_swallowed
 
 CLASS_JOIN_WAIT_SECONDS = 5.0
 CLASS_JOIN_WAIT_PUMPS = 300
@@ -1222,6 +1223,7 @@ class ClientGS2:
         try:
             return bool(self.client.request_class_bytecode(classname))
         except Exception:
+            log_swallowed(logger)
             return False
 
     #: Distinct class names pulled through NPC CLASS props per session.
@@ -1269,7 +1271,7 @@ class ClientGS2:
             try:
                 self.client.request_class_bytecode(name)
             except Exception:
-                pass
+                log_swallowed(logger)
         return True
 
     def _join_listed_classes(self, vm: GS2VM, names) -> None:
@@ -1328,7 +1330,7 @@ class ClientGS2:
             try:
                 self.client.request_class_bytecode(classname)
             except Exception:
-                pass
+                log_swallowed(logger)
         if vm.call_is_suspendable:
             return _ClassJoinWait(self, vm, cname)
         return False
@@ -1852,7 +1854,7 @@ class ClientGS2:
                 try:
                     client.request_file(fname)
                 except Exception:
-                    pass
+                    log_swallowed(logger)
             return None
         return _image_size(data)
 
@@ -2106,7 +2108,7 @@ class ClientGS2:
                 if request(name, 0):
                     self._requested_ganis.add(name)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     def note_gani(self, wearer_key: tuple, value, force: bool = False) -> None:
         name, params = self._split_gani_text(value)
@@ -2277,7 +2279,7 @@ class ClientGS2:
             if client.send_position():
                 self._pos_sync_last = snap
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def _npc_timer_suppressed(self, kind: str, key, vm) -> bool:
         """True when this VM's timed events must NOT fire.

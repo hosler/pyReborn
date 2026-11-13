@@ -20,6 +20,7 @@ from ..packets import (
 )
 from ..client_callbacks import emit
 from .registry import handles
+from ..logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def adopt_gmap(client, filename: str, blob: bytes) -> bool:
     try:
         client.load_gmap(text)
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return False
     client.gmap_name = filename
     # Now that the grid is known, pull in the neighbouring segments so the

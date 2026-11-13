@@ -8,6 +8,7 @@ from ..tiletypes import selection_for, register_tiledef, remove_tiledefs
 from .board import board_update_region
 from .objects import _pcode, _write_npc_command
 from .registry import _FALL_THROUGH, _GS1_PRE_COMMANDS, _NOOP, _NPC_WRITE, _gs1_command
+from ..logutil import log_swallowed
 
 
 
@@ -138,7 +139,7 @@ class PreCommandsMixin:
             if rt.client is not None:
                 rt.client.set_gattrib(int(pk[1:]), val)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "replaceani")
     def _cmd_replaceani(self, name, args, ctx, imgs):
@@ -161,7 +162,7 @@ class PreCommandsMixin:
                 try:
                     rt.client.request_file(new + ".gani")
                 except Exception:
-                    pass
+                    log_swallowed(logger)
         else:
             rt.ani_replacements.pop(orig, None)
 
@@ -200,7 +201,7 @@ class PreCommandsMixin:
             try:
                 send(base)
             except Exception:
-                pass
+                log_swallowed(logger)
         # Local mirror: the renderer draws the local player from
         # player_anim/current_anim_name, which only the built-in input path
         # updates — the pygame shell wires on_setani (game/setup.py) to
@@ -250,7 +251,7 @@ class PreCommandsMixin:
             try:
                 cl.send_hit_objects(power, x, y)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "setminimap")
     def _cmd_setminimap(self, name, args, ctx, imgs):

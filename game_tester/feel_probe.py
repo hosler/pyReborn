@@ -31,6 +31,9 @@ from pyreborn.prefs import Prefs
 from pyreborn.pygame_game import GameClient
 from pyreborn.game.gs2_gui.basic_controls import GuiWindowCtrl
 from game_tester.login import login_client
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 FPS = 60
@@ -835,13 +838,13 @@ class Probe:
                 try:
                     self.client.disconnect()
                 except Exception:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             if self.game is not None:
                 try:
                     self.game.sound_mgr.stop_all()
                     self.game.sound_mgr.stop_music()
                 except Exception:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             self.summary["runtime_seconds"] = round(time.monotonic() - self.started, 3)
             self.summary["frames"] = self.frame
             (self.out / "summary.json").write_text(

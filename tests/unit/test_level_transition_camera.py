@@ -1,46 +1,34 @@
-"""Discrete level transitions hold the old view until the new board arrives."""
-
 import pygame
+import pytest
 
-from pyreborn import Client
 from pyreborn.game import render as render_module
 from pyreborn.game.render import RenderMixin
 from pyreborn.packets import PacketID
 
 
-class _ProtocolStub:
-    connected = True
-
-    def __init__(self):
-        self.sent = []
-
-    def send_packet(self, packet_id, data):
-        self.sent.append((packet_id, data))
-        return True
-
-
-class _CameraHarness(RenderMixin):
-    def __init__(self, client, x, y):
-        self.client = client
-        self.visual_x = x
-        self.visual_y = y
-        self.follow_speed = 24.0
-        self._seen_level_transition_epoch = (
-            client._local_level_transition_epoch)
+@pytest.fixture
+def new_game(make_game):
+    """``new_game(level="outside.nw", x=30.0, y=30.0)``: a real offline game in
+    ``level`` (an all-tile-1 board) with the player at (x, y) and its camera
+    view at the same spot (the held-view tests read ``visual_x/y``)."""
+    def build(level="outside.nw", x=30.0, y=30.0):
+        game = make_game(level=level, tiles=lambda tx, ty: 1)
+        game.client.player.x = x
+        game.client.player.y = y
+        game.visual_x, game.visual_y = x, y
+        game.follow_speed = 24.0
+        game._seen_level_transition_epoch = (
+            game.client._local_level_transition_epoch)
+        return game
+    return build
 
 
-def _client(level="outside.nw", x=30.0, y=30.0):
-    client = Client("localhost", 14900)
-    client._protocol = _ProtocolStub()
-    client._authenticated = True
-    client._current_level_name = level
-    client._pending_level_name = level
-    client.player.x = x
-    client.player.y = y
-    client.tiles = [1] * 4096
-    client.levels[level] = client.tiles
-    client._tiles_level_name = level
-    return client
+@pytest.fixture
+def new_client(new_game):
+    """``new_client(...)``: the client of ``new_game(...)``."""
+    def build(*args, **kwargs):
+        return new_game(*args, **kwargs).client
+    return build
 
 
 def _board(tile_id=2):
@@ -48,9 +36,9 @@ def _board(tile_id=2):
     return encoded * 4096
 
 
-def test_camera_holds_and_player_is_suppressed_while_board_is_pending():
-    client = _client()
-    view = _CameraHarness(client, 30.0, 30.0)
+def test_camera_holds_and_player_is_suppressed_while_board_is_pending(new_game):
+    view = new_game()
+    client = view.client
 
     assert client.warp_to_level("inside.nw", 5.0, 6.0)
     assert (client.player.x, client.player.y) == (5.0, 6.0)
@@ -63,9 +51,9 @@ def test_camera_holds_and_player_is_suppressed_while_board_is_pending():
     assert client._local_level_transition
 
 
-def test_camera_snaps_without_lerp_when_destination_board_arrives():
-    client = _client(x=5.0, y=5.0)
-    view = _CameraHarness(client, 5.0, 5.0)
+def test_camera_snaps_without_lerp_when_destination_board_arrives(new_game):
+    view = new_game(x=5.0, y=5.0)
+    client = view.client
     client.warp_to_level("inside.nw", 5.5, 5.5)
 
     client._handle_packet(PacketID.PLO_LEVELNAME, b"inside.nw")
@@ -79,14 +67,14 @@ def test_camera_snaps_without_lerp_when_destination_board_arrives():
     assert (view.visual_x, view.visual_y) == (5.5, 5.5)
 
 
-def test_link_touch_holds_through_old_stream_until_destination_board():
-    client = _client(x=10.0, y=10.0)
+def test_link_touch_holds_through_old_stream_until_destination_board(new_game):
+    view = new_game(x=10.0, y=10.0)
+    client = view.client
     client.player.direction = 0
     client.links["outside.nw"] = [{
         "dest_level": "inside.nw", "x": 11, "y": 11,
         "width": 1, "height": 1, "dest_x": "5", "dest_y": "6",
     }]
-    view = _CameraHarness(client, 10.0, 10.0)
     original_tiles = client.tiles
 
     link = client.check_link_collision()
@@ -112,8 +100,8 @@ def test_link_touch_holds_through_old_stream_until_destination_board():
     assert client._local_level_transition == ""
 
 
-def test_authoritative_playerwarp_releases_rejected_transition():
-    client = _client()
+def test_authoritative_playerwarp_releases_rejected_transition(new_client):
+    client = new_client()
     client.warp_to_level("missing.nw", 5.0, 6.0)
     client._handle_packet(PacketID.PLO_LEVELNAME, b"outside.nw")
     client._handle_packet(PacketID.PLO_BOARDPACKET, _board())
@@ -126,9 +114,9 @@ def test_authoritative_playerwarp_releases_rejected_transition():
     assert client._local_level_transition == ""
 
 
-def test_same_level_position_warp_does_not_hold_camera():
-    client = _client(x=10.0, y=10.0)
-    view = _CameraHarness(client, 10.0, 10.0)
+def test_same_level_position_warp_does_not_hold_camera(new_game):
+    view = new_game(x=10.0, y=10.0)
+    client = view.client
 
     assert client.warp_to_level("outside.nw", 40.0, 41.0)
     assert client._local_level_transition == ""
@@ -136,8 +124,8 @@ def test_same_level_position_warp_does_not_hold_camera():
     assert (view.visual_x, view.visual_y) == (40.0, 41.0)
 
 
-def test_gmap_segment_crossing_remains_continuous():
-    client = _client(level="west.nw", x=63.75, y=20.0)
+def test_gmap_segment_crossing_remains_continuous(new_client):
+    client = new_client(level="west.nw", x=63.75, y=20.0)
     client.gmap_grid = {(0, 0): "west.nw", (1, 0): "east.nw"}
     client.gmap_width = 2
     client.gmap_height = 1
@@ -157,19 +145,19 @@ _GMAP_FILE = (
 )
 
 
-def test_gmap_reentry_holds_until_world_frame_is_reestablished():
+def test_gmap_reentry_holds_until_world_frame_is_reestablished(new_game):
     """Leaving an interior back onto a gmap segment: the destination board
     arriving is NOT enough - the grid was dropped by _exit_gmap, so a release
     at that point snaps the camera in the standalone LOCAL frame and the
     .gmap reload then jumps it again into world coordinates (live-traced
     double jump). The hold must survive until the grid is rebuilt."""
-    client = _client(level="house.nw", x=29.5, y=38.0)
+    view = new_game(level="house.nw", x=29.5, y=38.0)
+    client = view.client
     # The session saw the gmap earlier; entering the house dropped the grid.
     client.load_gmap(_GMAP_FILE)
     client._exit_gmap("house.nw")
     assert client.gmap_width == 0
     assert "east.nw" in client._known_gmap_segments
-    view = _CameraHarness(client, 29.5, 38.0)
 
     assert client.warp_to_level("east.nw", 10.5, 25.0)
     assert client._local_level_transition == "east.nw"
@@ -193,10 +181,10 @@ def test_gmap_reentry_holds_until_world_frame_is_reestablished():
     assert (view.visual_x, view.visual_y) == (64 + 10.5, 25.0)
 
 
-def test_transition_to_plain_level_still_releases_on_board():
+def test_transition_to_plain_level_still_releases_on_board(new_client):
     """A destination that was never a gmap segment keeps the old behavior:
     active board = presentable, release immediately."""
-    client = _client()
+    client = new_client()
     client.load_gmap(_GMAP_FILE)
     client._exit_gmap("outside.nw")
     client.warp_to_level("inside.nw", 5.0, 6.0)
@@ -219,24 +207,24 @@ def _edge_link(direction):
     return {"dest_level": "next.nw", **links[direction]}
 
 
-def test_edge_link_inference_matches_all_walk_directions():
+def test_edge_link_inference_matches_all_walk_directions(new_client):
     for direction in range(4):
-        client = _client()
+        client = new_client()
         client.player.direction = direction
         link = _edge_link(direction)
         assert client.use_link(link)
         assert client._local_level_transition_direction == direction
 
 
-def test_ambiguous_door_and_wrong_destination_edge_do_not_slide():
-    client = _client()
+def test_ambiguous_door_and_wrong_destination_edge_do_not_slide(new_client):
+    client = new_client()
     client.player.direction = 3
     door = {"dest_level": "inside.nw", "x": 20, "y": 20,
             "width": 2, "height": 2, "dest_x": "1", "dest_y": "20"}
     assert client.use_link(door)
     assert client._local_level_transition_direction is None
 
-    client = _client()
+    client = new_client()
     client.player.direction = 3
     wrong_edge = _edge_link(3)
     wrong_edge["dest_x"] = "30"
@@ -244,8 +232,8 @@ def test_ambiguous_door_and_wrong_destination_edge_do_not_slide():
     assert client._local_level_transition_direction is None
 
 
-def test_dead_player_link_warp_never_arms_slide():
-    client = _client()
+def test_dead_player_link_warp_never_arms_slide(new_client):
+    client = new_client()
     client.player.direction = 3
     client.player.hearts = 0
     assert client.use_link(_edge_link(3))
@@ -288,10 +276,10 @@ class _SlideHarness(RenderMixin):
         pass
 
 
-def test_renderer_state_machine_hold_slide_done(monkeypatch):
+def test_renderer_state_machine_hold_slide_done(monkeypatch, new_client):
     clock = [10.0]
-    monkeypatch.setattr("time.monotonic", lambda: clock[0])
-    client = _client()
+    client = new_client()
+    client.clock.set_sources(source=lambda: clock[0])
     client.player.direction = 3
     assert client.use_link(_edge_link(3))
     client._local_level_transition_started = clock[0]
@@ -315,7 +303,7 @@ def test_renderer_state_machine_hold_slide_done(monkeypatch):
     assert not view._level_transition_input_frozen
 
 
-def test_cached_destination_slides_without_ever_holding(monkeypatch):
+def test_cached_destination_slides_without_ever_holding(monkeypatch, new_client):
     """The bounce must not be a first-visit-only effect.
 
     warp_to_level releases the hold synchronously when the destination board
@@ -325,8 +313,8 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch):
     you came -- so a slide gated on that snapshot fired once per edge link
     per session and then never again."""
     clock = [30.0]
-    monkeypatch.setattr("time.monotonic", lambda: clock[0])
-    client = _client()
+    client = new_client()
+    client.clock.set_sources(source=lambda: clock[0])
     client.player.direction = 3
     client.levels["next.nw"] = [0] * 4096  # visited earlier this session
     assert client.use_link(_edge_link(3))
@@ -342,10 +330,10 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch):
     assert view._level_transition_input_frozen
 
 
-def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch):
+def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch, new_client):
     clock = [20.0]
-    monkeypatch.setattr("time.monotonic", lambda: clock[0])
-    client = _client()
+    client = new_client()
+    client.clock.set_sources(source=lambda: clock[0])
     client.player.direction = 3
     assert client.use_link(_edge_link(3))
     client._local_level_transition_started = clock[0]
@@ -359,8 +347,8 @@ def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch):
     assert view.scene_renders == 1
 
 
-def test_renderer_slide_timeout_fails_open():
-    client = _client()
+def test_renderer_slide_timeout_fails_open(new_client):
+    client = new_client()
     view = _SlideHarness(client)
     view._level_transition_input_frozen = True
     view._level_transition_slide = {

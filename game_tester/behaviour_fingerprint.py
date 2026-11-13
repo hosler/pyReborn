@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from pyreborn.logutil import log_swallowed, reset_swallowed
+logger = logging.getLogger(__name__)
 
 BASELINE_PATH = Path(__file__).with_name("behaviour_baselines.json")
 SCHEMA_VERSION = 1
@@ -72,6 +74,14 @@ _WATCHED_LOGGERS = ("pyreborn", "reborn_protocol", "game_tester")
 #: Warnings starting with this are server-content facts, not engine noise --
 #: see _LogCapture.emit and the assets_refused invariant.
 _REFUSAL_PREFIX = "Server refused file"
+
+#: GS1 script errors ("[GS1] <where>: <type>: <text>", pyreborn.gs1_client
+#: registry._report_gs1_error) report what a server's own scripts did, not a
+#: client defect. They used to go to stderr, where this capture never saw
+#: them; they now go through logging. They are counted apart (``script_errors``)
+#: and kept out of ``kinds`` and the warning count, so no_new_warnings keeps
+#: its old meaning.
+_SCRIPT_ERROR_PREFIX = "[GS1] "
 
 
 @dataclass
@@ -128,14 +138,22 @@ class _LogCapture(logging.Handler):
 
     def __init__(self) -> None:
         super().__init__(level=logging.WARNING)
+        # The swallowed-exception log is once per site per process. Every
+        # capture (one per fingerprint target) starts it afresh, so which
+        # kinds a target shows does not depend on which target ran first.
+        reset_swallowed()
         self.kinds: Dict[str, int] = {}
         self.warnings = 0
         self.errors = 0
         self.samples: Dict[str, str] = {}
         self.refused: Dict[str, int] = {}
+        self.script_errors = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         if not record.name.startswith(_WATCHED_LOGGERS):
+            return
+        if str(record.msg).startswith(_SCRIPT_ERROR_PREFIX):
+            self.script_errors += 1
             return
         if str(record.msg).startswith(_REFUSAL_PREFIX):
             # A refused file is a fact about the SERVER's content, not about
@@ -160,7 +178,7 @@ class _LogCapture(logging.Handler):
         if key not in self.samples:
             try:
                 self.samples[key] = record.getMessage()[:300]
-            except Exception:
+            except Exception:  # inside a logging handler: must not log
                 self.samples[key] = str(record.msg)[:300]
 
 
@@ -180,6 +198,7 @@ def _is_scroll(ctrl: Any) -> bool:
     try:
         from pyreborn.game.gs2_gui import GuiScrollCtrl
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return False
     return isinstance(ctrl, GuiScrollCtrl)
 
@@ -203,6 +222,7 @@ def _content_size(ctrl: Any) -> int:
     try:
         text = ctrl.get("text")
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         text = None
     if isinstance(text, str) and text.strip():
         total += 1
@@ -248,6 +268,7 @@ def _walk_gui(gui: Any) -> Dict[str, Any]:
         try:
             text = ctrl.get("text")
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             text = None
         if isinstance(text, str) and text.strip():
             text_controls += 1
@@ -262,6 +283,7 @@ def _walk_gui(gui: Any) -> Dict[str, Any]:
             try:
                 rect = ctrl.rect()
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 rect = None
             if rect is not None:
                 if rect.width <= 0 or rect.height <= 0:
@@ -273,6 +295,7 @@ def _walk_gui(gui: Any) -> Dict[str, Any]:
                     try:
                         pr = parent.rect()
                     except Exception:
+                        log_swallowed(logger, level=logging.DEBUG)
                         pr = None
                     if pr is not None and pr.width > 0 and pr.height > 0 and (
                             rect.left < pr.left - OVERFLOW_SLOP
@@ -367,6 +390,7 @@ def _visible_windows(roots: Iterable[Any]) -> List[Tuple[str, Any]]:
     try:
         from pyreborn.game.gs2_gui import GuiWindowCtrl
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return []
     out: List[Tuple[str, Any]] = []
     for root in roots:
@@ -379,7 +403,7 @@ def _visible_windows(roots: Iterable[Any]) -> List[Tuple[str, Any]]:
                     out.append((_control_name(ctrl).lower()
                                 or type(ctrl).__name__, ctrl.rect()))
                 except Exception:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             for child in list(getattr(ctrl, "children", []) or []):
                 stack.append((child, shown))
     return out
@@ -428,7 +452,7 @@ class _Recorder:
                 self.events[key] = self.events.get(key, 0) + 1
                 self.event_calls += 1
             except Exception:
-                pass
+                log_swallowed(logger)
             return original(vm, event, *args)
 
         # Instance attribute shadows the bound method, so `self._run(...)`
@@ -486,7 +510,7 @@ def _replay_existing_bytecode(gs2: Any, client: Any) -> int:
             except Exception:
                 # load_bytecode already logs; a bad blob must not abort the
                 # capture (the log capture will have counted it).
-                pass
+                log_swallowed(logger)
     return loaded
 
 
@@ -632,7 +656,7 @@ def capture_from_client(client: Any, seconds: float = DEFAULT_SECONDS,
             game.sound_mgr.stop_all()
             game.sound_mgr.stop_music()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
 
 def capture_target(target: Target, username: str, password: str,

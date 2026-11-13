@@ -136,73 +136,39 @@ class _RecordingSoundManager(SoundManager):
         return sound
 
 
-class _StubPlayer:
-    direction = 2
-    hearts = 3
-    is_sitting = False
-
-    def is_carrying(self):
-        return False
-
-
-class _StubClient:
-    def __init__(self):
-        self.player = _StubPlayer()
-        self.players = {}
-        self.npcs = {}
-        self.baddies = {}
-        self.horses = {}
-        self.x = 30.0
-        self.y = 30.0
-
-    def set_animation(self, name):
-        pass
-
-
-class _Harness(RenderMixin):
-    """Minimal GameClient stand-in exposing the real _update_animations."""
-
-    def __init__(self, ganis):
-        self.client = _StubClient()
-        self.sound_mgr = _RecordingSoundManager()
-        self.gani_parser = GaniParser([])
+@pytest.fixture
+def new_harness(make_game, monkeypatch):
+    """``new_harness(ganis)``: a real offline game at (30, 30) whose gani
+    parser also holds ``ganis`` (name -> gani text) and whose sound manager is
+    the recording ``_RecordingSoundManager``."""
+    def build(ganis):
+        h = make_game(player_xy=(30.0, 30.0))
+        monkeypatch.setattr(h, 'sound_mgr', _RecordingSoundManager())
         for name, content in ganis.items():
-            self.gani_parser.put_cache(
-                name, self.gani_parser.parse_content(content, name))
-        self.player_anim = AnimationState(self.gani_parser)
-        self.current_anim_name = "idle"
-        self.other_player_anims = {}
-        self.other_player_visual = {}
-        self.npc_anims = {}
-        self.npc_visual = {}
-        self.baddy_anims = {}
-        self.horse_anims = {}
-        self.grab_state = None
-        self._grab_direction = 2
-        self.is_pushing = False
-        self.is_moving = False
-        self.is_swimming = False
-        self.visual_x = 30.0
-        self.visual_y = 30.0
+            h.gani_parser.put_cache(
+                name, h.gani_parser.parse_content(content, name))
+        h.visual_x = 30.0
+        h.visual_y = 30.0
+        return h
+    return build
 
-    def _update_sitting_state(self):
-        pass
 
-    def add_npc(self, npc_id, gani_name, at, params=None):
-        """Mirror what game/render_entities.py does on an NPC's first draw:
-        create the AnimationState, set its gani, and record its interpolated
-        world position."""
-        anim = AnimationState(self.gani_parser)
-        anim.set_animation(gani_name, 2, params=params)
-        assert anim.gani is not None, gani_name
-        self.npc_anims[npc_id] = anim
-        self.npc_visual[npc_id] = at
-        self.client.npcs[npc_id] = {}
-        return anim
+def add_npc(h, npc_id, gani_name, at, params=None):
+    """Mirror what game/render_entities.py does on an NPC's first draw:
+    create the AnimationState, set its gani, and record its interpolated
+    world position."""
+    anim = AnimationState(h.gani_parser)
+    anim.set_animation(gani_name, 2, params=params)
+    assert anim.gani is not None, gani_name
+    h.npc_anims[npc_id] = anim
+    h.npc_visual[npc_id] = at
+    h.client.npcs[npc_id] = {}
+    return anim
 
-    def pump(self, frames=40, dt=0.05):
-        for _ in range(frames):
-            self._update_animations(dt)
+
+def pump(h, frames=40, dt=0.05):
+    for _ in range(frames):
+        h._update_animations(dt)
 
 
 def _volumes_for(mgr, name):
@@ -210,11 +176,11 @@ def _volumes_for(mgr, name):
     return sound.volumes if sound else []
 
 
-def test_npc_sound_with_a_wait_trailer_reaches_the_mixer():
+def test_npc_sound_with_a_wait_trailer_reaches_the_mixer(new_harness):
     """The primary bug: a WAIT after PLAYSOUND silenced the sound entirely."""
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
-    h.add_npc(7, "npcwalk", (33.0, 31.0))
-    h.pump()
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
+    add_npc(h, 7, "npcwalk", (33.0, 31.0))
+    pump(h)
 
     assert "steps2.wav" in h.sound_mgr.played
     volumes = _volumes_for(h.sound_mgr, "steps2.wav")
@@ -226,10 +192,10 @@ def test_npc_sound_with_a_wait_trailer_reaches_the_mixer():
     assert max(volumes) > 0.7, volumes
 
 
-def test_npc_sound_pan_never_zeroes_both_channels():
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
-    h.add_npc(7, "npcwalk", (33.0, 31.0))
-    h.pump()
+def test_npc_sound_pan_never_zeroes_both_channels(new_harness):
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
+    add_npc(h, 7, "npcwalk", (33.0, 31.0))
+    pump(h)
 
     pans = h.sound_mgr.sounds["steps2.wav"].channel_volumes
     assert pans, "positional play never set a stereo pan"
@@ -237,68 +203,68 @@ def test_npc_sound_pan_never_zeroes_both_channels():
         assert max(left, right) > 0.0, (left, right)
 
 
-def test_singledirection_param_sound_resolves_via_defaultparam():
+def test_singledirection_param_sound_resolves_via_defaultparam(new_harness):
     """`PLAYSOUND PARAM1` + `DEFAULTPARAM1 sword.wav` in the LAST frame of a
     SINGLEDIRECTION gani -- all three of the defects at once."""
-    h = _Harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
-    h.add_npc(9, "zlttp_playsound3", (30.0, 30.0))
-    h.pump()
+    h = new_harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
+    add_npc(h, 9, "zlttp_playsound3", (30.0, 30.0))
+    pump(h)
 
     assert "sword.wav" in h.sound_mgr.played
     assert "PARAM1" not in h.sound_mgr.played
     assert all(v > 0.0 for v in _volumes_for(h.sound_mgr, "sword.wav"))
 
 
-def test_setani_params_override_the_gani_default():
+def test_setani_params_override_the_gani_default(new_harness):
     """`setani zlttp_playsound3,zlttp_mallet.wav` must play the caller's file."""
-    h = _Harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
-    h.add_npc(9, "zlttp_playsound3", (30.0, 30.0),
+    h = new_harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
+    add_npc(h, 9, "zlttp_playsound3", (30.0, 30.0),
               params=["zlttp_mallet.wav"])
-    h.pump()
+    pump(h)
 
     assert "zlttp_mallet.wav" in h.sound_mgr.played
     assert "sword.wav" not in h.sound_mgr.played
 
 
-def test_comma_joined_gani_name_supplies_params():
+def test_comma_joined_gani_name_supplies_params(new_harness):
     """The wire form is a single `ani,param1` string (NPC GANI prop)."""
-    h = _Harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
-    h.add_npc(9, "zlttp_playsound3,zlttp_mallet.wav", (30.0, 30.0))
-    h.pump()
+    h = new_harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
+    add_npc(h, 9, "zlttp_playsound3,zlttp_mallet.wav", (30.0, 30.0))
+    pump(h)
 
     assert "zlttp_mallet.wav" in h.sound_mgr.played
 
 
-def test_repeated_setani_with_new_params_replays_the_sound():
+def test_repeated_setani_with_new_params_replays_the_sound(new_harness):
     """A piano key: same gani, different note. The same-name early return in
     set_animation must not swallow the second press."""
-    h = _Harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
-    anim = h.add_npc(9, "zlttp_playsound3", (30.0, 30.0), params=["a.wav"])
-    h.pump(frames=5)
+    h = new_harness({"zlttp_playsound3": SINGLE_DIR_PARAM})
+    anim = add_npc(h, 9, "zlttp_playsound3", (30.0, 30.0), params=["a.wav"])
+    pump(h, frames=5)
     anim.set_animation("zlttp_playsound3", 2, params=["b.wav"])
-    h.pump(frames=5)
+    pump(h, frames=5)
 
     assert "a.wav" in h.sound_mgr.played
     assert "b.wav" in h.sound_mgr.played
 
 
-def test_other_player_sound_is_positional_and_audible():
+def test_other_player_sound_is_positional_and_audible(new_harness):
     """The other_player path (game/render.py:158) shares _play_entity_sounds."""
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
     anim = AnimationState(h.gani_parser)
     anim.set_animation("npcwalk", 2)
     h.other_player_anims[3] = anim
     h.other_player_visual[3] = (35.0, 30.0)
     h.client.players[3] = {}
-    h.pump()
+    pump(h)
 
     assert all(v > 0.0 for v in _volumes_for(h.sound_mgr, "steps2.wav"))
 
 
-def test_baddy_sound_is_played_not_discarded():
+def test_baddy_sound_is_played_not_discarded(new_harness):
     """game/render.py's baddy loop threw update()'s return value away, so a
     baddy's walk/hurt sounds (bomywalk*.wav etc.) never played at all."""
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
     anim = AnimationState(h.gani_parser)
     anim.set_animation("npcwalk", 2)
     h.baddy_anims[1] = anim
@@ -308,66 +274,66 @@ def test_baddy_sound_is_played_not_discarded():
     h.client.baddies[1] = {'x': 31.0, 'y': 30.0}
     h.visual_x = 30.0 + 64
     h.visual_y = 30.0
-    h.pump()
+    pump(h)
 
     volumes = _volumes_for(h.sound_mgr, "steps2.wav")
     assert volumes, "baddy sound never reached the mixer"
     assert max(volumes) > 0.85, volumes
 
 
-def test_horse_sound_is_played_not_discarded():
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
+def test_horse_sound_is_played_not_discarded(new_harness):
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
     anim = AnimationState(h.gani_parser)
     anim.set_animation("npcwalk", 2)
     h.horse_anims[(31.0, 30.0)] = anim
     h.client.horses[(31.0, 30.0)] = {'x': 31.0, 'y': 30.0}
-    h.pump()
+    pump(h)
 
     assert max(_volumes_for(h.sound_mgr, "steps2.wav")) > 0.85
 
 
-def test_a_baddy_without_a_position_yet_is_skipped_not_crashed():
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
+def test_a_baddy_without_a_position_yet_is_skipped_not_crashed(new_harness):
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
     anim = AnimationState(h.gani_parser)
     anim.set_animation("npcwalk", 2)
     h.baddy_anims[1] = anim
     h.client.baddies[1] = {}
-    h.pump(frames=5)
+    pump(h, frames=5)
 
     assert h.sound_mgr.played == []
 
 
-def test_distant_npc_is_attenuated_but_a_near_one_is_not():
-    near = _Harness({"npcwalk": SOUND_THEN_WAIT})
-    near.add_npc(1, "npcwalk", (31.0, 30.0))
-    near.pump()
+def test_distant_npc_is_attenuated_but_a_near_one_is_not(new_harness):
+    near = new_harness({"npcwalk": SOUND_THEN_WAIT})
+    add_npc(near, 1, "npcwalk", (31.0, 30.0))
+    pump(near)
 
-    far = _Harness({"npcwalk": SOUND_THEN_WAIT})
-    far.add_npc(1, "npcwalk", (30.0 + SoundManager.POSITIONAL_FALLOFF + 5, 30.0))
-    far.pump()
+    far = new_harness({"npcwalk": SOUND_THEN_WAIT})
+    add_npc(far, 1, "npcwalk", (30.0 + SoundManager.POSITIONAL_FALLOFF + 5, 30.0))
+    pump(far)
 
     assert max(_volumes_for(near.sound_mgr, "steps2.wav")) > 0.85
     assert not far.sound_mgr.played, "beyond falloff should not even load"
 
 
-def test_comma_decimal_offsets_do_not_lose_the_sound():
+def test_comma_decimal_offsets_do_not_lose_the_sound(new_harness):
     """Content written in a comma-decimal locale: `PLAYSOUND bomb.wav 1,5 2`.
     float('1,5') raises, and the old handler dropped the whole line."""
-    h = _Harness({"boom": COMMA_DECIMAL})
-    h.add_npc(4, "boom", (30.0, 30.0))
-    h.pump()
+    h = new_harness({"boom": COMMA_DECIMAL})
+    add_npc(h, 4, "boom", (30.0, 30.0))
+    pump(h)
 
     assert "bomb.wav" in h.sound_mgr.played
     frame = h.npc_anims[4].gani.directions[0][0]
     assert frame.sounds == [("bomb.wav", 1.5, 2.0)]
 
 
-def test_local_player_sound_still_works():
+def test_local_player_sound_still_works(new_harness):
     """Guard the half that was already audible (game/render.py:67-69)."""
-    h = _Harness({"npcwalk": SOUND_THEN_WAIT})
+    h = new_harness({"npcwalk": SOUND_THEN_WAIT})
     h.player_anim.set_animation("npcwalk", 2)
     h.current_anim_name = "npcwalk"
-    h.pump()
+    pump(h)
 
     assert all(v > 0.0 for v in _volumes_for(h.sound_mgr, "steps2.wav"))
 

@@ -21,59 +21,25 @@ _ONWALL2_EDGE_TOL (0.25 tiles). Origin cells and overlaps beyond a quarter
 tile are unchanged.
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
 
-from pyreborn.gs1_client import ClientGS1
 from pyreborn.tiletypes import is_blocking
 
 BLOCK = next(t for t in range(4096) if is_blocking(t))
 assert not is_blocking(0)
 
 
-class _FakePlayer:
-    def __init__(self, x=30.0, y=40.0):
-        self.id = 1
-        self.account = "t"
-        self.nickname = "t"
-        self.x = x
-        self.y = y
-        self.direction = 0
-        self.gani = "idle"
-        self.level = "test.nw"
-        self.chat = ""
-
-
-class _FakeClient:
-    def __init__(self, walls):
-        self.npcs = {}
-        self.players = {}
-        self.weapons = {}
-        self.global_flags = {}
-        self._current_level_name = "test.nw"
-        self.player = _FakePlayer()
-        self.tiles = [0] * 4096
-        for tx, ty in walls:
-            self.tiles[ty * 64 + tx] = BLOCK
-
-    def send_packet(self, *a, **k):
-        pass
-
-    def triggeraction(self, *a, **k):
-        pass
-
-
-def _onwall2(walls):
-    gs1 = ClientGS1(_FakeClient(walls))
-    return lambda *args: bool(gs1._host.call_function("onwall2", list(args), None))
+@pytest.fixture
+def onwall2(make_game):
+    """``onwall2(walls)``: the GS1 ``onwall2`` function of a real offline game
+    whose board is blocked at the given (tx, ty) cells and open elsewhere."""
+    def build(walls):
+        blocked = set(walls)
+        game = make_game(
+            tiles=lambda tx, ty: BLOCK if (tx, ty) in blocked else 0)
+        host = game.gs1._host
+        return lambda *args: bool(host.call_function("onwall2", list(args), None))
+    return build
 
 
 BOTTOM_WALL = [(tx, 45) for tx in range(0, 64)]   # wall row y=45
@@ -83,38 +49,38 @@ RIGHT_WALL = [(40, ty) for ty in range(0, 64)]    # wall column x=40
 # --- the live bug: flush/penetrated against a bottom wall, sliding sideways
 
 
-def test_bottom_wall_slide_probe_forgives_penetration_sliver():
+def test_bottom_wall_slide_probe_forgives_penetration_sliver(onwall2):
     # Exact probe from the live repro: player rested at y=42.1 (leading edge
     # 45.1, 0.1 inside wall row 45); horizontal CheckWall probe covers rows
     # [44.1, 45.0375] - the 0.0375 graze into row 45 must NOT count.
-    probe = _onwall2(BOTTOM_WALL)
+    probe = onwall2(BOTTOM_WALL)
     assert probe(30.2, 44.1, -0.04375, 0.9375) is False
 
 
-def test_bottom_wall_slide_probe_flush_exact_stays_clear():
+def test_bottom_wall_slide_probe_flush_exact_stays_clear(onwall2):
     # Integer-aligned flush (no penetration): far edge exactly on the wall
     # row boundary is exclusive.
-    probe = _onwall2(BOTTOM_WALL)
+    probe = onwall2(BOTTOM_WALL)
     assert probe(30.2, 44.0, -0.04375, 0.9375) is False
 
 
-def test_bottom_wall_down_probe_still_blocks():
+def test_bottom_wall_down_probe_still_blocks(onwall2):
     # The into-wall probe (degenerate h, origin cell = leading edge row)
     # must keep blocking, including from a penetrated resting position.
-    probe = _onwall2(BOTTOM_WALL)
+    probe = onwall2(BOTTOM_WALL)
     assert probe(30.5, 45.1, 0.9375, -0.04375) is True     # penetrated
     assert probe(30.5, 45.0, 0.9375, -0.04375) is True     # exactly flush
 
 
-def test_right_wall_slide_probe_forgives_penetration_sliver():
+def test_right_wall_slide_probe_forgives_penetration_sliver(onwall2):
     # Mirror case: player rested at x=37.6 (leading edge 40.1, 0.1 inside
     # wall column 40); vertical probe covers cols [39.1, 40.0375].
-    probe = _onwall2(RIGHT_WALL)
+    probe = onwall2(RIGHT_WALL)
     assert probe(39.1, 30.7, 0.9375, -0.04375) is False
 
 
-def test_right_wall_right_probe_still_blocks():
-    probe = _onwall2(RIGHT_WALL)
+def test_right_wall_right_probe_still_blocks(onwall2):
+    probe = onwall2(RIGHT_WALL)
     assert probe(40.1, 30.5, -0.04375, 0.9375) is True     # penetrated
     assert probe(40.0, 30.5, -0.04375, 0.9375) is True     # exactly flush
 
@@ -122,16 +88,16 @@ def test_right_wall_right_probe_still_blocks():
 # --- semantics preserved outside the forgiveness sliver
 
 
-def test_integer_rects_unchanged():
-    probe = _onwall2(BOTTOM_WALL)
+def test_integer_rects_unchanged(onwall2):
+    probe = onwall2(BOTTOM_WALL)
     assert probe(30.0, 43.0, 1.0, 3.0) is True    # rows 43-45: hits wall
     assert probe(30.0, 42.0, 1.0, 3.0) is False   # rows 42-44: exclusive far edge
 
 
-def test_substantial_overlap_still_blocks():
+def test_substantial_overlap_still_blocks(onwall2):
     # Overlap into the wall row beyond the quarter-tile tolerance must hit:
     # rows [44.5, 45.4375] overlaps row 45 by 0.4375.
-    probe = _onwall2(BOTTOM_WALL)
+    probe = onwall2(BOTTOM_WALL)
     assert probe(30.0, 44.5, 0.9375, 0.9375) is True
 
 
@@ -139,13 +105,13 @@ def test_substantial_overlap_still_blocks():
     (0.20, False),   # within tolerance: forgiven
     (0.30, True),    # beyond tolerance: counted
 ])
-def test_far_edge_tolerance_boundary(overlap, expect):
-    probe = _onwall2(BOTTOM_WALL)
+def test_far_edge_tolerance_boundary(overlap, expect, onwall2):
+    probe = onwall2(BOTTOM_WALL)
     y = 44.0 + overlap  # rect [y, y+1) pokes `overlap` into wall row 45
     assert probe(30.0, y, 0.9375, 1.0) is expect
 
 
-def test_two_arg_form_unchanged():
-    probe = _onwall2(RIGHT_WALL)
+def test_two_arg_form_unchanged(onwall2):
+    probe = onwall2(RIGHT_WALL)
     assert probe(40.5, 30.0) is True
     assert probe(39.9, 30.0) is False

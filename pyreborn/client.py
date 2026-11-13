@@ -28,7 +28,6 @@ from .gmap_coords import level_at
 from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
     BoundedLRU,
     MAX_CACHED_FILES,
-    MAX_CACHED_LEVELS,
     Callbacks,
     CombatState,
     EntityState,
@@ -170,6 +169,14 @@ class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, Actions
             'server_warp_notice_at')
         self._clear_hide_player()
         self._last_self_props = None
+        # The visited-level store describes ONE session: the new server has
+        # no record of what we hold, so a stale mod time would make it send
+        # nothing for a level it never streamed.
+        self.levels.clear()
+        self.level_modtimes.clear()
+        self.level_state.streaming_level_name = ""
+        self.level_state.level_layers.clear()
+        self._npc_cache.clear()
         # a new session must not age (or delete) old items
         self.entities.reset('items', 'item_stamps')
         self.instrumentation.reset('prop_parse_diagnostics')

@@ -12,6 +12,8 @@ from reborn_protocol.gs2 import to_str
 from .helpers import _csv_flatten
 from .objects_player import PLATFORM_NAME, _engine_object
 from .registry import _GS1_PURE, _GS2_BARE, _GS2_BARE_GUI, _TIMER_CANCEL, _WORD_BORDER, _gs2_builtin, logger
+import logging
+from ..logutil import log_swallowed
 
 class HostBareMixin:
 
@@ -154,6 +156,7 @@ class HostBareMixin:
         try:
             return manager.load_sheet(to_str(filename))
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return None
 
     @_gs2_builtin(_GS2_BARE, "getimgpixel", "isimgpixeltransparent",
@@ -237,6 +240,7 @@ class HostBareMixin:
                     source = pygame.transform.smoothscale(source, (width, height))
             pygame.image.save(source, str(target))
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return 0.0
         return 0.0
 
@@ -693,7 +697,7 @@ class HostBareMixin:
             try:
                 rt2.client.set_animation(ani)
             except Exception:
-                pass
+                log_swallowed(logger)
             # Script-driven movement mode (disabledefmovement): the
             # renderer draws the local player from game.player_anim /
             # current_anim_name, which only the built-in input path
@@ -710,7 +714,7 @@ class HostBareMixin:
                                            "direction", 0))))
                     game.current_anim_name = base
                 except Exception:
-                    pass
+                    log_swallowed(logger)
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "timevar2")
@@ -750,6 +754,7 @@ class HostBareMixin:
                 raw.encode("ascii", "replace"), validate=False
             ).decode("latin-1", "replace")
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return ""
 
     @_gs2_builtin(_GS2_BARE, "savevars")
@@ -935,7 +940,7 @@ class HostBareMixin:
                                            "b" in style)
                 return float(font.size(text)[0])
             except Exception:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
         # headless fallback: mean glyph advance ~0.55em
         return float(len(text)) * size * 0.55
 
@@ -957,7 +962,7 @@ class HostBareMixin:
                                            "b" in style)
                 return float(font.get_height())
             except Exception:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
         # headless fallback: the same 1.2em leading pygame's default
         # font reports
         return float(int(size * 1.2))

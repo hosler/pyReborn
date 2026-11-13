@@ -8,6 +8,7 @@ frame pipeline: start() once, step() per frame, shutdown() once; run() is the
 production loop over them, and the game_tester harnesses call them directly.
 """
 
+import gc
 import logging
 import os
 import sys
@@ -46,6 +47,7 @@ from .game.render_world import WorldRenderMixin
 from .game.render_entities import EntityRenderMixin, BaddySheet
 from .game.render_effects import EffectsRenderMixin
 from .game.render_objects import LevelObjectsRenderMixin
+from .logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +206,7 @@ class GameClient(
                 if not self.sprite_mgr.load_sheet("pics1.png"):
                     self.client.request_file("pics1.png")
             except Exception:
-                pass
+                log_swallowed(logger)
         # Tiledef applicability is scoped by level-name prefix; seed the
         # login level (later changes flow through _reload_level_scripts).
         self.tileset_mgr.set_current_level(
@@ -801,7 +803,21 @@ class GameClient(
         if sound_mgr is not None:
             attempt("stopping sounds", sound_mgr.stop_all)
             attempt("stopping music", sound_mgr.stop_music)
+        attempt("releasing fonts", self._release_fonts)
         attempt("pygame quit", pygame.quit)
+
+    def _release_fonts(self) -> None:
+        """Drop every Font reference the game holds. pygame keeps the file
+        handle of a Font that outlives ``pygame.quit()``, which leaked five
+        ``freesansbold.ttf`` descriptors per session. Called by shutdown()
+        just before the quit; the game cannot draw text afterwards."""
+        self.fonts.close()
+        self.font = self.font_small = None
+        self.__dict__.pop('_showtext_fonts', None)
+        inventory = getattr(self, 'inventory_ui', None)
+        if inventory is not None:
+            inventory.release_fonts()
+        gc.collect()
 
     def run(self):
         """Main game loop: start(), step() until quit or disconnect, and

@@ -13,15 +13,15 @@ from pyreborn.handlers.combat import handle_bomb_del
 from pyreborn.handlers.session import handle_ghost_mode
 from pyreborn.gs1_client import ClientGS1
 from pyreborn.packets import PacketID, build_bomb_del
-from .test_lift_oracle import Game
-from .test_push_grab_pull import _harness_facing_wall
+from offline_game import spy
+from .test_lift_oracle import game  # noqa: F401
+from .test_push_grab_pull import facing_wall  # noqa: F401
+from .test_throwing_oracle import carry
 
 
 @pytest.mark.parametrize('carry_update_first', [False, True])
-def test_bomb_pickup_never_explodes_for_observer(sim_time, monkeypatch, carry_update_first):
+def test_bomb_pickup_never_explodes_for_observer(sim_time, monkeypatch, carry_update_first, game):
     sim_time(lambda: 100.0)
-    game = Game()
-    wire_client_callbacks(game)
     bomb = game._add_remote_bomb({'x': 10, 'y': 10, 'timer_ms': 2000}, now=100)
     game.client.bombs['throw.nw'] = {0: bomb}
     owner = {'x': 8.5, 'y': 10, 'direction': 0, 'carry_sprite': 0 if carry_update_first else -1}
@@ -29,7 +29,7 @@ def test_bomb_pickup_never_explodes_for_observer(sim_time, monkeypatch, carry_up
     handle_bomb_del(game.client, build_bomb_del(10, 10))
     assert not bomb['exploded']
     assert not game.client.bombs['throw.nw']
-    game.sound_mgr.play.assert_not_called()
+    assert game.sound_calls == []
     game._start_camera_shake.assert_not_called()
     if carry_update_first:
         assert owner['_carried_bomb'] is bomb
@@ -40,10 +40,8 @@ def test_bomb_pickup_never_explodes_for_observer(sim_time, monkeypatch, carry_up
         assert not owner.get('_carried_bomb')
 
 
-def test_bomb_removal_uses_packet_segment_on_gmap(sim_time, monkeypatch):
+def test_bomb_removal_uses_packet_segment_on_gmap(sim_time, monkeypatch, game):
     sim_time(lambda: 100.0)
-    game = Game()
-    wire_client_callbacks(game)
     game.client.gmap_grid = {(1, 0): 'throw.nw'}
     game.client.gmap_width = 2
     game.client.player.x = 84
@@ -52,10 +50,10 @@ def test_bomb_removal_uses_packet_segment_on_gmap(sim_time, monkeypatch):
     assert not game.active_bombs and not bomb['exploded']
 
 
-def test_push_countdown_and_repeated_directional_event(sim_time, monkeypatch):
+def test_push_countdown_and_repeated_directional_event(sim_time, monkeypatch, facing_wall):
     now = [100.0]
     sim_time(lambda: now[0])
-    client, game = _harness_facing_wall()
+    client, game = facing_wall()
     client.triggeraction = Mock()
     game._update_push_hold(0, -1)
     assert game._push_counter == 38
@@ -75,11 +73,10 @@ def test_push_countdown_and_repeated_directional_event(sim_time, monkeypatch):
     assert game._push_counter == 38
 
 
-def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch):
+def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch, facing_wall):
     now = [100.0]
     sim_time(lambda: now[0])
-    client, game = _harness_facing_wall()
-    game.gs1 = ClientGS1(client)
+    client, game = facing_wall()
     client.npcs[10001] = {'x': 30, 'y': 19, 'visible': True}
     game.gs1.shapes[10001] = (3, 3, [])
     game.gs1.load_script('pullable', 'if (actionpull) { this.hits++; this.dir=#p(0); }', npc_id=10001)
@@ -104,10 +101,9 @@ def test_pull_counter_19_and_local_script_parameters(sim_time, monkeypatch):
     assert client.player.action_mode == 0
 
 
-def test_grab_accepts_nonblocking_npc_but_never_player(monkeypatch):
-    client, game = _harness_facing_wall()
+def test_grab_accepts_nonblocking_npc_but_never_player(monkeypatch, facing_wall):
+    client, game = facing_wall()
     game._effective_tile_type = lambda x, y: 0
-    game.gs1 = ClientGS1(client)
     client.npcs[10001] = {'x': 30, 'y': 19, 'image': 'box.png', 'visible': True, 'dontblock': True}
     assert game._pull_wall_before(0)
     game._player_blocks = lambda x, y: True
@@ -116,8 +112,7 @@ def test_grab_accepts_nonblocking_npc_but_never_player(monkeypatch):
 
 @pytest.mark.parametrize('ap,maximum,expected', [(0, 10, 3), (19, 10, 3), (20, 10, 5),
     (39, 10, 5), (20, 4, 4), (39, 3, 3), (40, 10, 10), (100, 10, 10)])
-def test_client_restart_predicts_alignment_hp(ap, maximum, expected):
-    game = Game()
+def test_client_restart_predicts_alignment_hp(ap, maximum, expected, game):
     player = game.client.player
     player.ap, player.max_hearts = ap, maximum
     object.__setattr__(player, 'hearts', 0)
@@ -137,9 +132,7 @@ def test_client_restart_predicts_alignment_hp(ap, maximum, expected):
 
 
 @pytest.mark.parametrize('mode', [0, 1, 2, 3])
-def test_ghost_packet_retains_integer_mode(mode):
-    game = Game()
-    wire_client_callbacks(game)
+def test_ghost_packet_retains_integer_mode(mode, game):
     handle_ghost_mode(game.client, bytes([mode + 32]))
     assert game.client.ghost_mode == mode and game.ghost_mode == mode
     handle_ghost_mode(game.client, b'')
@@ -147,11 +140,10 @@ def test_ghost_packet_retains_integer_mode(mode):
 
 
 @pytest.mark.parametrize('mode', [1, 2])
-def test_ghost_blocks_actions_before_mutation_or_packet(mode):
-    game = Game()
-    game.carry()
+def test_ghost_blocks_actions_before_mutation_or_packet(mode, game):
+    carry(game)
     game.client.ghost_mode = mode
-    game.client._protocol.send_packet.reset_mock()
+    sent_before = len(game.sent)
     assert not game.client.sword_attack()
     assert not game.client.pickup_item()
     assert not game.client.put_bomb()
@@ -164,27 +156,24 @@ def test_ghost_blocks_actions_before_mutation_or_packet(mode):
     game._use_weapon()
     assert not game._lift_in_front(3)
     assert game.client.player.is_carrying() and not game.thrown_objects
-    game.client._protocol.send_packet.assert_not_called()
-    game.sound_mgr.play.assert_not_called()
+    assert game.sent[sent_before:] == []
+    assert game.sound_calls == []
 
 
 @pytest.mark.parametrize('mode,count', [(0, 1), (1, 1), (2, 0)])
-def test_ghost_mode_two_hides_local_player_only(mode, count):
-    game = SimpleNamespace(client=SimpleNamespace(ghost_mode=mode, player=object()),
-                           camera=SimpleNamespace(world_to_screen=lambda x, y: (x, y)),
-                           _player_render_pos=(10, 20), visual_y=20,
-                           _depth_sort_key=lambda y, h: y + h)
+def test_ghost_mode_two_hides_local_player_only(make_game, mode, count):
+    game = make_game()
+    game.frames(1)
+    game.client.ghost_mode = mode
     entities = []
-    EntityCollectMixin._collect_local_player(game, entities, SimpleNamespace())
+    game._collect_local_player(entities, game._frame_context())
     assert len(entities) == count
 
 
 @pytest.mark.parametrize('mode,visible', [(0, True), (1, True), (2, False)])
-def test_real_offline_frame_respects_ghost_visibility(mode, visible):
-    from pyreborn import Client
-    from pyreborn.pygame_game import GameClient
-    game = GameClient(Client())
+def test_real_offline_frame_respects_ghost_visibility(make_game, monkeypatch, mode, visible):
+    game = make_game()
     game.client.ghost_mode = mode
-    game._render_player = Mock(wraps=game._render_player)
+    drawn = spy(monkeypatch, game, '_render_player')
     game._render()
-    assert bool(game._render_player.call_count) is visible
+    assert bool(drawn) is visible

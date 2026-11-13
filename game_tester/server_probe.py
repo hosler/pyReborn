@@ -20,6 +20,8 @@ from pyreborn.listserver import ListServerClient, ServerEntry
 from pyreborn.prefs import Prefs
 from pyreborn.tiletypes import get_tile_type, type_is_blocking
 from pyreborn.protocol import VERSIONS
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 3
@@ -718,6 +720,7 @@ def main(argv: list[str] | None = None) -> None:
             deep_timeout=args.deep_timeout, versions=versions,
             listserver=args.listserver, account=args.account, password=args.password)
     except Exception:
+        log_swallowed(logger)
         parser.exit(1, "Server probe or catalog tests failed; check the listserver and credentials.\n")
     print("Server probe complete.")
 

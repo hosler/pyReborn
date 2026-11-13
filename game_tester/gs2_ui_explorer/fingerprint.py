@@ -5,6 +5,9 @@ import json
 from typing import Any
 
 from reborn_protocol.gs2 import to_str
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 def _hash_text(value: Any) -> str:
@@ -56,7 +59,7 @@ def _event_names(gui: Any, control: Any) -> list[str]:
             if callable(control.get(name)):
                 names.add(name.lower())
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
     ctrl_name = str(getattr(control, "ctrl_name", "") or "").lower()
     names.update((getattr(gui, "_pending_catchers", {}).get(ctrl_name, {}) or {}))
     rt2 = getattr(gui, "rt2", None)

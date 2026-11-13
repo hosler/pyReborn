@@ -32,6 +32,9 @@ from .game.viewport import Viewport
 from .game.assets import FontManager
 from .game import theme
 from .game import ui
+import logging
+from .logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # Initial/default window size (overridden by prefs.window_w/h once saved).
 DEFAULT_WINDOW_W = 1024
@@ -144,7 +147,7 @@ class _Screen:
             w, h = self.viewport.window.get_size()
             self.prefs.remember_window_size(w, h)
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
         return result
 
 

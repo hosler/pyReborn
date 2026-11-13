@@ -10,6 +10,7 @@ from ..client_callbacks import emit
 from ..palette import REBORN_PALETTE
 from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _current_baddies, _item_ids, _push_dir
 from .registry import _FALL_THROUGH, _GS1_MAIN_COMMANDS, _gs1_command
+from ..logutil import log_swallowed
 
 
 
@@ -51,7 +52,7 @@ class MainCommandsMixin:
                     # login, re-firing this whole lifecycle.
                     rt.client.delete_weapon(wname)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "setimgpart")
     def _cmd_setimgpart(self, name, args, ctx, imgs):
@@ -122,7 +123,7 @@ class MainCommandsMixin:
             rt.client.send_putnpc(to_str(args[0]), to_str(args[1]),
                                   to_num(args[2]), to_num(args[3]))
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "putcomp", "putnewcomp")
     def _cmd_putcomp(self, name, args, ctx, imgs):
@@ -147,7 +148,7 @@ class MainCommandsMixin:
         try:
             rt.client.send_baddy_add(x, y, btype, power, image)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "removecompus")
     def _cmd_removecompus(self, name, args, ctx, imgs):
@@ -157,7 +158,7 @@ class MainCommandsMixin:
         try:
             rt.client.kill_all_baddies()
         except Exception:
-            pass
+            log_swallowed(logger)
 
     # -- scripted combat family (hurt/hit*/bombs/explosions/items) ----------
 
@@ -182,18 +183,18 @@ class MainCommandsMixin:
             try:
                 cl.respond_to_hurt(old - new)
             except Exception:
-                pass
+                log_swallowed(logger)
             player.hearts = new
             try:
                 emit(cl, "on_hurt", 0, old - new, 0, from_x or 0, from_y or 0)
             except Exception:
-                pass
+                log_swallowed(logger)
         else:
             player.set_hearts(new)
             try:
                 cl.send_hearts()
             except Exception:
-                pass
+                log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "hurt")
     def _cmd_hurt(self, name, args, ctx, imgs):
@@ -235,7 +236,7 @@ class MainCommandsMixin:
                 pid, damage=max(0.0, math.floor(hh) / 2.0),
                 knockback_x=int(dx * 2), knockback_y=int(dy * 2))
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "hitcompu")
     def _cmd_hitcompu(self, name, args, ctx, imgs):
@@ -265,7 +266,7 @@ class MainCommandsMixin:
                 rt.client.hurt_baddy(bid, damage=hh / 2.0,
                                      hurt_dx=dx, hurt_dy=dy)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "hitnpc")
     def _cmd_hitnpc(self, name, args, ctx, imgs):
@@ -309,7 +310,7 @@ class MainCommandsMixin:
             try:
                 rt.client.put_bomb(x, y, power, consume_ammo=False)
             except Exception:
-                pass
+                log_swallowed(logger)
         if rt.is_water_at((x + 1) % 64, (y + 1) % 64):
             if rt.on_putleaps:
                 rt.on_putleaps(5, x, y)
@@ -345,7 +346,7 @@ class MainCommandsMixin:
                 else:
                     rt.client.remove_bomb(bx, by)
             except Exception:
-                pass
+                log_swallowed(logger)
         if rt.on_removebomb:
             rt.on_removebomb(bomb, name == "explodebomb")
 
@@ -379,7 +380,7 @@ class MainCommandsMixin:
             try:
                 cl.send_explosion(radius, x, y, power)
             except Exception:
-                pass
+                log_swallowed(logger)
             make_explosion = getattr(cl, "make_explosion", None)
             if callable(make_explosion):
                 wx, wy = x, y
@@ -456,7 +457,7 @@ class MainCommandsMixin:
         try:
             rt.client.send_item_add(x, y, item_id)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "putleaps")
     def _cmd_putleaps(self, name, args, ctx, imgs):
@@ -508,12 +509,12 @@ class MainCommandsMixin:
                 from ..carrying import publish_carry
                 publish_carry(cl, -1)
             except Exception:
-                pass
+                log_swallowed(logger)
         if player.animation != "idle":
             try:
                 cl.set_animation("idle")
             except Exception:
-                pass
+                log_swallowed(logger)
             if self.rt.on_setani:
                 self.rt.on_setani("idle")
 
@@ -533,7 +534,7 @@ class MainCommandsMixin:
         try:
             cl._send_appearance_prop(21, "")
         except Exception:
-            pass
+            log_swallowed(logger)
         return None
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "setletters")

@@ -21,50 +21,22 @@ blocked on the torso and head rows, so the player stopped a full tile short
 of walls the real client tucks under.
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
 from pyreborn.game.constants import MOVE_STEP
 
 from .test_onwall2_flush_slide import BLOCK
 
 
-class _GameHarness(ActionsMixin, CollisionMixin):
-    def __init__(self, client):
-        self.client = client
-        self.noclip = False
-
-
-def _harness(walls):
-    """Harness over a 64x64 board blocked at the given (tx, ty) cells."""
-    c = Client("localhost", 14900)
-    c._authenticated = True
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    lvl = [0] * 4096
-    for tx, ty in walls:
-        lvl[ty * 64 + tx] = BLOCK
-    c._current_level_name = "test.nw"
-    c.levels["test.nw"] = lvl
-    c.tiles = lvl
-    return c, _GameHarness(c)
+@pytest.fixture
+def walled(make_game):
+    """``walled(cells)``: a real offline game on a 64x64 board blocked at the
+    given (tx, ty) cells and open everywhere else."""
+    def build(walls):
+        blocked = set(walls)
+        return make_game(
+            tiles=lambda tx, ty: BLOCK if (tx, ty) in blocked else 0)
+    return build
 
 
 # 0=up 1=left 2=down 3=right, the reference's direction ordering.
@@ -103,15 +75,15 @@ class TestProbePoints:
         (2, (2.0, 0.5)),   # down:  else-branch on both axes
         (3, (2.0, 0.5)),   # right: else-branch on both axes
     ])
-    def test_pair_per_direction(self, k, expected_p2):
-        c, h = _harness([])
+    def test_pair_per_direction(self, walled, k, expected_p2):
+        h = walled([])
         dx, dy = _DELTA[k]
         points = h._probe_points(10.0, 20.0, dx, dy)
         assert points[0] == (11.5, 22.0)          # P1 = (+1.5, +2.0), always
         assert points[1:] == [(10.0 + expected_p2[0], 20.0 + expected_p2[1])]
 
-    def test_diagonal_checks_both_cardinals(self):
-        c, h = _harness([])
+    def test_diagonal_checks_both_cardinals(self, walled):
+        h = walled([])
         points = h._probe_points(10.0, 20.0, 1, -1)   # up-right
         assert points[0] == (11.5, 22.0)
         assert set(points[1:]) == {(12.0, 21.0), (12.0, 20.5)}
@@ -123,29 +95,29 @@ class TestRestingPositions:
     body may overlap the wall row/column, exactly as the reference's
     upper-body probes allow."""
 
-    def test_up_head_row_overlaps_the_wall(self):
-        c, h = _harness(_ROW_UP)
+    def test_up_head_row_overlaps_the_wall(self, walled):
+        h = walled(_ROW_UP)
         _, y = _walk(h, (32.0, 30.0), 0)
         # Up probes ny+1.0 (P2) and ny+2.0 (P1): blocked once ny+1.0 enters
         # row 20, so the sprite's top row sits ON the wall row.
         assert y == _WALL_ROW_UP + 1 - 1.0
 
-    def test_left_edge_column_overlaps_the_wall(self):
-        c, h = _harness(_COL_LEFT)
+    def test_left_edge_column_overlaps_the_wall(self, walled):
+        h = walled(_COL_LEFT)
         x, _ = _walk(h, (30.0, 30.0), 1)
         # Left probes nx+1.0 (P2) and nx+1.5 (P1).
         assert x == _WALL_COL_LEFT + 1 - 1.0
 
-    def test_down_stops_when_body_centre_reaches_the_wall(self):
-        c, h = _harness(_ROW_DOWN)
+    def test_down_stops_when_body_centre_reaches_the_wall(self, walled):
+        h = walled(_ROW_DOWN)
         _, y = _walk(h, (32.0, 20.0), 2)
         # Down probes ny+0.5 and ny+2.0: the y+2.0 body point is the leading
         # probe. It rests one MOVE_STEP short of the row boundary (a point ON
         # the boundary floors into the wall tile).
         assert y + 2.0 == _WALL_ROW_DOWN - MOVE_STEP
 
-    def test_right_stops_when_leading_probe_reaches_the_wall(self):
-        c, h = _harness(_COL_RIGHT)
+    def test_right_stops_when_leading_probe_reaches_the_wall(self, walled):
+        h = walled(_COL_RIGHT)
         x, _ = _walk(h, (20.0, 30.0), 3)
         assert x + 2.0 == _WALL_COL_RIGHT - MOVE_STEP
 

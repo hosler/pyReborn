@@ -10,6 +10,7 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 import pytest
 
+from offline_game import spy
 from pyreborn import tiletypes
 from pyreborn.bushcut import BUSH_OBJECTS, BUSH_REPLACE
 from pyreborn.explosions import (
@@ -19,11 +20,10 @@ from pyreborn.explosions import (
     explosion_sprite, hits_player, knockback, order_point_y,
 )
 from pyreborn.game.frame_context import FrameContext
-from pyreborn.game.callbacks.client_callbacks import wire_client_callbacks
 from pyreborn.game.render_effects import EffectsRenderMixin
 from pyreborn.handlers.combat import handle_explosion
 from pyreborn.liftobjects import LIFT_OBJECTS, LIFT_REPLACE
-from .test_bushcut import FakeClient, gmap_client
+from .test_bushcut import gmap_client, new_client  # noqa: F401
 
 
 def plant(board, x, y, pattern):
@@ -154,16 +154,16 @@ def test_probe_cast_truncation_and_level_bounds():
 
 
 @pytest.mark.parametrize('gmap', [False, True])
-def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
+def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch, new_client, gmap_client):
     # TServerLevel.cpp:1624-1641: the arm cells also run putExplosion's probes.
-    client, board = gmap_client() if gmap else (FakeClient(), None)
+    client, board = gmap_client() if gmap else (new_client(), None)
     board = client.tiles if board is None else board
     plant(board, 14, 10, BUSH_OBJECTS[0])
     client.on_explosion = Mock()
     client.on_leaps = Mock()
     hearts = client.player.hearts
     handle_explosion(client, bytes((32, 32, 34, 52, 52, 35)))  # owner 0,radius=2,x=10,y=10,type=3
-    ox, oy = (64, 128) if gmap else (0, 0)
+    ox, oy = (64, 64) if gmap else (0, 0)
     cells = cross_cells(ox + 10, oy + 10, 2)
     assert [(e['x'], e['y'], e['sprite_row']) for e in client.active_explosions] == [
         (c.x, c.y, c.sprite_row) for c in cells]
@@ -178,14 +178,14 @@ def test_packet_expands_cells_and_blasts_arm(gmap, monkeypatch):
 
 
 @pytest.mark.parametrize('gmap', [False, True])
-def test_stone_patch_notifies_board_renderer_without_debris(gmap, monkeypatch):
+def test_stone_patch_notifies_board_renderer_without_debris(gmap, monkeypatch, new_client, gmap_client):
     # TServerLevel.cpp:1582-1586: stones still change tiles but do not spawn leaps.
-    client, board = gmap_client() if gmap else (FakeClient(), None)
+    client, board = gmap_client() if gmap else (new_client(), None)
     board = client.tiles if board is None else board
     client.on_board_modify = Mock()
     client.on_leaps = Mock()
     plant(board, 10, 10, LIFT_OBJECTS[3])
-    ox, oy = (64, 128) if gmap else (0, 0)
+    ox, oy = (64, 64) if gmap else (0, 0)
     assert client._blast_board_at(ox + 10, oy + 10) == {(ox + 10, oy + 10)}
     client.on_leaps.assert_not_called()
     assert client.effects == []
@@ -193,31 +193,33 @@ def test_stone_patch_notifies_board_renderer_without_debris(gmap, monkeypatch):
         'x': 10, 'y': 10, 'width': 2, 'height': 2,
         'tiles': [0x72a, 0x72b, 0x73a, 0x73b]}
     if gmap:
-        info.update(map_x=1, map_y=2)
+        info.update(map_x=1, map_y=1)
     client.on_board_modify.assert_called_once_with(info)
 
 
-class CellGame(EffectsRenderMixin):
-    def __init__(self):
-        self.client = FakeClient()
-        self.screen = pygame.Surface((320, 240))
-        self.camera = SimpleNamespace(world_to_screen=lambda x, y: (x * 16, y * 16))
-        self.sprite_mgr = Mock()
-        self.sprite_mgr.get_sprite.return_value = None
-        self.sound_mgr = Mock()
-        self._start_camera_shake = Mock()
-        self._render_explosion_burst = Mock()
+@pytest.fixture
+def cell_game(make_game, monkeypatch):
+    """A real offline game on an empty board whose art lookup answers nothing
+    (the vector fallback draws), with a unit camera (16 px per tile), the
+    burst drawing and camera shake stubbed and the sound manager spied
+    (``game.sound_calls``)."""
+    game = make_game(tiles=lambda tx, ty: 0)
+    monkeypatch.setattr(game.camera, 'world_to_screen', lambda x, y: (x * 16, y * 16))
+    monkeypatch.setattr(game.sprite_mgr, 'get_sprite', lambda *args, **kw: None)
+    game.sound_calls = spy(monkeypatch, game.sound_mgr, 'play')
+    game._start_camera_shake = Mock()
+    game._render_explosion_burst = Mock()
+    return game
 
 
-def test_callback_wiring_spawns_one_bush_leap_and_invalidates_surface(monkeypatch):
+def test_callback_wiring_spawns_one_bush_leap_and_invalidates_surface(cell_game):
     # TServerLevel.cpp:1558-1561,2850-2867: one patch and one leap per block.
-    game = CellGame()
+    game = cell_game
     game._request_asset = Mock()
     game._spawn_leaf_particles = Mock()
     game._spawn_leaps = Mock()
     game._patch_world_surface_for_modify = Mock()
     game.world_surface = object()
-    wire_client_callbacks(game)
     plant(game.client.tiles, 10, 10, BUSH_OBJECTS[0])
     game.client._blast_board_at(10, 10)
     game._spawn_leaf_particles.assert_called_once_with(10, 10)
@@ -228,21 +230,21 @@ def test_callback_wiring_spawns_one_bush_leap_and_invalidates_surface(monkeypatc
 @pytest.mark.parametrize('kind,sound,count', [(1, 'bomb.wav', 9),
                                             (2, 'bomb.wav', 53),
                                             (3, 'thunder.wav', 9)])
-def test_detonation_sounds_and_all_cells(kind, sound, count):
+def test_detonation_sounds_and_all_cells(cell_game, kind, sound, count):
     # TServerLevel.cpp:1697,1710-1724: bomb type owns sound and cross geometry.
-    game = CellGame()
+    game = cell_game
     game.client._blast_board_at = Mock()
     bomb = {'x': 10, 'y': 10, 'power': kind}
     assert game._detonate_bomb(bomb, now=100)
     assert not game._detonate_bomb(bomb, now=101)
-    game.sound_mgr.play.assert_called_once_with(sound)
+    assert game.sound_calls == [((sound,), {})]
     assert len(bomb['cells']) == count
     assert game.client._blast_board_at.call_count == count
 
 
-def test_cell_fallback_and_exact_depth_without_sheet():
+def test_cell_fallback_and_exact_depth_without_sheet(cell_game):
     # TExplosion.cpp:24-46: top-left draw; timeLeft contributes to sort Y.
-    game = CellGame()
+    game = cell_game
     frame = FrameContext(in_frame=True)
     game._render_explosion_cell(frame, 3, 4, 4, .1, .5)
     game._render_explosion_burst.assert_not_called()
@@ -253,20 +255,20 @@ def test_cell_fallback_and_exact_depth_without_sheet():
     game._render_explosion_burst.assert_called_once_with(48, 64, .1, 16, 212)
 
 
-def test_cell_sprite_uses_top_left_and_no_fallback():
+def test_cell_sprite_uses_top_left_and_no_fallback(cell_game, monkeypatch):
     # TServerLevel.cpp:1607; TExplosion.cpp:42-45.
-    game = CellGame()
+    game = cell_game
     sprite = pygame.Surface((4, 4))
     sprite.fill((250, 10, 20))
-    game.sprite_mgr.get_sprite.return_value = sprite
+    monkeypatch.setattr(game.sprite_mgr, 'get_sprite', lambda *args, **kw: sprite)
     game._render_explosion_cell(None, 3, 4, 4, 0, 0)
     assert game.screen.get_at((48, 64))[:3] == (250, 10, 20)
     game._render_explosion_burst.assert_not_called()
 
 
-def test_legacy_remote_cross_expands_on_render():
+def test_legacy_remote_cross_expands_on_render(cell_game):
     # TServerLevel.cpp:1614-1641: legacy cross entries use the same cell order.
-    game = CellGame()
+    game = cell_game
     game.client.active_explosions = [{'x': 3, 'y': 4, 'radius': 2, 'time': 100,
                                       'tick': game.client.clock.tick}]
     game._render_explosion_cell = Mock()
@@ -275,10 +277,10 @@ def test_legacy_remote_cross_expands_on_render():
     assert game._render_explosion_cell.call_count == 9
 
 
-def test_legacy_bomb_computes_cells_lazily_on_render():
+def test_legacy_bomb_computes_cells_lazily_on_render(cell_game):
     # TServerLevel.cpp:1710-1724: type 2 expands into all five crosses; the
     # burst lasts twelve ticks (TServerLevel.cpp:1606, TExplosion.cpp:101-102).
-    game = CellGame()
+    game = cell_game
     clock = game.client.clock
     bomb = {'x': 3, 'y': 4, 'time': 97, 'explosion_time': 100,
             'explosion_tick': clock.tick, 'exploded': True, 'power': 2}

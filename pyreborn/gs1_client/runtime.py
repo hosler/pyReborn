@@ -33,6 +33,8 @@ from .board import board_tile_read, board_layer_tile_ids, _board_locate
 from .host import GS1ClientHost
 from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope, _current_baddies
 from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _TIMEOUT_CANCEL, _report_gs1_error
+from ..logutil import log_swallowed
+from ..lru import LruCache
 
 
 
@@ -74,12 +76,12 @@ class ClientGS1:
         self.client = client
         self.scripts: dict = {}        # name -> raw code (back-compat)
         self._progs: dict = {}         # name -> entry dict
-        self._parse_cache: dict = {}   # source text -> parsed Program (or None)
+        self._PARSE_CACHE_MAX = 512
+        self._parse_cache: dict = LruCache(self._PARSE_CACHE_MAX)   # source text -> parsed Program (or None)
         self._gs1_classes: dict = {}
         self._pending_class_joins: dict = {}
         self._requested_classes: set = set()
         self._rejected_class_payloads: set = set()
-        self._PARSE_CACHE_MAX = 512
         # npc_id -> (width, height, flags) recorded when setshape/setshape2 runs.
         # The NPC touch handler reads collision geometry from here.
         self.shapes: dict = {}
@@ -283,8 +285,6 @@ class ClientGS1:
             logger.warning("failed to parse client GS1 script %s: %s", name, exc,
                            exc_info=logger.isEnabledFor(logging.DEBUG))
             prog = None
-        if len(cache) >= self._PARSE_CACHE_MAX:
-            cache.clear()               # simple bound; re-parses warm it again
         cache[code] = prog
         return prog
 
@@ -326,7 +326,7 @@ class ClientGS1:
             try:
                 self.client.request_class_bytecode(class_name)
             except Exception:
-                pass
+                log_swallowed(logger)
         return False
 
     def receive_class_source(self, class_name, source):
@@ -345,6 +345,7 @@ class ClientGS1:
             try:
                 source = source.decode("latin-1")
             except Exception:
+                log_swallowed(logger)
                 self._requested_classes.discard(cname)
                 return False
         prog = self._parse_cached("class_" + cname, to_str(source))
@@ -793,6 +794,7 @@ class ClientGS1:
                 try:
                     size = self.image_size_source(image)
                 except Exception:
+                    log_swallowed(logger, level=logging.DEBUG)
                     size = None
             w_px, h_px = size if size else (_DEFAULT_IMAGE_PX,
                                             _DEFAULT_IMAGE_PX)
@@ -822,6 +824,7 @@ class ClientGS1:
         try:
             opaque = self.image_opaque_source(npc.get("image"), px, py)
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             opaque = None
         return opaque is not False
 
@@ -858,6 +861,7 @@ class ClientGS1:
             try:
                 tile = self.tile_source(x, y)
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 tile = None
             if tile is not None:
                 return None if tile < 0 else tile
@@ -954,6 +958,7 @@ class ClientGS1:
             try:
                 name = self.player_ani_source() or ""
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 name = ""
         if not name and self.client is not None:
             name = getattr(getattr(self.client, "player", None),
@@ -1081,10 +1086,11 @@ class ClientGS1:
             try:
                 cl.send_item_del(ix, iy)
             except Exception:
-                pass
+                log_swallowed(logger)
             try:
                 cl.remove_item_local(level, ix, iy)
             except Exception:
+                log_swallowed(logger)
                 items.pop((ix, iy), None)
             self._npc_take_effect(npc, index)
             return True
@@ -1228,7 +1234,7 @@ class ClientGS1:
                 try:
                     cl.hurt_baddy(baddy_id, damage=power)
                 except Exception:
-                    pass
+                    log_swallowed(logger)
 
     def _run(self, entry, event):
         if entry.get("inactive"):

@@ -27,6 +27,9 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 PYR = Path(__file__).resolve().parent.parent
 PYG = Path(os.environ.get("PYGSERVER_DIR", PYR.parent / "pygserver"))
@@ -69,7 +72,7 @@ def _api_key() -> str:
             key = subprocess.check_output(
                 ["rbw", "get", "anthropic-api-key"], text=True).strip()
         except Exception:
-            pass
+            log_swallowed(logger)
     if not key:
         sys.exit("No ANTHROPIC_API_KEY in env and `rbw get anthropic-api-key` failed.")
     return key
@@ -126,6 +129,7 @@ def start_daemon(game_port: int, game_host: str = "localhost"):
         except urllib.error.HTTPError:
             break  # daemon answered (404 for no bot) -> it's up
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             time.sleep(0.3)
     return proc, dport
 
@@ -275,13 +279,14 @@ def _serve_only(external_host: str = None, external_port: int = 14900):
         try:
             daemon_get(dport, "/quit?confirm=shutdown")
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
         procs = (dproc, srv) if srv is not None else (dproc,)
         for p in procs:
             p.terminate()
             try:
                 p.wait(8)
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 p.kill()
         if logf is not None:
             logf.close()
@@ -363,6 +368,7 @@ def main():
             try:
                 p.wait(8)
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 p.kill()
         if logf is not None:
             logf.close()

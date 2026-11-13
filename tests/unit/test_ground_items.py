@@ -1,22 +1,10 @@
-"""Classic ground-item rules (pyreborn/ground_items.py): walk-over pickup,
-bob/blink presentation, weapon-grant table, and the S+D / S+A chords.
-
-Numbers are transcribed from the decompiled client under
-Preagonal/FourPlay/quattroplay/src/ (TServerLevel.cpp animateExtras/putExtra,
-TServerExtra.cpp draw, TPlayer.cpp nextGiveItem/loseItem, TInitStatics.cpp
-tables)."""
-
 import math
 import os
-import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
 
 import pygame
 import pytest
@@ -26,11 +14,12 @@ pygame.display.set_mode((64, 64))
 
 from pygame.locals import K_a, K_d, K_s, K_SPACE, K_UP, K_DOWN, K_LEFT, K_RIGHT
 
-from pyreborn.clock import Clock
+from offline_game import spy
 from pyreborn import ground_items as gi
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.input import InputMixin
 from pyreborn.packets import LEVEL_ITEM_NAMES
+
+ITEM_ID = {name: i for i, name in LEVEL_ITEM_NAMES.items()}
+LEVEL = 'fixture.nw'
 
 
 def _age(time_left):
@@ -75,15 +64,38 @@ def test_walkover_absorbs_the_non_giveaway_kinds_locally():
     assert gi.walkover_absorbs(10.0, 10.0, items, ages) == [(10.0, 10.5)]
 
 
-def test_auto_pickup_removes_non_giveaway_items_without_sending():
-    items = {(10.0, 10.0): 'glove1'}
-    game = _pickup_game((10.0, 10.0), items)
-    game.client.remove_item_local = Mock(
-        side_effect=lambda level, x, y: items.pop((x, y), None))
-    assert ActionsMixin._auto_pickup_items(game) == 0
-    game.client.pickup_item.assert_not_called()
-    game.client.remove_item_local.assert_called_once_with('a.nw', 10.0, 10.0)
-    assert items == {}
+@pytest.fixture
+def pickup_game(make_game, monkeypatch):
+    """``pickup_game(player_xy, items, take_ok=True, **knobs)``: a real offline
+    game whose level holds ``items`` (``{(x, y): name}``), each stamped as
+    arrived two seconds ago (``client.item_stamps``), with the player at ``player_xy`` (world). Call-through
+    spies: ``game.pickups`` (client.pickup_item), ``game.removals``
+    (client.remove_item_local), ``game.sound_calls`` (sound_mgr.play).
+    ``take_ok=False`` makes ``pickup_item`` report that nothing was sent."""
+    def build(player_xy, items, take_ok=True, **knobs):
+        game = make_game(items=[(x, y, ITEM_ID[name])
+                                for (x, y), name in items.items()], **knobs)
+        client = game.client
+        client.player.x, client.player.y = player_xy
+        level = client.get_current_level_from_position()
+        for pos in client.items_in_level(level):
+            client.item_stamps[(level, pos)] = game.clock.sim_now() - 2.0
+        if not take_ok:
+            monkeypatch.setattr(client, 'pickup_item', lambda *a, **k: False)
+        game.pickups = spy(monkeypatch, client, 'pickup_item')
+        game.removals = spy(monkeypatch, client, 'remove_item_local')
+        game.sound_calls = spy(monkeypatch, game.sound_mgr, 'play')
+        game.level = level
+        return game
+    return build
+
+
+def test_auto_pickup_removes_non_giveaway_items_without_sending(pickup_game):
+    game = pickup_game((10.0, 10.0), {(10.0, 10.0): 'glove1'})
+    assert game._auto_pickup_items() == 0
+    assert game.pickups == []
+    assert game.removals == [((game.level, 10.0, 10.0), {})]
+    assert game.client.items_in_level(game.level) == {}
 
 
 def test_item_ages_forgets_removed_items_and_allows_retake():
@@ -99,46 +111,34 @@ def test_item_ages_forgets_removed_items_and_allows_retake():
 
 # --- ActionsMixin walk-over wiring -----------------------------------------
 
-def _pickup_game(player_xy, items, take_ok=True):
-    client = SimpleNamespace(
-        connected=True, authenticated=True,
-        player=SimpleNamespace(x=player_xy[0], y=player_xy[1]),
-        get_current_level_from_position=lambda: 'a.nw',
-        items_in_level=lambda name: items,
-        pickup_item=Mock(return_value=take_ok),
-    )
-    clock = Clock()
-    return SimpleNamespace(client=client, sound_mgr=Mock(), clock=clock,
-                           _item_first_seen={('a.nw', k): clock.sim_now() - 2.0 for k in items})
+def test_auto_pickup_sends_one_take_per_item_until_server_removes_it(pickup_game):
+    game = pickup_game((10.0, 10.0), {(10.0, 10.0): 'greenrupee'})
+    client = game.client
+    assert game._auto_pickup_items() == 1
+    assert game.pickups == [((10.0, 10.0), {})]
+    assert game.sound_calls == [(("item.wav",), {})]
+    assert game._auto_pickup_items() == 0          # deduped
+    client.items_in_level(game.level).clear()      # server removed it
+    game._auto_pickup_items()
+    client.items_in_level(game.level)[(10.0, 10.0)] = 'greenrupee'   # dropped again
+    client.item_stamps[(game.level, (10.0, 10.0))] = game.clock.sim_now() - 2.0
+    assert game._auto_pickup_items() == 1
 
 
-def test_auto_pickup_sends_one_take_per_item_until_server_removes_it():
-    items = {(10.0, 10.0): 'greenrupee'}
-    game = _pickup_game((10.0, 10.0), items)
-    assert ActionsMixin._auto_pickup_items(game) == 1
-    game.client.pickup_item.assert_called_once_with(10.0, 10.0)
-    game.sound_mgr.play.assert_called_once_with("item.wav")
-    assert ActionsMixin._auto_pickup_items(game) == 0          # deduped
-    items.clear()                                              # server removed it
-    ActionsMixin._auto_pickup_items(game)
-    items[(10.0, 10.0)] = 'greenrupee'                         # dropped again
-    game._item_first_seen[('a.nw', (10.0, 10.0))] = game.clock.sim_now() - 2.0
-    assert ActionsMixin._auto_pickup_items(game) == 1
+def test_auto_pickup_ignores_far_items_and_unsent_takes_retry(pickup_game, monkeypatch):
+    game = pickup_game((10.0, 10.0), {(30.0, 30.0): 'heart'})
+    assert game._auto_pickup_items() == 0
+    game = pickup_game((10.0, 10.0), {(10.0, 10.0): 'heart'}, take_ok=False)
+    assert game._auto_pickup_items() == 0
+    monkeypatch.undo()                 # the take can now be sent
+    assert game._auto_pickup_items() == 1
 
 
-def test_auto_pickup_ignores_far_items_and_unsent_takes_retry():
-    game = _pickup_game((10.0, 10.0), {(30.0, 30.0): 'heart'})
-    assert ActionsMixin._auto_pickup_items(game) == 0
-    game = _pickup_game((10.0, 10.0), {(10.0, 10.0): 'heart'}, take_ok=False)
-    assert ActionsMixin._auto_pickup_items(game) == 0
-    game.client.pickup_item.return_value = True
-    assert ActionsMixin._auto_pickup_items(game) == 1
-
-
-def test_auto_pickup_converts_world_position_to_level_local():
+def test_auto_pickup_converts_world_position_to_level_local(pickup_game):
     # GMAP segment (1, 0): world x 74 is local 10
-    game = _pickup_game((74.0, 10.0), {(10.0, 10.0): 'heart'})
-    assert ActionsMixin._auto_pickup_items(game) == 1
+    game = pickup_game((74.0, 10.0), {(10.0, 10.0): 'heart'},
+                       gmap=True, gmap_segment=(1, 0))
+    assert game._auto_pickup_items() == 1
 
 
 # --- bob / blink ------------------------------------------------------------
@@ -212,27 +212,28 @@ def test_drop_position_uses_layd_offsets_snapped_to_half_tiles():
         assert not gi.within_pickup_range(10.0, 10.0, x, y)
 
 
-def test_giveaway_drop_costs_the_stat_and_lays_the_item():
+def test_giveaway_drop_costs_the_stat_and_lays_the_item(make_game, monkeypatch):
     from reborn_protocol import PLPROP
-    player = SimpleNamespace(x=10.0, y=10.0, direction=3, rupees=40, bombs=0,
-                             arrows=0, hearts=3.0)
-    client = SimpleNamespace(
-        player=player, items={}, send_appearance_prop=Mock(),
-        send_item_add=Mock(return_value=True),
-        get_current_level_from_position=lambda: 'a.nw')
+    game = make_game(player_xy=(10.0, 10.0))
+    client = game.client
+    player = client.player
+    player.x, player.y, player.direction = 10.0, 10.0, 3
+    player.rupees, player.bombs, player.arrows, player.hearts = 40, 0, 0, 3.0
     player.action_mode = 9
-    game = SimpleNamespace(client=client, sound_mgr=Mock(), clock=Clock(),
-                           _giveaway_item=2)
-    game._giveaway_stats = lambda: ActionsMixin._giveaway_stats(game)
-    assert ActionsMixin._giveaway_drop(game) is True
+    game._giveaway_item = 2
+    level = client.get_current_level_from_position()
+    client.items.pop(level, None)
+    props = spy(monkeypatch, client, 'send_appearance_prop')
+    adds = spy(monkeypatch, client, 'send_item_add')
+    assert game._giveaway_drop() is True
     assert player.rupees == 10
-    client.send_appearance_prop.assert_called_once_with(PLPROP.RUPEESCOUNT, 10)
-    client.send_item_add.assert_called_once_with(12.5, 11.0, 2)
-    assert client.items == {'a.nw': {(12.5, 11.0): 'redrupee'}}
+    assert props == [((PLPROP.RUPEESCOUNT, 10), {})]
+    assert adds == [((12.5, 11.0, 2), {})]
+    assert client.items == {level: {(12.5, 11.0): 'redrupee'}}
     assert game._giveaway_item is None
     assert player.action_mode == 0
     game._giveaway_item = 2
-    assert ActionsMixin._giveaway_drop(game) is False        # 10 < 30 now
+    assert game._giveaway_drop() is False        # 10 < 30 now
     assert player.rupees == 10
 
 
@@ -249,65 +250,36 @@ class _Keys:
         return 512
 
 
-class _UI:
-    visible = False
-
-
-class _ChordHarness(InputMixin):
-    def __init__(self):
-        self.client = SimpleNamespace(
-            player=SimpleNamespace(hearts=3.0, direction=0),
-            input_frozen=False, local_level_transition='')
-        self.gs1 = SimpleNamespace(default_movement=True, keys_dir=set(),
-                                   keys_raw=set())
-        self.typing = False
-        self.dialogue_text = None
-        self.inventory_ui = _UI()
-        self.show_player_list = self.show_server_list = False
-        self.pm_target_id = None
-        self.key_just_pressed = {}
-        self.last_action_time = 0.0
-        self.action_delay = 0.3
-        self._frozen_until = 0.0
-        self._vk_cache = {}
-        self.is_moving = False
-        self.calls = []
-
-    def _ensure_settings_ui(self):
-        return _UI()
-
-    def _gs2_gui_captures_keys(self):
-        return False
-
-    def _feed_gs1_input(self, keys):
-        pass
-
-    def _fire_gs1_keypress_queue(self):
-        pass
-
-    def _auto_pickup_items(self):
-        self.calls.append('auto_pickup')
-
-    def _clear_grab_state(self):
-        pass
-
-    def _clear_push_hold(self):
-        pass
-
-    def _cycle_weapon(self):
-        self.calls.append('cycle')
-
-    def _giveaway_select(self):
-        self.calls.append('giveaway')
-
-    def _giveaway_drop(self):
-        self.calls.append('drop')
-
-    def _use_weapon(self):
-        self.calls.append('use_weapon')
-
-    def _swing_sword(self):
-        self.calls.append('sword')
+@pytest.fixture
+def chord(make_game, monkeypatch):
+    """``chord(real_giveaway=False)``: a real offline game driven through the
+    REAL _handle_input, with the dispatch targets recording into
+    ``game.calls`` ('auto_pickup', 'cycle', 'giveaway', 'drop', 'use_weapon',
+    'sword') instead of running. ``real_giveaway=True`` keeps the real
+    _giveaway_select / _giveaway_drop and gives the player 40 rupees, 5 bombs
+    and 5 arrows; ``game.sound_calls`` and ``game.item_adds`` spy on the
+    sound manager and client.send_item_add."""
+    def build(real_giveaway=False):
+        game = make_game()
+        game.frames(1)
+        game.gs1.default_movement = True
+        game.calls = []
+        targets = {'_auto_pickup_items': 'auto_pickup', '_cycle_weapon': 'cycle',
+                   '_use_weapon': 'use_weapon', '_swing_sword': 'sword'}
+        if not real_giveaway:
+            targets.update({'_giveaway_select': 'giveaway',
+                            '_giveaway_drop': 'drop'})
+        for name, label in targets.items():
+            monkeypatch.setattr(game, name,
+                                lambda *a, _l=label, **k: game.calls.append(_l))
+        player = game.client.player
+        player.hearts = 3.0
+        if real_giveaway:
+            player.rupees, player.bombs, player.arrows = 40, 5, 5
+        game.sound_calls = spy(monkeypatch, game.sound_mgr, 'play')
+        game.item_adds = spy(monkeypatch, game.client, 'send_item_add')
+        return game
+    return build
 
 
 def _press(harness, held, just, now=100.0):
@@ -320,20 +292,20 @@ def _press(harness, held, just, now=100.0):
         pygame.key.get_pressed = orig
 
 
-def test_s_plus_d_cycles_weapons():
-    h = _ChordHarness()
+def test_s_plus_d_cycles_weapons(chord):
+    h = chord()
     _press(h, {K_s, K_d}, {K_d})
     assert h.calls == ['auto_pickup', 'cycle']
 
 
-def test_s_plus_a_is_the_item_giveaway_not_weapon_cycle():
-    h = _ChordHarness()
+def test_s_plus_a_is_the_item_giveaway_not_weapon_cycle(chord):
+    h = chord()
     _press(h, {K_s, K_a}, {K_a})
     assert h.calls == ['auto_pickup', 'giveaway']
 
 
-def test_bare_a_drops_while_giveaway_is_up():
-    h = _ChordHarness()
+def test_bare_a_drops_while_giveaway_is_up(chord):
+    h = chord()
     h._giveaway_item = 2
     _press(h, {K_a}, {K_a})
     assert h.calls == ['auto_pickup', 'drop']
@@ -341,24 +313,8 @@ def test_bare_a_drops_while_giveaway_is_up():
     assert h.client.player.action_mode == 0
 
 
-class _GiveawayInputHarness(_ChordHarness, ActionsMixin):
-    _giveaway_select = ActionsMixin._giveaway_select
-    _giveaway_drop = ActionsMixin._giveaway_drop
-
-    def __init__(self):
-        super().__init__()
-        from pyreborn.player import Player
-        self.client.player = Player(rupees=40, bombs=5, arrows=5)
-        self.client.items = {}
-        self.client.send_appearance_prop = Mock()
-        self.client.send_item_add = Mock(return_value=True)
-        self.client.get_current_level_from_position = lambda: 'a.nw'
-        self.sound_mgr = Mock()
-        self._play_action_animation = Mock()
-
-
-def test_hold_s_and_tap_a_cycles_between_releases_without_cooldown():
-    h = _GiveawayInputHarness()
+def test_hold_s_and_tap_a_cycles_between_releases_without_cooldown(chord):
+    h = chord(real_giveaway=True)
     # TPlayer.cpp:2220-2230: A presses cycle; held/released keys do nothing.
     for tap, item in enumerate((0, 1, 2, 3, 4, 5, 0)):
         now = 100.0 + tap * 0.02
@@ -369,29 +325,29 @@ def test_hold_s_and_tap_a_cycles_between_releases_without_cooldown():
         _press(h, {K_s}, set(), now + 0.01)
         assert h._giveaway_item == item
         assert h.client.player.action_mode == 9
-    assert h.sound_mgr.play.call_count == 7
-    assert all(call.args == ('item2.wav',) for call in h.sound_mgr.play.call_args_list)
+    assert len(h.sound_calls) == 7
+    assert all(args == ('item2.wav',) for args, _ in h.sound_calls)
 
 
-def test_releasing_s_or_a_preserves_selection_then_bare_a_lays_it():
-    h = _GiveawayInputHarness()
+def test_releasing_s_or_a_preserves_selection_then_bare_a_lays_it(chord):
+    h = chord(real_giveaway=True)
     _press(h, {K_s, K_a}, {K_a})
     _press(h, {K_a}, set())  # Releasing S while A remains held cannot drop.
     _press(h, set(), set())
     assert h._giveaway_item == 0
     assert h.client.player.action_mode == 9
-    assert not h.client.send_item_add.called
+    assert not h.item_adds
     _press(h, {K_a}, {K_a})
     assert h._giveaway_item is None
     assert h.client.player.action_mode == 0
     assert h.client.player.rupees == 39
-    h.client.send_item_add.assert_called_once()
-    h.sound_mgr.play.assert_called_with('item.wav')
+    assert len(h.item_adds) == 1
+    assert h.sound_calls[-1] == (('item.wav',), {})
 
 
 @pytest.mark.parametrize('key', [K_UP, K_DOWN, K_LEFT, K_RIGHT, K_d, K_SPACE, K_s])
-def test_only_fresh_other_gameplay_presses_end_selection(key):
-    h = _GiveawayInputHarness()
+def test_only_fresh_other_gameplay_presses_end_selection(chord, key):
+    h = chord(real_giveaway=True)
     _press(h, {K_s, K_a}, {K_a})
     _press(h, {key}, set())
     assert h._giveaway_item == 0
@@ -400,20 +356,20 @@ def test_only_fresh_other_gameplay_presses_end_selection(key):
     assert h._giveaway_item is None
     assert h.client.player.action_mode == 0
     assert set(h.calls) == {'auto_pickup'}
-    assert not h.client.send_item_add.called
+    assert not h.item_adds
 
 
-def test_pressing_s_while_a_is_held_does_not_enter_selection():
-    h = _ChordHarness()
+def test_pressing_s_while_a_is_held_does_not_enter_selection(chord):
+    h = chord()
     _press(h, {K_s, K_a}, {K_s})
     assert h.calls == ['auto_pickup']
 
 
-def test_bare_a_ends_selection_even_if_selected_item_is_no_longer_available():
-    h = _GiveawayInputHarness()
+def test_bare_a_ends_selection_even_if_selected_item_is_no_longer_available(chord):
+    h = chord(real_giveaway=True)
     _press(h, {K_s, K_a}, {K_a})
     h.client.player.rupees = 0
     _press(h, {K_a}, {K_a})
     assert h._giveaway_item is None
     assert h.client.player.action_mode == 0
-    assert not h.client.send_item_add.called
+    assert not h.item_adds

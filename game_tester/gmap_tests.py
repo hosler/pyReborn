@@ -25,6 +25,9 @@ from typing import List, Optional, Tuple
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
 from .test_scenarios import reset_account_position
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # chicken.gmap layout (col,row) -> level. Center segment is (1,1)=chicken1.nw;
 # its east neighbour is (2,1)=chicken7.nw.
@@ -290,7 +293,7 @@ def _require_gmap_world(bot: GameBot) -> Optional[TestResult]:
     try:
         _enter_gmap(bot)
     except Exception:  # noqa: BLE001 - report it as "not loaded" below
-        pass
+        log_swallowed(logger)
     if getattr(c, "is_gmap", False) and getattr(c, "gmap_name", ""):
         return None
     return TestResult(

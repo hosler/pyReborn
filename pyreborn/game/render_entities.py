@@ -95,6 +95,10 @@ from .render_collect import EntityCollectMixin
 from .render_gani import GaniRenderMixin
 from .render_layers import LayerRenderMixin
 from .render_text import RenderTextMixin
+import logging
+from ..logutil import log_swallowed
+from ..lru import LruCache
+logger = logging.getLogger(__name__)
 
 
 class EntityRenderMixin(
@@ -387,7 +391,7 @@ class EntityRenderMixin(
         actually changes."""
         cache = getattr(self, '_other_anim_split_cache', None)
         if cache is None:
-            cache = self._other_anim_split_cache = {}
+            cache = self._other_anim_split_cache = LruCache(300)
         result = cache.get(player_anim)
         if result is None:
             if ',' in player_anim:
@@ -398,8 +402,6 @@ class EntityRenderMixin(
                 name = player_anim
                 params = []
             result = (name, params)
-            if len(cache) > 300:
-                cache.clear()
             cache[player_anim] = result
         return result
 
@@ -519,7 +521,7 @@ class EntityRenderMixin(
             if self.client.request_file(filename):
                 self._requested_assets.add(filename)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     @staticmethod
     def _gani_drawn_sprite_ids(gani, defaults) -> set:
@@ -600,7 +602,7 @@ class EntityRenderMixin(
             for filename in filenames:
                 self._request_asset(filename)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def _status_label(self, status) -> str:
         """Tier 3c: resolve a numeric PLPROP_STATUS to a selectable label from
@@ -672,15 +674,13 @@ class EntityRenderMixin(
         dozens of NPCs re-splitting the same static string every frame."""
         cache = getattr(self, '_npc_gani_split_cache', None)
         if cache is None:
-            cache = self._npc_gani_split_cache = {}
+            cache = self._npc_gani_split_cache = LruCache(300)
         result = cache.get(gani_name)
         if result is None:
             parts = [p.strip() for p in gani_name.split(',')]
             name = parts[0].strip()
             params = parts[1:]
             result = (name, params)
-            if len(cache) > 300:
-                cache.clear()
             cache[gani_name] = result
         return result
 
@@ -827,7 +827,7 @@ class EntityRenderMixin(
                 if zoom and zoom > 0 and zoom != 1.0:
                     zcache = getattr(self, '_npc_zoom_cache', None)
                     if zcache is None:
-                        zcache = self._npc_zoom_cache = {}
+                        zcache = self._npc_zoom_cache = LruCache(100)
                     zkey = (image_name, part, zoom)
                     zoomed = zcache.get(zkey)
                     if zoomed is None:
@@ -840,8 +840,6 @@ class EntityRenderMixin(
                         # out so the shaft of light dissolves into the scene
                         # instead of ending in a visible rectangle.
                         self._fade_surface_edges(zoomed)
-                        if len(zcache) > 100:
-                            zcache.clear()
                         zcache[zkey] = zoomed
                     x -= (zoomed.get_width() - sprite.get_width()) / 2.0
                     y -= (zoomed.get_height() - sprite.get_height()) / 2.0
@@ -1037,4 +1035,5 @@ class EntityRenderMixin(
                 # Live particles ride their layer's pass/stratum.
                 self._render_layer_emitter(rec, emitter)
         except Exception:
+            log_swallowed(logger)
             pass  # A bad layer must never break the frame.

@@ -12,7 +12,7 @@ from typing import Dict, Optional
 from .asset_paths import normalize_asset_name, server_cache_dir
 from . import update_packages as _packages
 from .packets import (
-    PacketID, build_board_modify, gupd_name_reserved, build_update_class, build_update_file,
+    PacketBuilder, PacketID, build_board_modify, gupd_name_reserved, build_update_class, build_update_file,
     build_update_gani, build_update_package_request, build_update_script,
     build_wantfile,
 )
@@ -98,11 +98,9 @@ class FileTransferMixin:
         if not self.connected or not self._authenticated:
             return False
 
-        # Build packet: GUInt5 (modtime=0) + level name
-        data = bytearray()
-        # modtime = 0, encoded as 5 GCHARs
-        for _ in range(5):
-            data.append(32)  # 0 + 32
+        # GUInt5 mod time (0 when we hold no copy) + level name
+        data = bytearray(PacketBuilder().write_gint5(
+            self.level_modtimes.get(level_name, 0)).build())
         data.extend(level_name.encode('latin-1'))
 
         sent = self._protocol.send_packet(PacketID.PLI_ADJACENTLEVEL, data)

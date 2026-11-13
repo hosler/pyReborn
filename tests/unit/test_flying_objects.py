@@ -1,100 +1,101 @@
-"""Script-fired flying objects (shootfireblast / shootnuke): the hit rules of
-TServerFlying::animate, Preagonal/FourPlay/quattroplay/src/TServerFlying.cpp.
-"""
-
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
+from reborn_protocol import PLSTATUS
 
-from pyreborn.clock import Clock
-from pyreborn.client_combat import CombatMixin
 from pyreborn.flyingobjects import (
     BOUNCE_COUNTER, FLYING_TICK_SECONDS, NOT_BOUNCING,
 )
-from pyreborn.game.callbacks.gs1_callbacks import wire_gs1_callbacks
-from pyreborn.game.flying import FlyingObjectsMixin
 from pyreborn.gs1_client import ClientGS1
 from pyreborn.npc_handler import NPCHandler
+from pyreborn.tiletypes import is_blocking
 
 from .test_gs1_npc_host_gaps import _client, _this
 
 TICK = FLYING_TICK_SECONDS
+WALL = next(tile for tile in range(4096) if is_blocking(tile))
 
 
-class _Sound:
-    def __init__(self):
-        self.played = []
+@pytest.fixture
+def new_harness(make_game, monkeypatch):
+    """``new_harness(player_xy=(30, 30), immune=False, **knobs)``: a real
+    offline game on an open board, with recorders on what flying.py does:
+    ``hurts`` (hurt_local_by_flying calls), ``blasts`` (make_explosion calls),
+    ``shots`` (gs1/gs2 wasshot triggers), ``probes`` (every wall, player and
+    NPC probe, in order), ``npc_cells`` (``{(tx, ty): npc id}`` the NPC probe
+    answers from) and the game's own sound manager (``sounds``). ``immune``
+    makes the local player refuse hits."""
+    def build(player_xy=(30.0, 30.0), immune=False, **knobs):
+        knobs.setdefault('tiles', lambda tx, ty: 0)
+        h = make_game(**knobs)
+        h.hurts, h.blasts, h.shots, h.probes = [], [], [], []
+        h.npc_cells = {}
+        h.client.player.x, h.client.player.y = player_xy
+        h.sounds = []
+        real_play = h.sound_mgr.play
+        monkeypatch.setattr(h.sound_mgr, 'play',
+                            lambda name, *a, **k: (h.sounds.append(name),
+                                                   real_play(name, *a, **k))[1])
+        monkeypatch.setattr(h.client, 'can_receive_local_hit',
+                            lambda *a, **k: not immune)
+        real_hurt = h.client.hurt_local_by_flying
+        monkeypatch.setattr(h.client, 'hurt_local_by_flying',
+                            lambda *a: (h.hurts.append(a), real_hurt(*a))[1])
+        real_boom = h.client.make_explosion
+        monkeypatch.setattr(h.client, 'make_explosion',
+                            lambda *a: (h.blasts.append(a), real_boom(*a))[1])
+        monkeypatch.setattr(h.npc_handler, 'npc_at_point',
+                            lambda x, y: h.npc_cells.get((int(x), int(y))))
+        monkeypatch.setattr(
+            h.gs1, 'trigger_npc_wasshot',
+            lambda i, by: h.shots.append(('gs1', i, by)))
+        monkeypatch.setattr(
+            h.gs2, 'trigger_npc_wasshot',
+            lambda i, by: h.shots.append(('gs2', i, by)))
+        for name, label in (('_is_blocked_at', 'wall'),
+                            ('_flying_hits_player', 'player'),
+                            ('_flying_npc_at', 'npc')):
+            real = getattr(h, name)
 
-    def play(self, name):
-        self.played.append(name)
-
-
-class _Harness(FlyingObjectsMixin):
-    """The state flying.py reads, with recorders for what it does."""
-
-    def __init__(self, player_xy=(30.0, 30.0), immune=False):
-        self.hurts, self.blasts, self.shots = [], [], []
-        self.probes = []
-        self.walls = set()
-        self.npc_cells = {}
-        self.sound_mgr = _Sound()
-        self.client = SimpleNamespace(
-            clock=Clock(),
-            player=SimpleNamespace(x=player_xy[0], y=player_xy[1]),
-            players={},
-            in_gmap_segment=False,
-            can_receive_local_hit=lambda *a, **k: not immune,
-            hurt_local_by_flying=lambda *a: self.hurts.append(a) or True,
-            make_explosion=lambda *a: self.blasts.append(a),
-        )
-        self.npc_handler = SimpleNamespace(
-            npc_at_point=lambda x, y: self.npc_cells.get((int(x), int(y))))
-        self.gs1 = SimpleNamespace(
-            trigger_npc_wasshot=lambda i, by: self.shots.append(('gs1', i, by)))
-        self.gs2 = SimpleNamespace(
-            trigger_npc_wasshot=lambda i, by: self.shots.append(('gs2', i, by)))
-
-    def _is_blocked_at(self, x, y, check_players=True):
-        self.probes.append(('wall', x, y, check_players))
-        if check_players:
-            players = [self.client.player, *self.client.players.values()]
-            if any(p.x + 0.5 <= x < p.x + 3.0 and
-                   p.y + 1.0 <= y < p.y + 3.0 for p in players):
-                return True
-        return (int(x), int(y)) in self.walls
-
-    def _flying_hits_player(self, proj, x, y):
-        self.probes.append(('player', x, y))
-        return super()._flying_hits_player(proj, x, y)
-
-    def _flying_npc_at(self, x, y):
-        self.probes.append(('npc', x, y))
-        return super()._flying_npc_at(x, y)
-
-    def fly(self, x, y, direction, power, from_player=False):
-        step = 20.0
-        dx, dy = ((0, -step), (-step, 0), (0, step), (step, 0))[direction]
-        return {'x': x, 'y': y, 'dx': dx, 'dy': dy, 'direction': direction,
-                'power': power, 'from_player': from_player, 'lx': x, 'ly': y,
-                'tick_acc': 0.0, 'bounce': NOT_BOUNCING}
-
-    def run(self, proj, ticks):
-        """Advance whole ticks; returns the tick on which it finished."""
-        for n in range(1, ticks + 1):
-            if not self._advance_flying(proj, TICK):
-                return n
-        return None
+            def probe(*args, _real=real, _label=label, **kwargs):
+                # ('wall', x, y, check_players), ('player', x, y), ('npc', x, y)
+                if _label == 'wall':
+                    check = kwargs.get('check_players',
+                                       args[2] if len(args) > 2 else True)
+                    h.probes.append((_label, args[0], args[1], check))
+                else:
+                    h.probes.append((_label,) + tuple(args[-2:]))
+                return _real(*args, **kwargs)
+            monkeypatch.setattr(h, name, probe)
+        return h
+    return build
 
 
-def test_a_level_npcs_fireblast_hurts_the_player_and_explodes():
-    h = _Harness(player_xy=(30.0, 20.0))
-    proj = h.fly(20.0, 20.5, 3, 2)
-    done = h.run(proj, 30)
+def set_walls(h, cells):
+    for tx, ty in cells:
+        h.client.tiles[ty * 64 + tx] = WALL
+
+
+def fly(h, x, y, direction, power, from_player=False):
+    step = 20.0
+    dx, dy = ((0, -step), (-step, 0), (0, step), (step, 0))[direction]
+    return {'x': x, 'y': y, 'dx': dx, 'dy': dy, 'direction': direction,
+            'power': power, 'from_player': from_player, 'lx': x, 'ly': y,
+            'tick_acc': 0.0, 'bounce': NOT_BOUNCING}
+
+
+def run(h, proj, ticks):
+    """Advance whole ticks; returns the tick on which it finished."""
+    for n in range(1, ticks + 1):
+        if not h._advance_flying(proj, TICK):
+            return n
+    return None
+
+
+def test_a_level_npcs_fireblast_hurts_the_player_and_explodes(new_harness):
+    h = new_harness(player_xy=(30.0, 20.0))
+    proj = fly(h, 20.0, 20.5, 3, 2)
+    done = run(h, proj, 30)
     assert done == 9
     assert h.hurts == [(2, 1.0, 0.0)]      # power, unit travel direction
     assert len(h.blasts) == 1
@@ -102,65 +103,63 @@ def test_a_level_npcs_fireblast_hurts_the_player_and_explodes():
     assert (radius, kind, owner, from_player) == (2, 1, 0, False)
     # TServerFlying.cpp:102-103: (28 + 0.9375 - 1, 20.5 + 0.3125 - 1).
     assert (x, y) == (27.9375, 19.8125)
-    assert h.sound_mgr.played == ['bomb.wav']       # :105
+    assert h.sounds.count('bomb.wav') == 1       # :105 (the hurt sound is the victim's)
 
 
-def test_a_weapon_scripts_shot_never_hurts_its_own_player():
-    h = _Harness(player_xy=(30.0, 20.0))
-    proj = h.fly(20.0, 20.5, 3, 3, from_player=True)
-    assert h.run(proj, 30) is None          # flew straight through (:127)
+def test_a_weapon_scripts_shot_never_hurts_its_own_player(new_harness):
+    h = new_harness(player_xy=(30.0, 20.0))
+    proj = fly(h, 20.0, 20.5, 3, 3, from_player=True)
+    assert run(h, proj, 30) is None          # flew straight through (:127)
     assert h.hurts == [] and h.blasts == []
 
 
-def test_a_player_who_cannot_be_hurt_still_blocks_the_wall_probe():
-    h = _Harness(player_xy=(30.0, 20.0), immune=True)
-    assert h.run(h.fly(20.0, 20.75, 3, 2), 30) == 10
+def test_a_player_who_cannot_be_hurt_still_blocks_the_wall_probe(new_harness):
+    h = new_harness(player_xy=(30.0, 20.0), immune=True)
+    assert run(h, fly(h, 20.0, 20.75, 3, 2), 30) == 10
     assert h.hurts == []
     assert h.blasts == [(28.9375, 20.0625, 2, 1, 0, False)]
 
 
-def test_a_remote_player_blocks_a_nukes_centre_probe():
+def test_a_remote_player_blocks_a_nukes_centre_probe(new_harness):
     # The wall query includes players (TServerFlying.cpp:276-279;
     # TServerLevel.cpp:2650), even though only the local player can be hurt.
-    h = _Harness(player_xy=(0.0, 0.0))
-    h.client.players[2] = SimpleNamespace(x=30.0, y=20.0)
-    assert h.run(h.fly(20.0, 20.75, 3, 3), 30) == 10
+    h = new_harness(player_xy=(0.0, 0.0))
+    h.client.players[2] = {'x': 30.0, 'y': 20.0}
+    assert run(h, fly(h, 20.0, 20.75, 3, 3), 30) == 10
     assert h.hurts == []
     assert h.probes[-1] == ('wall', 30.9375, 21.0625, True)
     assert h.blasts == [(28.9375, 20.0625, 2, 1, 0, False)]
 
 
-def test_a_wall_explodes_a_nuke_where_it_was_one_tick_earlier():
-    h = _Harness(player_xy=(0.0, 0.0))
-    h.walls = {(25, 20)}
-    proj = h.fly(20.0, 20.0, 3, 3)
-    done = h.run(proj, 40)
+def test_a_wall_explodes_a_nuke_where_it_was_one_tick_earlier(new_harness):
+    h = new_harness(player_xy=(0.0, 0.0))
+    set_walls(h, {(25, 20)})
+    proj = fly(h, 20.0, 20.0, 3, 3)
+    done = run(h, proj, 40)
     assert done is not None
     assert h.hurts == []
     assert len(h.blasts) == 1 and h.blasts[0][2:4] == (2, 1)
 
 
-def test_power_one_ignores_walls():
+def test_power_one_ignores_walls(new_harness):
     # handleFlyingWallCollision returns at once for power <= 1 (:273); the
     # script callbacks only fire powers 2 and 3, so drive the rule directly.
-    h = _Harness(player_xy=(0.0, 0.0))
-    h.walls = {(25, 20)}
-    proj = h.fly(20.0, 20.0, 3, 1)
-    assert h.run(proj, 10) is None and h.blasts == []
+    h = new_harness(player_xy=(0.0, 0.0))
+    set_walls(h, {(25, 20)})
+    proj = fly(h, 20.0, 20.0, 3, 1)
+    assert run(h, proj, 10) is None and h.blasts == []
     assert all(probe[0] != 'wall' for probe in h.probes)
 
 
 @pytest.mark.parametrize('direction, start, done', [
     (0, (-0.3125, 1.0625), 2),
     (1, (1.0625, -0.3125), 2),
-    (2, (-0.3125, 61.0625), 3),
-    (3, (61.0625, -0.3125), 3),
 ])
-def test_leaving_the_level_checks_top_left_and_motion(direction, start, done):
+def test_leaving_the_level_checks_top_left_and_motion(direction, start, done, new_harness):
     # Launch offsets leave the perpendicular axis negative. Only travel toward
     # that edge transfers, before all probes (TServerFlying.cpp:378-388).
-    h = _Harness(player_xy=(30.0, 30.0))
-    proj = h.fly(*start, direction, 3)
+    h = new_harness(player_xy=(30.0, 30.0))
+    proj = fly(h, *start, direction, 3)
     for tick in range(1, done + 1):
         h.probes.clear()
         assert h._advance_flying(proj, TICK) is (tick < done)
@@ -169,37 +168,73 @@ def test_leaving_the_level_checks_top_left_and_motion(direction, start, done):
     assert h.blasts == [] and h.hurts == []
 
 
-def test_a_bounce_uses_motion_for_the_level_edge_gate():
-    h = _Harness(player_xy=(0.0, 0.0))
-    proj = h.fly(0.0625, 20.0, 3, 3)
+@pytest.mark.parametrize('direction, start', [
+    (2, (-0.3125, 61.0625)),
+    (3, (61.0625, -0.3125)),
+])
+def test_a_nuke_whose_centre_passes_the_far_edge_explodes_on_the_edge(direction, start, new_harness):
+    # Past the board with no side level, the level's tile query answers the
+    # default tile (TServerLevel.cpp:587), whose type is a wall, so the centre
+    # probe blocks one tick before the origin test (:381-388) would drop it.
+    h = new_harness(player_xy=(30.0, 30.0))
+    proj = fly(h, *start, direction, 3)
+    assert run(h, proj, 5) == 2
+    assert [p[0] for p in h.probes[-3:]] == ['player', 'npc', 'wall']
+    assert len(h.blasts) == 1 and h.hurts == []
+
+
+def test_the_local_player_blocks_flying_probes_but_never_movement(new_harness):
+    # isOnPlayer walks the level's whole player list (TServerLevel.cpp:794,
+    # :2650); the local player is on it. Movement must not collide with itself.
+    h = new_harness(player_xy=(30.0, 20.0))
+    assert h._is_blocked_at(31.0, 22.0, include_local=True)
+    assert not h._is_blocked_at(31.0, 22.0)
+    assert not h._is_blocked_at(29.9, 22.0, include_local=True)
+    # The box starts at x + 0.5 (TServerLevel.cpp:789-794 bounds): 30.2 is left of it.
+    assert not h._is_blocked_at(30.2, 22.0, include_local=True)
+    assert h._is_blocked_at(30.5, 22.0, include_local=True)
+
+
+@pytest.mark.parametrize('status', [PLSTATUS.DEAD, PLSTATUS.HIDDEN])
+def test_a_dead_or_hidden_local_player_does_not_block_flying_probes(status, new_harness):
+    # Mutation: drop the DEAD|HIDDEN test on the local player in
+    # CollisionMixin._player_blocks -> the include_local probe turns True.
+    h = new_harness(player_xy=(30.0, 20.0))
+    assert h._is_blocked_at(31.0, 22.0, include_local=True)
+    h.client.player.status = status
+    assert not h._is_blocked_at(31.0, 22.0, include_local=True)
+
+
+def test_a_bounce_uses_motion_for_the_level_edge_gate(new_harness):
+    h = new_harness(player_xy=(0.0, 0.0))
+    proj = fly(h, 0.0625, 20.0, 3, 3)
     proj.update(dx=-20.0, bounce=BOUNCE_COUNTER)
-    assert h.run(proj, 1) == 1
+    assert run(h, proj, 1) == 1
     assert h.probes == [] and proj['bounce'] == BOUNCE_COUNTER
 
 
-def test_negative_gmap_world_coordinates_obey_the_direction_gate():
-    h = _Harness(player_xy=(30.0, 30.0))
-    h.client.in_gmap_segment = True
-    h.client.gmap_width, h.client.gmap_height = 2, 2
-    proj = h.fly(-2.9375, 20.75, 3, 1)
-    assert h.run(proj, 3) is None
+def test_negative_gmap_world_coordinates_obey_the_direction_gate(new_harness):
+    h = new_harness(player_xy=(30.0, 30.0), gmap=True)
+    assert h.client.in_gmap_segment
+    proj = fly(h, -2.9375, 20.75, 3, 1)
+    assert run(h, proj, 3) is None
     assert proj['lx'] == 0.0625
     assert [p[0] for p in h.probes] == ['player', 'npc'] * 3
     proj['dx'] = -20.0
     h.probes.clear()
-    assert h.run(proj, 1) == 1
+    assert run(h, proj, 1) == 1
     assert h.probes == [] and h.blasts == []
 
 
-def test_several_ticks_in_a_slow_frame_match_one_tick_per_frame():
-    h = _Harness(player_xy=(30.0, 20.0))
-    slow = _Harness(player_xy=(30.0, 20.0))
-    proj = h.fly(20.0, 20.5, 3, 3)
-    slow_proj = slow.fly(20.0, 20.5, 3, 3)
-    assert h.run(proj, 8) is None
+def test_several_ticks_in_a_slow_frame_match_one_tick_per_frame(new_harness):
+    h = new_harness(player_xy=(30.0, 20.0))
+    slow = new_harness(player_xy=(30.0, 20.0))
+    proj = fly(h, 20.0, 20.5, 3, 3)
+    slow_proj = fly(slow, 20.0, 20.5, 3, 3)
+    assert run(h, proj, 8) is None
     assert slow._advance_flying(slow_proj, 8 * TICK)
     assert slow.probes == h.probes
-    assert h.run(proj, 1) == 1
+    assert run(h, proj, 1) == 1
     assert not slow._advance_flying(slow_proj, 3 * TICK)
     assert slow.probes == h.probes
     assert slow.hurts == h.hurts == [(3, 1.0, 0.0)]
@@ -208,10 +243,10 @@ def test_several_ticks_in_a_slow_frame_match_one_tick_per_frame():
 
 
 @pytest.mark.parametrize("from_player", [False, True])
-def test_an_npc_hit_fires_wasshot_then_bounces_back_for_four_ticks(from_player):
-    h = _Harness(player_xy=(0.0, 0.0))
+def test_an_npc_hit_fires_wasshot_then_bounces_back_for_four_ticks(from_player, new_harness):
+    h = new_harness(player_xy=(0.0, 0.0))
     h.npc_cells = {(24, 20): 7}
-    proj = h.fly(20.0, 20.0, 3, 3, from_player=from_player)
+    proj = fly(h, 20.0, 20.0, 3, 3, from_player=from_player)
     hit_tick = None
     for n in range(1, 30):
         if not h._advance_flying(proj, TICK):
@@ -226,17 +261,17 @@ def test_an_npc_hit_fires_wasshot_then_bounces_back_for_four_ticks(from_player):
     assert h.blasts == [] and h.hurts == []  # an arrow sprite never explodes
 
 
-def test_a_bouncing_object_no_longer_tests_player_or_npc():
-    h = _Harness(player_xy=(0.0, 0.0))
+def test_a_bouncing_object_no_longer_tests_player_or_npc(new_harness):
+    h = new_harness(player_xy=(0.0, 0.0))
     h.npc_cells = {(24, 20): 7, (23, 20): 7, (22, 20): 7}
-    proj = h.fly(20.0, 20.0, 3, 2)
-    h.run(proj, 30)
+    proj = fly(h, 20.0, 20.0, 3, 2)
+    run(h, proj, 30)
     assert len([s for s in h.shots if s[0] == 'gs1']) == 1
 
 
-def test_sprite_position_tracks_the_partial_tick():
-    h = _Harness(player_xy=(0.0, 0.0))
-    proj = h.fly(10.0, 10.0, 3, 2)
+def test_sprite_position_tracks_the_partial_tick(new_harness):
+    h = new_harness(player_xy=(0.0, 0.0))
+    proj = fly(h, 10.0, 10.0, 3, 2)
     h._advance_flying(proj, TICK * 1.5)
     assert proj['lx'] == pytest.approx(11.0)
     assert proj['x'] == pytest.approx(11.0 + 20.0 * 0.5 * TICK)
@@ -244,49 +279,45 @@ def test_sprite_position_tracks_the_partial_tick():
 
 # -- the client-side damage ----------------------------------------------------
 
-def _victim(hearts_ok=True):
-    log = SimpleNamespace(hurt=[], cb=[])
-    victim = SimpleNamespace(
-        can_receive_local_hit=lambda *a, **k: True,
-        respond_to_hurt=lambda dmg, gani, knockback=None: log.hurt.append(
-            (dmg, knockback)) or hearts_ok,
-        hurt_animation="hurt",
-        on_hurt=lambda *a: log.cb.append(a))
-    return victim, log
+@pytest.fixture
+def victim(make_client, monkeypatch):
+    """``victim(hearts_ok=True)``: (real offline client, log) where ``log.hurt``
+    lists respond_to_hurt calls (the answer is ``hearts_ok``) and ``log.cb``
+    the on_hurt callback calls."""
+    def build(hearts_ok=True):
+        client = make_client()
+        log = SimpleNamespace(hurt=[], cb=[])
+        monkeypatch.setattr(
+            client, 'respond_to_hurt',
+            lambda dmg, gani, knockback=None: log.hurt.append(
+                (dmg, knockback)) or hearts_ok)
+        monkeypatch.setattr(client, 'can_receive_local_hit', lambda *a, **k: True)
+        client.on_hurt = lambda *a: log.cb.append(a)
+        return client, log
+    return build
 
 
 @pytest.mark.parametrize("power, damage", [(2, 0.5), (3, 1.0)])
-def test_flying_damage_is_the_arrow_damage_for_the_power(power, damage):
-    victim, log = _victim()
+def test_flying_damage_is_the_arrow_damage_for_the_power(victim, power, damage):
+    client, log = victim()
     # TServerFlying.cpp:222: powers 1 and 3 hit for a heart, the rest half.
-    assert CombatMixin.hurt_local_by_flying(victim, power, 1.0, 0.0)
+    assert client.hurt_local_by_flying(power, 1.0, 0.0)
     assert log.hurt == [(damage, (1.0, 0.0))]
     assert log.cb == [(0, damage, 2, 1.0, 0.0)]
 
 
-def test_flying_damage_respects_immunity():
-    victim, log = _victim()
-    victim.can_receive_local_hit = lambda *a, **k: False
-    assert not CombatMixin.hurt_local_by_flying(victim, 2, 0.0, 1.0)
+def test_flying_damage_respects_immunity(victim, monkeypatch):
+    client, log = victim()
+    monkeypatch.setattr(client, 'can_receive_local_hit', lambda *a, **k: False)
+    assert not client.hurt_local_by_flying(2, 0.0, 1.0)
     assert log.hurt == []
 
 
 # -- wiring ----------------------------------------------------------------------
 
-def _game():
-    client = SimpleNamespace(player=SimpleNamespace(id=1, account="a"),
-                             clock=Clock(),
-                             ARROW_SPEED=20.0, ARROW_MAX_DISTANCE=128.0)
-    game = SimpleNamespace(
-        gs1=ClientGS1(None), client=client, clock=client.clock, player_anim=SimpleNamespace(),
-        active_bombs=[], thrown_objects=[], other_thrown_objects=[],
-        active_projectiles=[])
-    wire_gs1_callbacks(game)
-    return game
-
-
-def test_on_flying_queues_a_ticked_projectile_with_its_shooter():
-    game = _game()
+def test_on_flying_queues_a_ticked_projectile_with_its_shooter(make_game):
+    game = make_game()
+    game.active_projectiles.clear()
     game.gs1.on_flying(4.0, 5.0, 3, 2)
     level_npc = game.active_projectiles[0]
     assert (level_npc['flying'], level_npc['power'], level_npc['from_player']) == (True, 2, False)
@@ -348,16 +379,8 @@ def test_an_npc_wall_cell_is_not_a_target():
 
 # -- through the real render loop ---------------------------------------------------
 
-def test_the_render_loop_runs_a_nuke_into_the_player(monkeypatch):
-    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-    import pygame
-    pygame.init()
-    pygame.display.set_mode((64, 64))
-    from pyreborn import Client
-    from pyreborn.pygame_game import GameClient
-
-    game = GameClient(Client('127.0.0.1', 14900, version='6.037'))
+def test_the_render_loop_runs_a_nuke_into_the_player(make_game, monkeypatch):
+    game = make_game(player_xy=(40.0, 30.0))
     game.active_projectiles.clear()
     game.client.active_explosions.clear()
     game.client.player.x, game.client.player.y = 40.0, 30.0

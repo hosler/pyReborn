@@ -23,6 +23,9 @@ from reborn_protocol import (
     Gen3Codec,
     Gen2Codec,
 )
+import logging
+from .logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # Detect browser environment
 IS_BROWSER = sys.platform == "emscripten"
@@ -246,7 +249,7 @@ class Protocol:
                 try:
                     self.socket.close()
                 except Exception:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             self.socket = None
             return False
 
@@ -278,7 +281,7 @@ class Protocol:
                 self.socket.shutdown(socket.SHUT_RDWR)
                 self.socket.close()
             except:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
             self.socket = None
 
     def send_login(self, username: str, password: str) -> bool:
@@ -420,6 +423,7 @@ class Protocol:
             except BlockingIOError:
                 pass
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 self._connection_lost()
                 # Bytes received before this failing iteration remain valid and
                 # must not be stranded behind the disconnected guard above.
@@ -459,6 +463,7 @@ class Protocol:
                         print(f"Dropping oversized first packet: {e}")
                         continue
                     except Exception:
+                        log_swallowed(logger, level=logging.DEBUG)
                         decrypted = self.codec.recv_packet(packet_data)
                 else:
                     decrypted = self.codec.recv_packet(packet_data)
@@ -727,6 +732,7 @@ class WebSocketProtocol:
                     print(f"Dropping oversized first packet: {e}")
                     continue
                 except Exception:
+                    log_swallowed(logger, level=logging.DEBUG)
                     decrypted = self.codec.recv_packet(packet_data)
             else:
                 decrypted = self.codec.recv_packet(packet_data)
@@ -801,7 +807,7 @@ class WebSocketProtocol:
             try:
                 self.ws.close()
             except:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
             self.ws = None
 
     def send_login(self, username: str, password: str) -> bool:

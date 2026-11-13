@@ -15,154 +15,133 @@ segments from login. With the probe wired in, the same walk reports
 `zlttp-e5.nw -> zlttp-f5.nw`, NPCs 4 -> 13 and 12 segments cached.
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
 
-from pyreborn import Client
+from offline_game import GMAP_SEGMENTS, IMAGE_NPC
 from pyreborn.packets import PacketID
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
+
+SPAWN = GMAP_SEGMENTS[3]       # grid (1, 1) = world origin (64, 64)
+WEST = GMAP_SEGMENTS[2]        # grid (0, 1)
 
 
-class _Gs1Stub:
-    default_movement = False
+@pytest.fixture
+def seam_game(make_game):
+    """``seam_game(**knobs)``: (client, game) on the fixture's 2x2 gmap,
+    spawned in segment (1, 1) with the movement engine OFF (scripted)."""
+    def build(**knobs):
+        knobs.setdefault("gmap", True)
+        knobs.setdefault("gmap_segment", (1, 1))
+        game = make_game(**knobs)
+        game.gs1.default_movement = False
+        return game.client, game
+    return build
 
 
-class _Harness(ActionsMixin, CollisionMixin):
-    def __init__(self, client):
-        self.client = client
-        self.gs1 = _Gs1Stub()
-        self.warped = []
-
-    def _try_link_warp(self):
-        self.warped.append((self.client.x, self.client.y))
-        return False
+def sent_ids(c):
+    return [pid for pid, _ in c._protocol.sent]
 
 
-def _client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
-    sent = []
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, pid, data=b"", *a, **k):
-            sent.append(pid)
-            return True
-
-    c._protocol = _Stub()
-    c.sent_packets = sent
-    # 3x3 grid, spawn segment at (1, 1) = world origin (64, 64).
-    names = ["a.nw", "b.nw", "c.nw",
-             "d.nw", "spawn.nw", "e.nw",
-             "f.nw", "g.nw", "h.nw"]
-    c.gmap_width, c.gmap_height = 3, 3
-    for i, name in enumerate(names):
-        c.gmap_grid[(i % 3, i // 3)] = name
-    c._current_level_name = "spawn.nw"
-    c.levels["spawn.nw"] = [0] * 4096
-    c.tiles = c.levels["spawn.nw"]
-    return c
+#: A seam crossing announces itself with the PLAIN level warp, even though the
+#: preloaded neighbour is held: the reference sends no warp for a hop inside
+#: its map, and a mod-time warp would make the server resend the board.
+WARPS = (PacketID.PLI_LEVELWARP,)
 
 
-def test_staying_in_the_same_cell_announces_nothing():
-    c = _client()
-    h = _Harness(c)
+def warped(c):
+    return any(pid in WARPS for pid in sent_ids(c))
+
+
+def test_staying_in_the_same_cell_announces_nothing(seam_game):
+    c, h = seam_game()
     c.player.x, c.player.y = 70.0, 70.0
     h._check_scripted_link_warp()
-    c.sent_packets.clear()
+    c._protocol.sent.clear()
     c.player.x, c.player.y = 80.0, 90.0        # still cell (1, 1)
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP not in c.sent_packets
-    assert c._current_level_name == "spawn.nw"
+    assert not warped(c)
+    assert c._current_level_name == SPAWN
 
 
-def test_crossing_west_re_homes_us_in_the_new_segment():
-    c = _client()
-    h = _Harness(c)
+def test_crossing_west_re_homes_us_in_the_new_segment(seam_game):
+    c, h = seam_game()
     c.player.x, c.player.y = 70.0, 70.0
     h._check_scripted_link_warp()
-    c.sent_packets.clear()
-    c.player.x, c.player.y = 60.0, 70.0        # cell (0, 1) = "d.nw"
+    c._protocol.sent.clear()
+    c.player.x, c.player.y = 60.0, 70.0        # cell (0, 1)
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP in c.sent_packets
-    assert c._current_level_name == "d.nw"
+    assert warped(c)
+    assert c._current_level_name == WEST
 
 
-def test_unknown_cell_says_nothing_and_does_not_re_probe():
+def test_unknown_cell_says_nothing_and_does_not_re_probe(seam_game):
     """Straight off the grid's edge: nothing to announce, and the cell is
     still latched so the next frame does not retry."""
-    c = _client()
-    h = _Harness(c)
+    c, h = seam_game()
     c.player.x, c.player.y = 70.0, 70.0
     h._check_scripted_link_warp()
-    c.sent_packets.clear()
+    c._protocol.sent.clear()
     c.player.x, c.player.y = 700.0, 70.0       # cell (10, 1): no segment
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP not in c.sent_packets
-    assert c._current_level_name == "spawn.nw"
+    assert not warped(c)
+    assert c._current_level_name == SPAWN
     assert h._scripted_gmap_cell == (10, 1)
 
 
-def test_default_movement_worlds_are_untouched():
+def test_default_movement_worlds_are_untouched(seam_game):
     """With the built-in movement engine, move_to() already does this. The
     probe must not fire a second announce."""
-    c = _client()
-    h = _Harness(c)
+    c, h = seam_game()
     h.gs1.default_movement = True
+    c._protocol.sent.clear()
     c.player.x, c.player.y = 60.0, 70.0
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP not in c.sent_packets
+    assert not warped(c)
 
 
-def test_inside_a_house_local_coords_announce_nothing():
+def test_inside_a_house_local_coords_announce_nothing(seam_game):
     """is_gmap stays True inside a standalone interior (house/cave) of a gmap
     world, but player coords there are LOCAL — the probe must not read them
     as world. Live regression (LTTP 2026-07-26): moving inside
     zlttp-linkshouse.nw announced grid cell (0,0) and the server warped the
     player to the gmap's top-left segment."""
-    c = _client()
-    h = _Harness(c)
-    c._current_level_name = "linkshouse.nw"    # interior: not a grid member
-    c.tiles = c.levels.setdefault("linkshouse.nw", [0] * 4096)
+    c, h = seam_game(extra_levels={"linkshouse.nw": None})
+
+    async def enter_house(world):
+        await world.me.warp("linkshouse.nw", 30.5, 38.0)    # not a grid member
+    h.server.run(enter_house)
+    assert c._current_level_name == "linkshouse.nw"
+    c._protocol.sent.clear()
     c.player.x, c.player.y = 30.5, 38.0
     h._check_scripted_link_warp()
-    c.player.x, c.player.y = 30.5, 37.5        # local step ≠ segment (0,0)
+    c.player.x, c.player.y = 30.5, 37.5        # local step != segment (0,0)
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP not in c.sent_packets
+    assert not warped(c)
     assert c._current_level_name == "linkshouse.nw"
 
 
-def test_non_gmap_worlds_are_untouched():
-    c = _client()
-    c.gmap_width = c.gmap_height = 0
-    c.gmap_grid.clear()
-    h = _Harness(c)
+def test_non_gmap_worlds_are_untouched(make_game):
+    h = make_game()
+    h.gs1.default_movement = False
+    c = h.client
+    assert not c.gmap_width
+    c._protocol.sent.clear()
     c.player.x, c.player.y = 60.0, 70.0
     h._check_scripted_link_warp()
-    assert PacketID.PLI_LEVELWARP not in c.sent_packets
+    assert not warped(c)
 
 
-def test_enter_gmap_segment_is_not_a_level_reset():
+def test_enter_gmap_segment_is_not_a_level_reset(seam_game):
     """A seam hop keeps level state (unlike warp_to_level): the server just
     re-homes us and streams the newly-adjacent segments."""
-    c = _client()
-    c.npcs = {1: {"id": 1}}
-    assert c.enter_gmap_segment("d.nw", 60.0 % 64, 70.0 % 64) is True
-    assert c._current_level_name == "d.nw"
-    assert c.npcs == {1: {"id": 1}}
+    c, _ = seam_game(npcs=[IMAGE_NPC])
+    before = dict(c.npcs)
+    assert before
+    assert c.enter_gmap_segment(WEST, 60.0 % 64, 70.0 % 64) is True
+    assert c._current_level_name == WEST
+    assert c.npcs == before
 
 
-def test_enter_gmap_segment_needs_a_live_session():
-    c = _client()
+def test_enter_gmap_segment_needs_a_live_session(seam_game):
+    c, _ = seam_game()
     c._authenticated = False
-    assert c.enter_gmap_segment("d.nw", 1.0, 1.0) is False
+    assert c.enter_gmap_segment(WEST, 1.0, 1.0) is False

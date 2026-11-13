@@ -13,22 +13,8 @@ pygame-client audit:
    type they were at segment-bake time.
 """
 
-import os
-import sys
-from types import SimpleNamespace
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
-from pyreborn import Client
-from pyreborn.game.render_world import WorldRenderMixin
 from pyreborn.game.camera import Camera2D
-from pyreborn.game.setup import SetupMixin
-from pyreborn.sprites import SpriteManager, TilesetManager
 from pyreborn.tiletypes import get_tile_type, TileType
 
 # A real WATER-type tile id (from tiletypes1.dat), used to exercise the
@@ -36,46 +22,25 @@ from pyreborn.tiletypes import get_tile_type, TileType
 WATER_TILE_ID = 264
 assert get_tile_type(WATER_TILE_ID) == TileType.WATER
 
-
-def _fake_connected_client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    return c
+LEVEL = "level1.nw"
 
 
-class _RenderHarness(SetupMixin, WorldRenderMixin):
-    """Minimal GameClient stand-in exercising just the segment-cache slice
-    of the mixins (on_tiledef via SetupMixin._setup_gs1_callbacks, the
-    per-segment surface cache via WorldRenderMixin), without pygame
-    display/asset/sound/GS1-engine setup."""
-
-    def __init__(self, client):
-        self.client = client
-        self.gs1 = SimpleNamespace(resolve_ani=lambda name: name)
-        self.player_anim = SimpleNamespace(name_resolver=None)
-        self.current_anim_name = ""
-        self.sprite_mgr = SpriteManager([])
-        self.tileset_mgr = TilesetManager(self.sprite_mgr)
-        self.world_surface = None
-        self._setup_gs1_callbacks()
+@pytest.fixture
+def render_game(make_game):
+    """``render_game(water=())``: a real offline game in level1.nw on an open
+    board (``water`` = (tx, ty) cells that start as WATER). Returns
+    ``(game, tiles)``, ``tiles`` being the level's own board list."""
+    def build(water=()):
+        cells = set(water)
+        game = make_game(level=LEVEL, tiles=lambda tx, ty: (
+            WATER_TILE_ID if (tx, ty) in cells else 0))
+        return game, game.client.levels[LEVEL]
+    return build
 
 
 class TestTiledefInvalidatesSegmentCache:
-    def test_set_tiledef_drops_cached_segment_surface(self):
-        c = _fake_connected_client()
-        c._current_level_name = "level1.nw"
-        c.levels["level1.nw"] = [0] * 4096
-        c.tiles = c.levels["level1.nw"]
-
-        h = _RenderHarness(c)
+    def test_set_tiledef_drops_cached_segment_surface(self, render_game):
+        h, _ = render_game()
         # _render_world() calls _apply_pending_full_invalidate() every frame
         # before blitting segments; simulate one frame having already run so
         # world_surface is in its steady True state, matching what a real
@@ -100,13 +65,8 @@ class TestTiledefInvalidatesSegmentCache:
             "pre-tiledef bake"
         )
 
-    def test_clear_tiledefs_also_drops_cached_segment_surface(self):
-        c = _fake_connected_client()
-        c._current_level_name = "level1.nw"
-        c.levels["level1.nw"] = [0] * 4096
-        c.tiles = c.levels["level1.nw"]
-
-        h = _RenderHarness(c)
+    def test_clear_tiledefs_also_drops_cached_segment_surface(self, render_game):
+        h, _ = render_game()
         h._apply_pending_full_invalidate()
         h.gs1.on_tiledef("paste", "custom_tiles.png", "", 0, 0)
         h._apply_pending_full_invalidate()
@@ -121,14 +81,8 @@ class TestTiledefInvalidatesSegmentCache:
 
 
 class TestBoardModifyUpdatesAnimatedIndex:
-    def test_water_tile_added_by_modify_is_indexed(self):
-        c = _fake_connected_client()
-        c._current_level_name = "level1.nw"
-        tiles = [0] * 4096
-        c.levels["level1.nw"] = tiles
-        c.tiles = tiles
-
-        h = _RenderHarness(c)
+    def test_water_tile_added_by_modify_is_indexed(self, render_game):
+        h, tiles = render_game()
         h._get_segment_surface("level1.nw")  # bake with no water tiles
         entry = h._segments()["level1.nw"]
         assert entry['animated'] == []
@@ -144,15 +98,8 @@ class TestBoardModifyUpdatesAnimatedIndex:
             "not just re-blit the base tile"
         )
 
-    def test_water_tile_removed_by_modify_is_unindexed(self):
-        c = _fake_connected_client()
-        c._current_level_name = "level1.nw"
-        tiles = [0] * 4096
-        tiles[5 * 64 + 5] = WATER_TILE_ID
-        c.levels["level1.nw"] = tiles
-        c.tiles = tiles
-
-        h = _RenderHarness(c)
+    def test_water_tile_removed_by_modify_is_unindexed(self, render_game):
+        h, tiles = render_game(water=[(5, 5)])
         h._get_segment_surface("level1.nw")  # bake WITH the water tile
         entry = h._segments()["level1.nw"]
         assert (5, 5, WATER_TILE_ID) in entry['animated']
@@ -165,18 +112,12 @@ class TestBoardModifyUpdatesAnimatedIndex:
             "that are no longer water/lava after the patch"
         )
 
-    def test_modify_forces_animated_tiles_refold(self):
+    def test_modify_forces_animated_tiles_refold(self, render_game):
         """_refresh_animated_tiles_cache keys off id(surface), which an
         in-place patch does not change - the patch must also invalidate that
         key so the per-frame shimmer fold actually re-reads the updated
         animated index."""
-        c = _fake_connected_client()
-        c._current_level_name = "level1.nw"
-        tiles = [0] * 4096
-        c.levels["level1.nw"] = tiles
-        c.tiles = tiles
-
-        h = _RenderHarness(c)
+        h, tiles = render_game()
         h._animated_tiles_key = "sentinel"
         h._get_segment_surface("level1.nw")
         tiles[5 * 64 + 5] = WATER_TILE_ID
@@ -186,15 +127,15 @@ class TestBoardModifyUpdatesAnimatedIndex:
 
 
 class TestShimmerRamp:
-    def test_ramp_cycles_off_half_full_half(self, monkeypatch):
-        h = _RenderHarness(_fake_connected_client())
+    def test_ramp_cycles_off_half_full_half(self, render_game):
+        h, _ = render_game()
         times = iter((0.0, 0.3, 0.6, 0.9, 1.2))
-        monkeypatch.setattr('time.monotonic', lambda: next(times))
+        h.clock.set_sources(source=lambda: next(times))
 
         assert [h._shimmer_ramp_step() for _ in range(5)] == [0, 1, 2, 3, 0]
 
-    def test_cache_is_zoom_keyed_and_precomputes_ramp_variants(self):
-        h = _RenderHarness(_fake_connected_client())
+    def test_cache_is_zoom_keyed_and_precomputes_ramp_variants(self, render_game):
+        h, _ = render_game()
         h.camera = Camera2D(320, 240)
 
         half = h._get_shimmer_tile(WATER_TILE_ID, 1)

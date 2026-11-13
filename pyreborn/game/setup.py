@@ -13,6 +13,9 @@ from .callbacks.client_callbacks import (
 )
 from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
 from .clocked import ClockedMixin
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 
@@ -96,7 +99,7 @@ class SetupMixin(ClockedMixin):
             try:
                 self.client.request_file(name)
             except Exception:
-                pass
+                log_swallowed(logger)
         else:
             self.sound_mgr.play(name)
 
@@ -131,7 +134,7 @@ class SetupMixin(ClockedMixin):
                 try:
                     self.gs1.trigger_event('created', name=f"npc_{npc_id}")
                 except Exception:
-                    pass
+                    log_swallowed(logger)
         self._load_weapon_scripts()
 
     def _load_weapon_scripts(self):
@@ -147,7 +150,7 @@ class SetupMixin(ClockedMixin):
                     try:
                         self.gs1.trigger_event('created', name=f'weapon_{name}')
                     except Exception:
-                        pass
+                        log_swallowed(logger)
     def _trigger_playerenters(self):
         """Fire `playerenters` once across all loaded NPC scripts (trigger_event
         with no name already runs every program; calling it per-script would run
@@ -167,6 +170,7 @@ class SetupMixin(ClockedMixin):
         try:
             self.gs1.trigger_event('playerenters')
         except Exception:
+            log_swallowed(logger)
             pass  # Silently ignore errors during event execution
 
     def _load_new_npcs(self):
@@ -199,7 +203,7 @@ class SetupMixin(ClockedMixin):
                 self.gs1.trigger_npc_event(npc_id, 'created')
                 self.gs1.trigger_npc_event(npc_id, 'playerenters')
             except Exception:
-                pass
+                log_swallowed(logger)
         if new:
             self.npc_handler.update_npcs()     # pick up their collision shapes
 
@@ -215,13 +219,13 @@ class SetupMixin(ClockedMixin):
             try:
                 self.gs1.fire_projectile(params)
             except Exception:
-                pass
+                log_swallowed(logger)
             gs2 = getattr(self, 'gs2', None)
             if gs2 is not None:
                 try:
                     gs2.trigger_event("onActionProjectile2", *params)
                 except Exception:
-                    pass
+                    log_swallowed(logger)
 
     def _process_pending_warp(self):
         """Perform a GS1-requested warp (setlevel2/serverwarp) recorded by the
@@ -242,7 +246,7 @@ class SetupMixin(ClockedMixin):
             # (see _use_door_link for the same reasoning on link warps).
             self._update_swimming_state()
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def _check_level_change(self):
         """Reload the GS1 engine when the player lands in a new level (script

@@ -1,65 +1,49 @@
-"""Literal official-client hurt geometry, timing, and authority regressions."""
-
-from types import SimpleNamespace
-from unittest.mock import Mock
 import math
 
 import pytest
 from reborn_protocol import PacketBuilder, PLPROP
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
-from pyreborn.game.callbacks.client_callbacks import wire_client_callbacks
+from offline_game import GMAP_SEGMENTS, spy
 from pyreborn.handlers.combat import handle_hurt_player
 from pyreborn.handlers.entities import handle_player_props
 from pyreborn.hurt import HURT_FLY_PROBES, HURT_SECONDS, HurtState, hurt_vector
-from pyreborn.gs1_client import ClientGS1
 from pyreborn.tiletypes import TILE_TYPES
 
 
 @pytest.fixture
-def client(sim_time, monkeypatch):
+def game(sim_time, make_game):
+    """A real offline game in 'hurt.nw' on an open board, the player at
+    (20, 20), simulation time pinned at 100, and nothing sent yet
+    (``client.sent`` lists what the client sends from here on)."""
     sim_time(lambda: 100.0)
-    c = Client('localhost', 14900)
-    c.sent = []
-    c._protocol = SimpleNamespace(connected=True, send_packet=lambda p, d=b'': c.sent.append((p, d)) or True)
-    c._authenticated = True
-    c._current_level_name = c._tiles_level_name = 'hurt.nw'
-    c.tiles = [0] * 4096
-    c.levels['hurt.nw'] = c.tiles
-    c.player.x = c.player.y = 20.0
-    return c
-
-
-class Motion(ActionsMixin, CollisionMixin):
-    def __init__(self, client):
-        self.client = client
+    g = make_game(level='hurt.nw', player_xy=(20.0, 20.0),
+                  tiles=lambda tx, ty: 0)
+    g.client.player.x = g.client.player.y = 20.0
+    g.client._protocol.sent.clear()
+    g.client.sent = g.client._protocol.sent
+    return g
 
 
 @pytest.fixture
-def presentation(client):
-    game = Motion(client)
-    game.current_anim_name = 'idle'
-    game.player_anim = Mock()
-    game.sound_mgr = Mock()
-    game.combat_presentation = Mock()
-    game._request_asset = Mock()
+def client(game):
+    return game.client
+
+
+@pytest.fixture
+def presentation(game):
+    """The game with two NPC scripts and a weapon watching ``playerdies``."""
+    client = game.client
     game.damage_numbers = []
-    game.visual_x = game.visual_y = 20.0
-    game.gs1 = ClientGS1(client)
     script = 'if (playerdies) { this.deaths++; }'
     for npc_id in (1, 2):
         client.npcs[npc_id] = {'x': 20, 'y': 20}
         game.gs1.load_script(f'npc_{npc_id}', script, npc_id=npc_id)
     game.gs1.load_weapon('probe', script)
-    wire_client_callbacks(game)
     return game
 
 
 @pytest.mark.parametrize('mode', [10, 5, 1, 2, 4, 14])
-def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time, 
-        client, presentation, monkeypatch, mode):
+def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time, client, presentation, monkeypatch, mode):
     # TPlayer.cpp:5743-5753: clear action/counter, dead ani, NPC event 5.
     game = presentation
     player = client.player
@@ -72,8 +56,8 @@ def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time,
     game._pull_started = 99.0
     game._pull_fired = True
     game._ledge_jump = object()
-    game._clear_push_hold = Mock(wraps=game._clear_push_hold)
-    game._clear_grab_state = Mock(wraps=game._clear_grab_state)
+    clears = (spy(monkeypatch, game, '_clear_push_hold'),
+              spy(monkeypatch, game, '_clear_grab_state'))
     assert client.respond_to_hurt(3, server_forced=True)
     client.on_hurt(99, 3, 0, 0, 0)
 
@@ -82,8 +66,7 @@ def test_death_ends_actions_and_fires_playerdies_once_on_each_npc(sim_time,
     assert not game._pull_fired
     assert game._push_hold_start is None and not game.is_pushing
     assert game._ledge_jump is None
-    game._clear_push_hold.assert_called_once()
-    game._clear_grab_state.assert_called_once()
+    assert [len(c) for c in clears] == [1, 1]
     assert game.current_anim_name == 'dead'
     assert player.hearts == 0
     # GServer-v2/bin/docs/scripting-gs1-events.md:196-204: NPC event, no weapons.
@@ -122,9 +105,8 @@ def test_hit_vector_normalization(vector, expected):
     assert hurt_vector(*vector) == expected
 
 
-def test_five_displacements_then_sixth_tick_stops(client):
+def test_five_displacements_then_sixth_tick_stops(client, game):
     assert client.respond_to_hurt(0.5, knockback=(1, 0))
-    game = Motion(client)
     for tick in range(1, 7):
         game._advance_hurt(0.05)
         assert client.x == 20 + min(tick, 5)
@@ -133,23 +115,22 @@ def test_five_displacements_then_sixth_tick_stops(client):
     assert client.player.hurt_timeout == 102.0
 
 
-def test_diagonal_knockback_is_not_snapped_to_an_axis(client):
+def test_diagonal_knockback_is_not_snapped_to_an_axis(client, game):
     client.respond_to_hurt(0.5, knockback=(1, 1))
-    Motion(client)._advance_hurt(0.3)
+    game._advance_hurt(0.3)
     assert client.x == pytest.approx(20 + 5 / math.sqrt(2))
     assert client.y == pytest.approx(client.x)
 
 
-def test_fly_wall_probes_stop_knockback(client):
+def test_fly_wall_probes_stop_knockback(client, game):
     wall = next(i for i, kind in enumerate(TILE_TYPES) if kind == 22)
     client.tiles[23 + 22 * 64] = wall
     client.respond_to_hurt(0.5, knockback=(1, 0))
-    Motion(client)._advance_hurt(0.3)
+    game._advance_hurt(0.3)
     assert (client.x, client.y) == (20, 20)
 
 
-def test_all_twelve_hurt_probes_are_checked(client):
-    game = Motion(client)
+def test_all_twelve_hurt_probes_are_checked(client, game):
     probes = []
     game._is_blocked_at = lambda x, y, **kwargs: probes.append((x, y)) or False
     game._move_hurt_step(0, -1)
@@ -194,10 +175,10 @@ def test_no_hurt_states_refuse_local_reports(client, state):
 
 
 @pytest.mark.parametrize('mechanic', ['hurt 1;', 'hitplayer 0,1,10,10;', 'putexplosion 2,20,20;'])
-def test_script_damage_cannot_bypass_immunity_with_second_hp_write(client, mechanic):
+def test_script_damage_cannot_bypass_immunity_with_second_hp_write(client, mechanic, game):
     # TExplosion.cpp:60,86-90: the cell at (20,20) covers this player, but
     # existing hurt immunity must reject its 0.5-heart local explosion hit.
-    gs1 = ClientGS1(client)
+    gs1 = game.gs1
     client.npcs[1] = {'x': 20, 'y': 20}
     gs1.load_script('npc_1', 'if (playertouchsme) { ' + mechanic + ' }', npc_id=1)
     assert client.respond_to_hurt(0.5)
@@ -207,12 +188,12 @@ def test_script_damage_cannot_bypass_immunity_with_second_hp_write(client, mecha
     assert client.player.hurt.generation == 1
 
 
-def test_gs1_hurt_negative_heals_after_property_write_during_immunity(client):
+def test_gs1_hurt_negative_heals_after_property_write_during_immunity(client, game):
     # TPlayerProperties.cpp:108: hearts is a property, separate from hurtPlayer.
     # TPlayer.cpp:6567: getNoHurt gates hurt-driven damage.
     client.player.hurt.start(0, 0, 100.0)
     assert client.player.hearts == 3.0 and client.player.no_hurt()
-    gs1 = ClientGS1(client)
+    gs1 = game.gs1
     client.npcs[1] = {'x': 20, 'y': 20}
     gs1.load_script('npc_1', 'if (playerenters) { '
                     'playerhearts = 1; this.assigned = playerhearts; hurt -2; }',
@@ -224,14 +205,13 @@ def test_gs1_hurt_negative_heals_after_property_write_during_immunity(client):
 
 
 @pytest.mark.parametrize('surface', ['gs2', 'send_hearts'])
-def test_hearts_property_writes_bypass_hurt_immunity(client, surface):
+def test_hearts_property_writes_bypass_hurt_immunity(client, surface, game):
     # TPlayerProperties.cpp:108: property writes have their own setter.
     # TPlayer.cpp:8277: setHP stores the value without getNoHurt.
     client.player.hurt.start(0, 0, 100.0)
     assert client.player.no_hurt()
     if surface == 'gs2':
-        from pyreborn.gs2_client import ClientGS2
-        ClientGS2(client).player_object.set('hearts', 1.0)
+        game.gs2.player_object.set('hearts', 1.0)
     else:
         assert client.send_hearts(1.0)
     assert client.player.hearts == 1.0
@@ -297,15 +277,15 @@ def test_ghost_refuses_local_damage_reports(client):
     assert client.player.hearts == 3
 
 
-def test_knockback_crosses_gmap_seam_with_local_wire_position(client):
-    client.gmap_width, client.gmap_height = 2, 1
-    client.gmap_grid.update({(0, 0): 'hurt.nw', (1, 0): 'next.nw'})
-    client.levels['next.nw'] = [0] * 4096
-    client.player.x = 63
+def test_knockback_crosses_gmap_seam_with_local_wire_position(sim_time, make_game):
+    sim_time(lambda: 100.0)
+    game = make_game(gmap=True, gmap_segment=(0, 0), tiles=lambda tx, ty: 0)
+    client = game.client
+    client.player.x, client.player.y = 63, 20.0
     client.respond_to_hurt(0.5, knockback=(1, 0))
-    Motion(client)._advance_hurt(0.05)
+    game._advance_hurt(0.05)
     assert client.x == 64
-    assert client._current_level_name == 'next.nw'
+    assert client._current_level_name == GMAP_SEGMENTS[1]
 
 
 def test_server_max_hp_clamp_is_not_suppressed(client):
@@ -314,9 +294,7 @@ def test_server_max_hp_clamp_is_not_suppressed(client):
     assert client.player.hearts == 1.0
 
 
-def test_composed_game_hurt_and_forced_death_render(client):
-    from pyreborn.pygame_game import GameClient
-    game = GameClient(client)
+def test_composed_game_hurt_and_forced_death_render(client, game):
     assert client.respond_to_hurt(0.5, knockback=(1, 0))
     client.on_hurt(99, 0.5, 0, 1, 0)
     assert game.current_anim_name == 'hurt'
@@ -331,9 +309,7 @@ def test_composed_game_hurt_and_forced_death_render(client):
     game._render()
 
 
-def test_pushaway_replaces_fly_vector_without_damage_or_new_immunity(client):
-    from pyreborn.pygame_game import GameClient
-    game = GameClient(client)
+def test_pushaway_replaces_fly_vector_without_damage_or_new_immunity(client, game):
     assert client.respond_to_hurt(0.5)
     until = client.player.hurt.until
     client.on_pushaway(-0.5, 0)
@@ -343,8 +319,8 @@ def test_pushaway_replaces_fly_vector_without_damage_or_new_immunity(client):
     assert client.player.hurt.until == until
 
 
-def test_hurt_motion_keeps_player_checks_disabled(client):
+def test_hurt_motion_keeps_player_checks_disabled(client, game):
     # TPlayer.cpp:2907 uses isOnWall(..., false) during knockback.
     client.players[7] = {'x': 22, 'y': 20}
-    assert Motion(client)._move_hurt_step(1, 0)
+    assert game._move_hurt_step(1, 0)
     assert client.x == 21

@@ -9,7 +9,7 @@ from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.props import PLAYER_PROPS, payload_len
 
 from .gmap_coords import grid_of
-from .packets import PacketID, build_level_warp, build_movement
+from .packets import PacketID, build_movement
 
 #: Asset and file requests do not depend on where we stand, so they do not
 #: send a tick's held position first (see movement_batch): a gani or sound
@@ -147,8 +147,8 @@ class MovementMixin:
         exact same way."""
         if not self.connected or not self._authenticated:
             return False
-        warp_data = build_level_warp(local_x, local_y, level_name)
-        if not self._protocol.send_packet(PacketID.PLI_LEVELWARP, warp_data):
+        if not self._send_level_warp(local_x, local_y, level_name,
+                                     same_map=True):
             return False
         self._current_level_name = level_name
         # Point the ACTIVE board at the segment we just walked into. The

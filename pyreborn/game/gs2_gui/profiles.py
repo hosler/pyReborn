@@ -130,7 +130,7 @@ def prime_font_roots() -> Dict[str, str]:
         from ... import asset_paths
         roots.extend(asset_paths.content_dirs())
     except Exception:  # noqa: BLE001 - prefs/asset trouble must not hide text
-        pass
+        log_swallowed(logger)
     index: Dict[str, str] = {}
     for root in roots:
         for directory in (root, root / "fonts"):
@@ -606,11 +606,11 @@ def _font(fonts, prof: GuiProfile):
             try:
                 return at(prof.font_size, prof.font_bold, path=prof.font_path)
             except Exception:  # unreadable face file: default face below
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
         try:
             return at(prof.font_size, prof.font_bold)
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
     return fonts.get("small")
 
 
@@ -652,6 +652,7 @@ def _draw_label(surf, font, text, color, pos, shadow=False):
 
 from .base import GuiControl
 from reborn_protocol.gs2 import GS2Object  # noqa: F401  - kept: original import block (star-import consumers rely on it)
+from ...logutil import log_swallowed
 
 if TYPE_CHECKING:  # annotation-only; real imports would cycle
     from .skins import _Skin

@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from .clock import Clock
 from .nc_client import NCClient
 from .packets import PacketID
+from .logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +290,7 @@ class NCLink:
                 try:
                     nc.disconnect()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             if self.state in (CONNECTING, READY):
                 self._set_state(CLOSED, "NC session closed")
 

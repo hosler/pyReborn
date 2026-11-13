@@ -13,6 +13,9 @@ import re
 
 from .asset_paths import normalize_asset_name
 from .asset_paths import find_asset_file
+import logging
+from .logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # Bound on GaniParser.cache - same LRU-eviction idea as render_world.py's
 # per-segment surface cache and sprites.py's sheet/sprite caches. A real
@@ -187,6 +190,7 @@ class GaniParser:
                 try:
                     gani = self.parse_content(data.decode('latin-1'), cache_key)
                 except Exception:
+                    log_swallowed(logger, level=logging.DEBUG)
                     gani = None
                 self.put_cache(cache_key, gani)
                 return gani
@@ -632,7 +636,7 @@ class AnimationState:
             try:
                 name = self.name_resolver(name) or name
             except Exception:
-                pass
+                log_swallowed(logger)
         if ',' in name:
             parts = [p.strip() for p in name.split(',')]
             name = parts[0]

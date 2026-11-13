@@ -1,4 +1,7 @@
 from .common import *
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 def parse_npc_showimgs(data: bytes, id_bytes: int = 3) -> dict:
     """Parse PLO_SHOWIMGNPC (166) into NPC showimg layer updates."""
@@ -90,7 +93,7 @@ def parse_level_link(data: bytes) -> dict:
                 'dest_y': parts[6]
             }
     except:
-        pass
+        log_swallowed(logger, level=logging.DEBUG)
     return {}
 
 

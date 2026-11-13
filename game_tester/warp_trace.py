@@ -30,6 +30,9 @@ from __future__ import annotations
 import sys
 import time
 from typing import Optional
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # A transition that never completes (rejected warp, dropped board) must not
 # hold a half-finished row forever; print what we got and move on.
@@ -186,7 +189,7 @@ def main(argv) -> int:
         try:
             client.disconnect()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
     return 0
 
 

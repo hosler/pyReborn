@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterable
 
 from pyreborn.gani import GaniParser
 from pyreborn.gmap_coords import grid_of
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 MAX_FILES = 40
@@ -223,6 +225,7 @@ class RecordingHost:
             try:
                 referenced = to_str(args[0]).strip()
             except BaseException:
+                log_swallowed(logger, level=logging.DEBUG)
                 referenced = ""
             if referenced:
                 self.script_refs[kind].add(referenced)
@@ -533,6 +536,7 @@ def run_gs2_bounded(blob: bytes, name: str = "script",
                 except Exception:
                     # _execute already swallows handler errors; anything
                     # escaping is counted through vm._errors below.
+                    log_swallowed(logger)
                     break
                 yields += 1
             else:
@@ -1125,6 +1129,7 @@ class DeepCrawler:
                 try:
                     self.session.warm(identity, blob)
                 except BaseException:
+                    log_swallowed(logger)
                     continue
         for (kind, key), blob in pending:
             identity = (kind, key)

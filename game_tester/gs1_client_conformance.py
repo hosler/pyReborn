@@ -64,6 +64,9 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .reporter import TestResult
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # SDL dummy before any pygame import (render_smoke pattern).
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -1403,7 +1406,7 @@ def run_gs1_client_conformance(host: Optional[str] = None,
             try:
                 client.disconnect()
             except Exception:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
         _stop_server(proc, workdir)
 
 

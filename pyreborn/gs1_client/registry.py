@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
-import traceback
+import sys  # noqa: F401 - compatibility re-export (gs1_client.__init__)
+import traceback  # noqa: F401 - compatibility re-export
 
 from reborn_protocol.gs1.host_shared import A_CLASS_NPC_ATTR, A_CLASS_PLAYER_ATTR
 
@@ -39,9 +39,8 @@ def _report_gs1_error(where: str, exc: Exception):
     if sig in _GS1_ERR_SEEN:
         return
     _GS1_ERR_SEEN.add(sig)
-    print(f"[GS1] {where}: {type(exc).__name__}: {exc}", file=sys.stderr)
-    if _GS1_DEBUG:
-        traceback.print_exc()
+    logger.warning("[GS1] %s: %s: %s", where, type(exc).__name__, exc,
+                   exc_info=exc if _GS1_DEBUG else None)
 
 
 

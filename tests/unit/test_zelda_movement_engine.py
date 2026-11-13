@@ -18,20 +18,10 @@ repository.
 3. **`tiletype()` itself** was not implemented (-Player/Movement:369-370, 451).
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pygame
 import pytest
 
-from pyreborn.game.render_entities import EntityRenderMixin, _layer_colors
-from pyreborn.gs1_client import ClientGS1
+from pyreborn.game.render_entities import _layer_colors
 from pyreborn.tiletypes import TileType
 
 
@@ -59,15 +49,17 @@ def test_non_numeric_channel_falls_back_to_one():
     assert _layer_colors({'alpha': 'x'}) == (1.0, 1.0, 1.0, 1.0)
 
 
-class _PolyHarness(EntityRenderMixin):
-    """Just enough of GameClient for _render_showpoly_rec."""
-
-    def __init__(self, surf):
-        self.screen = surf
-
-    @staticmethod
-    def _layer_is_gui(rec):
-        return True          # screen-pixel vertices, no camera needed
+@pytest.fixture
+def poly_game(make_game, monkeypatch):
+    """``poly_game(canvas)``: a real offline game drawing onto ``canvas`` (a
+    64x48 surface the test inspects), with every layer treated as GUI-band
+    (screen-pixel vertices, no camera needed)."""
+    def build(canvas):
+        game = make_game()
+        monkeypatch.setattr(game, 'screen', canvas)
+        monkeypatch.setattr(game, '_layer_is_gui', lambda rec: True)
+        return game
+    return build
 
 
 @pytest.fixture
@@ -81,26 +73,26 @@ def _fullscreen_quad(**extra):
             'vis': 15, 'vis_set': True, **extra}
 
 
-def test_alpha_zero_fullscreen_quad_draws_nothing(canvas):
+def test_alpha_zero_fullscreen_quad_draws_nothing(canvas, poly_game):
     """THE live bug: the world went white behind an invisible quad."""
     canvas.fill((10, 20, 30))
-    _PolyHarness(canvas)._render_showpoly_rec(
+    poly_game(canvas)._render_showpoly_rec(
         _fullscreen_quad(red=1.0, green=0.0, blue=0.0, alpha=0.0))
     assert canvas.get_at((32, 24))[:3] == (10, 20, 30)
 
 
-def test_uncoloured_quad_still_fills_white(canvas):
+def test_uncoloured_quad_still_fills_white(canvas, poly_game):
     """Unchanged behaviour for a layer the script never coloured."""
     canvas.fill((10, 20, 30))
-    _PolyHarness(canvas)._render_showpoly_rec(_fullscreen_quad())
+    poly_game(canvas)._render_showpoly_rec(_fullscreen_quad())
     assert canvas.get_at((32, 24))[:3] == (255, 255, 255)
 
 
-def test_faded_in_quad_tints_red(canvas):
+def test_faded_in_quad_tints_red(canvas, poly_game):
     """As the player takes damage the script ramps `.alpha` up
     (-Player/Movement:128-129) — the flash must actually appear, in red."""
     canvas.fill((0, 0, 0))
-    _PolyHarness(canvas)._render_showpoly_rec(
+    poly_game(canvas)._render_showpoly_rec(
         _fullscreen_quad(red=1.0, green=0.0, blue=0.0, alpha=1.0))
     assert canvas.get_at((32, 24))[:3] == (255, 0, 0)
 
@@ -118,24 +110,22 @@ def _first_tile_of_type(kind):
     raise AssertionError(f"no tile of type {kind}")
 
 
-class _FakeClient:
-    tiles = None
-    npcs = {}
-    players = {}
-    level_links = {}
+@pytest.fixture
+def host(make_game, monkeypatch):
+    """``host(tile_source=None)``: the GS1 engine of a real offline game (an
+    empty board) with its tile resolver set to ``tile_source``."""
+    def build(tile_source=None):
+        game = make_game(tiles=lambda tx, ty: 0)
+        rt = game.gs1
+        monkeypatch.setattr(rt, 'tile_source', tile_source)
+        return rt
+    return build
 
 
-def _host(tile_source=None):
-    rt = ClientGS1(_FakeClient())
-    rt.tile_source = tile_source
-    return rt
-
-
-def test_without_a_tile_source_the_single_level_fallback_is_unchanged():
-    client = _FakeClient()
-    client.tiles = [0] * (64 * 64)
+def test_without_a_tile_source_the_single_level_fallback_is_unchanged(host):
+    rt = host(None)
+    client = rt.client
     client.tiles[10 * 64 + 5] = _first_tile_of_type(TileType.BLOCKING)
-    rt = ClientGS1(client)
     assert rt.is_wall(5, 10) is True
     assert rt.is_wall(6, 10) is False
     # ...and a world coordinate off that board reads as open, the old
@@ -143,40 +133,40 @@ def test_without_a_tile_source_the_single_level_fallback_is_unchanged():
     assert rt.is_wall(319, 320) is False
 
 
-def test_gmap_world_coordinates_reach_the_owning_segment():
+def test_gmap_world_coordinates_reach_the_owning_segment(host):
     """With the game shell's resolver wired, a probe at a Zelda-scale world
     coordinate finds the real tile instead of falling off the board."""
     wall = _first_tile_of_type(TileType.BLOCKING)
     board = {(319, 320): wall}
-    rt = _host(lambda x, y: board.get((int(x), int(y)), 0))
+    rt = host(lambda x, y: board.get((int(x), int(y)), 0))
     assert rt.is_wall(319, 320) is True
     assert rt.is_wall(318, 320) is False
 
 
-def test_unresolvable_gmap_cell_blocks():
+def test_unresolvable_gmap_cell_blocks(host):
     """A resolver returning -1 means "outside the world" (CollisionMixin's
     own convention) — the script must be told it is a wall, not open air."""
-    rt = _host(lambda x, y: -1)
+    rt = host(lambda x, y: -1)
     assert rt.is_wall(999, 999) is True
     assert rt.is_water_at(999, 999) is False
 
 
-def test_water_probe_uses_the_resolver():
+def test_water_probe_uses_the_resolver(host):
     water = _first_tile_of_type(TileType.WATER)
-    rt = _host(lambda x, y: water if (int(x), int(y)) == (300, 300) else 0)
+    rt = host(lambda x, y: water if (int(x), int(y)) == (300, 300) else 0)
     assert rt.is_water_at(300, 300) is True
     assert rt.is_water_at(301, 300) is False
 
 
-def test_tiletype_returns_the_type_code():
+def test_tiletype_returns_the_type_code(host):
     chair = _first_tile_of_type(TileType.CHAIR)
-    rt = _host(lambda x, y: chair if (int(x), int(y)) == (12, 34) else 0)
+    rt = host(lambda x, y: chair if (int(x), int(y)) == (12, 34) else 0)
     assert rt.tile_type_at(12, 34) == float(int(TileType.CHAIR))
     assert rt.tile_type_at(0, 0) == float(int(TileType.NONBLOCK))
 
 
-def test_tiletype_builtin_is_callable_from_a_script():
+def test_tiletype_builtin_is_callable_from_a_script(host):
     chair = _first_tile_of_type(TileType.CHAIR)
-    rt = _host(lambda x, y: chair)
+    rt = host(lambda x, y: chair)
     val = rt._host.call_function("tiletype", [12.5, 34.5], None)
     assert val == float(int(TileType.CHAIR))

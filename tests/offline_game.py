@@ -28,7 +28,9 @@ without. See pyReborn/CLAUDE.md, "Offline game fixture".
 """
 
 import asyncio
+import atexit
 import contextlib
+import gc
 import os
 import random
 import tempfile
@@ -383,6 +385,12 @@ def _nw_text(tiles, *, signs=(), links=(), chests=(), baddies=()) -> str:
     return "\n".join(lines) + "\n"
 
 
+def tiles_from_board(board: Sequence[int]):
+    """A ``tiles`` knob answering from a flat 64x64 row-major list (the shape
+    ``Client.tiles`` has), for tests that were written against one."""
+    return lambda tx, ty: board[ty * BOARD_SIZE + tx]
+
+
 def gmap_text(names: Sequence[str] = GMAP_SEGMENTS, width: int = 2) -> str:
     rows = [names[i:i + width] for i in range(0, len(names), width)]
     body = ",\n".join(",".join('"%s"' % n for n in row) for row in rows)
@@ -453,6 +461,18 @@ class _CaptureSession:
         self.connected = False
 
 
+#: Event loops of closed worlds, cleaned and ready for the next one. Creating a
+#: loop opens a socketpair (~8 ms); a world owns its loop exclusively while it
+#: lives, so a loop that was cleaned at close can be handed to the next world.
+_LOOP_POOL: List["asyncio.AbstractEventLoop"] = []
+
+
+@atexit.register
+def _close_pooled_loops() -> None:
+    while _LOOP_POOL:
+        _LOOP_POOL.pop().close()
+
+
 class ServerWorld:
     """A pygserver world held in-process for one offline client.
 
@@ -465,7 +485,7 @@ class ServerWorld:
         from pygserver.protocol import colors
         self.root = root
         self.client = client
-        self.loop = asyncio.new_event_loop()
+        self.loop = _LOOP_POOL.pop() if _LOOP_POOL else asyncio.new_event_loop()
         self._colors_server = colors._server
         self.server = None
         self.me = None
@@ -484,7 +504,7 @@ class ServerWorld:
             if pending:
                 loop.run_until_complete(
                     asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
+            _LOOP_POOL.append(loop)
 
     # -- server-side helpers usable inside run() ------------------------------
 
@@ -939,7 +959,12 @@ def shutdown_games(games: Sequence["GameClient"]) -> None:
     are done. ``pygame.quit`` is neutralised for the duration: a test session
     shares one SDL, and shutdown() ends with that call."""
     real_quit = pygame.quit
+    real_collect = gc.collect
     pygame.quit = lambda: None
+    # shutdown() ends with a full collection (it frees font file handles for
+    # a session that really quits); a test session has no handles to free and
+    # pays ~18 ms for it per game.
+    gc.collect = lambda *args, **kwargs: 0
     errors: List[BaseException] = []
     try:
         for game in games:
@@ -954,6 +979,7 @@ def shutdown_games(games: Sequence["GameClient"]) -> None:
                     errors.append(exc)
     finally:
         pygame.quit = real_quit
+        gc.collect = real_collect
     if errors:
         raise errors[0]
 
@@ -961,3 +987,52 @@ def shutdown_games(games: Sequence["GameClient"]) -> None:
 def key_event(key: int, unicode: str = "", mod: int = 0):
     return pygame.event.Event(pygame.KEYDOWN, key=key, unicode=unicode,
                               mod=mod, scancode=0)
+
+
+def spy(monkeypatch, obj, name: str) -> List[Tuple[tuple, dict]]:
+    """Wrap ``obj.name`` so every call is recorded as ``(args, kwargs)`` and
+    still runs the real method. For tests on a real game that assert "the
+    client was asked to send X" without replacing the client."""
+    real = getattr(obj, name)
+    calls: List[Tuple[tuple, dict]] = []
+
+    def wrapper(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(obj, name, wrapper)
+    return calls
+
+
+def stub_art(monkeypatch, game, sheets) -> None:
+    """Make the game's art lookup answer ``sheets`` (``{name: Surface}``, or
+    one Surface for every name), blank its screen, and record asset requests
+    in ``game.requested`` instead of sending them. The renderer, camera and
+    screen stay the game's own: only the pixels a test inspects are chosen by
+    the test, so one pixel says which layer drew it."""
+    def lookup(name, *part):
+        return sheets if isinstance(sheets, pygame.Surface) else sheets.get(name)
+
+    game.requested = []
+    monkeypatch.setattr(game, "_request_asset", game.requested.append)
+    monkeypatch.setattr(game.sprite_mgr, "load_sheet", lookup)
+    monkeypatch.setattr(game.sprite_mgr, "get_sprite", lookup)
+    game.screen.fill((0, 0, 0))
+
+
+class BlitRecorder:
+    """Stands in for a game's ``screen`` when a test asserts what was blitted
+    where: ``blits`` lists ``(source, dest)`` and nothing is drawn, so the
+    source may be any marker (a tile id) instead of a Surface. Every other
+    attribute is the real surface's. Install with
+    ``monkeypatch.setattr(game, "screen", BlitRecorder(game.screen))``."""
+
+    def __init__(self, surface: "pygame.Surface") -> None:
+        self._surface = surface
+        self.blits: List[Tuple[Any, Any]] = []
+
+    def blit(self, source, dest, *args, **kwargs):
+        self.blits.append((source, dest))
+
+    def __getattr__(self, name):
+        return getattr(self._surface, name)

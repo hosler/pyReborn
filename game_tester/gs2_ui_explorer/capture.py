@@ -92,7 +92,7 @@ class CaptureWriter:
                 template = f"{record.name}|{record.levelname}|{str(record.msg)[:160]}"
                 try:
                     message = record.getMessage()
-                except Exception:
+                except Exception:  # inside a logging handler: must not log
                     message = str(record.msg)
                 # Engine warnings conventionally start "GS2 <vm>...". Keep
                 # that token separately so samples remain attributable.

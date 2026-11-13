@@ -37,6 +37,9 @@ import time
 from typing import Dict, List, Optional
 
 from .game_bot import GameBot
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # A warp the server never confirms should be recorded as a failure, not hang
 # the run. Deliberately above GameBot.warp_to's own 5s ceiling.
@@ -170,7 +173,7 @@ def run(host: str, port: int, account: str, password: str,
         try:
             bot.disconnect()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
 
 def _summarize(samples: List[WarpSample]) -> None:

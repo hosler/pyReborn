@@ -1,82 +1,41 @@
-"""Action gani and lightweight world-particle regressions."""
+"""Action gani and lightweight world-particle regressions (real offline game)."""
 
-from types import SimpleNamespace
-
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.render import RenderMixin
-from pyreborn.game.render_effects import EffectsRenderMixin
+from offline_game import spy
 
 
-class _Animation:
-    def __init__(self, setback=None):
-        self.calls = []
-        self.setback = setback
+def test_action_animation_is_local_and_server_visible(make_game, monkeypatch):
+    h = make_game()
+    h.client.player.direction = 3
+    local = spy(monkeypatch, h.player_anim, 'set_animation')
+    sent = spy(monkeypatch, h.client, 'set_animation')
 
-    def set_animation(self, name, direction, force=False):
-        self.calls.append((name, direction, force))
+    h._play_action_animation('shoot')
 
-    def update(self, dt):
-        return []
-
-    def is_finished(self):
-        return self.setback is not None
-
-    def get_setback(self):
-        return self.setback
-
-
-class _Client:
-    def __init__(self):
-        self.player = SimpleNamespace(
-            direction=3, hearts=3, is_sitting=False,
-            is_carrying=lambda: False,
-        )
-        self.animations = []
-        self.players = {}
-        self.npcs = {}
-        self.baddies = {}
-        self.horses = {}
-
-    def set_animation(self, name):
-        self.animations.append(name)
-
-
-def test_action_animation_is_local_and_server_visible():
-    h = SimpleNamespace(client=_Client(), player_anim=_Animation(),
-                        current_anim_name='idle')
-
-    ActionsMixin._play_action_animation(h, 'shoot')
-
-    assert h.player_anim.calls == [('shoot', 3, True)]
+    assert [args[:2] + (args[2:] or (kwargs.get('force'),))[:1]
+            for args, kwargs in local] == [('shoot', 3, True)]
     assert h.current_anim_name == 'shoot'
-    assert h.client.animations == ['shoot']
+    assert [args[0] for args, _ in sent] == ['shoot']
 
 
-def test_finished_action_broadcasts_its_setback():
-    h = SimpleNamespace(
-        client=_Client(), player_anim=_Animation('idle'), sound_mgr=SimpleNamespace(
-            play_from_gani=lambda sound: None), current_anim_name='shoot',
-        is_moving=False, is_swimming=False, grab_state=None,
-        is_pushing=False, other_player_anims={}, other_player_visual={},
-        npc_anims={}, npc_visual={}, baddy_anims={}, baddy_visual={},
-        horse_anims={},
-    )
-    h._update_sitting_state = lambda: None
+def test_finished_action_broadcasts_its_setback(make_game, monkeypatch):
+    h = make_game()
+    h.client.player.direction = 3
+    h._play_action_animation('hurt')
+    # The synthetic ganis carry no SETBACKTO: this one finished, back to idle.
+    monkeypatch.setattr(h.player_anim, 'is_finished', lambda: True)
+    monkeypatch.setattr(h.player_anim, 'get_setback', lambda: 'idle')
+    sent = spy(monkeypatch, h.client, 'set_animation')
+    h.is_moving = False
 
-    RenderMixin._update_animations(h, 0.1)
+    h._update_animations(0.1)
 
-    assert ('idle', 3, False) in h.player_anim.calls
     assert h.current_anim_name == 'idle'
-    assert h.client.animations == ['idle']
+    assert [args[0] for args, _ in sent] == ['idle']
 
 
-class _Particles(EffectsRenderMixin):
-    def __init__(self):
-        self.leaf_particles = []
-
-
-def test_leaf_spawn_is_capped():
-    h = _Particles()
+def test_leaf_spawn_is_capped(make_game):
+    h = make_game()
+    h.leaf_particles = []
 
     for _ in range(20):
         h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=6)
@@ -85,8 +44,9 @@ def test_leaf_spawn_is_capped():
     assert h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=6) == 0
 
 
-def test_leaf_particles_expire_after_lifetime():
-    h = _Particles()
+def test_leaf_particles_expire_after_lifetime(make_game):
+    h = make_game()
+    h.leaf_particles = []
     h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=5)
 
     assert len(h._expire_leaf_particles(now=10.59)) == 5

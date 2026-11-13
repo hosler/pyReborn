@@ -1,13 +1,8 @@
-"""Official canJump/animateJumping coordinates and game integration."""
-
 import math
-from types import SimpleNamespace
 
 import pytest
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
+from offline_game import GMAP_SEGMENTS, spy
 from pyreborn.jumping import (
     JUMP_DELTA_X_SIDE, JUMP_DELTA_Y_DOWN, JUMP_DELTA_Y_SIDE,
     JUMP_DELTA_Y_UP, JUMP_LANDING_OFFSET, JumpState,
@@ -18,44 +13,43 @@ LEDGE = next(i for i, kind in enumerate(TILE_TYPES) if kind == 21)
 WALL = next(i for i, kind in enumerate(TILE_TYPES) if kind == 22)
 
 
-class Game(ActionsMixin, CollisionMixin):
-    def __init__(self):
-        self.client = Client('localhost', 14900)
-        self.client._authenticated = True
-        self.sent = []
-        self.client._protocol = SimpleNamespace(connected=True,
-            send_packet=lambda p, d=b'': self.sent.append((p, d)) or True)
-        self.client._current_level_name = self.client._tiles_level_name = 'jump.nw'
-        self.client.tiles = [0] * 4096
-        self.client.levels['jump.nw'] = self.client.tiles
-        self.client.player.x = self.client.player.y = 20.0
-        self.animations, self.sounds = [], []
-        self.player_anim = SimpleNamespace(
-            set_direction=lambda d: None,
-            set_animation=lambda *a, **kw: self.animations.append(a))
-        self.sound_mgr = SimpleNamespace(play=self.sounds.append)
-        self.gani_parser = SimpleNamespace(parse=lambda name: None)
-        self.current_anim_name = 'idle'
-        self._push_hold_dir = None
-        self._push_hold_start = 0
-        self.is_pushing = False
-        self.is_moving = False
-        self._find_chest_in_front = lambda: None
-        self._update_swimming_state = lambda: None
-        self._try_link_warp = lambda: None
-        self.npc_handler = SimpleNamespace(process_movement=lambda *a: None)
+@pytest.fixture
+def new_game(make_game, monkeypatch):
+    """``new_game(**knobs)``: a real offline game on an open board at
+    (20, 20). ``game.sound_calls`` / ``game.anim_calls`` record what the
+    sound manager and the player's animation state were asked (call-through);
+    ``sounds(game)`` and ``animations(game)`` read them."""
+    def build(**knobs):
+        knobs.setdefault("player_xy", (20.0, 20.0))
+        knobs.setdefault("tiles", lambda tx, ty: 0)
+        game = make_game(**knobs)
+        game.sound_calls = spy(monkeypatch, game.sound_mgr, "play")
+        game.anim_calls = spy(monkeypatch, game.player_anim, "set_animation")
+        game.current_anim_name = 'idle'
+        return game
+    return build
 
-    def set_tile(self, x, y, tile):
-        if self.client.in_gmap_segment:
-            name = self.client.gmap_grid[(math.floor(x / 64), math.floor(y / 64))]
-            self.client.levels[name][math.floor(x) % 64 + (math.floor(y) % 64) * 64] = tile
-        else:
-            self.client.tiles[math.floor(x) + math.floor(y) * 64] = tile
 
-    def plant_ledge(self, direction):
-        dx, dy = ((0, -1), (-1, 0), (0, 1), (1, 0))[direction]
-        self.set_tile(self.client.x + 1.5 + dx * 1.5,
-                      self.client.y + 2 + dy * 1.5, LEDGE)
+def sounds(game):
+    return [args[0] for args, _ in game.sound_calls]
+
+
+def animations(game):
+    return [args for args, _ in game.anim_calls]
+
+
+def set_tile(game, x, y, tile):
+    if game.client.in_gmap_segment:
+        name = game.client.gmap_grid[(math.floor(x / 64), math.floor(y / 64))]
+        game.client.levels[name][math.floor(x) % 64 + (math.floor(y) % 64) * 64] = tile
+    else:
+        game.client.tiles[math.floor(x) + math.floor(y) * 64] = tile
+
+
+def plant_ledge(game, direction):
+    dx, dy = ((0, -1), (-1, 0), (0, 1), (1, 0))[direction]
+    set_tile(game, game.client.x + 1.5 + dx * 1.5,
+             game.client.y + 2 + dy * 1.5, LEDGE)
 
 
 def test_jump_tables_match_oracle():
@@ -83,12 +77,12 @@ def test_arc_positions_per_tick(direction, path):
 
 
 @pytest.mark.parametrize('direction', range(4))
-def test_ledge_starts_and_lands_at_oracle_offset(direction):
-    game = Game()
-    game.plant_ledge(direction)
+def test_ledge_starts_and_lands_at_oracle_offset(direction, new_game):
+    game = new_game()
+    plant_ledge(game, direction)
     assert game._try_start_ledge_jump(direction)
     assert game.client.player.action_mode == 2
-    assert game.sounds == ['jump.wav']
+    assert sounds(game) == ['jump.wav']
     for _ in range(8):
         game._advance_ledge_jump(0.05)
     dx, dy = JUMP_LANDING_OFFSET[direction]
@@ -98,66 +92,69 @@ def test_ledge_starts_and_lands_at_oracle_offset(direction):
 
 
 @pytest.mark.parametrize('direction', range(4))
-def test_blocked_landing_keeps_ledge_a_wall(direction):
-    game = Game()
-    game.plant_ledge(direction)
+def test_blocked_landing_keeps_ledge_a_wall(direction, new_game):
+    game = new_game()
+    plant_ledge(game, direction)
     dx, dy = JUMP_LANDING_OFFSET[direction]
-    game.set_tile(21.5 + dx, 22 + dy, WALL)
+    set_tile(game, 21.5 + dx, 22 + dy, WALL)
     assert not game._try_start_ledge_jump(direction)
     assert game._is_blocked_at(21.5 + (0, -1.5, 0, 1.5)[direction],
                                22 + (-1.5, 0, 1.5, 0)[direction])
-    assert game.sounds == []
+    assert sounds(game) == []
 
 
 @pytest.mark.parametrize('kind', [0, 3, 4, 6, 11, 20, 22])
-def test_other_tile_types_never_start_jump(kind):
-    game = Game()
+def test_other_tile_types_never_start_jump(kind, new_game):
+    game = new_game()
     tile = next(i for i, value in enumerate(TILE_TYPES) if value == kind)
-    game.set_tile(21.5, 23.5, tile)
+    set_tile(game, 21.5, 23.5, tile)
     assert not game._try_start_ledge_jump(2)
     assert (game.client.x, game.client.y) == (20, 20)
 
 
-def test_landing_player_blocks_jump():
-    game = Game()
-    game.plant_ledge(3)
+def test_landing_player_blocks_jump(new_game):
+    game = new_game()
+    plant_ledge(game, 3)
     game.client.players[99] = {'x': 27, 'y': 24}
     assert not game._try_start_ledge_jump(3)
 
 
-def test_missing_gani_does_not_prevent_motion_or_change_pose():
-    game = Game()
+def test_missing_gani_does_not_prevent_motion_or_change_pose(new_game):
+    game = new_game()
     game.current_anim_name = 'walk'
-    game.plant_ledge(2)
+    plant_ledge(game, 2)
     assert game._try_start_ledge_jump(2)
-    assert game.animations == []
+    assert animations(game) == []
     assert game.current_anim_name == 'walk'
     game._advance_ledge_jump(0.4)
     assert (game.client.x, game.client.y) == (20, 27)
     assert game.current_anim_name == 'idle'
 
 
-def test_available_jump_gani_is_played():
-    game = Game()
-    game.gani_parser.parse = lambda name: object()
-    game.plant_ledge(2)
+def test_available_jump_gani_is_played(new_game, monkeypatch):
+    game = new_game()
+    real_parse = game.gani_parser.parse
+    # A jump gani exists: answer it with a real (looping) gani's data.
+    monkeypatch.setattr(game.gani_parser, 'parse',
+                        lambda name: real_parse('walk' if name == 'jump' else name))
+    plant_ledge(game, 2)
     game._try_start_ledge_jump(2)
-    assert game.animations == [('jump', 2)]
+    assert animations(game) == [('jump', 2)]
     assert game.client.player.animation == 'jump'
 
 
-def test_motion_ignores_intermediate_walls_after_landing_check():
-    game = Game()
-    game.plant_ledge(3)
+def test_motion_ignores_intermediate_walls_after_landing_check(new_game):
+    game = new_game()
+    plant_ledge(game, 3)
     assert game._try_start_ledge_jump(3)
     game._is_blocked_at = lambda x, y: pytest.fail('arc must ignore collision')
     game._advance_ledge_jump(0.4)
     assert (game.client.x, game.client.y) == (26.5, 23)
 
 
-def test_jump_starts_from_held_movement_after_eighteen_ticks(sim_time, monkeypatch):
-    game = Game()
-    game.plant_ledge(2)
+def test_jump_starts_from_held_movement_after_eighteen_ticks(sim_time, monkeypatch, new_game):
+    game = new_game()
+    plant_ledge(game, 2)
     sim_time(lambda: 100.0)
     game._move(0, 1)
     assert getattr(game, '_ledge_jump', None) is None
@@ -170,9 +167,9 @@ def test_jump_starts_from_held_movement_after_eighteen_ticks(sim_time, monkeypat
     assert (game.client.x, game.client.y) == (20, 20)
 
 
-def test_jump_ignores_input_until_landing():
-    game = Game()
-    game.plant_ledge(2)
+def test_jump_ignores_input_until_landing(new_game):
+    game = new_game()
+    plant_ledge(game, 2)
     game._try_start_ledge_jump(2)
     game._move(-1, 0)
     assert game.client.player.direction == 2
@@ -180,9 +177,9 @@ def test_jump_ignores_input_until_landing():
     assert (game.client.x, game.client.y) == (20, 27)
 
 
-def test_hurt_interrupts_jump():
-    game = Game()
-    game.plant_ledge(2)
+def test_hurt_interrupts_jump(new_game):
+    game = new_game()
+    plant_ledge(game, 2)
     game._try_start_ledge_jump(2)
     game.client.respond_to_hurt(0.5)
     game._advance_ledge_jump(0.4)
@@ -190,32 +187,27 @@ def test_hurt_interrupts_jump():
     assert game.client.player.action_mode == 3
 
 
-def test_gmap_probes_and_arc_cross_seam():
-    game = Game()
+def test_gmap_probes_and_arc_cross_seam(new_game):
+    game = new_game(gmap=True, gmap_segment=(0, 0))
     c = game.client
-    c.gmap_width, c.gmap_height = 2, 1
-    c.gmap_grid.update({(0, 0): 'jump.nw', (1, 0): 'next.nw'})
-    c.levels['next.nw'] = [0] * 4096
-    c.player.x = 61
-    game.plant_ledge(3)  # Probe is in the next segment, at world x=64.
+    c.player.x, c.player.y = 61, 20.0
+    plant_ledge(game, 3)  # Probe is in the next segment, at world x=64.
     assert game._try_start_ledge_jump(3)
     game._advance_ledge_jump(0.4)
     assert (c.x, c.y) == (67.5, 23)
-    assert c._current_level_name == 'next.nw'
+    assert c._current_level_name == GMAP_SEGMENTS[1]
 
 
-def test_landing_off_standalone_board_is_blocked():
-    game = Game()
+def test_landing_off_standalone_board_is_blocked(new_game):
+    game = new_game()
     game.client.player.x = 59
-    game.plant_ledge(3)
+    plant_ledge(game, 3)
     assert not game._try_start_ledge_jump(3)
 
 
-def test_composed_game_renders_missing_gani_jump_through_landing():
-    from pyreborn.pygame_game import GameClient
-    harness = Game()
-    harness.plant_ledge(3)
-    game = GameClient(harness.client)
+def test_composed_game_renders_missing_gani_jump_through_landing(new_game):
+    game = new_game()
+    plant_ledge(game, 3)
     assert game._try_start_ledge_jump(3)
     for _ in range(8):
         game._update_animations(0.05)

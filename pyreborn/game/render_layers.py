@@ -11,6 +11,10 @@ from ..gani import AnimationState
 from .constants import TILE_SIZE
 from .frame_context import FrameContext
 from .render_shared import SUBTRACT_SMOKE_SCALE, _c255, _layer_colors
+import logging
+from ..logutil import log_swallowed
+from ..lru import LruCache
+logger = logging.getLogger(__name__)
 
 
 class LayerRenderMixin:
@@ -217,7 +221,7 @@ class LayerRenderMixin:
         # everything that can change its pixels.
         cache = getattr(self, '_showimg_cache', None)
         if cache is None:
-            cache = self._showimg_cache = {}
+            cache = self._showimg_cache = LruCache(300)
         cache_key = (image, part, w, h, colors_key, additive, subtractive)
         out = cache.get(cache_key)
         if out is None:
@@ -248,8 +252,6 @@ class LayerRenderMixin:
                 out.fill((_c255(r), _c255(g), _c255(b), 255),
                           special_flags=pygame.BLEND_RGB_MULT)
                 out.set_alpha(_c255(a))
-            if len(cache) > 300:
-                cache.clear()
             cache[cache_key] = out
 
         sx, sy = self._layer_pos(rec)
@@ -443,6 +445,7 @@ class LayerRenderMixin:
             try:
                 font = pygame.font.SysFont(name, size, bold=bold)
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 font = pygame.font.Font(None, size)
             cache[key] = font
         return font
@@ -521,7 +524,7 @@ class LayerRenderMixin:
         # the result.
         cache = getattr(self, '_light_sprite_cache', None)
         if cache is None:
-            cache = self._light_sprite_cache = {}
+            cache = self._light_sprite_cache = LruCache(300)
 
         if is_light:
             # See the class-level comment above: alpha is folded into the RGB
@@ -536,8 +539,6 @@ class LayerRenderMixin:
             else:
                 light_sprite = sprite.copy()
                 light_sprite.fill((mult, mult, mult, 255), special_flags=pygame.BLEND_RGB_MULT)
-                if len(cache) > 300:
-                    cache.clear()
                 cache[key] = (sprite, light_sprite)
             # Position - place light sprite with top-left at NPC position.
             # User testing confirmed this positioning is correct for light
@@ -563,7 +564,5 @@ class LayerRenderMixin:
                 light_sprite = sprite.copy()
                 if alpha is not None:
                     light_sprite.set_alpha(alpha)
-                if len(cache) > 300:
-                    cache.clear()
                 cache[key] = (sprite, light_sprite)
             self.screen.blit(light_sprite, (x, y))

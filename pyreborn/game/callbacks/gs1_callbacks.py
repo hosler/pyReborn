@@ -6,6 +6,9 @@ from ...colors_width import colors_len_in_force
 from ...flyingobjects import NOT_BOUNCING
 from ...sprites import strip_tiledef_image
 from .client_callbacks import route_gs2_source
+import logging
+from ...logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # A script loop can spawn thrown objects, bombs and flying objects faster
 # than they expire (`timeout = 0.05` re-arming throwcarry), so each live list
@@ -69,7 +72,7 @@ def wire_gs1_callbacks(game):
                                            params=joined.split(',')[1:])
             game.current_anim_name = base
         except Exception:
-            pass
+            log_swallowed(logger)
         # The scripted gani may not be downloaded yet (bomber's
         # sen_piano_idle) — fetch it through the once-only asset path;
         # the on_file gani branch above re-asserts it when it lands.
@@ -80,7 +83,7 @@ def wire_gs1_callbacks(game):
             else:
                 game._prefetch_gani_assets(gani)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     # Set effect callback (Tier 3d) - fullscreen tint drawn under the HUD,
     # over the world (see game/render_effects.py _render_screen_tint,
@@ -117,14 +120,14 @@ def wire_gs1_callbacks(game):
                         game.gs1.trigger_event('created', name=f'weapon_{name}')
                     game.gs1.trigger_event('playerenters', name=f'weapon_{name}')
                 except Exception:
-                    pass
+                    log_swallowed(logger)
         elif current is None:
             game.client.weapons[name] = {'name': name, 'image': '', 'script': ''}
         if npc_id is not None:
             try:
                 game.client.send_weapon_add(npc_id)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     # setminimap img,txt,... — remember the minimap source + fetch the file.
     # Via _request_asset (not raw request_file) so it's requested once per
@@ -167,7 +170,7 @@ def wire_gs1_callbacks(game):
         try:
             game.client.triggeraction(action, x, y, npc_id)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     # shoot — Bomber's room system uses projectiles as a message bus
     # (setshootparams Bomb.Queue,... ; shoot ...,blank). Send it to the
@@ -188,7 +191,7 @@ def wire_gs1_callbacks(game):
         try:
             game.client.shoot(gani=gani, params=','.join(shoot_params))
         except Exception:
-            pass
+            log_swallowed(logger)
 
     game.gs1.on_play = on_play
     game.gs1.on_stopmusic = on_stopmusic
@@ -397,7 +400,7 @@ def wire_gs1_callbacks(game):
             try:
                 game.client.request_file(image)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     game.gs1.on_warp = on_warp
     game.gs1.on_triggeraction = on_triggeraction

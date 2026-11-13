@@ -1,14 +1,9 @@
 """Lava damage, beds and water rules (TPlayer.cpp:5887-6055, :7350-7362)."""
 
-from types import SimpleNamespace
-from unittest.mock import Mock
-
 import pytest
 
-from pyreborn import Client
+from offline_game import spy
 from pyreborn import ground_effects as ge
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
 from pyreborn.tiletypes import TILE_TYPES
 
 
@@ -56,42 +51,40 @@ def test_lava_types_and_bed_snap():
     assert ge.bed_snap_y(20.75, False) == 21.0
 
 
-class Game(ActionsMixin, CollisionMixin):
-    def __init__(self):
-        self.client = Client('localhost', 14900)
-        self.client._authenticated = True
-        self.sent = []
-        self.client._protocol = SimpleNamespace(
-            connected=True, send_packet=lambda p, d=b'': self.sent.append((p, d)) or True)
-        self.client._current_level_name = self.client._tiles_level_name = 'g.nw'
-        self.client.tiles = [0] * 4096
-        self.client.levels['g.nw'] = self.client.tiles
-        self.client.player.x, self.client.player.y = 20.0, 20.75
-        self.client.player.max_hearts = 3
-        self.client.player.hearts = 3.0
-        self.player_anim = Mock()
-        self.sound_mgr = Mock()
-        self._spawn_leaps = Mock()
-        self.gani_parser = SimpleNamespace(parse=lambda name: None)
-        self.thrown_objects = []
-        self.current_anim_name = 'idle'
-        self.is_swimming = False
-        self.is_moving = False
-        self.client.send_hearts = Mock()
+@pytest.fixture
+def new_game(make_game, monkeypatch):
+    """A real offline game on an all-type-0 board at (20.0, 20.75), with a
+    call-through spies on ``client.send_hearts``, ``_spawn_leaps``, the sound
+    manager and the player animation (``hearts_calls``, ``leap_calls``,
+    ``sound_calls``, ``anim_calls``)."""
+    def build():
+        game = make_game(player_xy=(20.0, 20.75), tiles=lambda tx, ty: 0,
+                         hearts=3.0)
+        # The server rounds a login position to half tiles; the tests want
+        # the quarter-tile row the rules are pinned at.
+        game.client.player.x, game.client.player.y = 20.0, 20.75
+        game.hearts_calls = spy(monkeypatch, game.client, "send_hearts")
+        game.leap_calls = spy(monkeypatch, game, "_spawn_leaps")
+        game.sound_calls = spy(monkeypatch, game.sound_mgr, "play")
+        game.anim_calls = spy(monkeypatch, game.player_anim, "set_animation")
+        return game
+    return build
 
-    def set_tile(self, x, y, tile):
-        self.client.tiles[int(x) + int(y) * 64] = tile
 
-    def ground_tile(self, tile, dy=0.0):
-        """Put `tile` under the (x+1.5, y+2.0+dy) sample point."""
-        self.set_tile(self.client.x + 1.5, self.client.y + 2.0 + dy, tile)
+def set_tile(game, x, y, tile):
+    game.client.tiles[int(x) + int(y) * 64] = tile
+
+
+def ground_tile(game, tile, dy=0.0):
+    """Put `tile` under the (x+1.5, y+2.0+dy) sample point."""
+    set_tile(game, game.client.x + 1.5, game.client.y + 2.0 + dy, tile)
 
 
 @pytest.mark.parametrize("kind,hurts", [(2, True), (9, True), (12, True),
                                         (0, False), (6, False), (11, False), (8, False)])
-def test_lava_damage_by_tile_type(kind, hurts):
-    game = Game()
-    game.ground_tile(tile_of(kind))
+def test_lava_damage_by_tile_type(kind, hurts, new_game):
+    game = new_game()
+    ground_tile(game, tile_of(kind))
     for _ in range(100):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 3.0
@@ -99,68 +92,68 @@ def test_lava_damage_by_tile_type(kind, hurts):
     assert (game.client.player.hearts == 2.5) is hurts
 
 
-def test_lava_samples_y_plus_two_not_two_and_a_half():
-    game = Game()  # y = 20.75: y+2.0 is row 22, y+2.5 is row 23
-    game.ground_tile(tile_of(12), dy=0.5)  # lava only under y+2.5
+def test_lava_samples_y_plus_two_not_two_and_a_half(new_game):
+    game = new_game()  # y = 20.75: y+2.0 is row 22, y+2.5 is row 23
+    ground_tile(game, tile_of(12), dy=0.5)  # lava only under y+2.5
     for _ in range(101):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 3.0
-    game.ground_tile(tile_of(12))
+    ground_tile(game, tile_of(12))
     for _ in range(101):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 2.5
 
 
-def test_lava_damage_is_reported_and_bypasses_swim_immunity():
-    game = Game()
-    game.ground_tile(tile_of(12))
+def test_lava_damage_is_reported_and_bypasses_swim_immunity(new_game):
+    game = new_game()
+    ground_tile(game, tile_of(12))
     game.client.player.animation = 'lava'  # no_hurt() is true while swimming
     for _ in range(101):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 2.5
-    game.client.send_hearts.assert_called_once_with()
+    assert game.hearts_calls == [((), {})]
 
 
-def test_lava_can_kill_and_stops_at_zero():
-    game = Game()
+def test_lava_can_kill_and_stops_at_zero(new_game):
+    game = new_game()
     game.client.player.hearts = 0.5
-    game.ground_tile(tile_of(2))
+    ground_tile(game, tile_of(2))
     for _ in range(101):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 0.0
 
 
-def test_leaving_lava_resets_the_timer():
-    game = Game()
+def test_leaving_lava_resets_the_timer(new_game):
+    game = new_game()
     lava = tile_of(12)
-    game.ground_tile(lava)
+    ground_tile(game, lava)
     for _ in range(90):
         game._advance_ground_effects(0.05)
-    game.ground_tile(0)
+    ground_tile(game, 0)
     game._advance_ground_effects(0.05)
-    game.ground_tile(lava)
+    ground_tile(game, lava)
     for _ in range(100):
         game._advance_ground_effects(0.05)
     assert game.client.player.hearts == 3.0
 
 
-def test_sleeping_heals_half_a_heart_per_101_ticks():
-    game = Game()
+def test_sleeping_heals_half_a_heart_per_101_ticks(new_game):
+    game = new_game()
     game.client.player.hearts = 1.0
     game.current_anim_name = 'sleep'
     for _ in range(100):
         game._advance_ground_effects(0.05)
-    game.client.send_hearts.assert_not_called()
+    assert game.hearts_calls == []
     game._advance_ground_effects(0.05)
-    game.client.send_hearts.assert_called_once_with(1.5)
+    assert game.hearts_calls == [((1.5,), {})]
 
 
-def test_sleeping_at_full_health_sends_nothing():
-    game = Game()
+def test_sleeping_at_full_health_sends_nothing(new_game):
+    game = new_game()
     game.current_anim_name = 'sleep'
     for _ in range(202):
         game._advance_ground_effects(0.05)
-    game.client.send_hearts.assert_not_called()
+    assert game.hearts_calls == []
 
 
 BED = tile_of(4)
@@ -169,11 +162,11 @@ BED = tile_of(4)
 def lay_bed(game, columns=(1, 2), rows=(0.0, 0.5)):
     for col in columns:
         for row in rows:
-            game.set_tile(game.client.x + col, game.client.y + row, BED)
+            set_tile(game, game.client.x + col, game.client.y + row, BED)
 
 
-def test_bed_needs_both_columns():
-    game = Game()
+def test_bed_needs_both_columns(new_game):
+    game = new_game()
     lay_bed(game, columns=(1,))
     game._test_sleeping()
     assert game.current_anim_name == 'idle'
@@ -182,8 +175,8 @@ def test_bed_needs_both_columns():
     assert game.current_anim_name == 'sleep'
 
 
-def test_bed_top_row_hit_snaps_down_to_tile():
-    game = Game()
+def test_bed_top_row_hit_snaps_down_to_tile(new_game):
+    game = new_game()
     game.client.player.y = 20.25
     lay_bed(game, rows=(0.0,))
     game._test_sleeping()
@@ -191,18 +184,18 @@ def test_bed_top_row_hit_snaps_down_to_tile():
     assert game.current_anim_name == 'sleep'
 
 
-def test_bed_only_lower_row_hit_moves_half_a_tile_then_snaps():
-    game = Game()  # y = 20.75: row y is tile 20, row y+0.5 is tile 21
+def test_bed_only_lower_row_hit_moves_half_a_tile_then_snaps(new_game):
+    game = new_game()  # y = 20.75: row y is tile 20, row y+0.5 is tile 21
     game.client.player.y = 20.75
     for col in (1, 2):
-        game.set_tile(game.client.x + col, game.client.y + 0.5, BED)
+        set_tile(game, game.client.x + col, game.client.y + 0.5, BED)
     game._test_sleeping()
     assert game.client.y == 21.0  # 20.75 + 0.5 = 21.25 -> floor
 
 
 @pytest.mark.parametrize("setup", ["carrying", "sitting", "mode", "dead"])
-def test_bed_refused_while(setup):
-    game = Game()
+def test_bed_refused_while(setup, new_game):
+    game = new_game()
     lay_bed(game)
     player = game.client.player
     if setup == "carrying":
@@ -217,8 +210,8 @@ def test_bed_refused_while(setup):
     assert game.current_anim_name == 'idle'
 
 
-def test_bed_test_runs_on_key_release_and_level_entry_only():
-    game = Game()
+def test_bed_test_runs_on_key_release_and_level_entry_only(new_game):
+    game = new_game()
     lay_bed(game)
     game._update_sleeping_state()  # level entry
     assert game.current_anim_name == 'sleep'
@@ -234,58 +227,61 @@ def test_bed_test_runs_on_key_release_and_level_entry_only():
 
 # Water ------------------------------------------------------------------
 
-def test_water_sampled_at_y_plus_two_not_two_and_a_half():
-    game = Game()
-    game.set_tile(game.client.x + 1.5, game.client.y + 2.5, tile_of(11))
+def test_water_sampled_at_y_plus_two_not_two_and_a_half(new_game):
+    game = new_game()
+    set_tile(game, game.client.x + 1.5, game.client.y + 2.5, tile_of(11))
     game._update_swimming_state()
     assert not game.is_swimming
-    game.ground_tile(tile_of(11))
+    ground_tile(game, tile_of(11))
     game._update_swimming_state()
     assert game.is_swimming
 
 
-def test_lava_tile_swims_with_the_lava_gani():
-    game = Game()
-    game.ground_tile(tile_of(12))
+def test_lava_tile_swims_with_the_lava_gani(new_game):
+    game = new_game()
+    ground_tile(game, tile_of(12))
     game._update_swimming_state()
     assert game.is_swimming and game.current_anim_name == 'lava'
-    game.ground_tile(tile_of(11))
+    ground_tile(game, tile_of(11))
     game._update_swimming_state()
     assert game.is_swimming and game.current_anim_name == 'swim'
 
 
-def test_swimming_drops_the_carried_object():
-    game = Game()
+def test_swimming_drops_the_carried_object(new_game):
+    game = new_game()
     game.client.player.pickup_object('vase', (1, 2, 3, 4), (0, 0))
-    game.ground_tile(tile_of(11))
+    ground_tile(game, tile_of(11))
     game._update_swimming_state()
     assert not game.client.player.is_carrying()
     assert len(game.thrown_objects) == 1
     assert game.current_anim_name == 'swim'
 
 
-def test_swimming_blocks_sword_weapon_and_lift():
-    game = Game()
-    game.ground_tile(tile_of(11))
+def test_swimming_blocks_sword_weapon_and_lift(new_game, monkeypatch):
+    game = new_game()
+    ground_tile(game, tile_of(11))
     game._update_swimming_state()
-    game.client.sword_attack = Mock()
+    swings = spy(monkeypatch, game.client, "sword_attack")
     game._swing_sword()
-    game.client.sword_attack.assert_not_called()
-    game.inventory_ui = SimpleNamespace(get_selected_weapon=Mock(side_effect=AssertionError))
+    assert swings == []
+
+    def refuse():
+        raise AssertionError("weapon use reached the inventory")
+    monkeypatch.setattr(game.inventory_ui, "get_selected_weapon", refuse)
     game._use_weapon()  # returns before touching the inventory
     assert game._lift_in_front(2) is False
 
 
-def test_sword_refused_when_facing_water_but_allowed_on_land():
+def test_sword_refused_when_facing_water_but_allowed_on_land(new_game,
+                                                              monkeypatch):
     from pyreborn.liftobjects import LIFT_PROBE
-    game = Game()
-    game.client.sword_attack = Mock()
+    game = new_game()
+    swings = spy(monkeypatch, game.client, "sword_attack")
     game.client.player.direction = 3
-    game._play_action_animation = Mock()
     ox, oy = LIFT_PROBE[3]  # laytest == lifttestd (TInitStatics.cpp:1548)
-    game.set_tile(game.client.x + ox, game.client.y + oy, tile_of(11))
+    set_tile(game, game.client.x + ox, game.client.y + oy, tile_of(11))
     game._swing_sword()
-    game.client.sword_attack.assert_not_called()
-    game.set_tile(game.client.x + ox, game.client.y + oy, 0)
+    assert swings == []
+    set_tile(game, game.client.x + ox, game.client.y + oy, 0)
     game._swing_sword()
-    game.client.sword_attack.assert_called_once_with(3)
+    assert swings == [((3,), {})]

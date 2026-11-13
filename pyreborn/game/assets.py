@@ -49,6 +49,12 @@ class FontManager:
         self._cache: Dict[Tuple[Optional[str], int, bool, bool], pygame.font.Font] = {}
         self._classic_cache: Dict[int, pygame.font.Font] = {}
 
+    def close(self) -> None:
+        """Drop every cached Font. A Font still alive when ``pygame.quit()``
+        runs keeps its file handle open, so the game calls this first."""
+        self._cache.clear()
+        self._classic_cache.clear()
+
     def at(self, size: int, bold: bool = False, italic: bool = False,
            path: Optional[str] = None) -> pygame.font.Font:
         """Return a cached Font of an explicit size/style."""

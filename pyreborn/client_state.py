@@ -9,49 +9,17 @@ unaffected.
 Nothing here talks to the network or to Client: these are plain state holders.
 """
 
-from collections import OrderedDict
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import tiletypes as _tiletypes
 from .clock import Clock
+from .lru import LruCache as BoundedLRU  # noqa: F401  (client.py re-exports the name)
 
 # What an EntityState reads when no Client has rebound `item_clock`.
 _DEFAULT_CLOCK = Clock()
 
-MAX_CACHED_LEVELS = 512
 MAX_CACHED_FILES = 512
 MAX_REQUESTED_FILES = 4096
-
-
-class BoundedLRU(OrderedDict):
-    """Dictionary-compatible LRU cache with a fixed entry limit."""
-
-    def __init__(self, max_entries: int):
-        super().__init__()
-        self.max_entries = max_entries
-
-    def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def __contains__(self, key):
-        present = super().__contains__(key)
-        if present:
-            self.move_to_end(key)
-        return present
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        self.move_to_end(key)
-        while len(self) > self.max_entries:
-            self.popitem(last=False)
 
 
 class StateComponent:
@@ -206,7 +174,7 @@ class LevelState(StateComponent):
         'pending_board_level_name', 'adjacent_level_requests',
         'board_layers_level_name'})
     ALIAS_PROPERTIES = ('current_level_name',)
-    NO_ALIAS = frozenset({'tiletypes'})   # reached as client.level_state.tiletypes
+    NO_ALIAS = frozenset({'tiletypes', 'level_layers', 'streaming_level_name'})   # client.level_state.<name>
 
     def __init__(self):
         self.tiletypes = _tiletypes.TileTypeSelection()
@@ -215,10 +183,18 @@ class LevelState(StateComponent):
         self.tiles_level_name = ""     # which level self.tiles currently holds
 
         # GMAP support: multiple levels keyed by level name
-        self.levels: Dict[str, List[int]] = BoundedLRU(MAX_CACHED_LEVELS)
+        # Every level visited this session stays until disconnect: the server
+        # never re-streams a board, links or signs for a level it marks
+        # visited, so evicting one would leave a blank board on re-entry (the
+        # reference client's level list has no cap either).
+        self.levels: Dict[str, List[int]] = {}
         self.current_level_name = ""   # The player's actual level (set once at login)
         self.pending_level_name = ""   # Track which level data is being received
         self.pending_board_level_name = ""  # Adjacent preload board owner
+        # The level whose static data is streaming right now (the last
+        # PLO_LEVELNAME), adjacent preload or not. PLO_LEVELMODTIME ends that
+        # data, before the set-active-level packet names the level.
+        self.streaming_level_name = ""
         self.adjacent_level_requests: set[str] = set()
         self.active_level = ""         # PLO_SETACTIVELEVEL routing target
         self.level_modtimes: Dict[str, int] = {}  # PLO_LEVELMODTIME per level
@@ -250,6 +226,10 @@ class LevelState(StateComponent):
         # Board layers: maps layer_id -> tile data
         self.board_layers: Dict[int, bytes] = {}
         self.board_layers_level_name = ""
+        # Extra board layers of levels we have left (level -> {layer: tiles}),
+        # for the same reason as `levels`: the server sends layers only with a
+        # fresh board.
+        self.level_layers: Dict[str, Dict[int, bytes]] = {}
 
         # Gmap level-height overrides from PLO_BOARDHEIGHTS: (map_x, map_y) ->
         # {'block_x', 'block_y', 'block_width', 'block_height', 'heights'}.

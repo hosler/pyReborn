@@ -7,7 +7,7 @@ import math
 
 import pytest
 
-from pyreborn.client_actions import ActionsMixin
+from pyreborn.packets import PacketID
 from pyreborn.packets import PacketReader
 from pyreborn.packet_codec.gameplay import build_shoot, build_shoot_v1
 from pyreborn.packet_codec.player import parse_shoot
@@ -73,26 +73,17 @@ def test_v2_fields_roundtrip():
 
 
 @pytest.mark.parametrize("direction,byte", [(0, 55), (1, 110), (2, 165), (3, 0)])
-def test_client_direction_mapping(direction, byte):
-    sent = {}
+def test_client_direction_mapping(make_client, direction, byte):
+    client = make_client(player_xy=(10.0, 10.0))
+    client.player.x, client.player.y, client.player.direction = 10.0, 10.0, 2
+    before = len(client._protocol.sent)
 
-    class Proto:
-        def send_packet(self, pid, data):
-            sent['data'] = data
-            return True
+    assert client.shoot(direction)
 
-    class Player:
-        x, y, direction = 10.0, 10.0, 2
-
-    class C(ActionsMixin):
-        connected = True
-        _authenticated = True
-        version = "6.037"
-        _protocol = Proto()
-        player = Player()
-
-    assert C().shoot(direction)
-    assert decode_v2(sent['data'])['sangle'] == byte
+    shots = [data for pid, data in client._protocol.sent[before:]
+             if pid == PacketID.PLI_SHOOT2]
+    assert len(shots) == 1
+    assert decode_v2(shots[0])['sangle'] == byte
 
 
 def test_parse_shoot_v2_fields():

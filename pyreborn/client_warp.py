@@ -9,7 +9,8 @@ from typing import Optional, Tuple
 from reborn_protocol.coords import world_to_local
 
 from .gmap_coords import local_from_world, world_from_local
-from .packets import PacketID, build_level_warp
+from .packets import PacketID, build_level_warp, build_level_warp_mod
+from .logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ def _eval_warp_coord(expr, player_x: float, player_y: float) -> Optional[float]:
         try:
             return float(eval(s, {'__builtins__': {}}, {}))
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return None
     return None
 
@@ -90,6 +92,11 @@ class WarpMixin:
         # Snapshot the authoritative pre-warp state BEFORE the optimistic
         # flip below, so a PLO_WARPFAILED rejection can restore it.
         pre_warp_state = (self._current_level_name, self.player.x, self.player.y)
+        # Both ends inside the loaded gmap: a hop within one map (see
+        # _send_level_warp). Read before the grid is rebuilt or cleared below.
+        map_segments = set(self.gmap_grid.values())
+        same_map = (level_name in map_segments
+                    and self._current_level_name in map_segments)
         self._local_level_transition_direction = None
 
         # Update local state
@@ -153,6 +160,7 @@ class WarpMixin:
         # its sibling segments) on a previous visit. If the server re-streams
         # them, the fresh PLO_NPCPROPS just overwrites these.
         self._restore_cached_npcs(level_name)
+        self._restore_cached_layers(level_name)
 
         # Mark the warp as awaiting the server's authoritative confirmation.
         # We flipped _current_level_name above optimistically (for instant
@@ -171,8 +179,7 @@ class WarpMixin:
                     self._local_level_transition_direction = transition_direction
 
         # The LEVELWARP packet carries LOCAL coords within the target segment.
-        data = build_level_warp(x, y, level_name)
-        sent = self._protocol.send_packet(PacketID.PLI_LEVELWARP, data)
+        sent = self._send_level_warp(x, y, level_name, same_map)
         if not sent:
             self._restore_failed_warp("send_failed")
             return False
@@ -189,6 +196,28 @@ class WarpMixin:
         # an immediate cut to a view we could already draw.
         self._maybe_release_local_transition()
         return True
+
+    def _send_level_warp(self, x: float, y: float, level_name: str,
+                         same_map: bool = False) -> bool:
+        """Send the warp packet for `level_name`, local coords x/y.
+
+        A level we hold goes out as PLI_LEVELWARPMOD carrying its stored mod
+        time, 0 included: an explicit 0 makes the server compare and resend
+        the board, while the plain form lets it default to the level's own
+        time and never resend. A level we do not hold is the plain PLI_LEVELWARP,
+        and so is a segment of the loaded gmap. The reference sends the
+        mod-time warp only when the current level's name list (filled from the
+        map's level-name lines) lacks the target; otherwise it enters the
+        level locally and sends no warp (TClient.cpp:1355-1363). pygserver
+        still needs a warp to re-home us, and a mod-time warp for a preloaded
+        neighbour would make it resend that board."""
+        mod_time = self.level_modtimes.get(level_name, 0)
+        if level_name in self.levels and not same_map:
+            return self._protocol.send_packet(
+                PacketID.PLI_LEVELWARPMOD,
+                build_level_warp_mod(x, y, level_name, mod_time))
+        return self._protocol.send_packet(
+            PacketID.PLI_LEVELWARP, build_level_warp(x, y, level_name))
 
     def release_local_transition(self) -> None:
         """Public name of _release_local_transition (the renderer's fail-open)."""
@@ -333,6 +362,11 @@ class WarpMixin:
         if prev_level in self.levels:
             self.tiles = self.levels[prev_level]
             self._tiles_level_name = prev_level
+        # The target's layers may already be live (a held level re-entered
+        # without a board); put the previous level's back.
+        self.board_layers.clear()
+        self._board_layers_level_name = ""
+        self._restore_cached_layers(prev_level)
         cached_npcs = self._npc_cache.get(prev_level)
         if cached_npcs:
             self.npcs.update({nid: npc.copy()
@@ -363,6 +397,11 @@ class WarpMixin:
         self.item_stamps.clear()
         self.baddies.clear()
         self.horses.clear()
+        # The server sends a level's layers only with a fresh board, so keep
+        # the ones we are leaving for the next visit (_restore_cached_layers).
+        if self._board_layers_level_name and self.board_layers:
+            self.level_state.level_layers[self._board_layers_level_name] = dict(
+                self.board_layers)
         self.board_layers.clear()
         self._board_layers_level_name = ""
         # PLO_ISLEADER (GServer-v2 PlayerClient.cpp checkAndInformIfLevelLeader)
@@ -399,6 +438,15 @@ class WarpMixin:
         _npc_pos_epoch comment in __init__."""
         self._npc_pos_epoch += 1
         npc['_pos_epoch'] = self._npc_pos_epoch
+
+    def _restore_cached_layers(self, level_name: str) -> None:
+        """Re-install the extra board layers stored for `level_name` when we
+        left it, so a re-entry the server answers with no board still shows
+        them. A fresh board stream replaces them (handlers/level.py)."""
+        layers = self.level_state.level_layers.get(level_name)
+        if layers and level_name in self.levels:
+            self.board_layers = dict(layers)
+            self._board_layers_level_name = level_name
 
     def _restore_cached_npcs(self, level_name: str) -> None:
         """Repopulate self.npcs from _npc_cache for level_name - and, when

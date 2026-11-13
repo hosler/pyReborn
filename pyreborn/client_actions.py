@@ -23,6 +23,7 @@ from .packets import (
     build_putnpc, build_shoot, build_shoot_v1, build_triggeraction,
     build_weapon_add,
 )
+from .logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class ActionsMixin:
             try:
                 wire_name = resolver(gani_name) or gani_name
             except Exception:
-                pass
+                log_swallowed(logger)
         # Always send local coords (0-63)
         local_x, local_y = world_to_local(self.player.x, self.player.y)
         # A GS1/GS2 script writing `playerdir` stores a FLOAT; the SPRITE
@@ -620,6 +621,7 @@ class ActionsMixin:
         try:
             data = name.encode("latin-1", "replace")
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return False
         return self._protocol.send_packet(PacketID.PLI_NPCWEAPONDEL, data)
 

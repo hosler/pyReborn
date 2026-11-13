@@ -19,21 +19,12 @@ job a34dbef5 tmp/gui_before_* / gui_after_*):
    corner happens to be transparent.
 """
 
-import os
-import sys
-from types import SimpleNamespace
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 from pathlib import Path
 
 import pygame
+import pytest
 
-from pyreborn.game.render_entities import EntityRenderMixin
+from offline_game import stub_art
 from pyreborn.sprites import SpriteManager
 
 RED = (255, 0, 0, 255)
@@ -48,25 +39,16 @@ def _solid(color):
     return surf
 
 
-class _Harness(EntityRenderMixin):
-    """Minimal GameClient stand-in for the showimg layer slice (same pattern
-    as test_showimg_rotation.py). Sheets are solid colors keyed by name."""
-
-    def __init__(self, sheets):
-        self.screen = pygame.Surface((200, 200))
-        self.screen.fill((0, 0, 0))
-        self.camera = SimpleNamespace(
-            scale=16.0,
-            world_to_screen=lambda x, y: (x * 16.0, y * 16.0),
-        )
-        self.sprite_mgr = SimpleNamespace(
-            load_sheet=lambda name: sheets.get(name),
-            get_sprite=lambda name, *part: sheets.get(name),
-        )
-        self.requested = []
-
-    def _request_asset(self, name):
-        self.requested.append(name)
+@pytest.fixture
+def make_harness(make_game, monkeypatch):
+    """``make_harness(sheets)``: a real offline game (real camera, screen and
+    layer renderer) whose art lookup answers ``sheets`` (solid colours keyed
+    by name), so a pixel says which layer drew it. The screen starts black."""
+    def build(sheets):
+        game = make_game()
+        stub_art(monkeypatch, game, sheets)
+        return game
+    return build
 
 
 def _gui_rec(image, vis, x=50.0, y=50.0):
@@ -74,10 +56,10 @@ def _gui_rec(image, vis, x=50.0, y=50.0):
 
 
 class TestGuiBandVisStratumOrder:
-    def test_higher_vis_draws_on_top_despite_lower_index(self):
+    def test_higher_vis_draws_on_top_despite_lower_index(self, make_harness):
         # The -GraalUI shape: main layer at vis 6 with a LOW index, shadow
         # copy at vis 5 with a HIGHER index, both covering the same spot.
-        h = _Harness({'white.png': _solid(RED), 'shadow.png': _solid(BLUE)})
+        h = make_harness({'white.png': _solid(RED), 'shadow.png': _solid(BLUE)})
         store = {
             237: _gui_rec('white.png', vis=6),
             242: _gui_rec('shadow.png', vis=5),
@@ -85,8 +67,8 @@ class TestGuiBandVisStratumOrder:
         h._render_npc_layers(store, over=True, gui=True)
         assert h.screen.get_at((55, 55)) == RED     # vis 6 above vis 5
 
-    def test_same_vis_still_stacks_by_index(self):
-        h = _Harness({'a.png': _solid(RED), 'b.png': _solid(GREEN)})
+    def test_same_vis_still_stacks_by_index(self, make_harness):
+        h = make_harness({'a.png': _solid(RED), 'b.png': _solid(GREEN)})
         store = {
             300: _gui_rec('a.png', vis=4),
             301: _gui_rec('b.png', vis=4),
@@ -94,9 +76,9 @@ class TestGuiBandVisStratumOrder:
         h._render_npc_layers(store, over=True, gui=True)
         assert h.screen.get_at((55, 55)) == GREEN   # higher index on top
 
-    def test_world_over_band_uses_vis_strata_too(self):
+    def test_world_over_band_uses_vis_strata_too(self, make_harness):
         # vis 3 must draw above vis 2 even when its index is lower.
-        h = _Harness({'top.png': _solid(RED), 'under.png': _solid(GREEN)})
+        h = make_harness({'top.png': _solid(RED), 'under.png': _solid(GREEN)})
         store = {
             10: {'image': 'top.png', 'x': 3.0, 'y': 3.0,
                  'vis': 3, 'vis_set': True},
@@ -104,7 +86,8 @@ class TestGuiBandVisStratumOrder:
                  'vis': 2, 'vis_set': True},
         }
         h._render_npc_layers(store, over=True, gui=False)
-        assert h.screen.get_at((52, 52)) == RED
+        sx, sy = h.camera.world_to_screen(3.0, 3.0)
+        assert h.screen.get_at((int(sx) + 2, int(sy) + 2)) == RED
 
 
 class TestNegativePartInvisible:
@@ -138,10 +121,11 @@ class TestNegativePartInvisible:
         assert sprite is not None
         assert sprite.get_at((10, 10)) == GREEN
 
-    def test_negative_part_rec_draws_nothing(self, tmp_path):
+    def test_negative_part_rec_draws_nothing(self, tmp_path, make_harness,
+                                             monkeypatch):
         sm = self._sprite_manager(tmp_path)
-        h = _Harness({})
-        h.sprite_mgr = sm
+        h = make_harness({})
+        monkeypatch.setattr(h, "sprite_mgr", sm)
         rec = {'image': 'sheet.png', 'x': 50.0, 'y': 50.0,
                'vis': 4, 'vis_set': True, 'part': (-20, 0, 20, 20)}
         h._render_npc_layers({200: rec}, over=True, gui=True)

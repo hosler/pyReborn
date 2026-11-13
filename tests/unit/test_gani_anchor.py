@@ -30,7 +30,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
 
 import pygame
+import pytest
 
+from offline_game import BlitRecorder
 from pyreborn.gani import GaniParser, AnimationState
 from pyreborn.game.constants import TILE_SIZE
 from pyreborn.game.render_entities import EntityRenderMixin
@@ -69,40 +71,24 @@ ANIEND
 """
 
 
-class _RecordingScreen:
-    """Stands in for the pygame display. Records blit destinations."""
-
-    def __init__(self):
-        self.blits = []
-
-    def blit(self, surface, dest):
-        self.blits.append((surface, dest))
-
-
-class _StubSpriteManager:
-    """Returns a fresh surface for any sprite crop request."""
-
-    def get_sprite(self, image, x, y, w, h):
-        return pygame.Surface((w, h))
-
-    def get_sprite_recolored(self, image, colors, x, y, w, h):
-        return pygame.Surface((w, h))
-
-
-class _Harness(EntityRenderMixin, EffectsRenderMixin):
-    def __init__(self):
-        self.screen = _RecordingScreen()
-        self.sprite_mgr = _StubSpriteManager()
-        self.gani_parser = GaniParser()
-        self.shadow_sprite = pygame.Surface((24, 16))
-        self.requested = []
-        for name, content in (("itsasign2", ITSASIGN2),
-                              ("negoffs", NEGATIVE_OFFSETS)):
-            self.gani_parser.put_cache(
-                name, self.gani_parser.parse_content(content, name))
-
-    def _request_asset(self, filename):  # never hit the network in tests
-        self.requested.append(filename)
+@pytest.fixture
+def harness(make_game, monkeypatch):
+    """A real offline game whose screen records blit destinations
+    (``BlitRecorder``), whose sprite crops are fresh surfaces of the asked
+    size, and whose gani parser holds the two ganis of this file."""
+    h = make_game()
+    h.screen = BlitRecorder(h.screen)
+    monkeypatch.setattr(h.sprite_mgr, 'get_sprite',
+                        lambda image, x, y, w, hh: pygame.Surface((w, hh)))
+    monkeypatch.setattr(h.sprite_mgr, 'get_sprite_recolored',
+                        lambda image, colors, x, y, w, hh: pygame.Surface((w, hh)))
+    h.shadow_sprite = pygame.Surface((24, 16))
+    h.requested = []
+    monkeypatch.setattr(h, '_request_asset', h.requested.append)  # no network
+    for name, content in (("itsasign2", ITSASIGN2),
+                          ("negoffs", NEGATIVE_OFFSETS)):
+        h.gani_parser.put_cache(name, h.gani_parser.parse_content(content, name))
+    return h
 
 
 def _anim(harness, name, direction=2):
@@ -112,8 +98,8 @@ def _anim(harness, name, direction=2):
     return anim
 
 
-def test_sign_gani_anchors_sprite_exactly_at_entity_xy():
-    h = _Harness()
+def test_sign_gani_anchors_sprite_exactly_at_entity_xy(harness):
+    h = harness
     h._render_animated_entity(400.0, 300.0, _anim(h, "itsasign2"), {})
     # [0] is the shadow (also at its literal frame offset); [1] the sign.
     sign_blits = [(s, d) for s, d in h.screen.blits if s is not h.shadow_sprite]
@@ -126,27 +112,27 @@ def test_sign_gani_anchors_sprite_exactly_at_entity_xy():
         "there on the server), with no canvas-centring shift")
 
 
-def test_shadow_layer_uses_same_anchor():
-    h = _Harness()
+def test_shadow_layer_uses_same_anchor(harness):
+    h = harness
     h._render_animated_entity(400.0, 300.0, _anim(h, "negoffs"), {})
     shadow_blits = [d for s, d in h.screen.blits if s is h.shadow_sprite]
     assert shadow_blits == [(400.0 + 12, 300.0 + 36)]
 
 
-def test_negative_frame_offsets_apply_verbatim():
+def test_negative_frame_offsets_apply_verbatim(harness):
+    h = harness
     """sen_piano-style ganis carry their placement in the offsets."""
-    h = _Harness()
     h._render_animated_entity(240.0, 640.0, _anim(h, "negoffs"), {})
     dests = [d for _, d in h.screen.blits]
     assert (240.0 - 3, 640.0 - 30) in dests   # piano body
     assert (240.0 + 18, 640.0 + 36) in dests  # stool
 
 
-def test_effect_gani_frame_stays_centred_on_drop_point():
+def test_effect_gani_frame_stays_centred_on_drop_point(harness):
+    h = harness
     """Bomb/explosion ganis centre on an impact POINT. The call-site offset
     absorbed the old -8 canvas shift, so net placement is unchanged: a 32px
     sprite at frame offset 0 spans point +/- 16."""
-    h = _Harness()
     gani = h.gani_parser.parse("itsasign2")
     h._render_effect_gani_frame(gani, 100.0, 100.0, 2, 0.0)
     sign_blits = [(s, d) for s, d in h.screen.blits if s is not h.shadow_sprite]

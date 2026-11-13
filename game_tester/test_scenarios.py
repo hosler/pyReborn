@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from .game_bot import GameBot, Issue
 from .bug_detector import BugDetector
 from .reporter import TestResult
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 # Sibling server checkouts, derived from THIS checkout rather than one
@@ -461,6 +464,7 @@ class TestScenarios:
             bot._check_water_at_position(bot.x + 1.5, bot.y + 2.5)
             check_works = True
         except Exception as e:
+            log_swallowed(logger, level=logging.DEBUG)
             check_works = False
 
         # Note: Whether we're actually in water depends on level

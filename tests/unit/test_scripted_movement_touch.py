@@ -19,18 +19,10 @@ Covered here, no live server needed:
   bounce the player straight back out of the queue).
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
+import pytest
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
-from pyreborn.game.actions import ActionsMixin
+from offline_game import spy
 from pyreborn.npc_handler import NPCHandler, NPCShape
 
 
@@ -44,60 +36,44 @@ class FakeKeys:
         return key in self._held
 
 
-class _SpyHandler:
-    def __init__(self):
-        self.calls = []
-        self.refreshes = 0
-
-    def update_npcs(self):
-        self.refreshes += 1
-
-    def process_movement(self, x, y, direction):
-        self.calls.append((x, y, direction))
-
-
-class _StubClient:
-    def __init__(self, x=25.0, y=20.5):
-        self.x = x
-        self.y = y
-        self.npcs = {}
-
-
-class _Harness(ActionsMixin):
-    """Minimal object carrying just what _scripted_movement_touch reads."""
-
-    def __init__(self):
-        self.client = _StubClient()
-        self.npc_handler = _SpyHandler()
-
-
-def test_probe_dispatches_pressed_direction():
-    h = _Harness()
+def test_probe_dispatches_pressed_direction(make_game, monkeypatch):
+    h = make_game()
+    h.client.player.x, h.client.player.y = 25.0, 20.5
+    moves = spy(monkeypatch, h.npc_handler, 'process_movement')
+    order = []
+    real_update = h.npc_handler.update_npcs
+    monkeypatch.setattr(h.npc_handler, 'update_npcs',
+                        lambda: (order.append('refresh'), real_update())[1])
+    real_move = h.npc_handler.process_movement
+    monkeypatch.setattr(h.npc_handler, 'process_movement',
+                        lambda *a: (order.append('move'), real_move(*a))[1])
     h._scripted_movement_touch(FakeKeys(K_UP))
-    assert h.npc_handler.calls == [(25.0, 20.5, 0)]
+    assert moves == [((25.0, 20.5, 0), {})]
     # The probe must re-snapshot shapes first: GS2 NPCs record setshape2
     # after the level-entry update_npcs() snapshot (see method docstring).
-    assert h.npc_handler.refreshes == 1
+    assert order[:2] == ['refresh', 'move'] and order.count('move') == 1
 
-    h.npc_handler.calls.clear()
+    moves.clear()
+    order.clear()
     h._scripted_movement_touch(FakeKeys(K_RIGHT))
-    assert h.npc_handler.calls == [(25.0, 20.5, 3)]
+    assert moves == [((25.0, 20.5, 3), {})]
+    assert order[:2] == ['refresh', 'move'] and order.count('move') == 1
 
 
-def test_probe_noop_without_direction_or_handler():
-    h = _Harness()
+def test_probe_noop_without_direction_or_handler(make_game, monkeypatch):
+    h = make_game()
+    moves = spy(monkeypatch, h.npc_handler, 'process_movement')
     h._scripted_movement_touch(FakeKeys())
-    assert h.npc_handler.calls == []
+    assert moves == []
 
     # A missing handler (early init) must not raise.
     h.npc_handler = None
     h._scripted_movement_touch(FakeKeys(K_DOWN, K_LEFT))
 
 
-def _counter_handler(has_event=True):
+def _counter_handler(client, has_event=True):
     """NPCHandler with Bomber v6's queue-counter geometry: GS2-only NPC 10376
     at (25,18), setshape2 14,1,{22,22,0,0,0,0,22,22,0,0,0,0,22,22}."""
-    client = _StubClient()
     handler = NPCHandler(client)
     client.npcs[10376] = {'id': 10376, 'x': 25.0, 'y': 18.0, 'script': ''}
     handler.npc_scripts[10376] = ''  # GS2 NPC: no GS1 script text at all
@@ -115,8 +91,8 @@ def _counter_handler(has_event=True):
     return handler, fired
 
 
-def test_gs2_only_counter_touch_fires_and_dedupes():
-    handler, fired = _counter_handler()
+def test_gs2_only_counter_touch_fires_and_dedupes(make_client):
+    handler, fired = _counter_handler(make_client())
 
     # Pushing UP with the up-probe row (player y+0.5, the reference
     # touchtestd offsets) inside the shape row and the probe columns
@@ -135,84 +111,70 @@ def test_gs2_only_counter_touch_fires_and_dedupes():
     assert fired == [10376, 10376]
 
 
-def test_flush_contact_touches():
+def test_flush_contact_touches(make_client):
     """Scripted movement (classic box top = y+1) rests the player pressed
     dead against the counter at y=18.0: the box top is at 19.0, exactly the
     shape's exclusive bottom edge. The reference touchtestd probes reach
     half a tile PAST the box (up probe at y+0.5 = 18.5, well inside
     [18, 19)), so flush contact registers with margin."""
-    handler, fired = _counter_handler()
+    handler, fired = _counter_handler(make_client())
     handler.process_movement(24.8, 18.0, 0)
     assert fired == [10376]
 
     # A half-tile farther away (probe at the exclusive edge) must NOT fire.
-    handler2, fired2 = _counter_handler()
+    handler2, fired2 = _counter_handler(make_client())
     handler2.process_movement(24.8, 18.5, 0)
     assert fired2 == []
 
 
-def test_touch_band_covers_scripted_movement_rest_gap():
+def test_touch_band_covers_scripted_movement_rest_gap(make_client):
     """The v6 movement script check-then-moves and can rest the player up to
     speed - 1/16 = 0.24 tiles SHORT of flush (bomber shop misses fired at
     rest y=X.0 but not X.1 under the old 1-px probe extension). The 0.5-tile
     touchtestd reach covers the whole rest band...
     """
     for rest_gap in (0.0, 0.1, 0.24):
-        handler, fired = _counter_handler()
+        handler, fired = _counter_handler(make_client())
         handler.process_movement(24.8, 18.0 + rest_gap, 0)
         assert fired == [10376], f"touch missed at rest gap {rest_gap}"
 
     # ...but not an adjacent NPC the player is NOT facing: same position,
     # facing down — the down probes point away from the counter.
-    handler, fired = _counter_handler()
+    handler, fired = _counter_handler(make_client())
     handler.process_movement(24.8, 18.1, 2)
     assert fired == []
 
 
-def test_setshape2_flag_gaps_are_not_touchable():
-    handler, fired = _counter_handler()
+def test_setshape2_flag_gaps_are_not_touchable(make_client):
+    handler, fired = _counter_handler(make_client())
     # Columns 2-5 of the counter are flag-0 (seat gaps): probes at
     # x+1.05/x+1.95 land in those columns and must not touch.
     handler.process_movement(27.5, 18.2, 0)
     assert fired == []
 
 
-def test_gs2_npc_without_touch_event_does_not_fire():
-    handler, fired = _counter_handler(has_event=False)
+def test_gs2_npc_without_touch_event_does_not_fire(make_client):
+    handler, fired = _counter_handler(make_client(), has_event=False)
     handler.process_movement(24.5, 18.2, 0)
     assert fired == []
 
 
-def test_reload_preserves_gs2_npc_shapes():
+def test_reload_preserves_gs2_npc_shapes(make_game):
     """gs1.clear() during _reload_level_scripts must not permanently destroy
     shapes recorded by GS2 NPCs' onPlayerEnters (pump_level_events fires
     BEFORE the reload and never re-fires for the same level visit) — the
     live-lobby failure mode: no counter touch AND walking through it."""
-    import types
-    from pyreborn.gs1_client import ClientGS1
-    from pyreborn.game.setup import SetupMixin
-
     flags = [22, 22, 0, 0, 0, 0, 22, 22, 0, 0, 0, 0, 22, 22]
 
-    client = types.SimpleNamespace(
-        npcs={10376: {'id': 10376, 'x': 25.0, 'y': 18.0, 'script': ''}},
-        x=25.0, y=25.0, _current_level_name='bomblobby.nw',
-        player=types.SimpleNamespace(direction=0, hearts=3, x=25.0, y=25.0),
-        global_flags={})
-    gs1 = ClientGS1(client)
+    host = make_game()
+    client, gs1 = host.client, host.gs1
+    client.npcs[10376] = {'id': 10376, 'x': 25.0, 'y': 18.0, 'script': ''}
     # GS2 NPC 10376's onPlayerEnters ran setshape2 (shared shape store +
     # onwall2 blocking cells); a GS1-only NPC 42 also has a shape but no VM.
     gs1.shapes[10376] = (14, 1, list(flags))
     gs1._update_shape_blocks(10376, client.npcs[10376], 14, 1, flags)
     gs1.shapes[42] = (2, 2, [22, 22, 22, 22])
-
-    class _Host(SetupMixin):
-        pass
-
-    host = _Host()
-    host.client = client
-    host.gs1 = gs1
-    host.gs2 = types.SimpleNamespace(vms={'npc': {10376: object()}})
+    host.gs2.vms['npc'][10376] = object()
 
     keep = host._snapshot_gs2_npc_shapes()
     assert keep == {10376: (14, 1, flags)}
@@ -228,20 +190,13 @@ def test_reload_preserves_gs2_npc_shapes():
     assert (27, 18) not in gs1._shape_blocks
 
 
-
-def test_gs2_shape1_stays_a_box_after_level_reload():
-    from types import SimpleNamespace
-    from pyreborn import Client
-    from pyreborn.gs1_client import ClientGS1
-    from pyreborn.game.setup import SetupMixin
-    c = Client()
+def test_gs2_shape1_stays_a_box_after_level_reload(make_game):
+    host = make_game()
+    c, gs1 = host.client, host.gs1
     c.npcs[1] = {'x': 10, 'y': 10}
-    gs1 = ClientGS1(c)
     gs1._shape1_npcs.add(1)
     gs1._update_shape_blocks(1, c.npcs[1], 1, 1, [22])
-    host = type('Harness', (SetupMixin,), {})()
-    host.client, host.gs1 = c, gs1
-    host.gs2 = SimpleNamespace(vms={'npc': {1: object()}})
+    host.gs2.vms['npc'][1] = object()
     keep = host._snapshot_gs2_npc_shapes()
     gs1.clear()
     host._restore_gs2_npc_shapes(keep)

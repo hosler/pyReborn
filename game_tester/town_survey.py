@@ -40,6 +40,9 @@ from pyreborn import Client
 from pyreborn import tiletypes
 from pyreborn.pygame_game import GameClient
 from game_tester.login import login_client
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 FPS = 60
 TILE_PX = 16
@@ -257,7 +260,7 @@ class Survey:
                 try:
                     self.client.disconnect()
                 except Exception:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             (self.out / "index.json").write_text(
                 json.dumps(self.index, indent=2, default=str, sort_keys=True))
             pygame.quit()

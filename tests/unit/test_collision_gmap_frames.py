@@ -18,71 +18,31 @@ CollisionMixin/ActionsMixin (pyreborn/game/collision.py, .../actions.py):
    first PLO_BOARDPACKET arrives).
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pytest
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
+from offline_game import GMAP_SEGMENTS
 
 
-class _GameHarness(ActionsMixin, CollisionMixin):
-    """Minimal GameClient stand-in exercising just the collision/touch-point
-    slice of the mixins (mirrors tests/unit/test_render_cache_invalidation.
-    py's _RenderHarness pattern)."""
-
-    def __init__(self, client):
-        self.client = client
-
-
-def _fake_connected_client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    return c
+@pytest.fixture
+def grid_game(make_game):
+    """``grid_game(chests=())``: a real offline game on the fixture's 2x2
+    gmap, standing in its segment (1, 1) (fixture_d.nw, world origin
+    (64, 64)). Chests are ``(x, y, opened)`` on that segment."""
+    def build(chests=()):
+        game = make_game(gmap=True, gmap_segment=(1, 1), chests=chests,
+                         tiles=lambda tx, ty: 0)
+        return game.client, game
+    return build
 
 
-def _client_with_grid():
-    # Same 3x3 chicken.gmap layout used by test_gmap_coordination.py /
-    # test_position_frame_normalization.py: chicken1.nw sits at grid (1, 1),
-    # i.e. world origin (64, 64).
-    c = _fake_connected_client()
-    names = [
-        "chicken4.nw", "chicken5.nw", "chicken6.nw",
-        "chicken2.nw", "chicken1.nw", "chicken7.nw",
-        "chicken3.nw", "chicken9.nw", "chicken8.nw",
-    ]
-    c.gmap_width, c.gmap_height = 3, 3
-    for i, name in enumerate(names):
-        c.gmap_grid[(i % 3, i // 3)] = name
-    c._current_level_name = "chicken1.nw"
-    c.levels["chicken1.nw"] = [0] * 4096
-    c.tiles = c.levels["chicken1.nw"]
-    return c
+CHEST = [(5, 5, False)]
 
 
 class TestChestFrameFolding:
-    def test_find_chest_in_front_matches_a_chest_off_the_origin_segment(self):
-        c = _client_with_grid()
-        # Chest footprint local (5, 5)-(6, 6) in chicken1.nw (grid (1, 1)).
-        c.chests = {(5, 5): False}
-
-        h = _GameHarness(c)
+    def test_find_chest_in_front_matches_a_chest_off_the_origin_segment(
+            self, grid_game):
+        # Chest footprint local (5, 5)-(6, 6) in fixture_d.nw (grid (1, 1)).
+        c, h = grid_game(CHEST)
         # World position chosen so the "facing down" touch points land on
         # local (5, 5): segment origin (64, 64) + local (5.2, 1.6).
         c.player.x, c.player.y = 64 + 5.2, 64 + 1.6
@@ -90,19 +50,15 @@ class TestChestFrameFolding:
 
         assert h._find_chest_in_front() == (5, 5)
 
-    def test_find_chest_in_front_none_when_not_facing_a_chest(self):
-        c = _client_with_grid()
-        c.chests = {(5, 5): False}
-        h = _GameHarness(c)
+    def test_find_chest_in_front_none_when_not_facing_a_chest(self, grid_game):
+        c, h = grid_game(CHEST)
         c.player.x, c.player.y = 64 + 5.2, 64 + 1.6
         c.player.direction = 0  # up: touch points land elsewhere
 
         assert h._find_chest_in_front() is None
 
-    def test_chest_blocks_off_the_origin_segment(self):
-        c = _client_with_grid()
-        c.chests = {(5, 5): False}
-        h = _GameHarness(c)
+    def test_chest_blocks_off_the_origin_segment(self, grid_game):
+        c, h = grid_game(CHEST)
 
         # A world point inside the chest's local (5, 5)-(6, 6) footprint on
         # segment (1, 1).
@@ -112,68 +68,61 @@ class TestChestFrameFolding:
 
 
 class TestNoTileDataBlocking:
-    def test_hole_in_gmap_grid_blocks(self):
-        c = _client_with_grid()
-        h = _GameHarness(c)
+    def test_hole_in_gmap_grid_blocks(self, grid_game):
+        c, h = grid_game()
         # Grid (5, 5) has no entry in gmap_grid at all -- a genuine hole
-        # straight off the edge of the known 3x3 grid.
+        # straight off the edge of the known 2x2 grid.
+        assert (5, 5) not in c.gmap_grid
         assert h._get_tile_at(5 * 64 + 1.0, 5 * 64 + 1.0) == -1
 
-    def test_known_but_unstreamed_segment_stays_walkable(self):
-        c = _client_with_grid()
+    def test_known_but_unstreamed_segment_stays_walkable(self, grid_game):
+        c, h = grid_game()
         # A known segment (registered in gmap_grid) whose board hasn't
-        # streamed in yet -- e.g. chicken2.nw at grid (0, 1), no entry in
-        # c.levels. Must NOT block: this is exactly the connect/warp window
-        # before PLO_BOARDPACKET arrives, and blocking it would freeze
-        # movement dead at spawn.
-        h = _GameHarness(c)
-        assert (0, 1) in c.gmap_grid
-        assert "chicken2.nw" not in c.levels
+        # streamed in yet -- fixture_c.nw at grid (0, 1). Must NOT block:
+        # this is exactly the connect/warp window before PLO_BOARDPACKET
+        # arrives, and blocking it would freeze movement dead at spawn.
+        unstreamed = GMAP_SEGMENTS[2]
+        c.levels.pop(unstreamed, None)
+        assert c.gmap_grid[(0, 1)] == unstreamed
+        assert unstreamed not in c.levels
         assert h._get_tile_at(1.0, 64 + 1.0) == 0
 
-    def test_standalone_level_with_no_board_yet_stays_walkable(self):
+    def test_standalone_level_with_no_board_yet_stays_walkable(self, make_game):
         """Non-gmap initial-spawn path: no level streamed in at all yet."""
-        c = _fake_connected_client()
-        c._current_level_name = ""
-        h = _GameHarness(c)
+        h = make_game()
+        h.client._current_level_name = ""
         assert h._get_tile_at(1.0, 1.0) == 0
 
-    def test_known_segment_in_bounds_tile_still_reads_normally(self):
+    def test_known_segment_in_bounds_tile_still_reads_normally(self, grid_game):
         """Sanity check the fix did not disturb the ordinary in-bounds path
         for a segment whose board HAS streamed in."""
-        c = _client_with_grid()
+        c, h = grid_game()
         c.tiles[5 * 64 + 5] = 42  # tile at local (5, 5)
-        h = _GameHarness(c)
         assert h._get_tile_at(64 + 5.3, 64 + 5.3) == 42
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
-
-
 class TestChestProbeAllSides:
-    """Chest at local (60, 46) (chicken1.nw, the funtimes 2x2 chest): standing
+    """Chest at local (60, 46) (the funtimes 2x2 chest): standing
     flush against each face (player box (x+0.5,y+1)-(x+2.5,y+3)) opens it, one
     tile of gap does not. Facing up used to probe y+1.0 == the box top, which
     floors into the tile below a flush chest and missed it."""
 
-    # direction -> (flush x, flush y) in chicken1.nw-local tiles
+    # direction -> (flush x, flush y) in segment-local tiles
     FLUSH = {0: (60.0, 47.0), 2: (60.0, 43.0), 3: (57.5, 45.5), 1: (61.5, 45.5)}
 
-    def _found(self, direction, x, y):
-        c = _client_with_grid()
-        c.chests = {(60, 46): False}
+    def _found(self, grid_game, direction, x, y):
+        c, h = grid_game([(60, 46, False)])
         c.player.x, c.player.y = 64 + x, 64 + y
         c.player.direction = direction
-        return _GameHarness(c)._find_chest_in_front()
+        return h._find_chest_in_front()
 
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_flush_against_each_face_opens(self, direction):
+    def test_flush_against_each_face_opens(self, grid_game, direction):
         x, y = self.FLUSH[direction]
-        assert self._found(direction, x, y) == (60, 46)
+        assert self._found(grid_game, direction, x, y) == (60, 46)
 
     @pytest.mark.parametrize("direction", [0, 1, 2, 3])
-    def test_a_tile_of_gap_does_not_open(self, direction):
+    def test_a_tile_of_gap_does_not_open(self, grid_game, direction):
         x, y = self.FLUSH[direction]
         dx, dy = {0: (0, 1), 2: (0, -1), 3: (-1, 0), 1: (1, 0)}[direction]
-        assert self._found(direction, x + dx, y + dy) is None
+        assert self._found(grid_game, direction, x + dx, y + dy) is None

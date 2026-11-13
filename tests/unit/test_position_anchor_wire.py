@@ -113,92 +113,59 @@ def test_hurt_response_uses_the_session_position_format():
 
 # --- script-driven movement must reach the server ---------------------------
 
-class _FakeProtocol:
-    def __init__(self):
-        self.sent = []
+@pytest.fixture
+def synced(make_game):
+    """A real offline game standing at (15.5, 40.5) on classic half-tile
+    position props, plus ``sync(default_movement)``: run the GS2 runtime's
+    script-position sync from a fresh state. ``client._protocol.sent`` is
+    cleared once the player has 'walked here normally'."""
+    game = make_game(player_xy=(15.5, 40.5))
+    client = game.client
+    client._use_pixel_props = False
+    client.player.x, client.player.y, client.player.direction = 15.5, 40.5, 2
 
-    def send_packet(self, packet_id, data=b"", append_newline=True):
-        self.sent.append((packet_id, bytes(data)))
-        return True
+    def sync(default_movement):
+        game.gs1.default_movement = default_movement
+        runtime = game.gs2
+        runtime._pos_sync_last = None
+        runtime._pos_sync_next = 0.0
+        runtime._sync_script_position()
+        return runtime
 
-
-class _FakePlayer:
-    x = 15.5
-    y = 40.5
-    direction = 2
-
-
-class _FakeClient:
-    """Just enough Client surface for _sync_script_position."""
-    connected = True
-    _authenticated = True
-    _use_pixel_props = False
-    is_gmap = False
-    _local_level_transition = ""
-
-    def __init__(self):
-        self._protocol = _FakeProtocol()
-        self.player = _FakePlayer()
-        self._last_sent_position = None
-
-    # real implementations, copied by reference from Client
-    from pyreborn.client import Client as _C
-    _note_position_sent = _C._note_position_sent
-    position_matches_wire = _C.position_matches_wire
-    send_position = _C.send_position
-    _send_position_props = _C._send_position_props
-    tick_movement_ended = _C.tick_movement_ended
-    del _C
-
-
-def _sync(client, default_movement):
-    from pyreborn.gs2_client import ClientGS2
-
-    class _Gs1:
-        pass
-
-    gs1 = _Gs1()
-    gs1.default_movement = default_movement
-
-    runtime = ClientGS2.__new__(ClientGS2)
-    runtime.client = client
-    runtime.gs1 = gs1
-    runtime._pos_sync_last = None
-    runtime._pos_sync_next = 0.0
-    runtime._sync_script_position()
-    return runtime
-
-
-def test_script_position_is_broadcast_with_default_movement_on():
-    """Bomber's piano seat writes playery while default movement is ON. The
-    old gate skipped exactly that case."""
-    client = _FakeClient()
     client.send_position()                       # walked here normally
     client._protocol.sent.clear()
+    return client, sync
+
+
+def _position_packets(client):
+    return [data for pid, data in client._protocol.sent]
+
+
+def test_script_position_is_broadcast_with_default_movement_on(synced):
+    """Bomber's piano seat writes playery while default movement is ON. The
+    old gate skipped exactly that case."""
+    client, sync = synced
 
     client.player.y -= 0.5                       # `playery-=.5` (sit)
-    _sync(client, default_movement=True)
+    sync(default_movement=True)
 
-    assert len(client._protocol.sent) == 1, "script move never left the client"
-    assert _props(client._protocol.sent[0][1])[16] == 80   # 40.0 tiles
+    sent = _position_packets(client)
+    assert len(sent) == 1, "script move never left the client"
+    assert _props(sent[0])[16] == 80   # 40.0 tiles
 
 
-def test_walking_does_not_double_report():
+def test_walking_does_not_double_report(synced):
     """move_to already transmitted this exact position -- the script sync
     must stay quiet rather than duplicating every step."""
-    client = _FakeClient()
-    client.send_position()
-    client._protocol.sent.clear()
+    client, sync = synced
 
-    _sync(client, default_movement=True)
+    sync(default_movement=True)
     assert client._protocol.sent == []
 
 
-def test_script_position_still_broadcast_under_disabledefmovement():
-    client = _FakeClient()
-    client.send_position()
-    client._protocol.sent.clear()
+def test_script_position_still_broadcast_under_disabledefmovement(synced):
+    client, sync = synced
 
     client.player.x += 2.0
-    _sync(client, default_movement=False)
+    sync(default_movement=False)
     assert len(client._protocol.sent) == 1

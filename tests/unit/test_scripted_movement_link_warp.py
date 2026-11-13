@@ -15,96 +15,27 @@ is off it runs the same _try_link_warp path (rising-edge latch, arrival
 suppression, _use_door_link invariants) as input-driven movement.
 """
 
-import os
-import sys
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
-from types import SimpleNamespace
-
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
-
-DRY_LEVEL = [0] * 4096
+import pytest
 
 
-class _NoopSound:
-    def play(self, *a, **k):
-        pass
-
-
-class _NoopAnim:
-    def set_animation(self, *a, **k):
-        pass
-
-
-class _NoopNpcHandler:
-    def update_npcs(self):
-        pass
-
-
-def _fake_connected_client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    # Interior door link in lobby.nw: rect (30,32)-(34,34), well away from
-    # level edges so it is never classified as a GMAP edge link.
-    c._current_level_name = "lobby.nw"
-    c.player.level = "lobby.nw"
-    c.levels["lobby.nw"] = list(DRY_LEVEL)
-    c.levels["house1.nw"] = list(DRY_LEVEL)
-    c.tiles = c.levels["lobby.nw"]
-    c.links["lobby.nw"] = [{
-        'x': 30, 'y': 32, 'width': 4, 'height': 2,
-        'dest_level': 'house1.nw', 'dest_x': '30', 'dest_y': '30',
-    }]
-    c.player.direction = 2  # facing down: link probe at (x+1.5, y+3.0)
-    return c
-
-
-class _Harness(CollisionMixin, ActionsMixin):
-    """Minimal GameClient stand-in for the scripted-movement link probe."""
-
-    def __init__(self, client, default_movement=False):
-        self.client = client
-        self.gs1 = SimpleNamespace(default_movement=default_movement)
-        self.is_swimming = False
-        self.current_anim_name = "idle"
-        self.is_moving = False
-        self.noclip = False
-        self.sound_mgr = _NoopSound()
-        self.player_anim = _NoopAnim()
-        self.npc_handler = _NoopNpcHandler()
-        self.world_surface = None
-        self.visual_x = self.visual_y = 0.0
-        self._was_on_link = False
-        self._link_arrival = None
-        self._scripted_link_pos = None
-
-    # _use_door_link also drives GS1/NPC bootstrap - not under test here.
-    def _load_npc_scripts(self):
-        pass
-
-    def _trigger_playerenters(self):
-        pass
+@pytest.fixture
+def link_game(make_game):
+    """``link_game(default_movement=False)``: (client, real offline game) in
+    lobby.nw with an interior door link, rect (30,32)-(34,34), well away from
+    level edges so it is never classified as a GMAP edge link, to house1.nw
+    at (30, 30). The player faces down: the link probe is at (x+1.5, y+3.0)."""
+    def build(default_movement=False):
+        game = make_game(level="lobby.nw", extra_levels={"house1.nw": None},
+                         links=["house1.nw 30 32 4 2 30 30"])
+        game.gs1.default_movement = default_movement
+        game.client.player.direction = 2
+        return game.client, game
+    return build
 
 
 class TestScriptedMovementLinkWarp:
-    def test_vm_position_write_onto_link_warps(self):
-        c = _fake_connected_client()
-        h = _Harness(c)
+    def test_vm_position_write_onto_link_warps(self, link_game):
+        c, h = link_game()
 
         # Off the link: probe runs (position changed from None) but no warp.
         c.player.x, c.player.y = 30.0, 20.0
@@ -118,9 +49,8 @@ class TestScriptedMovementLinkWarp:
         assert c._current_level_name == "house1.nw"
         assert (c.x, c.y) == (30.0, 30.0)
 
-    def test_no_refire_at_warp_arrival(self):
-        c = _fake_connected_client()
-        h = _Harness(c)
+    def test_no_refire_at_warp_arrival(self, link_game):
+        c, h = link_game()
         c.player.x, c.player.y = 30.0, 30.0
         assert h._check_scripted_link_warp() is True
         assert c._current_level_name == "house1.nw"
@@ -130,9 +60,8 @@ class TestScriptedMovementLinkWarp:
         assert h._check_scripted_link_warp() is False
         assert c._current_level_name == "house1.nw"
 
-    def test_unchanged_position_short_circuits(self):
-        c = _fake_connected_client()
-        h = _Harness(c)
+    def test_unchanged_position_short_circuits(self, link_game):
+        c, h = link_game()
         c.player.x, c.player.y = 30.0, 20.0
         assert h._check_scripted_link_warp() is False
 
@@ -142,16 +71,14 @@ class TestScriptedMovementLinkWarp:
         assert h._check_scripted_link_warp() is False  # position unchanged
         assert calls == []
 
-    def test_default_movement_leaves_probe_inert(self):
-        c = _fake_connected_client()
-        h = _Harness(c, default_movement=True)
+    def test_default_movement_leaves_probe_inert(self, link_game):
+        c, h = link_game(default_movement=True)
         c.player.x, c.player.y = 30.0, 30.0
         assert h._check_scripted_link_warp() is False
         assert c._current_level_name == "lobby.nw"
 
-    def test_transition_in_flight_defers_probe(self):
-        c = _fake_connected_client()
-        h = _Harness(c)
+    def test_transition_in_flight_defers_probe(self, link_game):
+        c, h = link_game()
         c._local_level_transition = "scroll"
         c.player.x, c.player.y = 30.0, 30.0
         assert h._check_scripted_link_warp() is False

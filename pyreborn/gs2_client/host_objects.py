@@ -10,6 +10,9 @@ from reborn_protocol.gs2 import to_str
 from .objects_player import _CanvasObject, _engine_object
 from .registry import _gs2_object
 from ..throwing import carry_object
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 class HostObjectsMixin:
 
@@ -328,6 +331,7 @@ class HostObjectsMixin:
         try:
             sx, sy = game.viewport.mouse_pos()
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             sx = sy = 0
         if name == "mousescreenx":
             return float(sx)
@@ -336,6 +340,7 @@ class HostObjectsMixin:
         try:
             wx, wy = game.camera.screen_to_world(sx, sy)
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             wx = wy = 0.0
         return float(wx if name == "mousex" else wy)
 
@@ -345,6 +350,7 @@ class HostObjectsMixin:
             import pygame
             return bool(pygame.mouse.get_pressed()[0])
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             return False
 
     @_gs2_object("focusx", "focusy", "isfocused")
@@ -378,6 +384,7 @@ class HostObjectsMixin:
                 import pygame
                 return bool(pygame.display.get_surface() is not None and pygame.display.get_active())
             except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
                 return False
         player = getattr(self.rt2.client, "player", None)
         if name == "canspin":

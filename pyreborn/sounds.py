@@ -13,6 +13,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .asset_paths import normalize_asset_name
 from .clock import Clock
 from .asset_paths import find_asset_file
+import logging
+from .logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 # Pygame import is optional - only needed when actually used
 try:
@@ -180,7 +183,7 @@ class SoundManager:
         try:
             self.file_requester(name)
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def load_bytes(self, name: str, data: bytes) -> Optional["pygame.mixer.Sound"]:
         """Cache a sound that arrived from the server as bytes.
@@ -384,7 +387,7 @@ class SoundManager:
             try:
                 pygame.mixer.music.stop()
             except Exception:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
         self._current_music = None
 
     def preload(self, names: List[str]):
@@ -407,7 +410,7 @@ class SoundManager:
             try:
                 pygame.mixer.music.set_volume(self.volume)
             except Exception:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
 
     def set_music_enabled(self, enabled: bool):
         """Enable or disable streamed background music (see music_enabled
@@ -422,7 +425,7 @@ class SoundManager:
             try:
                 pygame.mixer.stop()
             except:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
 
     def clear_cache(self):
         """Clear all cached sounds."""

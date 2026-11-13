@@ -25,6 +25,9 @@ from .constants import (
     PLAYER_STAND_X, PLAYER_STAND_Y,
     PLAYER_GROUND_X, PLAYER_GROUND_Y,
 )
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 class CollisionMixin:
@@ -289,8 +292,15 @@ class CollisionMixin:
             max_x = max_y = LEVEL_SIZE
         return (x + self._FEET_LEFT < 0 or x + self._FEET_RIGHT > max_x or
                 y + self._FEET_TOP < 0 or y + self._FEET_BOTTOM > max_y)
-    def _is_blocked_at(self, x: float, y: float, *, check_players=True) -> bool:
+
+    def _is_blocked_at(self, x: float, y: float, *, check_players=True,
+                       include_local=False) -> bool:
         """True if the single tile at world position (x, y) blocks movement.
+
+        `include_local` also counts the local player's own box among the
+        players. Movement leaves it off (a player does not block itself); a
+        flying object's wall probe turns it on, because isOnPlayer walks the
+        level's whole player list, the local player included.
 
         Outside the current level's 64x64 bounds counts as blocking unless we're
         in an actual GMAP segment (where adjacent levels are stitched in and
@@ -315,7 +325,7 @@ class CollisionMixin:
 
         if self._chest_blocks(x, y) or self._bomb_blocks(x, y):
             return True
-        if check_players and self._player_blocks(x, y):
+        if check_players and self._player_blocks(x, y, include_local=include_local):
             return True
 
         # NPC footprints: the reference wall test asks the level's NPCs
@@ -331,7 +341,7 @@ class CollisionMixin:
                 if gs1.npc_blocks_at(x, y):
                     return True
             except Exception:
-                pass
+                log_swallowed(logger)
 
         tile_id = self._get_tile_at(x, y)
         level, *_ = _board_locate(self.client, x, y)
@@ -341,7 +351,7 @@ class CollisionMixin:
         return any(type_is_blocking(get_tile_type(tile, tilestype))
                    for tile in (tile_id, *board_layer_tile_ids(self.client, x, y)))
 
-    def _player_blocks(self, x: float, y: float) -> bool:
+    def _player_blocks(self, x: float, y: float, *, include_local=False) -> bool:
         # TServerLevel.cpp:789 skips no-PK, nonblocking, dead and hidden
         # players; remote bounds are [x+.5,x+3) by [y+1,y+3).
         client = self.client
@@ -350,6 +360,11 @@ class CollisionMixin:
         if getattr(client, 'level_nopk', False) or (level is not None and level.get('isnopkzone')):
             return False
         origin = origin_at(client.x, client.y) if client.in_gmap_segment else (0, 0)
+        if include_local:
+            me = client.player
+            if (not int(me.status or 0) & (PLSTATUS.DEAD | PLSTATUS.HIDDEN)
+                    and me.x + 0.5 <= x < me.x + 3.0 and me.y + 1.0 <= y < me.y + 3.0):
+                return True
         for pid, player in getattr(client, 'players', {}).items():
             if pid == client.player.id:
                 continue

@@ -10,6 +10,7 @@ import logging
 from reborn_protocol.gs2 import to_bool
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
+from ..logutil import log_swallowed
 
 if TYPE_CHECKING:
     from .runtime import ClientGS2
@@ -88,7 +89,7 @@ def gui_layer() -> "_GuiLayer":
             import importlib
             importlib.import_module(_GUI_LAYER_MODULE)
         except Exception:  # pragma: no cover - pygame not installed
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
         _gui_layer.resolved = True
     return _gui_layer
 

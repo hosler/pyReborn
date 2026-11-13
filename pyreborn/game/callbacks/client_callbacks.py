@@ -12,6 +12,7 @@ from ...client_callbacks import emit
 from ...gmap_coords import level_origin, world_from_local
 from ...packets import PacketID, parse_npcweapondel
 from ..constants import CHAT_HISTORY_CAP
+from ...logutil import log_swallowed
 
 # Downloaded audio handled as one-shot samples (mixer.Sound). The streaming
 # side of the split is SoundManager.MUSIC_EXTS; .ogg deliberately appears only
@@ -275,7 +276,7 @@ def wire_client_callbacks(game):
                     data.decode('latin-1'), name)
                 game.gani_parser.put_cache(name, gani)
             except Exception:
-                pass
+                log_swallowed(logger)
             else:
                 # Request the sheets this gani names NOW. Discovering them
                 # from the frame blit fallback instead costs one server
@@ -285,7 +286,7 @@ def wire_client_callbacks(game):
                 try:
                     game._prefetch_gani_assets(gani)
                 except Exception:
-                    pass
+                    log_swallowed(logger)
             # A scripted player gani (GS1 setani -> on_setani below) may
             # have been asked for before it was downloaded; the anim
             # state remembers the ask in requested_name — re-assert it so
@@ -299,7 +300,7 @@ def wire_client_callbacks(game):
                     anim.set_animation(name)
                     game.current_anim_name = name
                 except Exception:
-                    pass
+                    log_swallowed(logger)
         elif game.sound_mgr.is_music(filename):
             if filename == getattr(game, '_pending_music', None):
                 game._pending_music = None
@@ -327,7 +328,7 @@ def wire_client_callbacks(game):
                     game.gs1.trigger_event('created', name=f'weapon_{name}')
                 game.gs1.trigger_event('playerenters', name=f'weapon_{name}')
             except Exception:
-                pass
+                log_swallowed(logger)
 
     # Forget the old VM attempt when a weapon leaves inventory. A packet
     # listener runs after the inventory handler and before any embedding

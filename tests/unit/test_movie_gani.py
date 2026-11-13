@@ -64,21 +64,16 @@ def test_actor15_visibility_and_interpolation(movie):
     assert playback.actor_state("Actor15", 207) is None
 
 
-def test_movie_render_branch_tolerates_missing_actor_assets(movie):
+def test_movie_render_branch_tolerates_missing_actor_assets(movie, make_game, monkeypatch):
     gani, _playback = movie
     parser = GaniParser()
     parser.put_cache(gani.name, gani)
     animation = AnimationState(parser)
     animation.set_animation(gani.name)
 
-    class Harness(EntityRenderMixin):
-        def __init__(self):
-            self.requested = []
-
-        def _request_asset(self, filename):
-            self.requested.append(filename)
-
-    harness = Harness()
+    harness = make_game()
+    requested = []
+    monkeypatch.setattr(harness, '_request_asset', requested.append)
     harness._render_movie(100, 200, animation)
 
-    assert "cn_walkslow.gani" in harness.requested
+    assert "cn_walkslow.gani" in requested

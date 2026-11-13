@@ -19,6 +19,8 @@ from .basic_controls import GuiButtonBaseCtrl, GuiButtonCtrl, GuiWindowCtrl
 from .popup_controls import GuiPopUpEditCtrl
 from .profiles import _DEFAULT_PROFILE_NAME  # noqa: F401  - kept: original import block (star-import consumers rely on it)
 from reborn_protocol.gs2 import to_bool  # noqa: F401  - kept: original import block (star-import consumers rely on it)
+import logging
+from ...logutil import log_swallowed
 
 
 # =============================================================================
@@ -121,7 +123,7 @@ class GS2GuiManager:
         try:
             pygame.mouse.set_visible(self.cursor_on)
         except Exception:      # no display yet / headless SDL driver
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
     @property
     def keyboard_captured(self) -> bool:
@@ -518,6 +520,7 @@ class GS2GuiManager:
         try:
             down = pygame.mouse.get_pressed()[0]
         except Exception:
+            log_swallowed(logger, level=logging.DEBUG)
             down = False
         if not down or ctrl.parent is None or self.last_mouse is None:
             return
@@ -1060,6 +1063,7 @@ class GS2GuiManager:
         try:
             mods = pygame.key.get_mods()
         except Exception:                      # no keyboard subsystem
+            log_swallowed(logger, level=logging.DEBUG)
             mods = 0
         return (float(torque_modifier(mods)), float(pos[0]), float(pos[1]),
                 float(self._click_count), 0.0)

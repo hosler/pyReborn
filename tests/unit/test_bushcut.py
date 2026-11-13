@@ -1,10 +1,9 @@
 """Classic bush tables, bounded matching, and sword/explosion integration."""
 
-from types import SimpleNamespace
+from types import SimpleNamespace  # only for the GS1 runtime stand-in below
 
 import pytest
 
-from pyreborn import Client
 from pyreborn.bushcut import BUSH_OBJECTS, BUSH_PROBE, BUSH_REPLACE, bush_probe, find_bush_block
 from pyreborn.handlers.combat import handle_explosion
 from pyreborn.liftobjects import LIFT_OBJECTS, LIFT_REPLACE
@@ -18,29 +17,33 @@ def plant(board, x=10, y=10, index=0):
             board[x + dx + (y + dy) * 64] = BUSH_OBJECTS[index][dx * 2 + dy]
 
 
-class FakeClient(Client):
-    def __init__(self):
-        super().__init__('localhost', 14900)
-        self._authenticated = True
-        self.sent = []
-        self._protocol = SimpleNamespace(connected=True, send_packet=self.send)
-        self._current_level_name = self._tiles_level_name = 'bush.nw'
-        self.tiles = [0] * 4096
-        self.levels['bush.nw'] = self.tiles
-        self.player.x, self.player.y = 9.0, 6.0
-        self.player.direction = 2
-        self.player.sword_power = 1
-        self.modifications = []
-        self.effects = []
-        self.on_bush_cut = lambda *args: self.effects.append(args)
+LEVEL = 'fixture.nw'
 
-    def send(self, packet_id, data=b''):
-        self.sent.append((packet_id, data))
-        return True
 
-    def modify_board(self, *args):
-        self.modifications.append(args)
-        return super().modify_board(*args)
+@pytest.fixture
+def new_client(make_client):
+    """``new_client(**knobs)``: a real offline Client on an empty board with the
+    player at (9, 6) facing down holding a sword. ``c.modifications`` records
+    every ``modify_board`` call (the real one still runs), ``c.effects`` every
+    ``on_bush_cut`` event and ``c.sent`` every packet the client sent."""
+    def build(**knobs):
+        knobs.setdefault('tiles', lambda tx, ty: 0)
+        c = make_client(**knobs)
+        c.player.x, c.player.y = 9.0, 6.0
+        c.player.direction = 2
+        c.player.sword_power = 1
+        c.modifications = []
+        c.effects = []
+        c.on_bush_cut = lambda *args: c.effects.append(args)
+        real = c.modify_board
+
+        def modify_board(*args):
+            c.modifications.append(args)
+            return real(*args)
+        c.modify_board = modify_board
+        c.sent = c._protocol.sent
+        return c
+    return build
 
 
 def test_tables_match_official_client():
@@ -75,10 +78,10 @@ POSITIONS = {0: (8.0, 6.0), 1: (12.0, 6.0), 2: (8.0, 2.0), 3: (4.0, 6.0)}
 
 
 @pytest.mark.parametrize('direction', [0, 1, 2, 3])
-def test_flush_bush_cut_from_all_four_sides(direction):
+def test_flush_bush_cut_from_all_four_sides(direction, new_client):
     # Bush touching the player's box on the facing side.
     start = {0: (8, 5), 1: (10, 7), 2: (8, 5), 3: (6, 7)}[direction]
-    c = FakeClient()
+    c = new_client()
     plant(c.tiles, *start)
     c.player.x, c.player.y = POSITIONS[direction]
     c.player.direction = direction
@@ -88,9 +91,9 @@ def test_flush_bush_cut_from_all_four_sides(direction):
 
 
 @pytest.mark.parametrize('direction', [0, 1, 2, 3])
-def test_bush_one_tile_away_is_not_cut(direction):
+def test_bush_one_tile_away_is_not_cut(direction, new_client):
     start = {0: (8, 3), 1: (8, 7), 2: (8, 7), 3: (8, 7)}[direction]
-    c = FakeClient()
+    c = new_client()
     plant(c.tiles, *start)
     c.player.x, c.player.y = POSITIONS[direction]
     c.player.direction = direction
@@ -100,8 +103,8 @@ def test_bush_one_tile_away_is_not_cut(direction):
 
 @pytest.mark.parametrize('index', [0, 1])
 @pytest.mark.parametrize('dx,dy', [(0, 0), (0, 1), (1, 0), (1, 1)])
-def test_find_and_replace_from_every_quadrant(index, dx, dy):
-    c = FakeClient()
+def test_find_and_replace_from_every_quadrant(index, dx, dy, new_client):
+    c = new_client()
     plant(c.tiles, index=index)
     assert find_bush_block(c.get_tile, 10 + dx, 10 + dy) == (10, 10, index)
     assert c._cut_bush_at(10 + dx, 10 + dy) == (10, 10)
@@ -113,8 +116,8 @@ def test_find_and_replace_from_every_quadrant(index, dx, dy):
 
 
 @pytest.mark.parametrize('bad_corner', [0, 1, 2, 3])
-def test_partial_or_mismatched_block_is_not_cut(bad_corner):
-    c = FakeClient()
+def test_partial_or_mismatched_block_is_not_cut(bad_corner, new_client):
+    c = new_client()
     plant(c.tiles)
     dx, dy = divmod(bad_corner, 2)
     c.tiles[10 + dx + (10 + dy) * 64] = 0
@@ -134,15 +137,15 @@ def test_matching_never_reads_outside_board(x, y):
 
 
 @pytest.mark.parametrize('x,y', [(0, 0), (62, 62), (0, 62), (62, 0)])
-def test_complete_blocks_at_board_edges(x, y):
-    c = FakeClient()
+def test_complete_blocks_at_board_edges(x, y, new_client):
+    c = new_client()
     plant(c.tiles, x, y)
     assert find_bush_block(c.get_tile, x + 1, y + 1) == (x, y, 0)
 
 
 @pytest.mark.parametrize('index', [0, 1])
-def test_sword_cuts_and_sends_one_board_modify(index):
-    c = FakeClient()
+def test_sword_cuts_and_sends_one_board_modify(index, new_client):
+    c = new_client()
     plant(c.tiles, index=index)
     assert c.sword_attack()
     tl, bl, tr, br = BUSH_REPLACE[index]
@@ -150,8 +153,8 @@ def test_sword_cuts_and_sends_one_board_modify(index):
     assert sum(pid == PacketID.PLI_BOARDMODIFY for pid, _ in c.sent) == 1
 
 
-def test_zero_sword_power_does_not_cut():
-    c = FakeClient()
+def test_zero_sword_power_does_not_cut(new_client):
+    c = new_client()
     plant(c.tiles)
     c.player.sword_power = 0
     c.sword_attack()
@@ -160,8 +163,8 @@ def test_zero_sword_power_does_not_cut():
 
 
 @pytest.mark.parametrize('action', [10, 13])
-def test_blocked_action_mode_does_not_cut(action):
-    c = FakeClient()
+def test_blocked_action_mode_does_not_cut(action, new_client):
+    c = new_client()
     plant(c.tiles)
     c.player.action_mode = action
     c.sword_attack()
@@ -169,8 +172,8 @@ def test_blocked_action_mode_does_not_cut(action):
 
 
 @pytest.mark.parametrize('animation', ['dead', 'spin'])
-def test_blocked_animation_does_not_cut(animation):
-    c = FakeClient()
+def test_blocked_animation_does_not_cut(animation, new_client):
+    c = new_client()
     plant(c.tiles)
     c.player.animation = animation
     c.sword_attack()
@@ -178,8 +181,8 @@ def test_blocked_animation_does_not_cut(animation):
 
 
 @pytest.mark.parametrize('tile_type', [4, 11, 12, 20, 22])
-def test_can_lay_item_wall_and_water_gate(tile_type):
-    c = FakeClient()
+def test_can_lay_item_wall_and_water_gate(tile_type, new_client):
+    c = new_client()
     c.player.x = 8.0
     plant(c.tiles)
     c.tiles[9 + 10 * 64] = next(i for i, t in enumerate(tiletypes.TILE_TYPES) if t == tile_type)
@@ -187,22 +190,22 @@ def test_can_lay_item_wall_and_water_gate(tile_type):
 
 
 @pytest.mark.parametrize('obstacle', ['npc', 'chest', 'bomb'])
-def test_can_lay_item_entity_gate(obstacle):
-    c = FakeClient()
+def test_can_lay_item_entity_gate(obstacle, new_client):
+    c = new_client()
     c.player.x = 8.0
     plant(c.tiles)
     if obstacle == 'npc':
         c.gs1_host = SimpleNamespace(rt=SimpleNamespace(npc_blocks_at=lambda x, y: True))
     elif obstacle == 'chest':
-        c.chests['bush.nw'] = {(9, 10): False}
+        c.chests[LEVEL] = {(9, 10): False}
     else:
-        c.bombs['bush.nw'] = {0: {'x': 9, 'y': 10}}
+        c.bombs[LEVEL] = {0: {'x': 9, 'y': 10}}
     assert not c._can_lay_item(2)
 
 
 @pytest.mark.parametrize('overlay,can_cut', [(6, True), (11, False), (12, False)])
-def test_can_lay_item_water_uses_npc_tile_overlay(overlay, can_cut):
-    c = FakeClient()
+def test_can_lay_item_water_uses_npc_tile_overlay(overlay, can_cut, new_client):
+    c = new_client()
     c.player.x = 8.0
     plant(c.tiles)
     c.tiles[9 + 10 * 64] = next(i for i, t in enumerate(tiletypes.TILE_TYPES) if t == 11)
@@ -211,9 +214,9 @@ def test_can_lay_item_water_uses_npc_tile_overlay(overlay, can_cut):
     assert c._can_lay_item(2) == can_cut
 
 
-def test_bush_cut_ignores_can_lay_item_gate():
+def test_bush_cut_ignores_can_lay_item_gate(new_client):
     # Deliberate deviation: the type-20 bush tile ahead would fail canLayItem.
-    c = FakeClient()
+    c = new_client()
     plant(c.tiles)
     c.tiles[10 + 10 * 64] = BUSH_OBJECTS[0][0]
     assert not c._can_lay_item(2)
@@ -221,40 +224,41 @@ def test_bush_cut_ignores_can_lay_item_gate():
     assert len(c.modifications) == 1
 
 
-def test_missing_action_level_does_not_cut():
-    c = FakeClient()
+def test_missing_action_level_does_not_cut(new_client):
+    c = new_client()
     plant(c.tiles)
     c._current_level_name = ''
     c.sword_attack()
     assert c.modifications == []
 
 
-def gmap_client():
-    c = FakeClient()
-    c.gmap_grid[(1, 2)] = 'bush.nw'
-    c.gmap_width, c.gmap_height = 2, 3
-    c.player.x += 64
-    c.player.y += 128
-    # An adjacent preload must not replace the standing segment's board.
-    c._pending_level_name = c._tiles_level_name = 'neighbor.nw'
-    board = c.tiles
-    c.tiles = [0] * 4096
-    return c, board
+@pytest.fixture
+def gmap_client(new_client):
+    def build():
+        # Standing in segment (1, 1) of the fixture gmap (world origin 64, 64).
+        c = new_client(gmap=True, gmap_segment=(1, 1))
+        c.player.x, c.player.y = 9.0 + 64, 6.0 + 64
+        board = c.levels[c.current_level_name]
+        # An adjacent preload must not replace the standing segment's board.
+        c._pending_level_name = c._tiles_level_name = 'neighbor.nw'
+        c.tiles = [0] * 4096
+        return c, board
+    return build
 
 
-def test_gmap_uses_standing_board_local_probe_and_world_effect_origin():
+def test_gmap_uses_standing_board_local_probe_and_world_effect_origin(gmap_client):
     c, board = gmap_client()
     plant(board)
     c.sword_attack()
     assert c.modifications == [(10, 10, 2, 2, [0x2a5, 0x2a6, 0x2b5, 0x2b6])]
-    assert c.effects == [(74, 138, 0)]
+    assert c.effects == [(74, 74, 0)]
     assert board[10 + 10 * 64] == 0x2a5
     assert c.tiles == [0] * 4096
 
 
 @pytest.mark.parametrize('index', [0, 1])
-def test_server_explosion_cuts_once_and_preserves_outside_bush(index):
-    c = FakeClient()
+def test_server_explosion_cuts_once_and_preserves_outside_bush(index, new_client):
+    c = new_client()
     plant(c.tiles, index=index)
     plant(c.tiles, x=15)
     handle_explosion(c, bytes((32, 32, 33, 52, 52, 35)))  # owner 0, radius 1, (10,10), type 3
@@ -264,24 +268,24 @@ def test_server_explosion_cuts_once_and_preserves_outside_bush(index):
 
 
 @pytest.mark.parametrize('tiles_type', [1, 2, 5])
-def test_explosions_only_cut_classic_tiles(tiles_type, monkeypatch):
-    c = FakeClient()
+def test_explosions_only_cut_classic_tiles(tiles_type, monkeypatch, new_client):
+    c = new_client()
     plant(c.tiles)
     c.level_state.tiletypes.register_tiledef('', tiles_type)
     handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
     assert c.modifications == c.effects == []
 
 
-def test_server_explosion_local_position_on_gmap():
+def test_server_explosion_local_position_on_gmap(gmap_client):
     c, board = gmap_client()
     plant(board)
     handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
-    assert c.effects == [(74, 138, 0)]
-    assert (c.active_explosions[0]['x'], c.active_explosions[0]['y']) == (74, 138)
+    assert c.effects == [(74, 74, 0)]
+    assert (c.active_explosions[0]['x'], c.active_explosions[0]['y']) == (74, 74)
 
 
-def test_explosion_does_not_wrap_at_level_edge():
-    c = FakeClient()
+def test_explosion_does_not_wrap_at_level_edge(new_client):
+    c = new_client()
     plant(c.tiles, x=0)
     assert c._cut_bushes_at_explosion(63, 10) == set()
     assert c.modifications == []

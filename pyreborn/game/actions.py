@@ -29,6 +29,9 @@ from .constants import (
     MOVE_STEP, PUSH_HOLD_TIME,
 )
 from .clocked import ClockedMixin
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 class ActionsMixin(ClockedMixin):
@@ -1146,7 +1149,7 @@ class ActionsMixin(ClockedMixin):
                     try:
                         gs1.trigger_event(ev, name=prog_key)
                     except Exception:
-                        pass
+                        log_swallowed(logger)
                 return
             # Use weapon-specific action
             if "bow" in weapon.lower():

@@ -39,6 +39,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from .clock import Clock
 from .packets import PacketID
 from .rc_client import RCClient
+from .logutil import log_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,7 @@ class RCLink:
                 try:
                     rc.disconnect()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
             # Only a still-live session becomes CLOSED here. A DENIED/ERROR
             # verdict, or the more specific "connection dropped", is the
             # answer the panel needs to show.

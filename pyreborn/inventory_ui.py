@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, List, Mapping, Optional, Tuple, Union
 from .clock import Clock
 from .game import theme
 from .sprites import PLAYER_EQUIPMENT_PREVIEW_RECTS
+from .lru import LruCache
 
 if TYPE_CHECKING:
     from .player import Player
@@ -57,6 +58,11 @@ class InventoryUI:
     WEAPON_SLOT = 58
     WEAPON_GAP = 8
 
+    def release_fonts(self) -> None:
+        """Drop the three Fonts (see GameClient._release_fonts); the panel
+        cannot draw afterwards."""
+        self.font_large = self.font_medium = self.font_small = None
+
     def __init__(self, screen: 'pygame.Surface', sprite_mgr: Optional['SpriteManager'] = None,
                  clock: Optional[Clock] = None):
         """
@@ -103,7 +109,7 @@ class InventoryUI:
 
         # Cache keys include stable asset names/rects, and values pin source
         # surfaces alongside derived surfaces. Never key a cache by bare id().
-        self._text_cache = {}
+        self._text_cache = LruCache(300)
         self._sprite_scale_cache = {}
         self._stats_hearts = HeartDisplay(0, 0)
 
@@ -116,8 +122,6 @@ class InventoryUI:
         key = (font, text, color)
         surf = self._text_cache.get(key)
         if surf is None:
-            if len(self._text_cache) > 300:
-                self._text_cache.clear()
             surf = font.render(text, True, color)
             self._text_cache[key] = surf
         return surf

@@ -69,6 +69,7 @@ from urllib.parse import urlparse, parse_qs
 from game_tester.game_bot import GameBot
 from game_tester.world_graph import WorldGraph
 from pyreborn.tiletypes import get_tile_type, is_blocking, is_water, TileType
+from pyreborn.logutil import log_swallowed
 
 WORLD_GRAPH = None
 DISCONNECT_TIMEOUT = 5.0
@@ -105,7 +106,7 @@ def pump_loop():
                 # One short packet pump plus GameBot's position/death checks.
                 bot.update(0.01)
             except Exception:
-                pass
+                log_swallowed(logger)
             finally:
                 bot_lock.release()
         time.sleep(0.05)
@@ -264,6 +265,7 @@ def bot_map(bot, radius=14):
                 elif get_tile_type(tile, client=c) == TileType.CHAIR:
                     ch = 'c'
             except Exception:
+                log_swallowed(logger)
                 ch = '?'
             row.append(ch)
         rows.append(row)
@@ -488,7 +490,7 @@ def disconnect_all_bots():
         try:
             _disconnect_bot(name, expected=bot)
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
 
 def main(argv=None):

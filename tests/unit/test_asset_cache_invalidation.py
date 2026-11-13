@@ -73,15 +73,9 @@ def test_load_bytes_invalidates_derived_sprite_cuts():
     assert not manager._recolor_sprite_cache
 
 
-def test_tile_derived_helper_clears_all_four_caches():
-    class Harness(SetupMixin):
-        pass
-
-    harness = Harness()
-    harness.tileset_mgr = SimpleNamespace(
-        tile_cache={"tile": object()},
-        clear_cache=lambda: harness.tileset_mgr.tile_cache.clear(),
-    )
+def test_tile_derived_helper_clears_all_four_caches(make_game):
+    harness = make_game()
+    harness.tileset_mgr.tile_cache["tile"] = object()
     harness.world_surface = object()
     harness._shimmer_cache = {(1, 1.0): object()}
     harness._chest_sprite_cache = {False: object()}

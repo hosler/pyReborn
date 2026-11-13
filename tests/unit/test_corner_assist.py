@@ -18,9 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pytest
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
+from offline_game import tiles_from_board
 from pyreborn.tiletypes import TileType, is_blocking
 
 
@@ -28,29 +26,6 @@ from pyreborn.tiletypes import TileType, is_blocking
 # test_onwall2_flush_slide.py does it. These ids used to be fabricated by a
 # per-client tile-type override layer, which no longer exists.
 WALL = next(t for t in range(4096) if is_blocking(t))
-
-
-class _GameHarness(ActionsMixin, CollisionMixin):
-    """Minimal GameClient stand-in exercising just the collision slice of
-    the mixins (mirrors test_collision_gmap_frames.py's _GameHarness)."""
-
-    def __init__(self, client):
-        self.client = client
-        self.noclip = False
-
-
-def _fake_connected_client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
-
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    return c
 
 
 def _wall_row_with_doorway(row: int, doorway_cols=(32, 33, 34)) -> list:
@@ -73,12 +48,13 @@ def _wall_row_flat(row: int, span=(20, 45)) -> list:
     return lvl
 
 
-def _harness_with_level(lvl):
-    c = _fake_connected_client()
-    c._current_level_name = "test.nw"
-    c.levels["test.nw"] = lvl
-    c.tiles = lvl
-    return c, _GameHarness(c)
+@pytest.fixture
+def harness_with_level(make_game):
+    """``harness_with_level(board)``: (client, real offline game) on that board."""
+    def build(lvl):
+        game = make_game(tiles=tiles_from_board(lvl))
+        return game.client, game
+    return build
 
 
 # The y where the box's TOP first reaches row 20 on the NEXT step (y - 0.25)
@@ -99,35 +75,35 @@ class TestCornerAssistClearableDoorway:
     # blocked-but-assistable approach positions sit one MOVE_STEP outside
     # that window.
 
-    def test_offset_left_of_doorway_nudges_right(self):
+    def test_offset_left_of_doorway_nudges_right(self, harness_with_level):
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 29.75, APPROACH_Y  # window starts at 30.0
 
         assert h._is_position_blocked(29.75, APPROACH_Y - 0.25, 0, -1) is True
         assert h._corner_assist_offset(0, -1) == (1, 0)
 
-    def test_offset_right_of_doorway_nudges_left(self):
+    def test_offset_right_of_doorway_nudges_left(self, harness_with_level):
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 33.0, APPROACH_Y  # window ends at 33.0
 
         assert h._is_position_blocked(33.0, APPROACH_Y - 0.25, 0, -1) is True
         assert h._corner_assist_offset(0, -1) == (-1, 0)
 
-    def test_centered_in_doorway_needs_no_assist(self):
+    def test_centered_in_doorway_needs_no_assist(self, harness_with_level):
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 32.0, APPROACH_Y
 
         # Dead-centered: the plain cardinal move already clears on its own.
         assert h._is_position_blocked(32.0, APPROACH_Y - 0.25, 0, -1) is False
 
-    def test_vertical_doorway_nudges_along_x_only(self):
+    def test_vertical_doorway_nudges_along_x_only(self, harness_with_level):
         """The returned nudge is always exactly one axis, matching the
         pressed axis' perpendicular (never a diagonal delta)."""
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 31.0, APPROACH_Y
 
         nudge = h._corner_assist_offset(0, -1)
@@ -141,19 +117,19 @@ class TestCornerAssistDoesNotAssistFlatWall:
     fully blocked — corner-assist must never let a player slide indefinitely
     along (or squeeze through) a flat wall."""
 
-    def test_far_from_any_opening_returns_none(self):
+    def test_far_from_any_opening_returns_none(self, harness_with_level):
         lvl = _wall_row_flat(20, span=(20, 45))
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 30.0, APPROACH_Y
 
         assert h._is_position_blocked(30.0, APPROACH_Y - 0.25, 0, -1) is True
         assert h._corner_assist_offset(0, -1) is None
 
-    def test_doorway_too_far_away_returns_none(self):
+    def test_doorway_too_far_away_returns_none(self, harness_with_level):
         """A doorway exists, but 1.5 tiles away — well past the ~0.5 tile
         corner-assist range — must not be reachable by the nudge."""
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 29.5, APPROACH_Y  # doorway centered at 32.0
 
         assert h._corner_assist_offset(0, -1) is None
@@ -163,13 +139,13 @@ class TestCornerAssistDoesNotAssistSolidCorner:
     """A solid corner/pocket — where the perpendicular nudge itself is
     blocked, not just the far-away destination — must also stay blocked."""
 
-    def test_boxed_in_corner_returns_none(self):
+    def test_boxed_in_corner_returns_none(self, harness_with_level):
         lvl = _wall_row_flat(20, span=(20, 45))
         # Wall segment immediately beside the approach row too, boxing the
         # player into a dead-end pocket: any sideways nudge hits a wall.
         for tx in (30, 31, 32, 33, 34, 35):
             lvl[19 * 64 + tx] = 1
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 32.0, APPROACH_Y
 
         assert h._is_position_blocked(32.0, APPROACH_Y - 0.25, 0, -1) is True
@@ -177,18 +153,18 @@ class TestCornerAssistDoesNotAssistSolidCorner:
 
 
 class TestCornerAssistIgnoresDiagonalAndNoInput:
-    def test_diagonal_press_returns_none(self):
+    def test_diagonal_press_returns_none(self, harness_with_level):
         """Diagonal presses already have their own axis-slide in _move and
         do not use corner-assist."""
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 31.0, APPROACH_Y
 
         assert h._corner_assist_offset(1, -1) is None
 
-    def test_no_input_returns_none(self):
+    def test_no_input_returns_none(self, harness_with_level):
         lvl = _wall_row_with_doorway(20)
-        c, h = _harness_with_level(lvl)
+        c, h = harness_with_level(lvl)
         c.player.x, c.player.y = 31.0, APPROACH_Y
 
         assert h._corner_assist_offset(0, 0) is None

@@ -22,6 +22,9 @@ from reborn_protocol.encryption import (
     RebornEncryption,  # noqa: F401 - re-exported; this module used to define it
     decompress_data,
 )
+import logging
+from .logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .client import Client
@@ -418,7 +421,7 @@ class ListServerClient:
                 self._socket.shutdown(socket.SHUT_RDWR)
                 self._socket.close()
             except:
-                pass
+                log_swallowed(logger, level=logging.DEBUG)
             self._socket = None
 
     def _send(self, frame: bytes, what: str) -> bool:
@@ -641,7 +644,7 @@ if IS_BROWSER:
                 try:
                     self._ws.close()
                 except:
-                    pass
+                    log_swallowed(logger, level=logging.DEBUG)
                 self._ws = None
 
         def _send_raw(self, data: bytes) -> bool:

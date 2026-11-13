@@ -1,13 +1,15 @@
+import pytest
+
 from pyreborn.gani import Gani, GaniFrame, GaniSprite
-from pyreborn.game.render_entities import EntityRenderMixin
 
 
-class _Harness(EntityRenderMixin):
-    def __init__(self):
-        self.requested = []
-
-    def _request_asset(self, filename):
-        self.requested.append(filename)
+@pytest.fixture
+def harness(make_game, monkeypatch):
+    """A real offline game whose asset requests are recorded, not sent."""
+    game = make_game()
+    game.requested = []
+    monkeypatch.setattr(game, "_request_asset", game.requested.append)
+    return game
 
 
 def _gani(directions):
@@ -37,12 +39,11 @@ def _gani(directions):
     )
 
 
-def test_prefetch_requests_only_sheets_frames_draw():
+def test_prefetch_requests_only_sheets_frames_draw(harness):
     gani = _gani([
         [GaniFrame(sprites=[(0, 0, 0), (1, 0, 0), (2, 0, 0), ("PARAM1", 0, 0)])],
         [GaniFrame(sprites=[("PARAM2", 0, 0), ("PARAM3", 0, 0)])],
     ])
-    harness = _Harness()
 
     harness._prefetch_gani_assets(gani)
 
@@ -62,8 +63,7 @@ def test_prefetch_requests_only_sheets_frames_draw():
     assert harness.requested == first_requests
 
 
-def test_prefetch_requests_nothing_when_no_frame_places_a_sprite():
-    harness = _Harness()
+def test_prefetch_requests_nothing_when_no_frame_places_a_sprite(harness):
 
     harness._prefetch_gani_assets(_gani([]))
 

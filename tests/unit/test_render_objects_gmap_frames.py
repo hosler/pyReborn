@@ -15,96 +15,44 @@ Both now go through the shared LevelObjectsRenderMixin._current_segment_origin
 helper.
 """
 
-import os
-import sys
-from types import SimpleNamespace
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-protocol'))
-
 import pygame
 import pytest
 
-from pyreborn import Client
-from pyreborn.game.actions import ActionsMixin
-from pyreborn.game.collision import CollisionMixin
-from pyreborn.game.frame_context import FrameContextMixin
-from pyreborn.game.render_collect import EntityCollectMixin
-from pyreborn.game.render_objects import LevelObjectsRenderMixin
+from offline_game import GMAP_SEGMENTS
+from pyreborn.tiletypes import is_blocking
+
+# The fixture's 2x2 gmap: SPAWN (fixture_d.nw) is at grid (1, 1), world origin
+# (64, 64); OTHER (fixture_c.nw) is the segment to its west, grid (0, 1).
+SPAWN = GMAP_SEGMENTS[3]
+OTHER = GMAP_SEGMENTS[2]
+NORTH_WEST = GMAP_SEGMENTS[0]
+WALL = next(t for t in range(4096) if is_blocking(t))
 
 
-def _fake_connected_client():
-    c = Client("localhost", 14900)
-    c._authenticated = True
+@pytest.fixture
+def grid_game(make_game, monkeypatch):
+    """``grid_game(gmap_segment=(1, 1), **knobs)``: a real offline game on the
+    fixture gmap, standing in ``gmap_segment``. ``game.world_to_screen_calls``
+    records every world coordinate the renderer converts through the camera
+    (the conversion itself still runs); the screen is the game's own."""
+    def build(gmap_segment=(1, 1), **knobs):
+        knobs.setdefault('gmap', True)
+        game = make_game(gmap_segment=gmap_segment, **knobs)
+        game.frames(1)               # the camera now follows the player
+        game.world_to_screen_calls = []
+        real = game.camera.world_to_screen
 
-    class _Stub:
-        connected = True
-
-        def send_packet(self, *a, **k):
-            return True
-
-    c._protocol = _Stub()
-    return c
-
-
-def _client_with_grid():
-    # Same 3x3 chicken.gmap layout as test_collision_gmap_frames.py /
-    # test_gmap_coordination.py: chicken1.nw at grid (1, 1) -> world origin
-    # (64, 64).
-    c = _fake_connected_client()
-    names = [
-        "chicken4.nw", "chicken5.nw", "chicken6.nw",
-        "chicken2.nw", "chicken1.nw", "chicken7.nw",
-        "chicken3.nw", "chicken9.nw", "chicken8.nw",
-    ]
-    c.gmap_width, c.gmap_height = 3, 3
-    for i, name in enumerate(names):
-        c.gmap_grid[(i % 3, i // 3)] = name
-    c._current_level_name = "chicken1.nw"
-    return c
-
-
-class _ChestRenderHarness(LevelObjectsRenderMixin, EntityCollectMixin,
-                          FrameContextMixin):
-    """Minimal GameClient stand-in for _render_chests: stubs out
-    _get_chest_sprite (tileset-backed) and _world_to_screen (camera-backed,
-    defined on RenderMixin) so the test only exercises the coordinate fold,
-    not tileset loading or camera math."""
-
-    def __init__(self, client):
-        self.client = client
-        self.camera = self
-        self.sprite_mgr = SimpleNamespace(get_sprite=lambda *args: None)
-        self.screen = pygame.Surface((800, 600))
-        self.world_to_screen_calls = []
-
-    def _get_chest_sprite(self, opened: bool):
-        return pygame.Surface((32, 32), pygame.SRCALPHA)
-
-    def _world_to_screen(self, world_x, world_y):
-        self.world_to_screen_calls.append((world_x, world_y))
-        return (100.0, 100.0)  # safely on-screen, regardless of input
-
-    world_to_screen = _world_to_screen
-
-    def _get_item_sprite(self, item_type):
-        return pygame.Surface((16, 16), pygame.SRCALPHA)
-
-    def _baddy_height_tiles(self, baddy):
-        return 2.0
-
-    def _horse_height_tiles(self, horse):
-        return 2.0
+        def world_to_screen(world_x, world_y):
+            game.world_to_screen_calls.append((world_x, world_y))
+            return real(world_x, world_y)
+        monkeypatch.setattr(game.camera, 'world_to_screen', world_to_screen)
+        return game
+    return build
 
 
 class TestRenderChestsSegmentOrigin:
-    def test_chest_world_screen_call_uses_segment_origin(self):
-        c = _client_with_grid()
-        c.chests = {(5, 5): False}
-        h = _ChestRenderHarness(c)
+    def test_chest_world_screen_call_uses_segment_origin(self, grid_game):
+        h = grid_game(chests=[(5, 5, False)])
 
         h._render_chests()
 
@@ -112,11 +60,9 @@ class TestRenderChestsSegmentOrigin:
         # local (5, 5) the old code passed straight through.
         assert h.world_to_screen_calls == [(69, 69)]
 
-    def test_chest_on_origin_segment_is_unaffected(self):
-        c = _fake_connected_client()
-        c._current_level_name = "standalone.nw"  # not in_gmap_segment
-        c.chests = {(5, 5): False}
-        h = _ChestRenderHarness(c)
+    def test_chest_on_origin_segment_is_unaffected(self, grid_game):
+        h = grid_game(gmap=False, level="standalone.nw",
+                      chests=[(5, 5, False)])
 
         h._render_chests()
 
@@ -124,11 +70,14 @@ class TestRenderChestsSegmentOrigin:
 
 
 class TestRenderItemsSegmentOrigin:
-    def test_item_blit_and_depth_use_world_frame(self, sim_time, monkeypatch):
-        c = _client_with_grid()
-        c.items = {"chicken1.nw": {(5.0, 5.0): "greenrupee"}}
-        h = _ChestRenderHarness(c)
-        h._item_first_seen = {('chicken1.nw', (5.0, 5.0)): 100.0}
+    def test_item_blit_and_depth_use_world_frame(self, grid_game, sim_time,
+                                                 monkeypatch):
+        h = grid_game(items=[(5.0, 5.0, 0)], player_xy=(8.0, 8.0))
+        # A 16x16 stand-in for the item art keeps the (x+1, y+1) centring the
+        # expected coordinates are written for.
+        monkeypatch.setattr(h, '_get_item_sprite',
+                            lambda item_type: pygame.Surface((16, 16), pygame.SRCALPHA))
+        h.client.item_stamps[(SPAWN, (5.0, 5.0))] = 100.0
         sim_time(lambda: 102.0)
         entities = []
         frame = h._frame_context()
@@ -146,13 +95,13 @@ class TestRenderItemsSegmentOrigin:
 
 
 class TestRenderBaddiesSegmentOrigin:
-    def test_baddy_blit_and_depth_use_owning_segment_world_frame(self):
-        c = _client_with_grid()
+    def test_baddy_blit_and_depth_use_owning_segment_world_frame(self, grid_game):
+        h = grid_game(player_xy=(8.0, 8.0))      # on screen, near world (69, 69)
+        c = h.client
         c.baddies = {
-            "chicken1.nw": {1: {"x": 5.0, "y": 5.0}},
-            "chicken7.nw": {2: {"x": 5.0, "y": 5.0}},
+            SPAWN: {1: {"x": 5.0, "y": 5.0}},
+            OTHER: {2: {"x": 5.0, "y": 5.0}},
         }
-        h = _ChestRenderHarness(c)
         entities = []
         frame = h._frame_context()
         frame.screen_size = h.screen.get_size()
@@ -162,27 +111,27 @@ class TestRenderBaddiesSegmentOrigin:
         assert h.world_to_screen_calls == [(69.0, 69.0)]
         assert [entity.key for entity in entities] == [1]
         assert entities[0].depth == h._depth_sort_key(
-            69.0, h._baddy_height_tiles(c.baddies["chicken1.nw"][1]))
+            69.0, h._baddy_height_tiles(c.baddies[SPAWN][1]))
 
-    def test_same_local_position_in_adjacent_segments_stays_independent(self):
-        c = _client_with_grid()
+    def test_same_local_position_in_adjacent_segments_stays_independent(self, grid_game):
+        c = grid_game().client
         west = {"x": 5.0, "y": 5.0, "power": 2}
         east = {"x": 5.0, "y": 5.0, "power": 4}
-        c.baddies = {"chicken1.nw": {1: west}, "chicken7.nw": {2: east}}
+        c.baddies = {SPAWN: {1: west}, OTHER: {2: east}}
 
-        assert c.baddies_in_level("chicken1.nw") == {1: west}
-        assert c.baddies_in_level("chicken7.nw") == {2: east}
+        assert c.baddies_in_level(SPAWN) == {1: west}
+        assert c.baddies_in_level(OTHER) == {2: east}
 
 
 class TestRenderHorsesSegmentOrigin:
-    def test_horse_blit_and_depth_use_owning_segment_world_frame(self):
-        c = _client_with_grid()
+    def test_horse_blit_and_depth_use_owning_segment_world_frame(self, grid_game):
+        h = grid_game(player_xy=(8.0, 8.0))      # on screen, near world (69, 69)
+        c = h.client
         key = (5.0, 5.0)
         c.horses = {
-            "chicken1.nw": {key: {"x": 5.0, "y": 5.0}},
-            "chicken7.nw": {key: {"x": 5.0, "y": 5.0}},
+            SPAWN: {key: {"x": 5.0, "y": 5.0}},
+            OTHER: {key: {"x": 5.0, "y": 5.0}},
         }
-        h = _ChestRenderHarness(c)
         entities = []
         frame = h._frame_context()
         frame.screen_size = h.screen.get_size()
@@ -192,52 +141,40 @@ class TestRenderHorsesSegmentOrigin:
         assert h.world_to_screen_calls == [(69.0, 69.0)]
         assert [entity.key for entity in entities] == [key]
         assert entities[0].depth == h._depth_sort_key(
-            69.0, h._horse_height_tiles(c.horses["chicken1.nw"][key]))
+            69.0, h._horse_height_tiles(c.horses[SPAWN][key]))
 
-    def test_same_local_position_in_adjacent_segments_stays_independent(self):
-        c = _client_with_grid()
+    def test_same_local_position_in_adjacent_segments_stays_independent(self, grid_game):
+        c = grid_game().client
         key = (5.0, 5.0)
         west = {"x": 5.0, "y": 5.0, "image": "west.png"}
         east = {"x": 5.0, "y": 5.0, "image": "east.png"}
-        c.horses = {"chicken1.nw": {key: west}, "chicken7.nw": {key: east}}
+        c.horses = {SPAWN: {key: west}, OTHER: {key: east}}
 
-        assert c.horses_in_level("chicken1.nw") == {key: west}
-        assert c.horses_in_level("chicken7.nw") == {key: east}
-
-
-class _SignCheckHarness(ActionsMixin, CollisionMixin, LevelObjectsRenderMixin):
-    def __init__(self, client):
-        self.client = client
+        assert c.horses_in_level(SPAWN) == {key: west}
+        assert c.horses_in_level(OTHER) == {key: east}
 
 
 class TestCheckSignNearbySegmentOrigin:
-    def test_finds_a_sign_off_the_origin_segment(self):
-        c = _client_with_grid()
-        c.signs = {"chicken1.nw": {(5, 5): "hello"}}
+    def test_finds_a_sign_off_the_origin_segment(self, grid_game):
+        h = grid_game(signs=[(5, 5, "hello")],
+                      tiles=lambda tx, ty: WALL if (tx, ty) == (5, 5) else 0)
+        c = h.client
         # TPlayer.cpp:2849 reads a sign only with the upward wall probe.
         c.player.x, c.player.y = 64 + 4.0, 64 + 5.0
         c.player.direction = 0
-        c.levels["chicken1.nw"] = [0] * 4096
-        c.levels["chicken1.nw"][5 * 64 + 5] = -1
 
-        h = _SignCheckHarness(c)
-        assert h._check_sign_nearby() == "hello"
+        assert h._check_sign_nearby() == "hello\n"
 
-    def test_no_false_match_across_a_segment_boundary(self):
+    def test_no_false_match_across_a_segment_boundary(self, grid_game):
         """Documents the wrap bug: world x=64.9 (just past segment (0,0)'s
         edge) must NOT read as local x=0.9 and match a sign sitting at local
         (0, 0) in a DIFFERENT segment than the player is actually in."""
-        c = _client_with_grid()
-        c._current_level_name = "chicken4.nw"  # grid (0, 0), origin (0, 0)
-        c.signs = {"chicken4.nw": {(0, 0): "far away"}}
+        h = grid_game(gmap_segment=(0, 0), signs=[(0, 0, "far away")])
+        c = h.client
+        assert c._current_level_name == NORTH_WEST   # grid (0, 0), origin (0, 0)
         # The upward probe crosses the segment edge; it must not wrap
         # back into the sign box at the current level's opposite corner.
         c.player.x, c.player.y = 63.0, 63.5
         c.player.direction = 0
 
-        h = _SignCheckHarness(c)
         assert h._check_sign_nearby() is None
-
-
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])

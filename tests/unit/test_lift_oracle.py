@@ -15,7 +15,9 @@ from pyreborn.hiding import can_hide
 from pyreborn.liftobjects import LIFT_NAMES, LIFT_OBJECTS
 from pyreborn.packets import PacketID, build_bomb_add, build_bomb_del, parse_other_player, parse_player_props
 from reborn_protocol import PacketBuilder
-from .test_throwing_oracle import Game as ThrowGame, tile_of
+from offline_game import spy
+from .test_throwing_oracle import (  # noqa: F401
+    BlitRecorder, build_throw_game, carry, record_blits, tile_of)
 
 
 LIFT = '''SETBACKTO carrystill
@@ -30,46 +32,40 @@ ANIEND
 '''
 
 
-class Game(ThrowGame, EntityRenderMixin, RenderMixin):
-    def __init__(self):
-        super().__init__()
-        self.active_bombs = []
-        self.bomb_fuse_time = 3.0
-        self.explosion_duration = .6
-        self._start_camera_shake = self._break_bushes_in_blast = Mock()
-        self.gani_parser = GaniParser()
-        for name in ('lift', 'carry', 'carrystill', 'hidden', 'hiddenstill', 'idle'):
-            text = LIFT
-            if name != 'lift':
-                text = 'LOOP\nANI\n0 0 0\n0 0 0\n0 0 0\n0 0 0\nANIEND\n'
-            self.gani_parser.put_cache(name, self.gani_parser.parse_content(text, name))
-        self.player_anim = AnimationState(self.gani_parser)
-        self.player_anim.set_animation('idle')
-        self.current_anim_name = 'idle'
-        self.grab_state = None
-        self.is_pushing = False
-        for name in ('other_player_anims', 'other_player_visual', 'npc_anims', 'npc_visual', 'baddy_anims', 'horse_anims'):
-            setattr(self, name, {})
+def place_object(game, index=0):
+    game._lift_probe_tile = lambda direction: (10, 10)
+    for (x, y), tile in zip(((10, 10), (10, 11), (11, 10), (11, 11)), LIFT_OBJECTS[index]):
+        game.client.tiles[y * 64 + x] = tile
+    game._replace_lifted_tiles = Mock()
 
-    def place_object(self, index=0):
-        self._lift_probe_tile = lambda direction: (10, 10)
-        for (x, y), tile in zip(((10, 10), (10, 11), (11, 10), (11, 11)), LIFT_OBJECTS[index]):
-            self.client.tiles[y * 64 + x] = tile
-        self._replace_lifted_tiles = Mock()
 
-    def bomb(self, sprite=0x41, fuse=3.0):
-        bomb = {'x': 10, 'y': 10, 'time': 99.0, 'fuse_time': fuse,
-                'power': 1, 'sprite': sprite, 'exploded': False}
-        self.active_bombs.append(bomb)
-        self.client.bombs['throw.nw'] = {0: dict(bomb)}
-        self._lift_probe_tile = lambda direction: (10, 10)
-        return bomb
+def place_bomb(game, sprite=0x41, fuse=3.0):
+    bomb = {'x': 10, 'y': 10, 'time': 99.0, 'fuse_time': fuse,
+            'power': 1, 'sprite': sprite, 'exploded': False}
+    game.active_bombs.append(bomb)
+    game.client.bombs['throw.nw'] = {0: dict(bomb)}
+    game._lift_probe_tile = lambda direction: (10, 10)
+    return bomb
 
 
 @pytest.fixture
-def game(sim_time):
+def game(sim_time, make_game, monkeypatch):
+    """The throw game with the lift/carry ganis of this file in its parser
+    (a 4-frame lift with a sound, one-frame loops for the rest), and the
+    camera shake and blast helpers stubbed (their calls are what is read)."""
     sim_time(100.0)
-    return Game()
+    g = build_throw_game(make_game, monkeypatch)
+    g.active_bombs = []
+    g._start_camera_shake = g._break_bushes_in_blast = Mock()
+    for name in ('lift', 'carry', 'carrystill', 'hidden', 'hiddenstill', 'idle'):
+        text = LIFT
+        if name != 'lift':
+            text = 'LOOP\nANI\n0 0 0\n0 0 0\n0 0 0\n0 0 0\nANIEND\n'
+        g.gani_parser.put_cache(name, g.gani_parser.parse_content(text, name))
+    g.player_anim.set_animation('idle')
+    g.current_anim_name = 'idle'
+    g.gani_sound_calls = spy(monkeypatch, g.sound_mgr, 'play_from_gani')
+    return g
 
 
 @pytest.mark.parametrize('mode', [4, 5, 10])
@@ -78,7 +74,7 @@ def test_a_refuses_lift_pull_and_swim_modes(game, mode):
     game._find_chest_in_front = Mock()
     game._try_grab()
     game._find_chest_in_front.assert_not_called()
-    game.place_object()
+    place_object(game)
     assert not game._lift_in_front(3)
     assert not game.client.player.is_carrying()
     game._pickup_ground_item = Mock()
@@ -87,17 +83,17 @@ def test_a_refuses_lift_pull_and_swim_modes(game, mode):
 
 
 def test_successful_lift_sets_mode_and_plays_gani_sound_once(game):
-    game.place_object()
+    place_object(game)
     assert game._lift_in_front(3)
     assert game.client.player.action_mode == 4
     assert game.current_anim_name == 'lift'
-    game.sound_mgr.play.assert_not_called()
+    assert game.sound_calls == []
     game._update_animations(.05)
-    game.sound_mgr.play_from_gani.assert_called_once_with(('lift.wav', 1.5, 2.0))
+    assert game.gani_sound_calls == [((('lift.wav', 1.5, 2.0),), {})]
     assert game.current_anim_name == 'carrystill'
     assert game.client.player.action_mode == 0
     game._update_animations(.05)
-    game.sound_mgr.play_from_gani.assert_called_once()
+    assert len(game.gani_sound_calls) == 1
 
 
 @pytest.mark.parametrize('direction,positions', [
@@ -118,21 +114,23 @@ def test_lift_counter_is_subframe_not_gani_frame():
 
 
 @pytest.mark.parametrize('code,index', [(1, 0), (7, 1), (5, 2), (3, 3), (201, 4)])
-def test_remote_carry_tiles_and_rest_render(game, code, index):
+def test_remote_carry_tiles_and_rest_render(game, monkeypatch, code, index):
+    record_blits(game, monkeypatch)
     tl, bl, tr, br = LIFT_OBJECTS[index]
     assert carry_tiles(code) == (tl, tr, bl, br)
     game._render_animated_entity = Mock()
     game._render_other_player(100, 200, {'carry_sprite': code}, 8)
-    assert [c.args[0] for c in game.screen.blit.call_args_list] == [tl, tr, bl, br]
-    assert game.screen.blit.call_args_list[0].args[1] == (108, 178)
+    assert [source for source, _ in game.screen.blits] == [tl, tr, bl, br]
+    assert game.screen.blits[0][1] == (108, 178)
 
 
 @pytest.mark.parametrize('code', [0, 200])
-def test_remote_bombs_render_bomb_graphic(game, code):
+def test_remote_bombs_render_bomb_graphic(game, monkeypatch, code):
+    record_blits(game, monkeypatch)
     game._render_animated_entity = Mock()
     game._get_effect_sprite = Mock(return_value='bomb-image')
     game._render_other_player(100, 200, {'carry_sprite': code}, 8)
-    game.screen.blit.assert_called_once_with('bomb-image', (108, 178))
+    assert game.screen.blits == [('bomb-image', (108, 178))]
 
 
 @pytest.mark.parametrize('code', [-1, 0, 1, 3, 5, 7, 200, 201])
@@ -155,8 +153,7 @@ def test_remote_lift_setback_does_not_restart_on_each_draw(game, monkeypatch):
 
 
 def test_remote_bomb_pickup_pauses_fuse_and_transfers_it_to_throw(game):
-    wire_client_callbacks(game)
-    bomb = game.bomb()
+    bomb = place_bomb(game)
     game.client.players[8] = {'x': 8.5, 'y': 10, 'direction': 0, 'carry_sprite': 0}
     game.client.on_bomb_del(10, 10)
     assert game.client.players[8]['_carried_bomb'] is bomb
@@ -180,21 +177,20 @@ def test_remote_animation_retries_after_its_asset_arrives(game):
 @pytest.mark.parametrize('index,wire', [(0, 33), (1, 39), (2, 37), (3, 35), (4, 233)])
 @pytest.mark.parametrize('hurt', [False, True])
 def test_carry_property_lift_throw_and_hurt_drop(game, index, wire, hurt):
-    wire_client_callbacks(game)
     game.client.player.glove_power = 3
-    game.place_object(index)
+    place_object(game, index)
     assert game._lift_in_front(3)
-    calls = game.client._protocol.send_packet.call_args_list
-    assert any(c.args == (PacketID.PLI_PLAYERPROPS, bytes([51, wire])) for c in calls)
+    calls = game.sent
+    assert (PacketID.PLI_PLAYERPROPS, bytes([51, wire])) in calls
     if hurt:
         game.client.respond_to_hurt(.5)
         game.client.on_hurt(8, .5, 'bush', -1, 0)
     else:
         game._throw_object()
     assert game.client.player.carry_sprite == -1
-    assert any(c.args == (PacketID.PLI_PLAYERPROPS, bytes([51, 31])) for c in calls)
-    ids = [c.args[0] for c in calls]
-    clear = next(i for i, c in enumerate(calls) if c.args == (PacketID.PLI_PLAYERPROPS, bytes([51, 31])))
+    assert (PacketID.PLI_PLAYERPROPS, bytes([51, 31])) in calls
+    ids = [pid for pid, _ in calls]
+    clear = calls.index((PacketID.PLI_PLAYERPROPS, bytes([51, 31])))
     assert ids.index(PacketID.PLI_THROWCARRIED) < clear
 
 
@@ -203,7 +199,7 @@ def test_carry_property_lift_throw_and_hurt_drop(game, index, wire, hurt):
     (False, True, 'hiddenstill'), (True, True, 'hidden'),
 ])
 def test_carry_idle_and_walk_animations(game, moving, hidden, expected):
-    game.carry()
+    carry(game)
     game.is_moving = moving
     game.client.player.action_mode = 14 if hidden else 0
     game._update_animations(0)
@@ -216,7 +212,7 @@ def test_missing_carrystill_falls_back(game):
 
 
 def test_carrying_refuses_sit_sleep_and_bomb_hiding(game):
-    game.carry()
+    carry(game)
     game._effective_tile_type = lambda x, y: 3
     game._update_sitting_state()
     assert not game.client.player.is_sitting
@@ -229,14 +225,14 @@ def test_carrying_refuses_sit_sleep_and_bomb_hiding(game):
 
 @pytest.mark.parametrize('sprite,wire', [(0x41, 32), (0x42, 232)])
 def test_bomb_pickup_and_landing_preserve_fuse(game, sim_time, sprite, wire):
-    bomb = game.bomb(sprite)
+    bomb = place_bomb(game, sprite)
     assert game._lift_in_front(3)
     assert game.client.player.carried_bomb is bomb
     assert bomb['time'] == 99
     assert not game.client.bombs['throw.nw']
-    calls = game.client._protocol.send_packet.call_args_list
-    assert any(c.args == (PacketID.PLI_BOMBDEL, build_bomb_del(10, 10)) for c in calls)
-    assert any(c.args == (PacketID.PLI_PLAYERPROPS, bytes([51, wire])) for c in calls)
+    calls = game.sent
+    assert (PacketID.PLI_BOMBDEL, build_bomb_del(10, 10)) in calls
+    assert (PacketID.PLI_PLAYERPROPS, bytes([51, wire])) in calls
     game._throw_object()
     sim_time(100.45)
     game._update_and_render_thrown(.45)
@@ -244,12 +240,12 @@ def test_bomb_pickup_and_landing_preserve_fuse(game, sim_time, sprite, wire):
     assert (bomb['x'], bomb['y']) == pytest.approx((29.5, 21.925))
     assert bomb['time'] == 100.45 and bomb['fuse_time'] == 2
     expected = build_bomb_add(29.5, 21.925, 1, 1750, True)  # ticks-5
-    assert any(c.args == (PacketID.PLI_BOMBADD, expected) for c in calls)
+    assert (PacketID.PLI_BOMBADD, expected) in calls
     assert game.break_effects == []
 
 
 def test_bomb_fuse_pauses_while_carried(game, sim_time):
-    bomb = game.bomb(fuse=1.1)
+    bomb = place_bomb(game, fuse=1.1)
     assert game._lift_in_front(3)
     sim_time(100.11)
     game._advance_bombs()
@@ -259,8 +255,8 @@ def test_bomb_fuse_pauses_while_carried(game, sim_time):
 
 
 def test_tile_pattern_precedes_bomb_pickup(game):
-    bomb = game.bomb()
-    game.place_object()
+    bomb = place_bomb(game)
+    place_object(game)
     assert game._lift_in_front(3)
     assert game.client.player.carried_object_type == 'bush'
     assert bomb.get('carried_by') is None
@@ -274,20 +270,19 @@ def test_hot_bomb_sprite_is_taken_from_current_fuse_phase():
 
 
 def test_bomb_water_landing_splashes_instead_of_replacing(game):
-    bomb = game.bomb()
+    bomb = place_bomb(game)
     assert game._lift_in_front(3)
     game._throw_object()
     game._check_water_at_position = lambda x, y: True
     game._update_and_render_thrown(.45)
     assert bomb not in game.active_bombs
     assert game.break_effects[0]['leap_type'] == 5
-    assert not any(c.args[0] == PacketID.PLI_BOMBADD
-                   for c in game.client._protocol.send_packet.call_args_list)
+    assert not any(pid == PacketID.PLI_BOMBADD for pid, _ in game.sent)
 
 
 @pytest.mark.parametrize('probe,hit', [((10, 10), True), ((11, 11), True),
                                      ((12, 10), False), ((10, 12), False), ((9, 10), False)])
 def test_bomb_pickup_uses_half_open_two_tile_box(game, probe, hit):
-    game.bomb()
+    place_bomb(game)
     game._lift_probe_tile = lambda direction: probe
     assert game._lift_in_front(3) is hit

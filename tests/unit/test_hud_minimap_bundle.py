@@ -9,7 +9,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
-from pyreborn.game.input import InputMixin
+from offline_game import key_event, spy
 from pyreborn.game.minimap import aspect_fit, map_entity_positions
 from pyreborn.inventory_ui import HeartDisplay, resolve_weapon_indicator
 
@@ -78,34 +78,14 @@ def test_world_entity_dots_use_each_players_segment():
 
 
 @pytest.mark.parametrize("close_key", [pygame.K_m, pygame.K_ESCAPE])
-def test_open_map_dispatch_swallows_keys_and_m_or_escape_close(monkeypatch, close_key):
-    class _Game(InputMixin):
-        pass
-
-    game = _Game()
-    game.running = True
+def test_open_map_dispatch_swallows_keys_and_m_or_escape_close(make_game, monkeypatch, close_key):
+    game = make_game()
+    game.frames(1)
     game.big_map_visible = True
-    game.key_just_pressed = {}
-    game.client = SimpleNamespace(player=SimpleNamespace(hearts=3),
-                                  input_frozen=False, weapons={})
-    game.pm_target_id = None
-    game.show_player_list = False
-    game.show_server_list = False
-    game.typing = False
-    game.inventory_ui = SimpleNamespace(visible=False)
-    game.settings_ui = SimpleNamespace(visible=False)
-    game._gs1_keypress_queue = []
-    game._ensure_settings_ui = lambda: game.settings_ui
-    game._gs2_gui_event = lambda event: False
-    called = []
-    game._handle_key_press = lambda event: called.append(event.key)
-    monkeypatch.setattr(pygame.event, "get", lambda: [
-        pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_a, "unicode": "a"}),
-        pygame.event.Event(pygame.KEYDOWN, {"key": close_key, "unicode": ""}),
-    ])
+    pressed = spy(monkeypatch, game, "_handle_key_press")
 
-    game._handle_events()
+    game.frames(1, events=[key_event(pygame.K_a, "a"), key_event(close_key)])
 
     assert game.big_map_visible is False
-    assert called == []
+    assert pressed == []
     assert game._gs1_keypress_queue == []

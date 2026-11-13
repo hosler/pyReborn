@@ -10,6 +10,7 @@ from reborn_protocol.gs1.host_shared import host_value
 
 from ..palette import REBORN_PALETTE, REBORN_PALETTE_ALIASES
 from .registry import NPC_ATTR, PLAYER_ATTR, _NPC_WRITE
+from ..logutil import log_swallowed
 
 
 
@@ -286,7 +287,7 @@ class _ServerFlagScope(dict):
             cl.set_flag("server." + str(k), sv)
             self._sent[k] = sv
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def recv(self, k, v):
         """Set a flag value received from the server (do not echo it back). The
@@ -350,7 +351,7 @@ class _PlayerFlagScope(dict):
             cl.set_flag("client." + str(k), sv)
             self._sent[k] = sv
         except Exception:
-            pass
+            log_swallowed(logger)
 
     def recv(self, k, v):
         """Merge a player flag received from the server (no echo). Both

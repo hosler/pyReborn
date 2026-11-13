@@ -1,16 +1,12 @@
-"""Combat checks against the verified client functions and content steps."""
-
 from collections import defaultdict
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pygame
 import pytest
 from reborn_protocol import PLSTATUS
 
-from pyreborn import Client
+from offline_game import key_event, spy
 from pyreborn.arrowflight import ARROW_SIZES, overlaps_player, shield_blocks
-from pyreborn.game.input import InputMixin
 from pyreborn.packets import PacketID
 from pyreborn.sword import SwordState, owns_spin, play_sword_pose
 from pyreborn.throwing import advance_throw, throw_hits
@@ -18,23 +14,29 @@ from pyreborn.tiletypes import TILE_TYPES
 
 
 @pytest.fixture
-def client(sim_time, monkeypatch):
+def game(sim_time, make_game):
+    """A real offline game in 'combat.nw' on an open board, the player at
+    (30, 30), simulation time pinned at 100 and nothing sent yet."""
     sim_time(lambda: 100.0)
-    c = Client('localhost', 14900)
-    c._authenticated = True
-    c._protocol = SimpleNamespace(connected=True, send_packet=Mock(return_value=True),
-                                  recv_packets=lambda _: [])
-    c._current_level_name = c._tiles_level_name = 'combat.nw'
-    c.tiles = [0] * 4096
-    c.levels['combat.nw'] = c.tiles
-    c.player.x = c.player.y = 30.0
-    return c
+    g = make_game(level='combat.nw', player_xy=(30.0, 30.0),
+                  tiles=lambda tx, ty: 0)
+    g.client._protocol.sent.clear()
+    return g
+
+
+@pytest.fixture
+def client(game):
+    return game.client
+
+
+def sent_with(client, packet_id):
+    """The payloads of every packet of ``packet_id`` the client sent."""
+    return [data for pid, data in client._protocol.sent if pid == packet_id]
 
 
 def test_sword_tests_all_five_ticks_and_late_entry(sim_time, client, monkeypatch):
     client.players[7] = {'x': 40, 'y': 30}
-    probe = Mock(wraps=client._sword_hit_players)
-    client._sword_hit_players = probe
+    probe = spy(monkeypatch, client, '_sword_hit_players')
     assert client.sword_attack(3)
     assert client.player.action_mode == 6
     client.players[7]['x'] = 33
@@ -42,13 +44,12 @@ def test_sword_tests_all_five_ticks_and_late_entry(sim_time, client, monkeypatch
     for now in (100.05, 100.1, 100.15, 100.2, 100.25):
         sim_time(lambda: now)
         client.run_tick()   # one simulation tick of the library
-    assert probe.call_count == 5
+    assert len(probe) == 5
     assert client.player.action_mode == 0
-    hits = [call for call in client._protocol.send_packet.call_args_list
-            if call.args[0] == PacketID.PLI_HURTPLAYER]
+    hits = sent_with(client, PacketID.PLI_HURTPLAYER)
     assert len(hits) == 1  # victim immunity remains two seconds
     # attack packet direction bytes carry half of the radial delta.
-    assert hits[0].args[1][2:4] == bytes((32 + 24, 32 + 8))
+    assert hits[0][2:4] == bytes((32 + 24, 32 + 8))
 
 
 def test_spin_uses_item_24_and_a_second_press(client):
@@ -69,11 +70,11 @@ def test_spin_rotates_every_two_steps_and_uses_thirteen_frames():
     assert [direction for _, direction in state.due(1)] == [3, 3, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 3]
 
 
-def test_spin_sweeps_bush_probes_and_npcs(client):
+def test_spin_sweeps_bush_probes_and_npcs(client, monkeypatch):
     client.player.status |= 0x40
     client.sword_attack(0)
-    client._sword_cut_bushes = Mock()
-    client._sword_hit_npcs = Mock()
+    monkeypatch.setattr(client, '_sword_cut_bushes', Mock())
+    monkeypatch.setattr(client, '_sword_hit_npcs', Mock())
     client.sword_attack(0)
     client._tick_sword_attack(100.6)
     sweeps = [call.args[0] for call in client._sword_cut_bushes.call_args_list
@@ -105,15 +106,16 @@ def test_healing_threshold_is_forty(client, ap, allowed):
     assert client.player.hearts == (2 if allowed else 1)
 
 
-def test_saint_target_blocks_sword_but_saint_attacker_is_not_gated(client):
+def test_saint_target_blocks_sword_but_saint_attacker_is_not_gated(client, monkeypatch):
     client.player.ap = 100
     client.players[7] = {'x': 33, 'y': 30, 'ap': 100}
-    client.attack_player = Mock()
+    attack = Mock()
+    monkeypatch.setattr(client, 'attack_player', attack)
     client._sword_hit_players(3)
-    client.attack_player.assert_not_called()
+    attack.assert_not_called()
     client.players[7]['ap'] = 50
     client._sword_hit_players(3)
-    client.attack_player.assert_called_once()
+    attack.assert_called_once()
 
 
 @pytest.mark.parametrize('direction', range(4))
@@ -138,8 +140,7 @@ def test_shield_deflects_or_mirrors_with_literal_damage_fallthrough(client, shie
     client._tick_arrow_sims(.3)
     assert len(client._pending_arrow_hits) == (1 if shield == 2 else 0)
     assert client.player.hearts == 3
-    mirrored = [call for call in client._protocol.send_packet.call_args_list
-                if call.args[0] == PacketID.PLI_ARROWADD]
+    mirrored = sent_with(client, PacketID.PLI_ARROWADD)
     assert len(mirrored) == (1 if shield == 2 else 0)
     client._tick_arrow_sims(.3 + client._ARROW_HIT_GRACE)
     assert client.player.hearts == (2 if shield == 2 else 3)
@@ -152,11 +153,13 @@ def test_arrow_survives_twenty_ticks(client):
     assert client._arrow_sims[0]['x'] == pytest.approx(21)
 
 
-def throw_game(client, tile_type=0):
+def throw_game(game, tile_type=0):
+    """``game`` with its whole board set to the first tile of ``tile_type`` and
+    NPC events recorded (``game.gs1.trigger_npc_event`` is a Mock)."""
     tile = next(i for i, kind in enumerate(TILE_TYPES) if kind == tile_type)
-    return SimpleNamespace(client=client, _get_tile_at=lambda x, y: tile,
-                           _is_tile_blocking=lambda t: TILE_TYPES[t] >= 20,
-                           gs1=SimpleNamespace(trigger_npc_event=Mock()))
+    game.client.tiles[:] = [tile] * 4096
+    game.gs1.trigger_npc_event = Mock()
+    return game
 
 
 def obj(direction=3):
@@ -165,8 +168,8 @@ def obj(direction=3):
             'dist': 0, 'range': 9, 'z': 2.75, 'z0': 2.75, 'type': 'stone'}
 
 
-def test_throw_takes_nine_ticks_and_passes_type_twenty(client):
-    game, flying = throw_game(client, 20), obj()
+def test_throw_takes_nine_ticks_and_passes_type_twenty(client, game):
+    game, flying = throw_game(game, 20), obj()
     assert not advance_throw(game, flying, .049)
     assert flying['x'] == 10.5
     assert not advance_throw(game, flying, .351)
@@ -176,29 +179,31 @@ def test_throw_takes_nine_ticks_and_passes_type_twenty(client):
     assert flying['dist'] == 9
 
 
-def test_throw_cannot_tunnel_through_wall(client):
-    game, flying = throw_game(client, 22), obj()
+def test_throw_cannot_tunnel_through_wall(client, game):
+    game, flying = throw_game(game, 22), obj()
     assert advance_throw(game, flying, .45)
     assert flying['x'] == 11.5
 
 
 @pytest.mark.parametrize('hearts,damage', [(0.5, .5), (1, .5), (1.5, 1), (3, 1)])
-def test_throw_damage_depends_on_victim_hearts(client, hearts, damage):
-    game, flying = throw_game(client), obj()
+def test_throw_damage_depends_on_victim_hearts(client, hearts, damage, game, monkeypatch):
+    game, flying = throw_game(game), obj()
     client.players[8] = {'x': 12, 'y': 10, 'hearts': hearts}
-    client.attack_player = Mock()
+    attack = Mock()
+    monkeypatch.setattr(client, 'attack_player', attack)
     assert advance_throw(game, flying, .05)
-    client.attack_player.assert_called_once_with(8, damage=damage, knockback_x=1, knockback_y=0)
+    attack.assert_called_once_with(8, damage=damage, knockback_x=1, knockback_y=0)
 
 
-def test_throw_uses_point_npc_probe_before_player_hit(client):
-    game, flying = throw_game(client), obj()
+def test_throw_uses_point_npc_probe_before_player_hit(client, game, monkeypatch):
+    game, flying = throw_game(game), obj()
     client.npcs[9] = {'x': 12.4, 'y': 11.9, 'width': .2, 'height': .2}
     client.players[8] = {'x': 12, 'y': 10}
-    client.attack_player = Mock()
+    attack = Mock()
+    monkeypatch.setattr(client, 'attack_player', attack)
     assert advance_throw(game, flying, .05)
     game.gs1.trigger_npc_event.assert_called_once_with(9, 'waspelt')
-    client.attack_player.assert_not_called()
+    attack.assert_not_called()
     assert client.npcs[9]['pelt_kind'] == 'stone'
 
 
@@ -207,72 +212,51 @@ def test_throw_hit_boundary_is_strict():
     assert not throw_hits(12.5, 11, 10, 10)
 
 
-def test_pause_p_toggles_only_status_bit_and_locks_input(client, monkeypatch):
-    class Game(InputMixin):
-        pass
-    game = Game()
-    game.client = client
+def test_pause_p_toggles_only_status_bit_and_locks_input(game, client, monkeypatch):
     game.is_moving = True
     client.player.status = 4
-    game._handle_key_press(SimpleNamespace(key=pygame.K_p))
+    game._handle_key_press(key_event(pygame.K_p))
     assert client.player.status == 5
     assert not game.is_moving
     assert not client.sword_attack(0)
-    assert client._protocol.send_packet.call_args.args[0] == PacketID.PLI_PLAYERPROPS
-    game.typing = game.show_player_list = game.show_server_list = False
-    game.dialogue_text = game.pm_target_id = None
-    game.inventory_ui = SimpleNamespace(visible=False)
-    game._ensure_settings_ui = lambda: SimpleNamespace(visible=False)
-    game._admin_overlay_captures_keys = game._gs2_gui_captures_keys = lambda: False
-    game._revive_on_input = lambda *args: False
-    game._feed_gs1_input = Mock()
-    game._auto_pickup_items = Mock()
+    assert client._protocol.sent[-1][0] == PacketID.PLI_PLAYERPROPS
+    monkeypatch.setattr(game, '_revive_on_input', lambda *args: False)
+    pickups = spy(monkeypatch, game, '_auto_pickup_items')
     monkeypatch.setattr(pygame.key, 'get_pressed', lambda: defaultdict(bool, {pygame.K_UP: True}))
     game._handle_input(100)
-    game._auto_pickup_items.assert_not_called()
-    game._handle_key_press(SimpleNamespace(key=pygame.K_p))
+    assert pickups == []
+    game._handle_key_press(key_event(pygame.K_p))
     assert client.player.status == 4
 
 
 @pytest.mark.parametrize('available,pose', [(True, 'spin'), (False, 'idle')])
-def test_spin_pose_fallback_keeps_action_state(client, available, pose):
+def test_spin_pose_fallback_keeps_action_state(game, client, monkeypatch, available, pose):
     client.player.animation = 'spin'
     client.player.action_mode = 13
-    game = SimpleNamespace(client=client, gani_parser=SimpleNamespace(
-        parse=lambda name: object() if available else None),
-        _play_action_animation=Mock())
+    monkeypatch.setattr(game.gani_parser, 'parse',
+                        lambda name: object() if available else None)
+    play = Mock()
+    monkeypatch.setattr(game, '_play_action_animation', play)
     play_sword_pose(game)
-    game._play_action_animation.assert_called_once_with(pose, broadcast=False)
+    play.assert_called_once_with(pose, broadcast=False)
     assert client.player.action_mode == 13
 
 
 @pytest.mark.parametrize('pose', ['spin', 'idle'])
-def test_spin_locks_held_movement_even_during_fallback(client, monkeypatch, pose):
-    class Game(InputMixin):
-        pass
-    game = Game()
-    game.client = client
-    game.typing = game.show_player_list = game.show_server_list = False
-    game.dialogue_text = game.pm_target_id = None
-    game.inventory_ui = SimpleNamespace(visible=False)
-    game._ensure_settings_ui = lambda: SimpleNamespace(visible=False)
-    game._admin_overlay_captures_keys = game._gs2_gui_captures_keys = lambda: False
-    game._revive_on_input = lambda *args: False
-    game._feed_gs1_input = game._fire_gs1_keypress_queue = Mock()
-    game._auto_pickup_items = game._clear_grab_state = game._clear_push_hold = Mock()
-    game.gs1 = SimpleNamespace(default_movement=True)
+def test_spin_locks_held_movement_even_during_fallback(game, client, monkeypatch, pose):
+    monkeypatch.setattr(game, '_revive_on_input', lambda *args: False)
+    moves = spy(monkeypatch, game, '_move')
     game.current_anim_name = pose
     game.key_just_pressed = {}
-    game._move = Mock()
     client.player.action_mode = 13
     monkeypatch.setattr(pygame.key, 'get_pressed', lambda: defaultdict(bool, {pygame.K_RIGHT: True}))
     game._handle_input(100)
-    game._move.assert_not_called()
+    assert moves == []
     assert game.is_moving is False
 
 
-def test_remote_throw_uses_shared_hurt_grace_and_duplicate_guard(client):
-    game, flying = throw_game(client), obj()
+def test_remote_throw_uses_shared_hurt_grace_and_duplicate_guard(client, game):
+    game, flying = throw_game(game), obj()
     client.player.x, client.player.y = 12, 10
     flying['owner_id'] = 8
     assert advance_throw(game, flying, .05, remote=True)
@@ -286,10 +270,11 @@ def test_remote_throw_uses_shared_hurt_grace_and_duplicate_guard(client):
     assert client.player.hearts == 2
 
 
-def test_throw_checks_bomb_before_npc_or_player(client):
-    game, flying = throw_game(client), obj()
+def test_throw_checks_bomb_before_npc_or_player(client, game, monkeypatch):
+    game, flying = throw_game(game), obj()
     client.bombs['combat.nw'] = {1: {'x': 12, 'y': 12}}
     client.players[8] = {'x': 12, 'y': 10}
-    client.attack_player = Mock()
+    attack = Mock()
+    monkeypatch.setattr(client, 'attack_player', attack)
     assert advance_throw(game, flying, .05)
-    client.attack_player.assert_not_called()
+    attack.assert_not_called()

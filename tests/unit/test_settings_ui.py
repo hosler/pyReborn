@@ -37,20 +37,6 @@ class _Key:
         self.key = key
 
 
-class _FakeGame:
-    """Just enough of GameClient's surface for SettingsOverlay to drive:
-    a real SoundManager (its volume/music_enabled setters do not touch the
-    mixer before initialize()) and a real Camera2D (zoom clamps
-    identically to the live client)."""
-
-    def __init__(self):
-        self.sound_mgr = SoundManager()
-        self.camera = Camera2D(640, 480)
-        self.minimap_visible = True
-        self._day_night_enabled = True
-        self._low_hearts_warning_enabled = True
-
-
 def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
     hud = HUD.__new__(HUD)
     hud.game = SimpleNamespace(
@@ -88,8 +74,14 @@ def prefs_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def overlay(prefs_home):
-    return SettingsOverlay(_FakeGame())
+def overlay(prefs_home, make_game):
+    """A SettingsOverlay on a real offline game (real sound manager, camera
+    and flags), its toggles at the defaults the overlay is specified from."""
+    game = make_game()
+    game.minimap_visible = True
+    game._day_night_enabled = True
+    game._low_hearts_warning_enabled = True
+    return SettingsOverlay(game)
 
 
 # -- Prefs round-trip for the new fields -------------------------------------
@@ -187,7 +179,7 @@ def test_zoom_adjust_clamps_to_camera_bounds_and_persists(overlay):
     assert Prefs.load().zoom == Camera2D.MIN_ZOOM
 
 
-def test_apply_saved_prefs_pushes_prefs_into_live_state(prefs_home):
+def test_apply_saved_prefs_pushes_prefs_into_live_state(prefs_home, make_game):
     p = Prefs()
     p.sound_volume = 0.3
     p.music_enabled = False
@@ -197,7 +189,7 @@ def test_apply_saved_prefs_pushes_prefs_into_live_state(prefs_home):
     p.day_night = False
     p.save()
 
-    game = _FakeGame()
+    game = make_game()
     su = SettingsOverlay(game)
     su.apply_saved_prefs()
 
@@ -278,20 +270,15 @@ def test_f9_closes_settings_overlay(overlay):
     assert overlay.visible is False
 
 
-def test_chat_seq_counts_appends_past_history_cap():
+def test_chat_seq_counts_appends_past_history_cap(make_game):
     """The scroll indicator's "N new" math uses chat_seq, a monotonic append
     counter: unlike len(chat_messages), it keeps advancing once the log sits
     at CHAT_HISTORY_CAP (where every append pops a line)."""
     from pyreborn.game.constants import CHAT_HISTORY_CAP
-    from pyreborn.game.setup import SetupMixin
 
-    class _G(SetupMixin):
-        chat_seq = 0
-
-        def __init__(self):
-            self.chat_messages = []
-
-    g = _G()
+    g = make_game()
+    g.chat_messages = []
+    g.chat_seq = 0
     for i in range(CHAT_HISTORY_CAP):
         g._append_chat(f"m{i}")
     assert len(g.chat_messages) == CHAT_HISTORY_CAP

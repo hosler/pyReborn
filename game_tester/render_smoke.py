@@ -43,6 +43,9 @@ from pyreborn.pygame_game import GameClient
 from pyreborn.game.constants import TILE_SIZE
 from game_tester.login import level_ready, login_client
 from game_tester.test_scenarios import reset_account_position
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 SHARED_PORT = 14900
 # Set by main() from the command line; there is deliberately no default port.
@@ -89,7 +92,7 @@ def _quiet_disconnect(client: Client) -> None:
     try:
         client.disconnect()
     except Exception:
-        pass
+        log_swallowed(logger, level=logging.DEBUG)
 
 
 def _login_and_settle(stack: ExitStack, account: str,

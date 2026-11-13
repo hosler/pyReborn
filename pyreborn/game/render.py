@@ -21,6 +21,9 @@ from .constants import (
 )
 from .frame_context import FrameContextMixin
 from .clocked import ClockedMixin
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 class RenderMixin(ClockedMixin, FrameContextMixin):
@@ -417,6 +420,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             self._level_transition_input_frozen = True
             return True
         except Exception:
+            log_swallowed(logger)
             self._level_transition_slide = None
             self._level_transition_input_frozen = False
             return False

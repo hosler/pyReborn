@@ -21,6 +21,9 @@ from ..packets import (
 )
 from ..client_callbacks import emit
 from .registry import handles
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 @handles(PacketID.PLO_NPCWEAPONADD)
@@ -50,13 +53,13 @@ def handle_triggeraction(client, data):
             if action_name:
                 client.gs1_host.trigger_event('action' + action_name)
         except Exception:
-            pass
+            log_swallowed(logger)
     # GS2 counterpart: fire onAction<name>(params...) on loaded VMs.
     if client.gs2_host is not None and info['action']:
         try:
             client.gs2_host.handle_triggeraction(info['action'])
         except Exception:
-            pass
+            log_swallowed(logger)
 
 
 @handles(PacketID.PLO_NPCBYTECODE)
@@ -133,7 +136,7 @@ def _receive_script_header(client, info):
                     client.gs1_host.receive_class_source(
                         info['name'], info['bytecode'])
                 except Exception:
-                    pass
+                    log_swallowed(logger)
             emit(client, 'on_gs2_bytecode', kind, info['name'], info['bytecode'])
         elif info['type'] == 'weapon':
             # Header-only announcement (Weapon.cpp

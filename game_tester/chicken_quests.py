@@ -55,6 +55,9 @@ from pyreborn.pygame_game import GameClient
 from pyreborn.game.constants import PLAYER_STAND_X, PLAYER_STAND_Y
 
 from .login import login_client
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 HOST = os.environ.get("PYREBORN_TEST_HOST", "localhost")
 PORT = int(os.environ.get("PYREBORN_TEST_PORT", "14900"))
@@ -237,7 +240,7 @@ class QuestSession:
         try:
             self.client.disconnect()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
     def pump(self, n: int = 8, dt: float = 0.05):
         _pump(self.game, n, dt)

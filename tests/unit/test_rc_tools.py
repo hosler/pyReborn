@@ -415,21 +415,16 @@ def test_nc_disconnect_during_access_proof_is_retryable():
 
 # -- the panel must not leave the player walking ------------------------------
 
-def test_an_open_panel_stops_held_key_movement():
+def test_an_open_panel_stops_held_key_movement(make_game):
     """The panels are modal for EVENTS, and movement does not run off events.
 
     `_handle_input` polls `key.get_pressed()` every frame, so the arrow keys
     that scroll a row are physically held and the player walked off underneath
     the open panel.
     """
-    from pyreborn.game.input import InputMixin
-
-    class _Harness(InputMixin):
-        def __init__(self):
-            self.rc_ui = SimpleNamespace(visible=False)
-            self.dev_ui = SimpleNamespace(visible=False)
-
-    harness = _Harness()
+    harness = make_game()
+    harness._ensure_rc_ui()
+    harness._ensure_dev_ui()
     assert harness._admin_overlay_captures_keys() is False
 
     harness.rc_ui.visible = True
@@ -440,15 +435,8 @@ def test_an_open_panel_stops_held_key_movement():
     assert harness._admin_overlay_captures_keys() is True
 
 
-def test_edit_mode_is_left_walkable_on_purpose():
+def test_edit_mode_is_left_walkable_on_purpose(make_game):
     """F11 is non-modal by design: a builder walks while painting."""
-    from pyreborn.game.input import InputMixin
-
-    class _Harness(InputMixin):
-        def __init__(self):
-            self.rc_ui = SimpleNamespace(visible=False)
-            self.dev_ui = SimpleNamespace(visible=False)
-            self.level_editor = SimpleNamespace(state=SimpleNamespace(
-                enabled=True))
-
-    assert _Harness()._admin_overlay_captures_keys() is False
+    game = make_game()
+    game._ensure_editor().state.enabled = True
+    assert game._admin_overlay_captures_keys() is False

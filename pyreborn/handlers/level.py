@@ -53,6 +53,8 @@ def handle_level_name(client, data):
     # Every LEVELNAME starts a new static-data context. An adjacent .nw
     # announcement below immediately replaces this with its preload target.
     client._pending_board_level_name = ""
+    if level_name.endswith('.nw'):
+        client.level_state.streaming_level_name = level_name
     # .nw files are actual levels, .gmap is the world map name
     if level_name.endswith('.nw'):
         is_adjacent_preload = level_name in client._adjacent_level_requests
@@ -115,6 +117,7 @@ def handle_level_name(client, data):
             # (gs2emu won't re-stream them on a re-entry).
             client._reset_level_state()
             client._restore_cached_npcs(level_name)
+            client._restore_cached_layers(level_name)
         elif level_name == client._awaiting_warp_confirm:
             # Client-initiated warp: _current_level_name already equals
             # level_name (flipped optimistically at send), so the guard
@@ -132,6 +135,7 @@ def handle_level_name(client, data):
             # BEFORE the warp, so no transit-window leak comes back.)
             client._reset_level_state(cache_npcs=False)
             client._restore_cached_npcs(level_name)
+            client._restore_cached_layers(level_name)
             client._plain_level_change_epoch += 1
         if (client._awaiting_warp_confirm
                 and level_name == client._awaiting_warp_confirm):
@@ -235,12 +239,19 @@ def handle_board_packet(client, data):
                        or client._current_level_name)
     if level_for_tiles:
         client.levels[level_for_tiles] = tiles
-        # A fresh board stream means this level's static data (signs
-        # included) is being (re-)sent: restart the ordered sign list so a
-        # server that re-streams per entry (pygserver) doesn't append
-        # duplicates and shift `say <n>` indices. gs2emu streams a level's
-        # board only once per session, so its list is simply never reset.
+        # A real board means the level changed since the mod time we sent (or
+        # we sent none): the server follows it with that level's links and
+        # signs, and the reference replaces the cached level wholesale. Drop
+        # the old ones, the stored layers and the ordered sign list (a
+        # re-streaming server would otherwise append duplicates and shift
+        # `say <n>` indices). An empty PLO_LEVELBOARD ("keep your copy") never
+        # reaches here, so a visited level keeps all of it.
+        client.links.pop(level_for_tiles, None)
+        client.signs.pop(level_for_tiles, None)
         client.sign_lists.pop(level_for_tiles, None)
+        client.level_state.level_layers.pop(level_for_tiles, None)
+        if client._board_layers_level_name == level_for_tiles:
+            client.board_layers.clear()
     # client.tiles is the ACTIVE render/collision board and must only
     # ever switch on a real warp/segment change - never on a GMAP
     # adjacent-segment preload (request_adjacent_levels(), answered
@@ -520,8 +531,11 @@ def handle_is_leader(client, data):
 
 @handles(PacketID.PLO_LEVELMODTIME)
 def handle_level_mod_time(client, data):
-    # Active level's mod time (packet 39).
-    level = client.active_level or client._pending_level_name
+    # Mod time of the level being streamed (packet 39). The reference sends it
+    # at the end of the static data (PlayerClient.cpp:1513), before the
+    # set-active-level packet, so the active level is still the previous one.
+    level = (client.level_state.streaming_level_name or client.active_level
+             or client._pending_level_name)
     client.level_modtimes[level] = parse_level_modtime(data)
 
 

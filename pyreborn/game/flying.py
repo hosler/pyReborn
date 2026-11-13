@@ -72,7 +72,8 @@ class FlyingObjectsMixin:
             if proj['bounce'] == NOT_BOUNCING:
                 return True
 
-        if hits_walls(power) and self._is_blocked_at(cx, cy, check_players=True):
+        if hits_walls(power) and self._is_blocked_at(cx, cy, check_players=True,
+                                                include_local=True):
             self._flying_explode(proj, old_x, old_y)
             return True
         return False

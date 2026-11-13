@@ -13,6 +13,7 @@ from ..tiletypes import selection_for
 from .board import GS1NoBoard, board_tile_read, board_tile_write
 from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number, _write_npc_attr
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
+from ..logutil import log_swallowed
 
 
 
@@ -128,6 +129,7 @@ class BuiltinsMixin:
             try:
                 return [b for b in (src() or []) if not b.get("exploded")]
             except Exception:
+                log_swallowed(logger)
                 return []
         cl = self.rt.client
         if cl is None:

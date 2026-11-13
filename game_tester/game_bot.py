@@ -39,6 +39,9 @@ from pyreborn.tiletypes import (
 from .login import login_client
 from .pathing import UNREACHABLE, plan_path
 from .world_graph import Hop, WorldGraph
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -339,7 +342,7 @@ class GameBot:
         try:
             self.client.disconnect()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
 
     def disconnect(self):
         """Disconnect from server."""

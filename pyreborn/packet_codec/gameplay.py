@@ -1,5 +1,8 @@
 from .common import *
 from reborn_protocol.coords import world_to_local
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 def parse_hurt_player(data: bytes) -> dict:
     """
@@ -591,6 +594,19 @@ def build_level_warp(x: float, y: float, level_name: str) -> bytes:
     return bytes(packet)
 
 
+def build_level_warp_mod(x: float, y: float, level_name: str,
+                         mod_time: int) -> bytes:
+    """
+    Build PLI_LEVELWARPMOD (packet 30) - warp to a level we hold a cached copy of.
+
+    Same body as PLI_LEVELWARP behind a 5-byte GUInt5 mod time (the value the
+    server last gave us in PLO_LEVELMODTIME), so the server can skip a board
+    we already have. Layout: gint5(mod_time) gchar(x*2) gchar(y*2) name.
+    """
+    packet = PacketBuilder().write_gint5(mod_time).build()
+    return packet + build_level_warp(x, y, level_name)
+
+
 def build_private_message(player_ids: list, message: str) -> bytes:
     """
     Build PLI_PRIVATEMESSAGE (packet 28) - send a private message.
@@ -730,6 +746,7 @@ def parse_private_message(data: bytes) -> dict:
             'message': message
         }
     except Exception:
+        log_swallowed(logger, level=logging.DEBUG)
         return {'from_id': 0, 'type': '', 'message': ''}
 
 

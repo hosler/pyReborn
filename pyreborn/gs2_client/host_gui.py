@@ -6,6 +6,9 @@ from reborn_protocol.gs2 import GS2Object
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
 from .registry import _FALL_THROUGH, _GS2_GUI_METHODS, _GS2_POPUP_METHODS, _gs2_builtin
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 class HostGuiMixin:
 
@@ -69,7 +72,7 @@ class HostGuiMixin:
             fields = obj._members if isinstance(obj, GS2Object) else {}
             size = to_num(fields.get("fontsize", 14.0) or 14.0)
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)
         return float(len(text)) * max(size, 8.0) * 0.55
 
     @_gs2_builtin(_GS2_GUI_METHODS, "trigger")

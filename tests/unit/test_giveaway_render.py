@@ -6,10 +6,10 @@ from unittest.mock import Mock
 import pygame
 import pytest
 
+from offline_game import spy
 from pyreborn.clock import Clock
 from pyreborn import ground_items as gi
 from pyreborn.classic_sprites import SPRITE_RECTS
-from pyreborn.game.actions import ActionsMixin
 from pyreborn.game.render_entities import EntityRenderMixin
 from pyreborn.player import Player
 
@@ -80,30 +80,39 @@ def test_giveaway_missing_sprite_skips_blit():
     game.screen.blit.assert_not_called()
 
 
-class _SelectionGame(ActionsMixin):
-    def __init__(self):
-        self.client = SimpleNamespace(player=Player(rupees=40), set_animation=Mock())
-        self.player_anim = Mock()
-        self.sound_mgr = Mock()
+@pytest.fixture
+def selection_game(make_game, monkeypatch):
+    """A real offline game holding 40 rupees; call-through spies on the three
+    things a selection touches (``game.calls['anim' | 'sent' | 'sound']``)."""
+    game = make_game(me={"rupees": 40})
+    game.client.player.direction = 2
+    game.calls = {
+        'anim': spy(monkeypatch, game.player_anim, 'set_animation'),
+        'sent': spy(monkeypatch, game.client, 'set_animation'),
+        'sound': spy(monkeypatch, game.sound_mgr, 'play'),
+    }
+    return game
 
 
-def test_giveaway_select_enters_mode_nine_with_idle_and_cycles():
-    game = _SelectionGame()
+def test_giveaway_select_enters_mode_nine_with_idle_and_cycles(selection_game):
+    game = selection_game
+    assert game.client.player.rupees == 40
     for item in (0, 1, 2):
         game._giveaway_select()
         assert game._giveaway_item == item
         assert game.client.player.action_mode == 9
         assert game.current_anim_name == 'idle'
-        game.player_anim.set_animation.assert_called_with('idle', 2, force=True)
-        game.client.set_animation.assert_called_with('idle')
-        game.sound_mgr.play.assert_called_with('item2.wav')
+        assert game.calls['anim'][-1] == (('idle', 2), {'force': True})
+        assert game.calls['sent'][-1] == (('idle',), {})
+        assert game.calls['sound'][-1] == (('item2.wav',), {})
 
 
-def test_giveaway_without_available_items_clears_selection_mode():
-    game = _SelectionGame()
+def test_giveaway_without_available_items_clears_selection_mode(selection_game):
+    game = selection_game
     game._giveaway_select()
-    game.client.player.rupees = 0
-    game.client.player.hearts = 1.0
+    player = game.client.player
+    player.rupees = player.bombs = player.arrows = 0
+    player.hearts = 1.0
     game._giveaway_select()
     assert game._giveaway_item is None
     assert game.client.player.action_mode == 0

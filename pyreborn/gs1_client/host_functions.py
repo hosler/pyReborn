@@ -8,6 +8,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 
 from .objects import _GS1ObjectRef, _color_code_slot, _color_name, _current_baddies, _is_color_code, _pcode
 from .registry import _CHARPROP_NPC, _CHARPROP_PLAYER, _ONWALL2_EDGE_TOL
+from ..logutil import log_swallowed
 
 
 
@@ -116,6 +117,7 @@ class FunctionsMixin:
                 try:
                     size = self.rt.image_size_source(filename)
                 except Exception:
+                    log_swallowed(logger, level=logging.DEBUG)
                     size = None
             if not size:
                 return 0.0

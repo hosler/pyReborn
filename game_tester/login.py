@@ -28,6 +28,9 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
+import logging
+from pyreborn.logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -175,4 +178,4 @@ def login_session(host: str, port: int, account: str, password: str, *,
         try:
             client.disconnect()
         except Exception:
-            pass
+            log_swallowed(logger, level=logging.DEBUG)

@@ -19,7 +19,8 @@ from pyreborn.game.render_objects import (
     _CHEST_REVEAL_DURATION_MS, LevelObjectsRenderMixin,
 )
 from pyreborn.tiletypes import TileType
-from .test_lift_oracle import Game
+from offline_game import spy
+from .test_lift_oracle import game  # noqa: F401
 
 
 # -- chest reveal ------------------------------------------------------------
@@ -33,28 +34,27 @@ def test_chest_reveal_lasts_24_ticks_without_rise_or_fade():
     assert visual(reveal, 2200) is None
 
 
-def _chest_game(sign_index, signs):
-    game = Game()
-    game.client.chest_signs = {'t.nw': {(8, 10): sign_index}}
-    game.client.signs = {'t.nw': signs}
-    game._show_dialogue = Mock()
+def _chest_game(game, monkeypatch, sign_index, signs):
+    game.client.chest_signs = {'throw.nw': {(8, 10): sign_index}}
+    game.client.signs = {'throw.nw': signs}
+    game.dialogues = spy(monkeypatch, game, '_show_dialogue')
     game.is_moving = True
     game._move_accum = 0.4
     return game
 
 
-def test_chest_sign_index_opens_matching_sign_and_stops_walking():
-    game = _chest_game(1, {(1, 1): 'first', (2, 2): 'second'})
-    assert game._open_chest_sign('t.nw', 8, 10)
-    game._show_dialogue.assert_called_once_with('second', classic_font=True)
+def test_chest_sign_index_opens_matching_sign_and_stops_walking(game, monkeypatch):
+    game = _chest_game(game, monkeypatch, 1, {(1, 1): 'first', (2, 2): 'second'})
+    assert game._open_chest_sign('throw.nw', 8, 10)
+    assert game.dialogues == [(('second',), {'classic_font': True})]
     assert not game.is_moving and game._move_accum == 0.0
 
 
 @pytest.mark.parametrize('index', [-1, 2, 255])
-def test_chest_sign_index_invalid_opens_nothing(index):
-    game = _chest_game(index, {(1, 1): 'first', (2, 2): 'second'})
-    assert not game._open_chest_sign('t.nw', 8, 10)
-    game._show_dialogue.assert_not_called()
+def test_chest_sign_index_invalid_opens_nothing(game, monkeypatch, index):
+    game = _chest_game(game, monkeypatch, index, {(1, 1): 'first', (2, 2): 'second'})
+    assert not game._open_chest_sign('throw.nw', 8, 10)
+    assert game.dialogues == []
     assert game.is_moving
 
 
@@ -88,9 +88,7 @@ def test_alignment_default_is_ap_zero():
 
 # -- footsteps ---------------------------------------------------------------
 
-def _walker(tile_type=TileType.NONBLOCK, steps2_in_gani=False, action_mode=0):
-    game = Game()
-    game.sound_mgr = Mock()
+def _walker(game, tile_type=TileType.NONBLOCK, steps2_in_gani=False, action_mode=0):
     game.client.player.action_mode = action_mode
     game._effective_tile_type = lambda x, y: tile_type
     game._gani_plays_sound = lambda name: steps2_in_gani
@@ -98,58 +96,60 @@ def _walker(tile_type=TileType.NONBLOCK, steps2_in_gani=False, action_mode=0):
 
 
 def _played(game):
-    return [call.args[0] for call in game.sound_mgr.play.call_args_list]
+    return [args[0] for args, _ in game.sound_calls]
 
 
-def test_footsteps_first_tick_then_steps2_every_fifth_tick():
-    game = _walker()
+def test_footsteps_first_tick_then_steps2_every_fifth_tick(game):
+    game = _walker(game)
     for tick in range(100, 111):
         game._play_footsteps(tick)
     assert _played(game) == ['steps.wav', 'steps2.wav', 'steps2.wav', 'steps2.wav']
 
 
-def test_footsteps_once_per_tick():
-    game = _walker()
+def test_footsteps_once_per_tick(game):
+    game = _walker(game)
     game._play_footsteps(100)
     game._play_footsteps(100)
     assert _played(game) == ['steps.wav', 'steps2.wav']
 
 
-def test_footsteps_restart_after_pause_replays_steps():
-    game = _walker()
+def test_footsteps_restart_after_pause_replays_steps(game):
+    game = _walker(game)
     game._play_footsteps(101)
     game._play_footsteps(102)
     game._play_footsteps(120)
     assert _played(game) == ['steps.wav', 'steps.wav', 'steps2.wav']
 
 
-def test_footsteps_water_uses_water_wav_every_15_ticks():
-    game = _walker(TileType.WATER)
+def test_footsteps_water_uses_water_wav_every_15_ticks(game):
+    game = _walker(game, TileType.WATER)
     for tick in range(100, 121):
         game._play_footsteps(tick)
     assert _played(game) == ['water.wav', 'water.wav', 'water.wav']  # tick 100 (walk start), 105, 120
     assert 'steps.wav' not in _played(game)
 
 
-def test_footsteps_do_not_double_gani_steps2():
-    game = _walker(steps2_in_gani=True)
+def test_footsteps_do_not_double_gani_steps2(game):
+    game = _walker(game, steps2_in_gani=True)
     for tick in range(100, 111):
         game._play_footsteps(tick)
     assert _played(game) == ['steps.wav']
 
 
-def test_footsteps_silent_in_ghost_mode_and_wrong_action_mode():
-    game = _walker()
+def test_footsteps_silent_in_ghost_mode_and_wrong_action_mode(game):
+    game = _walker(game)
     game.client.ghost_mode = 1
     game._play_footsteps(100)
     assert _played(game) == []
-    other = _walker(action_mode=5)
+    game.client.ghost_mode = 0
+    game._footstep_tick = None        # a walker that has not stepped yet
+    other = _walker(game, action_mode=5)
     other._play_footsteps(100)
     assert _played(other) == ['steps.wav']  # first step only, no 5-tick cadence
 
 
-def test_footsteps_toggle_swamp_parity_each_tick():
-    game = _walker()
+def test_footsteps_toggle_swamp_parity_each_tick(game):
+    game = _walker(game)
     game._play_footsteps(100)
     assert game._step_parity == 1
     game._play_footsteps(101)
@@ -190,8 +190,7 @@ def test_draw_sprite_uses_sprites_sheet_rect():
     assert draw_sprite(mgr, 999) is None
 
 
-def test_gani_plays_sound_detects_walk_gani_playsound():
-    game = Game()
+def test_gani_plays_sound_detects_walk_gani_playsound(game):
     text = 'LOOP\nANI\n0 0 0\nPLAYSOUND steps2.wav 1.5 2\n\n0 0 0\nANIEND\n'
     game.gani_parser.put_cache('walk', game.gani_parser.parse_content(text, 'walk'))
     game.player_anim.set_animation('walk')

@@ -14,6 +14,9 @@ from .registry import _PLAYER_EMPTY_STRINGS, _PLAYER_MEMBER_ATTR, _PLAYER_READON
 from ..gs1_client.objects import ENGINE_PLAYER_PROPS
 from ..script_player_props import sync_script_player_stat
 from ..constants import WALK_SPEED
+import logging
+from ..logutil import log_swallowed
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .runtime import ClientGS2
@@ -291,7 +294,7 @@ class _PlayerAttrObject(GS2Object):
             try:
                 client.set_gattrib(index, text)
             except Exception:
-                pass
+                log_swallowed(logger)
 
     def has(self, key: str) -> bool:
         return self._slot(key) is not None or super().has(key)

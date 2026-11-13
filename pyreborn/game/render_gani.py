@@ -5,6 +5,7 @@ from __future__ import annotations
 import pygame
 
 from ..gani import AnimationState
+from ..lru import LruCache
 
 
 class GaniRenderMixin:
@@ -30,7 +31,7 @@ class GaniRenderMixin:
         """
         cache = getattr(self, '_gani_layer_cache', None)
         if cache is None:
-            cache = self._gani_layer_cache = {}
+            cache = self._gani_layer_cache = LruCache(2000)
 
         # A hashable snapshot of the equipment dict - small (a handful of
         # keys), so building this every call is cheap; it's re-walking
@@ -134,8 +135,6 @@ class GaniRenderMixin:
             recolor = layer == "BODY" and bool(equipment.get('colors'))
             resolved.append(('sprite', img, sprite_def, ox, oy, recolor))
 
-        if len(cache) > 2000:
-            cache.clear()
         cache[key] = (anim.gani, resolved)
         return resolved
 
@@ -232,14 +231,12 @@ class GaniRenderMixin:
             return sprite
         cache = getattr(self, '_entity_alpha_cache', None)
         if cache is None:
-            cache = self._entity_alpha_cache = {}
+            cache = self._entity_alpha_cache = LruCache(600)
         key = (id(sprite), alpha)
         entry = cache.get(key)
         if entry is not None and entry[0] is sprite:
             return entry[1]
         result = sprite.copy()
         result.set_alpha(alpha)
-        if len(cache) > 600:
-            cache.clear()
         cache[key] = (sprite, result)
         return result
