@@ -241,7 +241,7 @@ def test_bomb_pickup_and_landing_preserve_fuse(game, sim_time, sprite, wire):
     assert bomb['time'] == 100.45 and bomb['fuse_time'] == 2
     expected = build_bomb_add(29.5, 21.925, 1, 1750, True)  # ticks-5
     assert (PacketID.PLI_BOMBADD, expected) in calls
-    assert game.break_effects == []
+    assert game.particles.breaks == []
 
 
 def test_bomb_fuse_pauses_while_carried(game, sim_time):
@@ -276,7 +276,7 @@ def test_bomb_water_landing_splashes_instead_of_replacing(game):
     game._check_water_at_position = lambda x, y: True
     game._update_and_render_thrown(.45)
     assert bomb not in game.active_bombs
-    assert game.break_effects[0]['leap_type'] == 5
+    assert game.particles.breaks[0]['leap_type'] == 5
     assert not any(pid == PacketID.PLI_BOMBADD for pid, _ in game.sent)
 
 

@@ -139,7 +139,7 @@ class Probe:
         return {
             "weapon_showimgs": sum(len(v or {}) for v in weapon.values()),
             "npc_showimgs": npc_rows,
-            "break_effects": len(getattr(self.game, "break_effects", []) or []),
+            "break_effects": len(self.game.particles.breaks),
         }
 
     def board4(self, x: int, y: int) -> list[int | None]:

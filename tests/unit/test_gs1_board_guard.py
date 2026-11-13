@@ -27,6 +27,7 @@ from pyreborn.gs1_client import ClientGS1, GS1NoBoard
 from pyreborn.game.render_cache import RenderCache
 from pyreborn.game.setup import SetupMixin
 from pyreborn.game.level_arrival import LevelArrival
+from pyreborn.game.particles_state import Particles
 
 from .bomber_room0_fixture import load_script
 
@@ -178,6 +179,7 @@ class _EnterHarness(SetupMixin):
         self.visual_x = self.visual_y = 0.0
         self.world_surface = None
         self.arrival = LevelArrival()
+        self.particles = Particles()
         self.render_cache = RenderCache()
 
     def _load_npc_scripts(self):

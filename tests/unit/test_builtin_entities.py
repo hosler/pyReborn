@@ -20,7 +20,7 @@ def harness(make_game, monkeypatch):
     game.client.player.x, game.client.player.y = 4.0, 5.0
     game.active_bombs = []
     game.active_projectiles = []
-    game.break_effects = []
+    game.particles.breaks = []
     game.sound_calls = spy(monkeypatch, game.sound_mgr, 'play')
     return game
 

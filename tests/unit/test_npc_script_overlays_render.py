@@ -128,9 +128,9 @@ def _reset_throws(game):
     game.client.npcs.clear()
     game.camera.set_center(32.0, 32.0)
     game.visual_x = game.visual_y = 32.0
-    for name in ('thrown_objects', 'other_thrown_objects', 'active_bombs',
-                 'break_effects'):
+    for name in ('thrown_objects', 'other_thrown_objects', 'active_bombs'):
         getattr(game, name).clear()
+    game.particles.breaks.clear()
 
 
 def test_npc_thrown_vase_flies_then_bursts_at_its_landing_point(game):
@@ -147,8 +147,8 @@ def test_npc_thrown_vase_flies_then_bursts_at_its_landing_point(game):
     for _ in range(6):
         game._update_and_render_thrown(0.05)
     assert game.other_thrown_objects == []
-    assert len(game.break_effects) == 1                   # landed and burst
-    assert game.break_effects[0]['tiles'] == obj['tiles']
+    assert len(game.particles.breaks) == 1                   # landed and burst
+    assert game.particles.breaks[0]['tiles'] == obj['tiles']
 
 
 @pytest.mark.parametrize("sprite, power", [(0x41, 1), (0x42, 1), (0x141, 2),

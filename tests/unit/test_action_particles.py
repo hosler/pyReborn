@@ -35,18 +35,18 @@ def test_finished_action_broadcasts_its_setback(make_game, monkeypatch):
 
 def test_leaf_spawn_is_capped(make_game):
     h = make_game()
-    h.leaf_particles = []
+    h.particles.leaves = []
 
     for _ in range(20):
         h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=6)
 
-    assert len(h.leaf_particles) == h.MAX_LEAF_PARTICLES
+    assert len(h.particles.leaves) == h.MAX_LEAF_PARTICLES
     assert h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=6) == 0
 
 
 def test_leaf_particles_expire_after_lifetime(make_game):
     h = make_game()
-    h.leaf_particles = []
+    h.particles.leaves = []
     h._spawn_leaf_particles(4.0, 5.0, now=10.0, count=5)
 
     assert len(h._expire_leaf_particles(now=10.59)) == 5

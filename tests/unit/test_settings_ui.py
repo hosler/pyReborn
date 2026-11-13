@@ -40,7 +40,7 @@ class _Key:
 def test_frozen_hud_draws_modal_overlays_and_chat_compose_only():
     hud = HUD.__new__(HUD)
     hud.game = SimpleNamespace(
-        client=SimpleNamespace(input_frozen=True), screen=object(), typing=True,
+        client=SimpleNamespace(input_frozen=True), screen=object(), chat=SimpleNamespace(typing=True),
         show_player_list=True, show_server_list=True,
         settings_ui=SimpleNamespace(visible=True),
     )
@@ -271,21 +271,21 @@ def test_f9_closes_settings_overlay(overlay):
 
 
 def test_chat_seq_counts_appends_past_history_cap(make_game):
-    """The scroll indicator's "N new" math uses chat_seq, a monotonic append
-    counter: unlike len(chat_messages), it keeps advancing once the log sits
+    """The scroll indicator's "N new" math uses chat.seq, a monotonic append
+    counter: unlike len(chat.messages), it keeps advancing once the log sits
     at CHAT_HISTORY_CAP (where every append pops a line)."""
     from pyreborn.game.constants import CHAT_HISTORY_CAP
 
     g = make_game()
-    g.chat_messages = []
-    g.chat_seq = 0
+    g.chat.messages = []
+    g.chat.seq = 0
     for i in range(CHAT_HISTORY_CAP):
-        g._append_chat(f"m{i}")
-    assert len(g.chat_messages) == CHAT_HISTORY_CAP
+        g.chat.append(f"m{i}")
+    assert len(g.chat.messages) == CHAT_HISTORY_CAP
 
-    baseline = g.chat_seq  # PageUp at a full log stores this
+    baseline = g.chat.seq  # PageUp at a full log stores this
     for i in range(10):
-        g._append_chat(f"new{i}")
+        g.chat.append(f"new{i}")
 
-    assert len(g.chat_messages) == CHAT_HISTORY_CAP  # pinned at the cap
-    assert g.chat_seq - baseline == 10  # ...but the arrivals still count
+    assert len(g.chat.messages) == CHAT_HISTORY_CAP  # pinned at the cap
+    assert g.chat.seq - baseline == 10  # ...but the arrivals still count

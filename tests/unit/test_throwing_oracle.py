@@ -97,13 +97,13 @@ def test_landing_type_sound_and_sprite_water_probe(game, monkeypatch, index, lea
     monkeypatch.setattr(game, '_check_water_at_position', probe)
     assert advance_throw(game, obj, .45)
     game._spawn_break_effect(obj)
-    burst, = game.break_effects
+    burst, = game.particles.breaks
     assert burst['leap_type'] == (5 if water else leap)
     assert (burst['x'], burst['y']) == (obj['x'], obj['y'])
     assert burst['tiles'] == obj['tiles']
     probe.assert_called_once_with(obj['x'] + 1, obj['y'] - obj['z'] + 1)
     assert game.sound_calls == [(('water.wav' if water else 'crush.wav',), {})]
-    assert not getattr(game, 'leaf_particles', [])
+    assert not game.particles.leaves
 
 
 @pytest.mark.parametrize('water_type', [11, 12])
@@ -113,7 +113,7 @@ def test_water_samples_sprite_row_instead_of_ground_row(game, water_type, water_
     game.client.tiles[water_row * 64 + 30] = tile_of(water_type)
     assert advance_throw(game, obj, .45)
     game._spawn_break_effect(obj)
-    assert game.break_effects[0]['leap_type'] == leap
+    assert game.particles.breaks[0]['leap_type'] == leap
 
 
 @pytest.mark.parametrize('code,index', [(1, 0), (7, 1), (5, 2), (3, 3), (201, 4)])
@@ -359,7 +359,7 @@ def test_burst_uses_each_table_frame_once_and_expires(drawn, monkeypatch, leap, 
     monkeypatch.setattr(pygame.draw, 'rect', rect)
     now = game.clock.frame_now()
     effect = {'x': 10, 'y': 20, 'time': now, 'leap_type': leap, 'tiles': (1, 2, 3, 4)}
-    game.break_effects = [effect]
+    game.particles.breaks = [effect]
     # Sample each frame mid-tick: frame time sits far from zero, and a
     # boundary reading would be at the mercy of float rounding.
     game._fixture_clock.advance(.025)
@@ -367,7 +367,7 @@ def test_burst_uses_each_table_frame_once_and_expires(drawn, monkeypatch, leap, 
         game.screen.blits.clear()
         rect.reset_mock()
         game._render_break_effects()
-        assert game.break_effects == [effect]
+        assert game.particles.breaks == [effect]
         expected = [((10 + dx / 8) * 16, (20 + dy / 8) * 16)
                     for _sprite, dx, dy in LEAP_FRAMES[leap][frame]]
         if leap == 5:
@@ -380,7 +380,7 @@ def test_burst_uses_each_table_frame_once_and_expires(drawn, monkeypatch, leap, 
             assert [dest for _, dest in game.screen.blits] == expected
         game._fixture_clock.advance(.05)
     game._render_break_effects()
-    assert game.break_effects == []
+    assert game.particles.breaks == []
 
 
 @pytest.mark.parametrize('kind,last', [

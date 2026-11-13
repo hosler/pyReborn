@@ -360,12 +360,12 @@ def test_serverwarp_a_chat_line_ending_in_yes_enter_cannot_confirm(game, client)
     """The old confirm was "yes": a player finishing a chat line could answer
     the prompt by accident. The prompt now closes chat, drops queued key
     events and starts its own empty field, and "yes" is not the word."""
-    game.typing = True
-    game.chat_input = "see you in a bit, yes"
+    game.chat.typing = True
+    game.chat.input = "see you in a bit, yes"
     pygame.event.post(pygame.event.Event(
         pygame.KEYDOWN, key=pygame.K_RETURN, unicode='\r'))   # queued
     client._handle_packet(178, WARP_PACKET)
-    assert game.typing is False and game.chat_input == ""
+    assert game.chat.typing is False and game.chat.input == ""
     assert game.server_warp_prompt['typed'] == ''
     assert pygame.event.peek(pygame.KEYDOWN) is False          # discarded
     _arm(game)

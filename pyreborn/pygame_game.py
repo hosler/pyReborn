@@ -34,8 +34,11 @@ from .game.constants import (
 )
 from .game.camera import Camera2D
 from .game.viewport import Viewport
+from .game.chat_state import ChatState
 from .game.level_arrival import LevelArrival
+from .game.particles_state import Particles
 from .game.push_grab import PushGrab
+from .game.transition import TransitionState
 from .game.assets import FontManager
 from .game.hud import HUD
 from .game.combat_presentation import CombatPresentation
@@ -178,10 +181,8 @@ class GameClient(
         # the offset math that used to be copy-pasted into every render method.
         self.camera = Camera2D(self.screen.get_width(), self.screen.get_height(),
                                TILE_SIZE)
-        # Memoizes the inputs _sync_camera() last called camera.set_bounds()
-        # with, so it's only re-issued on an actual level/zoom/resize change
-        # rather than every frame - see game/render.py.
-        self._camera_bounds_key = None
+        # _sync_camera() memoizes the inputs it last called camera.set_bounds()
+        # with in render_cache.camera_bounds_key - see game/render.py.
 
         # Fonts: keyed/cached via FontManager. self.font / self.font_small remain
         # as aliases for the HUD and small roles the legacy render code uses.
@@ -281,9 +282,8 @@ class GameClient(
         self.hud = HUD(self)
 
         # Input state
-        self.typing = False
-        self.chat_input = ""
-        self.chat_messages: List[str] = []
+        # Chat log, chat-line input, scrollback and PM composer (game/chat_state.py).
+        self.chat = ChatState()
 
         # Timing
         self.walk_speed = WALK_SPEED
@@ -331,8 +331,9 @@ class GameClient(
         # interpolated between the last two ticks (_update_visual_position).
         self.visual_x = 0.0
         self.visual_y = 0.0
-        self._seen_level_transition_epoch = (
-            self.client.local_level_transition_epoch)
+        # Held-frame / slide presentation state (see game/transition.py).
+        self.transition = TransitionState(
+            seen_epoch=self.client.local_level_transition_epoch)
         # Player sprite top-left in render frame, set each frame by _sync_camera.
         self._player_render_pos = (0.0, 0.0)
         # Draw positions of moving things between the last two ticks
@@ -340,9 +341,7 @@ class GameClient(
         from .game.interpolation import TickInterpolator
         self.interpolator = TickInterpolator()
 
-        # Combat effects - floating damage numbers
-        # Each entry: {'x': float, 'y': float, 'damage': float, 'time': float, 'duration': float}
-        self.damage_numbers: List[dict] = []
+        # Floating damage numbers live in self.particles.
         self.combat_presentation = CombatPresentation()
         self.gs2_sources = Gs2SourceRouter()
 
@@ -360,10 +359,7 @@ class GameClient(
         self.thrown_objects: List[dict] = []
         # Break bursts when a thrown object lands/hits — each: {'x', 'y',
         # 'time', 'color'} with a handful of scattering particles.
-        self.break_effects: List[dict] = []
-        self.leaf_particles: List[dict] = []
-        self.water_ripples: List[dict] = []
-        self._last_ripple_time = float('-inf')
+        self.particles = Particles()
 
         self.horse_anims: Dict[Tuple[float, float], AnimationState] = {}
 
@@ -412,8 +408,6 @@ class GameClient(
         # Player list (F7) + private messaging.
         self.show_player_list = False
         self.player_list_sel = 0          # selected row in the player list
-        self.pm_target_id: Optional[int] = None  # player we're composing a PM to
-        self.pm_input = ""
 
         # Server list (F8) for switching servers. `servers` is populated by the
         # launcher (the listserver result); switch_server is set when the user

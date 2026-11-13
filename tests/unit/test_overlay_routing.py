@@ -106,12 +106,12 @@ OPENERS = {
     "rc": lambda g: setattr(g.rc_ui, "visible", True),
     "dev": lambda g: setattr(g.dev_ui, "visible", True),
     "editor": _open_editor,
-    "pm": lambda g: setattr(g, "pm_target_id", PM_PEER["id"]),
+    "pm": lambda g: setattr(g.chat, "pm_target_id", PM_PEER["id"]),
     "player_list": lambda g: setattr(g, "show_player_list", True),
     "server_list": lambda g: setattr(g, "show_server_list", True),
     "settings": lambda g: setattr(g.settings_ui, "visible", True),
     "big_map": lambda g: setattr(g, "big_map_visible", True),
-    "chat": lambda g: setattr(g, "typing", True),
+    "chat": lambda g: setattr(g.chat, "typing", True),
     "dialogue": lambda g: g._show_dialogue(DIALOGUE),
     "inventory": lambda g: setattr(g.inventory_ui, "visible", True),
     "help": lambda g: setattr(g, "show_help", True),
@@ -133,12 +133,12 @@ def _state(game):
         "dev": game.dev_ui.visible,
         "editor": editor.enabled,
         "palette": editor.palette_visible,
-        "pm": game.pm_target_id is not None,
+        "pm": game.chat.pm_target_id is not None,
         "player_list": game.show_player_list,
         "server_list": game.show_server_list,
         "settings": game.settings_ui.visible,
         "big_map": game.big_map_visible,
-        "chat": game.typing,
+        "chat": game.chat.typing,
         "dialogue": game.dialogue_text is not None,
         "inventory": game.inventory_ui.visible,
         "help": game.show_help,
@@ -149,10 +149,10 @@ def _state(game):
         "switch": game.switch_server is not None,
     }
     extra = {
-        "chat": repr(game.chat_input) if game.chat_input else "",
-        "pm": repr(game.pm_input) if game.pm_input else "",
+        "chat": repr(game.chat.input) if game.chat.input else "",
+        "pm": repr(game.chat.pm_input) if game.chat.pm_input else "",
         "typed": repr((game.server_warp_prompt or {}).get("typed", "")),
-        "scroll": str(game.chat_scroll) if game.chat_scroll else "",
+        "scroll": str(game.chat.scroll) if game.chat.scroll else "",
         "zoom": f"{game.camera.zoom:.3f}" if game.camera.zoom != 1.0 else "",
         "jp": ",".join(str(k) for k in sorted(game.key_just_pressed)),
         "gs1q": ",".join(str(k) for k, _ in game._gs1_keypress_queue),
@@ -236,8 +236,8 @@ def _reset(game, calls):
     game.level_editor = LevelEditor(game)
     game.tile_palette = TilePalette(game)
     game.editor_overlay = EditorOverlay(game, game.level_editor)
-    game.pm_target_id = None
-    game.pm_input = ""
+    game.chat.pm_target_id = None
+    game.chat.pm_input = ""
     game.show_player_list = False
     game.player_list_sel = 0
     game.show_server_list = False
@@ -248,21 +248,21 @@ def _reset(game, calls):
     game.settings_ui.visible = False
     game.settings_ui.selected = 0
     game.big_map_visible = False
-    game.typing = False
-    game.chat_input = ""
+    game.chat.typing = False
+    game.chat.input = ""
     game._dismiss_dialogue()
     game.inventory_ui.visible = False
     game.inventory_ui.selected_weapon_idx = 0
     game.show_help = False
     game.debug_mode = False
     game.noclip = False
-    game.chat_scroll = 0
-    game._chat_scroll_baseline = 0
+    game.chat.scroll = 0
+    game.chat.scroll_baseline = 0
     game.camera.zoom = 1.0
     game.client.player.status &= ~PLSTATUS.PAUSED
     game.key_just_pressed.clear()
     game._gs1_keypress_queue.clear()
-    game._level_transition_input_frozen = False
+    game.transition.input_frozen = False
     if getattr(game.client, "local_level_transition", ""):
         game.client.release_local_transition()
     win, _edit = _gs2_window(game)

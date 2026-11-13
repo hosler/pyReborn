@@ -174,19 +174,6 @@ class InputMixin(ClockedMixin):
     # every frame to find them).
     _vk_cache: Dict[int, int] = {}
 
-    # Chat scrollback (PageUp/PageDown -- see _handle_key_press/_draw_chat).
-    # Class-level defaults so `self.chat_scroll` is safe to read before the
-    # first keypress, same trick as _vk_cache above. `chat_scroll` counts
-    # messages back from the live tail (0 = at bottom); `_chat_scroll_baseline`
-    # is the history length when scrolling started, so hud.py can show "N new"
-    # while scrolled without needing its own per-frame bookkeeping.
-    chat_scroll: int = 0
-    _chat_scroll_baseline: int = 0
-    # Monotonic count of chat-log appends (advanced by _append_chat): unlike
-    # len(chat_messages) it keeps growing at the history cap, so the scroll
-    # indicator's "N new" stays honest once the log is full.
-    chat_seq: int = 0
-
     def _ensure_settings_ui(self):
         """Create the F9 settings overlay and apply its saved live settings.
 
@@ -249,8 +236,8 @@ class InputMixin(ClockedMixin):
             return False
         # Chat/PM composition keeps the keyboard: an incidentally-open GS2
         # window must not swallow Esc (or any key) out from under it.
-        if event.type == KEYDOWN and (self.typing
-                                      or self.pm_target_id is not None):
+        if event.type == KEYDOWN and (self.chat.typing
+                                      or self.chat.pm_target_id is not None):
             return False
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                           pygame.MOUSEMOTION):
@@ -376,7 +363,7 @@ class InputMixin(ClockedMixin):
             self._drop_latched_input()
 
         elif (getattr(self.client, 'local_level_transition', '')
-              or getattr(self, '_level_transition_input_frozen', False)):
+              or self.transition.input_frozen):
             pass
 
         # The overlays, topmost first (game/overlays.py).
@@ -417,31 +404,31 @@ class InputMixin(ClockedMixin):
     def _handle_chat_input(self, event):
         """Handle chat input mode."""
         if event.key == K_RETURN:
-            if self.chat_input:
-                message = self.chat_input
+            if self.chat.input:
+                message = self.chat.input
                 if message.startswith("toall "):
                     # Classic explicit server-wide chat; keep Client.say() as
                     # the PLI_TOALL library API used by bots and other callers.
                     message = message[len("toall "):]
                     if message:
                         self.client.say(message)
-                        self._append_chat(f"[You] {message}")
+                        self.chat.append(f"[You] {message}")
                 else:
                     # Normal typed chat is CURCHAT: it appears over the player
                     # and is the path that level NPC playerchats handlers see.
                     self.client.send_level_chat(message)
                     self.local_chat_text = message
                     self.local_chat_time = self.clock.sim_now()
-                    self._append_chat(f"[You] {message}")
-            self.chat_input = ""
-            self.typing = False
+                    self.chat.append(f"[You] {message}")
+            self.chat.input = ""
+            self.chat.typing = False
         elif event.key == K_ESCAPE:
-            self.chat_input = ""
-            self.typing = False
+            self.chat.input = ""
+            self.chat.typing = False
         elif event.key == pygame.K_BACKSPACE:
-            self.chat_input = self.chat_input[:-1]
-        elif event.unicode and len(self.chat_input) < 100:
-            self.chat_input += event.unicode
+            self.chat.input = self.chat.input[:-1]
+        elif event.unicode and len(self.chat.input) < 100:
+            self.chat.input += event.unicode
 
     # -- F7 player list + private messaging -------------------------------
     def _other_players(self) -> List[Tuple[int, str]]:
@@ -477,25 +464,25 @@ class InputMixin(ClockedMixin):
                                        self.player_list_sel + 1)
         elif event.key == K_RETURN and players:
             sel = min(self.player_list_sel, len(players) - 1)
-            self.pm_target_id = players[sel][0]   # -> opens the PM input
-            self.pm_input = ""
+            self.chat.pm_target_id = players[sel][0]   # -> opens the PM input
+            self.chat.pm_input = ""
 
     def _handle_pm_input(self, event):
         if event.key == K_RETURN:
-            msg = self.pm_input.strip()
+            msg = self.chat.pm_input.strip()
             if msg:
-                self.client.send_pm(self.pm_target_id, msg)
-                name = self._player_label(self.pm_target_id)
-                self._append_chat(f"[PM to {name}] {msg}")
-            self.pm_target_id = None
-            self.pm_input = ""
+                self.client.send_pm(self.chat.pm_target_id, msg)
+                name = self._player_label(self.chat.pm_target_id)
+                self.chat.append(f"[PM to {name}] {msg}")
+            self.chat.pm_target_id = None
+            self.chat.pm_input = ""
         elif event.key == K_ESCAPE:
-            self.pm_target_id = None
-            self.pm_input = ""
+            self.chat.pm_target_id = None
+            self.chat.pm_input = ""
         elif event.key == K_BACKSPACE:
-            self.pm_input = self.pm_input[:-1]
-        elif event.unicode and len(self.pm_input) < 100:
-            self.pm_input += event.unicode
+            self.chat.pm_input = self.chat.pm_input[:-1]
+        elif event.unicode and len(self.chat.pm_input) < 100:
+            self.chat.pm_input += event.unicode
 
     # -- F8 server list ---------------------------------------------------
     def _handle_server_list_key(self, event):
@@ -527,16 +514,16 @@ class InputMixin(ClockedMixin):
             # -list/chat all close on Escape instead of quitting): resume the
             # live chat tail first if scrolled back, then close the
             # inventory, then fall through to quit the app.
-            if self.chat_scroll > 0:
-                self.chat_scroll = 0
-                self._chat_scroll_baseline = 0
+            if self.chat.scroll > 0:
+                self.chat.scroll = 0
+                self.chat.scroll_baseline = 0
             elif self.inventory_ui.visible:
                 self.inventory_ui.toggle()
             else:
                 self.running = False
 
         elif action == "chat":
-            self.typing = True
+            self.chat.typing = True
 
         elif action == "inventory":
             # Toggle inventory
@@ -602,17 +589,17 @@ class InputMixin(ClockedMixin):
         elif action == "chat_scroll_back":
             # Scroll the chat log backward 5 messages at a time, up to the
             # stored history (CHAT_HISTORY_CAP) -- see hud.py's _draw_chat.
-            if self.chat_messages:
-                if self.chat_scroll == 0:
-                    self._chat_scroll_baseline = self.chat_seq
-                max_scroll = max(0, len(self.chat_messages) - 5)
-                self.chat_scroll = min(max_scroll, self.chat_scroll + 5)
+            if self.chat.messages:
+                if self.chat.scroll == 0:
+                    self.chat.scroll_baseline = self.chat.seq
+                max_scroll = max(0, len(self.chat.messages) - 5)
+                self.chat.scroll = min(max_scroll, self.chat.scroll + 5)
 
         elif action == "chat_scroll_forward":
             # Scroll forward; hitting the bottom resumes the live tail.
-            self.chat_scroll = max(0, self.chat_scroll - 5)
-            if self.chat_scroll == 0:
-                self._chat_scroll_baseline = 0
+            self.chat.scroll = max(0, self.chat.scroll - 5)
+            if self.chat.scroll == 0:
+                self.chat.scroll_baseline = 0
 
         elif action == "help":
             # Toggle the controls/help overlay
@@ -726,7 +713,7 @@ class InputMixin(ClockedMixin):
             return
         if (getattr(self.client, 'input_frozen', False)
                 or getattr(self.client, 'local_level_transition', '')
-                or getattr(self, '_level_transition_input_frozen', False)
+                or self.transition.input_frozen
                 or self._overlays_capture_keys()):
             self._clear_gs1_input()
             self._clear_push_hold()

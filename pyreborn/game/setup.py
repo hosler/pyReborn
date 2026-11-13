@@ -11,7 +11,7 @@ from .callbacks import wire_client_callbacks, wire_gs1_callbacks
 from .callbacks.client_callbacks import (
     SAMPLE_EXTS, append_start_message, route_gs2_source,
 )
-from .constants import PACKAGE_DIR, CHAT_HISTORY_CAP
+from .constants import PACKAGE_DIR
 from .clocked import ClockedMixin
 import logging
 from ..logutil import log_swallowed
@@ -35,18 +35,6 @@ class SetupMixin(ClockedMixin):
         self.world_surface = None
         self.render_cache.shimmer.clear()
         self.render_cache.chest_sprite.clear()
-
-    def _append_chat(self, message: str) -> None:
-        """Append one chat-log line, trim to the cap, and advance chat_seq.
-
-        chat_seq is a monotonic count of appends: unlike len(chat_messages),
-        it keeps growing once the log is at CHAT_HISTORY_CAP (where every
-        append pops a line), so the scroll indicator's "N new" math works.
-        """
-        self.chat_messages.append(message)
-        if len(self.chat_messages) > CHAT_HISTORY_CAP:
-            self.chat_messages.pop(0)
-        self.chat_seq += 1
 
     def _update_low_hearts_warning(self, now: Optional[float] = None) -> bool:
         """Play the low-health reminder at most once per second."""
@@ -389,12 +377,11 @@ class SetupMixin(ClockedMixin):
         # break bursts) — carrying them across a warp let a bomb armed in the
         # old level keep ticking (and eventually exploding) on top of the
         # new one.
-        for attr in ('active_projectiles', 'thrown_objects', 'active_bombs',
-                     'break_effects',
-                     'leaf_particles', 'water_ripples'):
+        for attr in ('active_projectiles', 'thrown_objects', 'active_bombs'):
             effects = getattr(self, attr, None)
             if isinstance(effects, list):
                 effects.clear()
+        self.particles.clear_level()
         self.visual_x, self.visual_y = self.client.x, self.client.y
         self.world_surface = None
         self.arrival.gs1_level = lvl

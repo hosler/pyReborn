@@ -269,12 +269,10 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         interpolator = getattr(self, 'interpolator', None)
         transition_epoch = getattr(
             self.client, 'local_level_transition_epoch', 0)
-        seen_epoch = getattr(self, '_seen_level_transition_epoch',
-                             transition_epoch)
-        if transition_epoch != seen_epoch:
+        if transition_epoch != self.transition.seen_epoch:
             self.visual_x = self.client.x
             self.visual_y = self.client.y
-            self._seen_level_transition_epoch = transition_epoch
+            self.transition.seen_epoch = transition_epoch
             if interpolator is not None:
                 interpolator.position('local', (self.client.x, self.client.y),
                                       self.clock.tick, alpha, snap=True)
@@ -329,8 +327,8 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         bounds_key = (self.client.in_gmap_segment, self.client.gmap_width,
                      self.client.gmap_height, self.client.current_level_name,
                      self.camera.zoom, self.screen_w, self.screen_h)
-        if bounds_key != self._camera_bounds_key:
-            self._camera_bounds_key = bounds_key
+        if bounds_key != self.render_cache.camera_bounds_key:
+            self.render_cache.camera_bounds_key = bounds_key
             if self.client.in_gmap_segment:
                 self.camera.set_bounds(0, 0, *gmap_extent(
                     self.client.gmap_width, self.client.gmap_height))
@@ -366,13 +364,13 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
 
     def _draw_transition_slide(self, now: float) -> bool:
         """Present static source/destination scenes while a slide is active."""
-        slide = getattr(self, '_level_transition_slide', None)
+        slide = self.transition.slide
         if slide is None:
             return False
         age = now - slide['started']
         if age < 0 or age > self.TRANSITION_HOLD_MAX_S:
-            self._level_transition_slide = None
-            self._level_transition_input_frozen = False
+            self.transition.slide = None
+            self.transition.input_frozen = False
             return False
         progress = min(1.0, age / self.TRANSITION_SLIDE_S)
         # Smoothstep keeps both endpoints still and avoids a mechanical pan.
@@ -391,8 +389,8 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         self._render_combat_presentation()
         self.viewport.present()
         if age >= self.TRANSITION_SLIDE_S:
-            self._level_transition_slide = None
-            self._level_transition_input_frozen = False
+            self.transition.slide = None
+            self.transition.input_frozen = False
         return True
 
     def _capture_transition_destination(self, source, direction: int,
@@ -413,16 +411,16 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
                 self._render_gui_band()
             finally:
                 self.screen = canvas
-            self._level_transition_slide = {
+            self.transition.slide = {
                 'source': source, 'destination': destination,
                 'direction': direction, 'started': now,
             }
-            self._level_transition_input_frozen = True
+            self.transition.input_frozen = True
             return True
         except Exception:
             log_swallowed(logger)
-            self._level_transition_slide = None
-            self._level_transition_input_frozen = False
+            self.transition.slide = None
+            self.transition.input_frozen = False
             return False
 
     def _render(self):
@@ -447,13 +445,14 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             started = getattr(
                 self.client, 'local_level_transition_started', 0.0)
             if self.clock.frame_now() - started <= self.TRANSITION_HOLD_MAX_S:
-                frozen = getattr(self, '_transition_frame', None)
+                frozen = self.transition.frame
                 if frozen is None:
                     # First held frame: self.screen still holds the last
                     # completed pre-warp frame. Snapshot it.
-                    base = getattr(self, '_death_base_frame', None)
-                    self._transition_frame = (base.copy() if base is not None
-                                              else self.screen.copy())
+                    base = self.transition.death_base_frame
+                    self.transition.frame = (
+                        base.copy() if base is not None
+                        else self.screen.copy())
                 else:
                     self.screen.blit(frozen, (0, 0))
                 self.viewport.present()
@@ -463,27 +462,27 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # The slide does NOT need the hold to have engaged first. A
         # destination whose board is already cached releases the hold inside
         # warp_to_level, synchronously, before any frame renders with it
-        # engaged -- so _transition_frame stays None. That is EVERY re-entry
+        # engaged -- so transition.frame stays None. That is EVERY re-entry
         # to a level visited this session, including simply walking back the
         # way you came, which is why gating the slide on that snapshot made
         # the effect look intermittent: each edge link bounced once per
-        # session and then never again. _transition_scene_frame is the
+        # session and then never again. transition.scene_frame is the
         # world-only copy of the last COMPLETED frame, which is the pre-warp
         # scene on both paths.
         direction = getattr(
             self.client, 'local_level_transition_direction', None)
-        source = getattr(self, '_transition_scene_frame', None)
+        source = self.transition.scene_frame
         if source is None:
-            source = getattr(self, '_transition_frame', None)
+            source = self.transition.frame
         if source is not None and direction in range(4):
             source = source.copy()
             self.client.clear_local_transition_direction()
-            self._transition_frame = None
+            self.transition.frame = None
             if self._capture_transition_destination(source, direction, now):
                 self._draw_transition_slide(now)
                 return
         self.client.clear_local_transition_direction()
-        self._transition_frame = None
+        self.transition.frame = None
 
         # Position the camera before any world-space drawing.
         self._sync_camera()
@@ -502,7 +501,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # Preserve the world-only portion of the last completed frame. The
         # ordinary hold still freezes the full framebuffer verbatim; this copy
         # is used only if that hold later becomes a slide, keeping the HUD fixed.
-        self._transition_scene_frame = self.screen.copy()
+        self.transition.scene_frame = self.screen.copy()
 
         # Screen-space overlays (never zoomed): sign popups, then the HUD.
         self._check_and_render_signs()
@@ -558,10 +557,10 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
             gui_layers()
             return
         key = (self.screen_w, self.screen_h, cam.tile_size)
-        if key != getattr(self, '_gui_cam_key', None):
-            self._gui_cam_key = key
-            self._gui_cam = Camera2D(self.screen_w, self.screen_h, cam.tile_size)
-        self.camera = self._gui_cam
+        if key != self.render_cache.gui_cam_key:
+            self.render_cache.gui_cam_key = key
+            self.render_cache.gui_cam = Camera2D(self.screen_w, self.screen_h, cam.tile_size)
+        self.camera = self.render_cache.gui_cam
         try:
             gui_layers()
         finally:
@@ -579,11 +578,11 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         sw = math.ceil(self.screen_w / zoom)
         sh = math.ceil(self.screen_h / zoom)
         cache_key = (sw, sh, self.camera.tile_size)
-        if cache_key != getattr(self, '_zoom_scene_key', None):
-            self._zoom_scene_key = cache_key
-            self._zoom_scene_surface = pygame.Surface((sw, sh))
-            self._zoom_scene_cam = Camera2D(sw, sh, self.camera.tile_size)
-        scene = self._zoom_scene_surface
+        if cache_key != self.render_cache.zoom_scene_key:
+            self.render_cache.zoom_scene_key = cache_key
+            self.render_cache.zoom_scene_surface = pygame.Surface((sw, sh))
+            self.render_cache.zoom_scene_cam = Camera2D(sw, sh, self.camera.tile_size)
+        scene = self.render_cache.zoom_scene_surface
         scene.fill((0, 0, 0))
 
         # Swap in the cached 1:1 camera, re-centered where the real one is.
@@ -591,7 +590,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # one pixel footprint per base tile and cannot be positioned directly
         # with a zoomed camera without opening gaps between adjacent segments.
         canvas, real_cam = self.screen, self.camera
-        scene_cam = self._zoom_scene_cam
+        scene_cam = self.render_cache.zoom_scene_cam
         scene_cam.set_center(*real_cam.center)
         ox, oy = real_cam.render_offset
         scene_cam.set_render_offset(ox / zoom, oy / zoom)
@@ -708,7 +707,7 @@ class RenderMixin(ClockedMixin, FrameContextMixin):
         # off to the left instead of centred/right-anchored.
         self._draw_text_with_bg(debug_text, self.screen_w // 2 - 150, 30, (255, 255, 0))
 
-        if not self.typing and not self.inventory_ui.visible:
+        if not self.chat.typing and not self.inventory_ui.visible:
             help_text = "1-7: Type | Click: Apply | RClick: Reset | F1: Exit"
             text = self.font_small.render(help_text, True, (255, 255, 0))
             self.screen.blit(text, (self.screen_w - text.get_width() - 10, 10))

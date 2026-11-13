@@ -14,8 +14,8 @@ def chat_game(make_game, monkeypatch):
     def build(message, **knobs):
         game = make_game(**knobs)
         game.frames(1)
-        game.chat_input = message
-        game.typing = True
+        game.chat.input = message
+        game.chat.typing = True
         game.say_calls = spy(monkeypatch, game.client, "say")
         game.level_chat_calls = spy(monkeypatch, game.client,
                                     "send_level_chat")
@@ -37,7 +37,7 @@ def test_enter_routes_normal_typed_chat_to_curchat_once(chat_game, sim_time):
     assert game.say_calls == []
     assert game.local_chat_text == "hello nearby"
     assert game.local_chat_time == 12.5
-    assert game.chat_messages[-1:] == ["[You] hello nearby"]
+    assert game.chat.messages[-1:] == ["[You] hello nearby"]
     assert game.client.player.chat == "hello nearby"
 
 
@@ -49,7 +49,7 @@ def test_toall_prefix_routes_stripped_message_to_global_chat(chat_game):
     assert game.say_calls == [(("hello everyone",), {})]
     assert game.level_chat_calls == []
     assert game.local_chat_text == ""
-    assert game.chat_messages[-1:] == ["[You] hello everyone"]
+    assert game.chat.messages[-1:] == ["[You] hello everyone"]
 
 
 def test_local_bubble_replaces_old_chat_and_clears_on_expiry(chat_game,
@@ -89,7 +89,7 @@ def test_typed_chat_takes_priority_over_open_dialogue(chat_game, monkeypatch):
 
     game.frames(1, events=[key_event(pygame.K_a, "a")])
 
-    assert game.chat_input == "a"
+    assert game.chat.input == "a"
     assert game.dialogue_text == "Still talking"
     assert advances == []
 
@@ -98,10 +98,10 @@ def test_dead_player_can_send_typed_chat(chat_game):
     game = chat_game("still here", hearts=0)
     game.frames(2)
     assert game.client.player.hearts == 0
-    game.chat_input = "still here"
-    game.typing = True
+    game.chat.input = "still here"
+    game.chat.typing = True
 
     game.frames(1, events=[key_event(pygame.K_RETURN, "\r")])
 
     assert game.level_chat_calls == [(("still here",), {})]
-    assert game.typing is False
+    assert game.chat.typing is False

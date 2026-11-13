@@ -40,7 +40,8 @@ def _stub_game(client, log):
     game = SimpleNamespace(
         client=client, gs1=Mock(scripts={}), sound_mgr=SimpleNamespace(),
         _request_asset=Mock(), arrival=LevelArrival(gs1_level='test.nw'), npc_handler=Mock(),
-        _append_chat=lambda text: log.append(('game', 'chat', text)))
+        chat=SimpleNamespace(
+            append=lambda text: log.append(('game', 'chat', text))))
     game.gs2_sources = Gs2SourceRouter()
     game.gs2_sources.attempts = _RecordingAttempts(log)
     return game

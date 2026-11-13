@@ -136,7 +136,7 @@ def test_thrown_post_sign_uses_smash_path(new_harness, monkeypatch):
     assert game.thrown_objects[0]["type"] == "sign"
     game._update_and_render_thrown(1.0)
     assert game.thrown_objects == []
-    assert len(game.break_effects) == 1
-    assert game.break_effects[0]["leap_type"] == 3
-    assert game.break_effects[0]["tiles"] == POST_SIGN_TILES
+    assert len(game.particles.breaks) == 1
+    assert game.particles.breaks[0]["leap_type"] == 3
+    assert game.particles.breaks[0]["tiles"] == POST_SIGN_TILES
     assert (("crush.wav",), {}) in plays

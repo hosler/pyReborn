@@ -73,17 +73,17 @@ def route_gs2_source(game, kind, key, script):
     return game.gs2_sources.route(game, kind, key, script)
 
 
-def append_start_message(chat_messages: list, text: str) -> int:
+def append_start_message(messages: list, text: str) -> int:
     """Append at most five non-empty initial-message lines to chat.
 
     Returns the number of lines appended so the caller can advance
-    chat_seq (the monotonic append counter the scroll indicator uses).
+    chat.seq (the monotonic append counter the scroll indicator uses).
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     added = [f"[server] {line}" for line in lines[:5]]
-    chat_messages.extend(added)
-    if len(chat_messages) > CHAT_HISTORY_CAP:
-        del chat_messages[:-CHAT_HISTORY_CAP]
+    messages.extend(added)
+    if len(messages) > CHAT_HISTORY_CAP:
+        del messages[:-CHAT_HISTORY_CAP]
     return len(added)
 
 
@@ -114,12 +114,12 @@ def wire_client_callbacks(game):
     game.client.send_level_chat = send_level_chat_with_events
 
     def on_chat(player_id, message):
-        game._append_chat(f"[{player_id}] {message}")
+        game.chat.append(f"[{player_id}] {message}")
 
     def on_pm(from_id, message):
         # Show received private messages in the chat log, named by sender.
         name = game._player_label(from_id)
-        game._append_chat(f"[PM {name}] {message}")
+        game.chat.append(f"[PM {name}] {message}")
 
     def _roster_name(info):
         return info.get('nickname') or info.get('account') or "?"
@@ -128,10 +128,10 @@ def wire_client_callbacks(game):
         # The server dumps the whole roster on login; only announce joins
         # that arrive after that settles (roster_ready_time, set in run()).
         if game.clock.frame_now() >= game.roster_ready_time:
-            game._append_chat(f"-> {_roster_name(info)} entered")
+            game.chat.append(f"-> {_roster_name(info)} entered")
 
     def on_del_player(pid, info):
-        game._append_chat(f"<- {_roster_name(info)} left")
+        game.chat.append(f"<- {_roster_name(info)} left")
 
     def on_hurt(attacker_id, damage, damage_type, source_x, source_y):
         was_dead = game.current_anim_name == 'dead'
@@ -155,7 +155,7 @@ def wire_client_callbacks(game):
             game.client.player.hurt_vector_pending = False
         now = game.clock.frame_now()
         # Spawn floating damage number at player position
-        game.damage_numbers.append({
+        game.particles.damage_numbers.append({
             'x': game.visual_x,
             'y': game.visual_y - 16,
             'damage': damage,
@@ -223,11 +223,11 @@ def wire_client_callbacks(game):
         # The engine's onReceiveText (Login serverlist chat weapon) is a
         # separate subscriber: ClientGS2.attach() listens on the same callback.
         if text:
-            game._append_chat(f"[server] {text}")
+            game.chat.append(f"[server] {text}")
 
     def on_start_message(text: str):
         """Put up to five non-empty initial-message lines in chat."""
-        game.chat_seq += append_start_message(game.chat_messages, text)
+        game.chat.seq += append_start_message(game.chat.messages, text)
 
     # PLO_RPGWINDOW (179) is the server's login greeting in practice
     # (GServer-v2 PlayerClient.cpp sends "Welcome to <name>." + credits
@@ -239,8 +239,8 @@ def wire_client_callbacks(game):
     # actions.py / on_say2.
     def on_rpg_window(lines):
         if lines:
-            game.chat_seq += append_start_message(
-                game.chat_messages, "\n".join(lines))
+            game.chat.seq += append_start_message(
+                game.chat.messages, "\n".join(lines))
 
     def on_file(filename: str, data: bytes):
         """Cache a downloaded asset. Images go to the sprite cache, ganis to

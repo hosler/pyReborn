@@ -734,13 +734,13 @@ def test_keys_typed_into_chat_never_reach_gameplay(make_game, monkeypatch):
     swings = _count_swings(game)
     hold(monkeypatch)
     game.ticks(1, events=[key_event(pygame.K_RETURN)])
-    assert game.typing
+    assert game.chat.typing
     _to_tick_boundary(game)
     x0 = game.client.x
     game.frames(1, dt=1 / 60, events=[key_event(pygame.K_s, "s")])
     game.frames(1, dt=1 / 60, events=[key_event(pygame.K_RIGHT)])
     game.frames(1, dt=1 / 60, events=[key_event(pygame.K_RETURN)])
-    assert not game.typing
+    assert not game.chat.typing
     game.ticks(2)
     assert swings == [] and game.client.x == x0
 

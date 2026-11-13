@@ -89,7 +89,7 @@ def test_remote_bomb_waits_for_quantized_relay_without_double_burst(game, linked
     game.client.on_throwcarried(8)
     game._update_and_render_other_thrown(.45)
     assert game.active_bombs == []
-    assert game.break_effects == []
+    assert game.particles.breaks == []
     bomb = game._add_remote_bomb({'x': 9, 'y': 2.5, 'timer_ms': 2000}, now=100.45)
     assert game.active_bombs == [bomb]
     game._detonate_bomb_at(9, 2.5)
@@ -119,14 +119,14 @@ def test_hurt_without_generation_advance_still_presents_and_throws(game, auto, d
     assert game.current_anim_name == 'hurt'
     assert game.sound_calls == [(('hurt.wav',), {})]
     assert len(game.thrown_objects) == 1
-    assert len(game.damage_numbers) == 1
+    assert len(game.particles.damage_numbers) == 1
 
 
 def test_hurt_dedupes_only_same_advanced_generation_and_timestamp(sim_time, game, monkeypatch):
     assert game.client.respond_to_hurt(.5)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
-    assert len(game.damage_numbers) == 1
+    assert len(game.particles.damage_numbers) == 1
     sim_time(lambda: 100.5)
     game.client.on_hurt(8, .5, 'bush', 0, 0)
-    assert len(game.damage_numbers) == 2
+    assert len(game.particles.damage_numbers) == 2

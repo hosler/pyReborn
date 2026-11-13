@@ -3,6 +3,7 @@ import pytest
 
 from pyreborn.game import render as render_module
 from pyreborn.game.render import RenderMixin
+from pyreborn.game.transition import TransitionState
 from pyreborn.packets import PacketID
 
 
@@ -17,7 +18,7 @@ def new_game(make_game):
         game.client.player.y = y
         game.visual_x, game.visual_y = x, y
         game.follow_speed = 24.0
-        game._seen_level_transition_epoch = (
+        game.transition.seen_epoch = (
             game.client._local_level_transition_epoch)
         return game
     return build
@@ -254,7 +255,8 @@ class _SlideHarness(RenderMixin):
         self.client = client
         self.screen = pygame.Surface((40, 30))
         self.screen.fill((10, 20, 30))
-        self._transition_scene_frame = self.screen.copy()
+        self.transition = TransitionState()
+        self.transition.scene_frame = self.screen.copy()
         self.viewport = _ViewportStub()
         self.camera = type("Camera", (), {"zoom": 1.0})()
         self.scene_renders = 0
@@ -286,21 +288,21 @@ def test_renderer_state_machine_hold_slide_done(monkeypatch, new_client):
     view = _SlideHarness(client)
 
     view._render()
-    assert view._transition_frame is not None
+    assert view.transition.frame is not None
     assert view.scene_renders == 0
 
     client._tiles_level_name = "next.nw"
     client._maybe_release_local_transition()
     clock[0] += 0.01
     view._render()
-    assert view._level_transition_slide is not None
-    assert view._level_transition_input_frozen
+    assert view.transition.slide is not None
+    assert view.transition.input_frozen
     assert view.scene_renders == 1
 
     clock[0] += view.TRANSITION_SLIDE_S + 0.001
     view._render()
-    assert getattr(view, '_level_transition_slide', None) is None
-    assert not view._level_transition_input_frozen
+    assert view.transition.slide is None
+    assert not view.transition.input_frozen
 
 
 def test_cached_destination_slides_without_ever_holding(monkeypatch, new_client):
@@ -308,7 +310,7 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch, new_client)
 
     warp_to_level releases the hold synchronously when the destination board
     is already cached, so no frame renders with the hold engaged and
-    _transition_frame is never captured. Every re-entry to a level visited
+    transition.frame is never captured. Every re-entry to a level visited
     this session takes that path -- including walking straight back the way
     you came -- so a slide gated on that snapshot fired once per edge link
     per session and then never again."""
@@ -322,12 +324,12 @@ def test_cached_destination_slides_without_ever_holding(monkeypatch, new_client)
     assert client._local_level_transition_direction == 3
 
     view = _SlideHarness(client)
-    assert getattr(view, '_transition_frame', None) is None
+    assert view.transition.frame is None
     view._render()
 
-    assert view._level_transition_slide is not None
-    assert view._level_transition_slide['direction'] == 3
-    assert view._level_transition_input_frozen
+    assert view.transition.slide is not None
+    assert view.transition.slide['direction'] == 3
+    assert view.transition.input_frozen
 
 
 def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch, new_client):
@@ -343,18 +345,18 @@ def test_renderer_hold_timeout_fails_open_without_slide(monkeypatch, new_client)
     clock[0] += view.TRANSITION_HOLD_MAX_S + 0.01
     view._render()
     assert client._local_level_transition == ""
-    assert getattr(view, '_level_transition_slide', None) is None
+    assert view.transition.slide is None
     assert view.scene_renders == 1
 
 
 def test_renderer_slide_timeout_fails_open(new_client):
     client = new_client()
     view = _SlideHarness(client)
-    view._level_transition_input_frozen = True
-    view._level_transition_slide = {
+    view.transition.input_frozen = True
+    view.transition.slide = {
         "source": view.screen.copy(), "destination": view.screen.copy(),
         "direction": 3, "started": 1.0,
     }
     assert not view._draw_transition_slide(2.01)
-    assert view._level_transition_slide is None
-    assert not view._level_transition_input_frozen
+    assert view.transition.slide is None
+    assert not view.transition.input_frozen

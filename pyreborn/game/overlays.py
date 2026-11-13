@@ -333,13 +333,13 @@ class PrivateMessage(_KeyPanel):
 
     @property
     def visible(self) -> bool:
-        return getattr(self.game, 'pm_target_id', None) is not None
+        return self.game.chat.pm_target_id is not None
 
     def handle_key(self, event) -> None:
         self.game._handle_pm_input(event)
 
     def close(self) -> None:
-        self.game.pm_target_id = None
+        self.game.chat.pm_target_id = None
 
 
 class PlayerList(_KeyPanel):
@@ -436,7 +436,7 @@ class Help(Overlay):
     def draw(self, surface) -> None:
         g = self.game
         if (self._hud_shown() and self.visible
-                and not (g.typing or g.debug_mode or g.inventory_ui.visible)):
+                and not (g.chat.typing or g.debug_mode or g.inventory_ui.visible)):
             self.hud._draw_help_overlay(surface)
 
     def close(self) -> None:
@@ -451,7 +451,7 @@ class ChatInput(_KeyPanel):
 
     @property
     def visible(self) -> bool:
-        return bool(getattr(self.game, 'typing', False))
+        return bool(self.game.chat.typing)
 
     def handle_key(self, event) -> None:
         self.game._handle_chat_input(event)
@@ -463,8 +463,8 @@ class ChatInput(_KeyPanel):
             self.hud._draw_chat(surface, show_log=False)
 
     def close(self) -> None:
-        self.game.typing = False
-        self.game.chat_input = ""
+        self.game.chat.typing = False
+        self.game.chat.input = ""
 
 
 class Dialogue(_KeyPanel):

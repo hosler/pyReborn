@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from ..sprites import SpriteManager, TilesetManager
     from .assets import FontManager
     from .camera import Camera2D
+    from .chat_state import ChatState
     from .callbacks.client_callbacks import Gs2SourceRouter
     from .combat_presentation import CombatPresentation
     from .dialogue import DialoguePager
@@ -50,7 +51,9 @@ if TYPE_CHECKING:
     from .hud import HUD
     from .interpolation import TickInterpolator
     from .level_arrival import LevelArrival
+    from .particles_state import Particles
     from .push_grab import PushGrab
+    from .transition import TransitionState
     from .render_cache import RenderCache
     from .settings_ui import SettingsOverlay
     from .viewport import Viewport
@@ -176,12 +179,7 @@ class GameHost:
     arrival: "LevelArrival"
 
     # -- level transition (TransitionState, S8) -----------------------------
-    _level_transition_slide: Optional[Dict[str, Any]]
-    _level_transition_input_frozen: bool
-    _transition_frame: Optional["pygame.Surface"]
-    _transition_scene_frame: Optional["pygame.Surface"]
-    _death_base_frame: Optional["pygame.Surface"]
-    _seen_level_transition_epoch: int
+    transition: "TransitionState"
 
     # -- render caches (RenderCache; groups A and B moved, C/R below) -------
     render_cache: "RenderCache"
@@ -189,33 +187,13 @@ class GameHost:
     # -- render caches, group C: world and objects (RenderCache, S6) ---------
     world_surface: Optional["pygame.Surface"]
 
-    # -- render caches, group R: render.py (RenderCache, S8) -----------------
-    _zoom_scene_key: Optional[Any]
-    _zoom_scene_surface: Optional["pygame.Surface"]
-    _zoom_scene_cam: Optional["Camera2D"]
-    _gui_cam: Optional["Camera2D"]
-    _gui_cam_key: Optional[Any]
-    _camera_bounds_key: Optional[Any]
-
     # -- particles (Particles, S9) -------------------------------------------
-    break_effects: List[Any]
-    leaf_particles: List[Any]
-    water_ripples: List[Any]
-    leap_bursts: List[Any]
-    _last_ripple_time: float
-    damage_numbers: List[Any]
+    particles: "Particles"
     explosion_duration: float
     grass_tile_id: int
 
     # -- chat (ChatState, S10) -----------------------------------------------
-    typing: bool
-    chat_input: str
-    chat_messages: List[Any]
-    chat_seq: int
-    chat_scroll: int
-    _chat_scroll_baseline: int
-    pm_target_id: Optional[int]
-    pm_input: str
+    chat: "ChatState"
 
     # -- combat presentation and GS2 source routing (S3) ---------------------
     combat_presentation: "CombatPresentation"
@@ -282,7 +260,6 @@ class GameHost:
         def weapons(self) -> List[str]: ...
 
         # SetupMixin
-        def _append_chat(self, message: str) -> None: ...
         def _check_level_change(self): ...
         def _load_new_npcs(self): ...
         def _load_npc_scripts(self): ...

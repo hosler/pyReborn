@@ -33,7 +33,7 @@ def client(game):
 def presentation(game):
     """The game with two NPC scripts and a weapon watching ``playerdies``."""
     client = game.client
-    game.damage_numbers = []
+    game.particles.damage_numbers = []
     script = 'if (playerdies) { this.deaths++; }'
     for npc_id in (1, 2):
         client.npcs[npc_id] = {'x': 20, 'y': 20}

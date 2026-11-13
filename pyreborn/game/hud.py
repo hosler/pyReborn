@@ -61,7 +61,7 @@ def stats_mask(game) -> int:
 
 
 def chat_window(total: int, scroll: int, window: int = 5) -> Tuple[int, int]:
-    """[start, end) indices into chat_messages for the visible chat-log slice.
+    """[start, end) indices into chat.messages for the visible chat-log slice.
 
     `scroll` is messages back from the live tail (0 = tail, matching
     game/input.py's PageUp/PageDown bookkeeping). Pure function (no pygame,
@@ -314,7 +314,7 @@ class HUD:
         self.ui.root.add(self.hint, self.ghost)
 
         # Per-message (text, plate) surfaces for the chat log, rebuilt only
-        # when the visible 5-message window of chat_messages actually changes
+        # when the visible 5-message window of chat.messages actually changes
         # (that window is the live tail normally, or a PageUp/PageDown
         # scrollback slice -- see _draw_chat).
         self._chat_cache = {}
@@ -364,7 +364,7 @@ class HUD:
 
         # The hint hides when typing, in the inventory, in debug mode, or when the
         # full help overlay is up.
-        self.hint.visible = not (g.typing or g.inventory_ui.visible
+        self.hint.visible = not (g.chat.typing or g.inventory_ui.visible
                                  or g.debug_mode or g.show_help)
 
         self.ui.update(g.viewport.mouse_pos())
@@ -468,10 +468,10 @@ class HUD:
 
     def _draw_chat(self, surf, show_log=True):
         g = self.game
-        total = len(g.chat_messages)
-        scroll = g.chat_scroll   # 0 = live tail; >0 = PageUp'd back that many messages
+        total = len(g.chat.messages)
+        scroll = g.chat.scroll   # 0 = live tail; >0 = PageUp'd back that many messages
         start, end = chat_window(total, scroll)
-        slice_ = tuple(g.chat_messages[start:end])
+        slice_ = tuple(g.chat.messages[start:end])
 
         if slice_ != self._chat_slice:
             old_cache = self._chat_cache
@@ -491,9 +491,9 @@ class HUD:
 
         if show_log and scroll > 0:
             # New messages that arrived while scrolled back still get
-            # appended to chat_messages (and counted here) even though
+            # appended to chat.messages (and counted here) even though
             # they're off-screen until PageDown/Esc resumes the live tail.
-            new_count = max(0, g.chat_seq - g._chat_scroll_baseline)
+            new_count = max(0, g.chat.seq - g.chat.scroll_baseline)
             label = f"-- {scroll} back"
             if new_count:
                 label += f", {new_count} new"
@@ -504,11 +504,11 @@ class HUD:
                     label, True, theme.WARN)
             surf.blit(self._scroll_indicator_surf, (10, y))
 
-        if g.typing:
+        if g.chat.typing:
             entry = pygame.Rect(5, g.screen_h - 30, g.screen_w - 10, 25)
             pygame.draw.rect(surf, theme.NIGHT_DEEP, entry)
             pygame.draw.rect(surf, theme.EMERALD_DEEP, entry, 1)
-            ts = g.font.render(f"> {g.chat_input}_", True, theme.MINT)
+            ts = g.font.render(f"> {g.chat.input}_", True, theme.MINT)
             surf.blit(ts, (10, g.screen_h - 25))
 
     def _draw_minimap(self, surf):
@@ -610,10 +610,10 @@ class HUD:
         players = g._other_players()
         sel = min(g.player_list_sel, max(0, len(players) - 1))
         rows = [label for _pid, label in players]
-        if g.pm_target_id is not None:
+        if g.chat.pm_target_id is not None:
             # Composing a PM: show the input line as the footer.
-            name = g._player_label(g.pm_target_id)
-            footer = f"PM {name}: {g.pm_input}_"
+            name = g._player_label(g.chat.pm_target_id)
+            footer = f"PM {name}: {g.chat.pm_input}_"
         else:
             footer = "Up/Down select · Enter to PM · F7/Esc close"
         self._draw_list_overlay(surf, "Players", rows, sel, footer)

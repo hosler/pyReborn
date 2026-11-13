@@ -451,15 +451,15 @@ def _t3a(game, c1, c2):
 @check("tier3b_server_text_and_rpg_window_wired")
 def _t3b(game, c1, c2):
     emit(game.client, "on_server_text", "hello from the server")
-    assert any("hello from the server" in m for m in game.chat_messages)
+    assert any("hello from the server" in m for m in game.chat.messages)
     # PLO_RPGWINDOW is the login greeting in practice; it goes to the chat
     # log NON-modally (the real client doesn't gate input on it), so the
     # modal dialogue box must stay untouched (game/setup.py on_rpg_window).
     game.dialogue_text = None
     emit(game.client, "on_rpg_window", ["line one", "line two"])
     assert game.dialogue_text is None
-    assert any("line one" in m for m in game.chat_messages)
-    assert any("line two" in m for m in game.chat_messages)
+    assert any("line one" in m for m in game.chat.messages)
+    assert any("line two" in m for m in game.chat.messages)
 
 
 @check("tier3c_status_label_resolves_from_status_list")

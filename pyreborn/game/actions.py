@@ -503,7 +503,7 @@ class ActionsMixin(ClockedMixin):
         # Mid level-transition the position/link tables are in flux; let the
         # in-flight warp settle before probing again.
         if (getattr(self.client, 'local_level_transition', '')
-                or getattr(self, '_level_transition_input_frozen', False)):
+                or self.transition.input_frozen):
             return False
         pos = (self.client.x, self.client.y)
         if pos == self.arrival.scripted_link_pos:

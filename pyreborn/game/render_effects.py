@@ -130,14 +130,14 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
             # framebuffer hold. Reuse the surface instead of allocating.
             base = self._combat_surface('death-base', flags=0)
             base.blit(self.screen, (0, 0))
-            self._death_base_frame = base
+            self.transition.death_base_frame = base
             fade = self._combat_surface('death-fade')
             fade.fill((24, 24, 28, state.death_fade_alpha(now)))
             self.screen.blit(fade, (0, 0))
             if state.show_death_overlay(now):
                 self.hud.draw_death_overlay(self.screen)
         else:
-            self._death_base_frame = None
+            self.transition.death_base_frame = None
             alpha = state.respawn_fade_alpha(now)
             if alpha:
                 fade = self._combat_surface('respawn-fade')
@@ -216,7 +216,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
         # Update and render each damage number
         active_numbers = []
-        for dmg in self.damage_numbers:
+        for dmg in self.particles.damage_numbers:
             elapsed = current_time - dmg['time']
             if elapsed < dmg['duration']:
                 # Calculate position (float up over time)
@@ -241,7 +241,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
                 active_numbers.append(dmg)
 
-        self.damage_numbers = active_numbers
+        self.particles.damage_numbers = active_numbers
     def _render_bomb_ticking(self, screen_x: float, screen_y: float, elapsed: float):
         """Draw a still-ticking bomb: bomb.gif (or the standard bomb gani) if
         the asset has arrived, else the original flashing-circle primitive."""
@@ -755,7 +755,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
     def _spawn_hit_break_effect(self, x: float, y: float):
         """Queue the existing weapon-hit spark burst at its reported point."""
-        self.break_effects.append({
+        self.particles.breaks.append({
             'x': x, 'y': y,
             'time': self.clock.frame_now(),
             'colors': self.BREAK_COLORS['bush'],
@@ -788,7 +788,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                     self._client_bomb_record(bomb)
                 return
             self.active_bombs[:] = [b for b in self.active_bombs if b is not bomb]
-        self.break_effects.append({
+        self.particles.breaks.append({
             'x': obj['x'], 'y': obj['y'], 'time': self.clock.frame_now(),
             'leap_type': leap_type, 'tiles': obj.get('tiles', ()),
         })
@@ -803,9 +803,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         """Add a small capped spray of procedural vegetation fragments."""
         now = self.clock.frame_now() if now is None else now
         count = random.randint(4, 6) if count is None else max(0, int(count))
-        particles = getattr(self, 'leaf_particles', None)
-        if particles is None:
-            particles = self.leaf_particles = []
+        particles = self.particles.leaves
         room = max(0, self.MAX_LEAF_PARTICLES - len(particles))
         for _ in range(min(count, room)):
             angle = random.uniform(0.0, math.tau)
@@ -822,11 +820,11 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
     def _expire_leaf_particles(self, now=None):
         """Discard expired fragments and return the remaining registry."""
         now = self.clock.frame_now() if now is None else now
-        self.leaf_particles[:] = [
-            leaf for leaf in self.leaf_particles
+        self.particles.leaves[:] = [
+            leaf for leaf in self.particles.leaves
             if now - leaf['time'] < self.LEAF_DURATION - 1e-9
         ]
-        return self.leaf_particles
+        return self.particles.leaves
 
     # -- GS2 particle emitters (pyreborn/particles.py state model) ----------
 
@@ -930,7 +928,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         now = self.clock.frame_now()
         self._expire_leaf_particles(now)
         colors = ((72, 164, 62), (38, 112, 45))
-        for leaf in self.leaf_particles:
+        for leaf in self.particles.leaves:
             age = now - leaf['time']
             t = age / self.LEAF_DURATION
             wx = leaf['x'] + leaf['vx'] * age
@@ -959,9 +957,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         if not 0 <= int(leap_type) <= 5:
             return
         now = self.clock.frame_now() if now is None else now
-        bursts = getattr(self, 'leap_bursts', None)
-        if bursts is None:
-            bursts = self.leap_bursts = []
+        bursts = self.particles.leaps
         if len(bursts) >= self.MAX_LEAP_BURSTS:
             return
         bursts.append({'type': int(leap_type), 'x': float(x), 'y': float(y),
@@ -973,7 +969,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
     def _render_leaps(self):
         """Draw active putleaps bursts and expire finished ones."""
-        bursts = getattr(self, 'leap_bursts', None)
+        bursts = self.particles.leaps
         if not bursts:
             return
         now = self.clock.frame_now()
@@ -995,7 +991,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                     burst['x'] + dx * 0.125, burst['y'] + dy * 0.125)
                 self.screen.blit(sheet, (round(px), round(py)),
                                  area=pygame.Rect(rect))
-        self.leap_bursts[:] = alive
+        self.particles.leaps[:] = alive
 
     def _ripple_surface(self, radius: int):
         """Return a cached one-pixel ring for a ripple scale."""
@@ -1011,13 +1007,11 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
     def _render_water_ripples(self):
         now = self.clock.frame_now()
-        ripples = getattr(self, 'water_ripples', None)
-        if ripples is None:
-            ripples = self.water_ripples = []
-        if self.is_swimming and now - getattr(self, '_last_ripple_time', float('-inf')) >= 0.5:
+        ripples = self.particles.ripples
+        if self.is_swimming and now - self.particles.last_ripple_time >= 0.5:
             feet_x, feet_y = self._player_feet()
             ripples.append({'x': feet_x, 'y': feet_y, 'time': now})
-            self._last_ripple_time = now
+            self.particles.last_ripple_time = now
         ripples[:] = [r for r in ripples if now - r['time'] < 0.5]
         for ripple in ripples:
             t = (now - ripple['time']) / 0.5
@@ -1032,7 +1026,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         """Draw thrown-object leap frames and the existing weapon-hit sparks."""
         now = self.clock.frame_now()
         active = []
-        for eff in self.break_effects:
+        for eff in self.particles.breaks:
             if 'leap_type' in eff:
                 frames = LEAP_FRAMES[eff['leap_type']]
                 frame = max(0, int((now - eff['time'] + 1e-9) / TICK))
@@ -1067,7 +1061,7 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
                 chunk.fill((*(bright if i % 2 == 0 else dark), alpha))
                 self.screen.blit(chunk, (px - size / 2, py - size / 2))
             active.append(eff)
-        self.break_effects = active
+        self.particles.breaks = active
     _ARROW_DIRECTION_VECTOR = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
 
     def _render_server_arrows(self):
