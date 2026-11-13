@@ -50,7 +50,7 @@ CHARACTER_TOUCH_DX = 0.5
 CHARACTER_TOUCH_DY = 1.0
 CHARACTER_TOUCH_TILES = 2
 # NPC image of a character NPC: `showcharacter` sets it (NPC.h:484-487
-# isCharacter, and GS1Commands.cpp:3049 which writes the prop). Servers that
+# isCharacter, and GS1Commands.cpp:3192 which writes the prop). Servers that
 # run the level script themselves stream that image to us; when OUR engine
 # runs the command instead it records the same fact on the NPC dict as
 # 'is_character' (gs1_client.py:1068).
@@ -60,6 +60,20 @@ CHARACTER_IMAGE = '#c#'
 def _is_character_npc(npc_data: dict) -> bool:
     return (npc_data.get('image') == CHARACTER_IMAGE
             or bool(npc_data.get('is_character')))
+
+
+def mark_npc_character(npc_data: dict, character: bool) -> None:
+    """Set or clear the client's character mark on an NPC dict.
+
+    The one place the mark changes. The client `showcharacter` and a server
+    image prop of "#c#" (CHARACTER_IMAGE) set it; the client `setimg` and
+    `setimgpart` and any other non-empty server image prop clear it. The
+    renderer reads the same mark (or that image) to decide "is a character".
+    """
+    if character:
+        npc_data['is_character'] = True
+    else:
+        npc_data.pop('is_character', None)
 
 
 @dataclass

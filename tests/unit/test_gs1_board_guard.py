@@ -181,6 +181,10 @@ class _EnterHarness(SetupMixin):
         self.npc_handler = SimpleNamespace(update_npcs=lambda: None)
         self.visual_x = self.visual_y = 0.0
         self.world_surface = None
+        self.npc_anims, self.npc_effects, self.npc_chat_texts = {}, {}, {}
+        self.npc_visual, self.other_player_visual = {}, {}
+        self.active_projectiles, self.thrown_objects = [], []
+        self.active_bombs = []
         self.arrival = LevelArrival()
         self.particles = Particles()
         self.render_cache = RenderCache()

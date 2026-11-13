@@ -392,6 +392,8 @@ _NPC_PROP_HANDLERS = {
     # A preset head id is meaningful to the renderer here (unlike the player
     # case), so the int is surfaced alongside custom image names.
     22: _set('headimage'),
+    # NPCProp::ALIGNMENT, one byte; the plate colour of a character NPC.
+    33: _set('ap'),
     # PropertyImagePart: classic "object" NPCs point image at a tilesheet (e.g.
     # pics1.png) and use this rect to pick the sub-region; without it the
     # renderer blits the whole sheet.

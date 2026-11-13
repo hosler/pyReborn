@@ -27,6 +27,7 @@ from ..packets import (
 from reborn_protocol import PLPROP, PLSTATUS
 
 from ..client_callbacks import emit
+from ..npc_handler import CHARACTER_IMAGE, mark_npc_character
 from .registry import STOP, handles
 from ..colors_width import colors_width_policy
 from ..attachments import (apply_attachment_props, update_attachments,
@@ -358,6 +359,13 @@ def handle_npc_props(client, data):
             # in from wherever a stale same-id visual entry sits.
             client._mark_npc_pos_snap(props)
             client.npcs[npc_id] = props
+        if props.get('image'):
+            # The server marks a character with the image "#c#" (a
+            # `showcharacter` sends it); any other non-empty image clears
+            # the mark, like the client's setimg. An empty image changes
+            # nothing.
+            mark_npc_character(client.npcs[npc_id],
+                               props['image'] == CHARACTER_IMAGE)
         update_attachments(client)
         host = getattr(client, 'gs2_host', None)
         if 'gani' in props and host is not None:

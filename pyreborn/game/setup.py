@@ -94,10 +94,9 @@ class SetupMixin(ClockedMixin):
     def _on_npc_del(self, npc_id: int):
         if self.npc_handler is not None:
             self.npc_handler.forget_npc(npc_id)
-        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual'):
-            cache = getattr(self, attr, None)
-            if isinstance(cache, dict):
-                cache.pop(npc_id, None)
+        for cache in (self.npc_anims, self.npc_effects, self.npc_chat_texts,
+                      self.npc_visual):
+            cache.pop(npc_id, None)
         interpolator = self.interpolator
         if interpolator is not None:
             interpolator.forget(('npc', npc_id))
@@ -358,11 +357,9 @@ class SetupMixin(ClockedMixin):
         self._load_npc_scripts()
         self._trigger_playerenters()
         self.npc_handler.update_npcs()
-        for attr in ('npc_anims', 'npc_effects', 'npc_chat_texts', 'npc_visual',
-                     'other_player_visual'):
-            cache = getattr(self, attr, None)
-            if isinstance(cache, dict):
-                cache.clear()
+        for cache in (self.npc_anims, self.npc_effects, self.npc_chat_texts,
+                      self.npc_visual, self.other_player_visual):
+            cache.clear()
         # Draw positions of the old level's things: the new level's start
         # where they are, not sliding from an old entity with the same id.
         interpolator = self.interpolator
@@ -375,10 +372,9 @@ class SetupMixin(ClockedMixin):
         # break bursts) — carrying them across a warp let a bomb armed in the
         # old level keep ticking (and eventually exploding) on top of the
         # new one.
-        for attr in ('active_projectiles', 'thrown_objects', 'active_bombs'):
-            effects = getattr(self, attr, None)
-            if isinstance(effects, list):
-                effects.clear()
+        for effects in (self.active_projectiles, self.thrown_objects,
+                        self.active_bombs):
+            effects.clear()
         self.particles.clear_level()
         self.visual_x, self.visual_y = self.client.x, self.client.y
         self.world_surface = None

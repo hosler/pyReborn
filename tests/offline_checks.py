@@ -315,27 +315,30 @@ def check_nameplates(make_game):
     def plate(text, color):
         return render_outlined_text(font, text, color, (0, 0, 0))
 
-    # Players: centred on the sprite's body centre (x + 24 px), 48 px down.
+    # Centred 1.5 tiles (24 px) in from x. The top of the text sits 3.5 tiles
+    # (56 px) below the local player's y and 2.5 tiles (40 px) below another
+    # player's or a character NPC's (TServerPlayer.cpp:1337, :1424; the
+    # local player skips the -1.0 adjustment, TPlayer.cpp:659).
     own = plate(og.ACCOUNT, alignment_color(ap))
     ox, oy = top_left(origin, 30.0, 30.0)
-    ex.expect_text_at(frame, own, (ox + 24 - own.get_width() // 2, oy + 48),
+    ex.expect_text_at(frame, own, (ox + 24 - own.get_width() // 2, oy + 56),
                       "own nameplate")
     peer = game.client.players[5]
     assert peer["nickname"] == "*Bob"          # pygserver marks unregistered names
     bob = plate(peer["nickname"], alignment_color(peer["ap"]))
     bx, by = top_left(origin, 20.0, 20.0)
-    ex.expect_text_at(frame, bob, (bx + 24 - bob.get_width() // 2, by + 48),
+    ex.expect_text_at(frame, bob, (bx + 24 - bob.get_width() // 2, by + 40),
                       "other player nameplate")
-    # An NPC's label is blue and is centred 16 px (a 2-tile sprite's centre)
-    # in from the sprite's left edge, 48 px down. (A character NPC's body is
-    # 32 px wide at +8, centred at +24 like a player's, so this plate sits
-    # 8 px left of the body centre. Observed behaviour, pinned here.)
+    # A character NPC's label is drawn by the reference's player draw: the bare
+    # nick, centred 1.5 tiles (24 px) in from the NPC's x, 40 px down, in the
+    # alignment colour (default alignment 50: white) -- the same rule as the
+    # players' plates above.
     npc = dict(NAMED_NPC)
     game = make_game(tiles=floor_tile, player_xy=(30.0, 30.0), npcs=[npc])
     frame = settle(game, label="nameplates_npc")
-    guard = plate("Offline Guard", (0, 0, 255))
+    guard = plate("Offline Guard", alignment_color(50))
     nx, ny = top_left(origin, 28.0, 34.0)
-    ex.expect_text_at(frame, guard, (nx + 16 - guard.get_width() // 2, ny + 48),
+    ex.expect_text_at(frame, guard, (nx + 24 - guard.get_width() // 2, ny + 40),
                       "NPC nameplate")
 
 

@@ -12,7 +12,7 @@
    packet_codec's parse_say2 translated it, so the sign-popup path leaked the
    raw token.
 4. A server-run `showcharacter` streams the literal NPC image "#c#"
-   (GS1Commands.cpp:3049 / NPC.h isCharacter). The render path must treat it
+   (GS1Commands.cpp:3192 / NPC.h isCharacter). The render path must treat it
    as the character marker, not a sheet filename (three funtimes villagers
    were invisible).
 """
@@ -65,7 +65,12 @@ def _gs1_game():
     client._authenticated = True
     client._protocol = _SentRecorder()
     gs1 = ClientGS1(client)
-    game = type("_Game", (SetupMixin,), {})()
+    def mark_script_owned_animation(self, name):
+        self.script_owned = name
+
+    game = type("_Game", (SetupMixin,),
+                {"mark_script_owned_animation": mark_script_owned_animation})()
+    game.script_owned = None
     game.client = client
     game.gs1 = gs1
     game.player_anim = _AnimRecorder()
@@ -91,6 +96,9 @@ def test_setani_from_an_npc_script_drives_the_player_not_the_npc():
     assert client.player.animation == "sen_piano_idle"
     assert game.current_anim_name == "sen_piano_idle"
     assert game.player_anim.calls[-1][0] == "sen_piano_idle"
+    # and held: the GS1 callback marks it script-owned through the game's
+    # public operation. Mutation: drop the mark in on_setani -> this fails.
+    assert game.script_owned == "sen_piano_idle"
 
 
 def test_setcharani_still_targets_the_npc():

@@ -119,6 +119,9 @@ def test_remote_carry_tiles_and_rest_render(game, monkeypatch, code, index):
     tl, bl, tr, br = LIFT_OBJECTS[index]
     assert carry_tiles(code) == (tl, tr, bl, br)
     game._render_animated_entity = Mock()
+    # These pdata have no nick, which now draws an "unknown" plate; the
+    # test is about the carried object's blits only.
+    game._draw_nameplate = Mock()
     game._render_other_player(100, 200, {'carry_sprite': code}, 8)
     assert [source for source, _ in game.screen.blits] == [tl, tr, bl, br]
     assert game.screen.blits[0][1] == (108, 178)
@@ -129,6 +132,7 @@ def test_remote_bombs_render_bomb_graphic(game, monkeypatch, code):
     record_blits(game, monkeypatch)
     game._render_animated_entity = Mock()
     game._get_effect_sprite = Mock(return_value='bomb-image')
+    game._draw_nameplate = Mock()  # nick-less pdata draws an "unknown" plate
     game._render_other_player(100, 200, {'carry_sprite': code}, 8)
     assert game.screen.blits == [('bomb-image', (108, 178))]
 

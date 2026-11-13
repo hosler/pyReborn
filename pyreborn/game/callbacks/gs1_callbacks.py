@@ -58,11 +58,8 @@ def wire_gs1_callbacks(game):
         base = joined.split(',')[0].strip()
         if not base:
             return
-        # Marks the ani as script-owned: render.py's finished-animation
-        # chain holds a setback-less scripted gani on its final frame
-        # instead of auto-idling (disarmed as soon as any other writer
-        # changes current_anim_name away from this name).
-        game._scripted_player_ani = base
+        # Marks the ani as script-owned (see mark_script_owned_animation).
+        game.mark_script_owned_animation(base)
         try:
             direction = int(game.client.player.direction) & 3
         except (TypeError, ValueError):

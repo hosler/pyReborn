@@ -109,6 +109,12 @@ class GameClient(
     def dismiss_dialogue(self) -> None:
         self._dismiss_dialogue()
 
+    def mark_script_owned_animation(self, name: str) -> None:
+        """Remember ``name`` as the gani a script set; render.py's
+        finished-animation chain holds it (when it has no setback) until any
+        other writer changes ``current_anim_name`` away from it."""
+        self._scripted_player_ani = name
+
     def showtext_font(self, name: str, size: int, bold: bool):
         return self._showtext_font(name, size, bold)
 
@@ -521,9 +527,8 @@ class GameClient(
         # keep the script engines' canvas dims live (screenwidth/
         # GUIContainer reads; the GS2 GUI manager additionally propagates
         # Torque horizSizing/vertSizing deltas itself at render time)
-        if self.gs1 is not None:
-            self.gs1.screen_w = w
-            self.gs1.screen_h = h
+        self.gs1.screen_w = w
+        self.gs1.screen_h = h
         if self.hud is not None:
             self.hud.ui.resize(w, h)
         if self.inventory_ui is not None:
@@ -838,8 +843,7 @@ class GameClient(
         # The RC link is a second connection on its own thread (and the dev
         # playground's NC link a third); drop them with the game one so a
         # server switch doesn't leave them logged in.
-        for name in ('rc_ui', 'dev_ui'):
-            ui = getattr(self, name, None)
+        for name, ui in (('rc_ui', self.rc_ui), ('dev_ui', self.dev_ui)):
             if ui is not None:
                 attempt(f"{name} shutdown", ui.shutdown)
         sound_mgr = self.sound_mgr

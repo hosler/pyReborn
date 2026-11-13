@@ -204,10 +204,6 @@ class EntityRenderMixin(
     # anchor note inside _render_animated_entity).
     _PLAYER_ANCHOR_FIX = TILE_SIZE // 2  # 8px: bubble centring for 3-tile-wide players
 
-    # Classic v2.31 draws NPC nicknames in blue (players get white); tunable
-    # against a fresh real-client reference if the shade looks off.
-    _NPC_NICK_COLOR = (0, 0, 255)
-
     @staticmethod
     def _attr_equipment(gattribs) -> dict:
         """attr1_image..attr5_image for a player whose gani attributes we know.
@@ -254,13 +250,45 @@ class EntityRenderMixin(
         return 115 if ghost or (int(status or 0) & 0x02) else 255
 
     def _nameplate_label(self, name: str, paused: bool, status) -> str:
-        """name, " (paused)", " [status-list label]": the player label rules."""
+        """name, " (paused)", " [status-list label]": the player label rules.
+
+        A player with an empty nick shows "unknown"; the " (paused)" suffix
+        follows it (TServerPlayer.cpp:957-972). The reference cuts the nick
+        to `nicknamelimit` (default 12) only when the `limitnicknames`
+        preference is on (default off, TOptions.cpp:32, :35); this client has
+        neither preference, so it never cuts.
+        """
+        name = name or 'unknown'
         if paused:
             name = f"{name} (paused)"
         status_label = self._status_label(status)
         if status_label:
             name = f"{name} [{status_label}]" if name else f"[{status_label}]"
         return name
+
+    # Nickname plate: the TOP of the text line box (the glyph top is
+    # y + ascent - bearing, TScreenPanelOpenGL.cpp:251) sits this many tiles
+    # below the entity's y. Another player or a character NPC draws at
+    # y - z - 1.0 + 3.5 (TServerPlayer.cpp:1337, :1424; constants 1.0 / 3.5 at
+    # TInitStatics.cpp:1274, :1262), 1.0 less on a horse (:1339). The local
+    # player's gani flag skips that adjustment, so it draws at y + 3.5
+    # (:1424; TPlayer.cpp:659). chatOffset (a script-set property) is not
+    # modelled: it is 0 unless a script sets it.
+    _NAMEPLATE_DY_TILES = 2.5
+    _NAMEPLATE_DY_TILES_HORSE = 1.5
+    _NAMEPLATE_DY_TILES_OWN = 3.5
+
+    def _nameplate_top(self, y: float, horse: bool = False,
+                       own: bool = False) -> float:
+        """Plate top for an entity drawn at screen y (z already subtracted
+        for everything but the local player, whose plate ignores z)."""
+        if own:
+            tiles = self._NAMEPLATE_DY_TILES_OWN
+        elif horse:
+            tiles = self._NAMEPLATE_DY_TILES_HORSE
+        else:
+            tiles = self._NAMEPLATE_DY_TILES
+        return y + TILE_SIZE * tiles
 
     def _draw_nameplate(self, text: str, color, centre_x: float, top_y: float,
                         frame: FrameContext) -> None:
@@ -327,10 +355,11 @@ class EntityRenderMixin(
         # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
         # (24px): the sprite is 3 tiles wide, top-left anchored at x.
         self._draw_nameplate(
-            self._nameplate_label(player.nickname or player.account,
+            self._nameplate_label(player.nickname,
                                   bool(player.status & 1), player.status),
             alignment_color(getattr(player, 'ap', 0)),
-            x + int(TILE_SIZE * 1.5), y + 48, frame)
+            x + int(TILE_SIZE * 1.5),
+            self._nameplate_top(y + z_offset, own=True), frame)
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
@@ -508,10 +537,11 @@ class EntityRenderMixin(
         # player (see _render_player).
         self._draw_nameplate(
             self._nameplate_label(
-                pdata.get('nick') or pdata.get('nickname') or pdata.get('account') or '',
+                pdata.get('nick') or pdata.get('nickname') or '',
                 bool(pdata.get('status', 0) & 1), pdata.get('status')),
             alignment_color(pdata.get('ap', 0)),
-            x + int(TILE_SIZE * 1.5), y + 48, frame)
+            x + int(TILE_SIZE * 1.5),
+            self._nameplate_top(y, horse=bool(pdata.get('horse_image'))), frame)
         if imgs:
             self._render_npc_layers(imgs, over=True)
 
@@ -714,7 +744,7 @@ class EntityRenderMixin(
         is_character = npc.get('is_character')
         if not is_character and image_name == CHARACTER_IMAGE:
             # A server that runs `showcharacter` itself streams the literal
-            # image "#c#" as the character marker (GS1Commands.cpp:3049 writes
+            # image "#c#" as the character marker (GS1Commands.cpp:3192 writes
             # the prop, NPC.h:484-487 isCharacter; pygserver mirrors it). The
             # marker is truthy, so without this the static-sprite branch below
             # tried to load a sheet literally named "#c#" and the NPC stayed
@@ -865,16 +895,22 @@ class EntityRenderMixin(
         if imgs:
             self._render_npc_layers(imgs, over=True)
 
-        # NPC nickname (setcharprop #n / setnick / NPCPROP 20 -> npc['nickname']):
-        # a floating label centred under the NPC — classic draws it in blue,
-        # players in white. Reuses the outlined-text helper so it stays readable
-        # over dark/busy art, and _place_nameplate so it staggers against player
-        # nameplates on the same tile. nick_anchor is None for undrawn / invisible
-        # NPCs, so they get no label (matching the classic client).
+        # NPC nickname (setcharprop #n / setnick / NPCPROP 20 -> npc['nickname']).
+        # The reference draws a nickname only for a character NPC (showcharacter
+        # or a head/body image): TServerNPC::draw hands it to the player draw
+        # (TServerNPC.cpp:1886-1891), which centres the bare nick 1.5 tiles
+        # from the NPC's x in the alignment colour (TServerPlayer.cpp:1416-1424).
+        # An image or non-character gani NPC draws no plate. The alignment is
+        # NPCPROP 33 (stored as 'ap'; TServerNPC.cpp:1239),
+        # default 50 (TServerPlayer.cpp:249). nick_anchor is None for undrawn
+        # NPCs, so they get no label. y: see _nameplate_top.
         nickname = npc.get('nickname')
-        if nickname and nick_anchor:
-            self._draw_nameplate(nickname, self._NPC_NICK_COLOR,
-                                 nick_anchor[0], nick_anchor[1], frame)
+        if is_character and nickname and nick_anchor:
+            self._draw_nameplate(nickname, alignment_color(npc.get('ap', 50)),
+                                 x + int(TILE_SIZE * 1.5),
+                                 self._nameplate_top(
+                                     y, horse=bool(npc.get('horseimage'))),
+                                 frame)
 
         self._render_npc_script_overlays(npc, x, y, nick_anchor)
 

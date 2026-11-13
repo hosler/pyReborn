@@ -93,14 +93,29 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
         if not frame.defer_world_draw(draw, world_y + height_tiles):
             draw()
 
-    def _combat_surface(self, name, flags=pygame.SRCALPHA):
-        """Return a screen-sized cached effect surface."""
+    def _combat_surface(self, name, flags=pygame.SRCALPHA, paint=None):
+        """Return a screen-sized cached effect surface. ``paint(surface)``,
+        when given, fills a surface once as it is created, so a surface of a
+        new size (after a window resize) is never handed out blank."""
         key = (name, self.screen.get_size())
         cache = self.render_cache.combat_surface
         surf = cache.get(key)
         if surf is None:
             surf = cache[key] = pygame.Surface(self.screen.get_size(), flags)
+            if paint is not None:
+                paint(surf)
         return surf
+
+    @staticmethod
+    def _paint_hurt_vignette(vignette):
+        """Red edge falloff, drawn into a transparent screen-sized surface."""
+        vignette.fill((0, 0, 0, 0))
+        w, h = vignette.get_size()
+        edge = max(24, min(w, h) // 7)
+        for i in range(edge):
+            alpha = round(90 * (1.0 - i / edge) ** 2)
+            pygame.draw.rect(vignette, (150, 0, 0, alpha),
+                             (i, i, w - i * 2, h - i * 2), 1)
 
     def _render_combat_presentation(self):
         """Composite cached hurt/death effects after the HUD."""
@@ -111,16 +126,8 @@ class EffectsRenderMixin(ClockedMixin, FlyingObjectsMixin, FrameContextMixin):
 
         hit_alpha = state.hit_flash_alpha(now)
         if hit_alpha:
-            vignette = self._combat_surface('hurt-vignette')
-            if not self.render_cache.hurt_vignette_ready:
-                vignette.fill((0, 0, 0, 0))
-                w, h = vignette.get_size()
-                edge = max(24, min(w, h) // 7)
-                for i in range(edge):
-                    alpha = round(90 * (1.0 - i / edge) ** 2)
-                    pygame.draw.rect(vignette, (150, 0, 0, alpha),
-                                     (i, i, w - i * 2, h - i * 2), 1)
-                self.render_cache.hurt_vignette_ready = True
+            vignette = self._combat_surface(
+                'hurt-vignette', paint=self._paint_hurt_vignette)
             vignette.set_alpha(hit_alpha)
             self.screen.blit(vignette, (0, 0))
 

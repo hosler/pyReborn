@@ -7,6 +7,7 @@ from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.gs1.values import to_num, to_str
 
 from ..client_callbacks import emit
+from ..npc_handler import mark_npc_character
 from ..palette import REBORN_PALETTE
 from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _current_baddies, _item_ids, _push_dir
 from .registry import _FALL_THROUGH, _GS1_MAIN_COMMANDS, _gs1_command
@@ -62,6 +63,7 @@ class MainCommandsMixin:
         if not (isinstance(npc, dict) and len(args) >= 5):
             return _FALL_THROUGH
         npc["image"] = to_str(args[0])
+        mark_npc_character(npc, False)
         npc["imagepart"] = (int(to_num(args[1])), int(to_num(args[2])),
                             int(to_num(args[3])), int(to_num(args[4])))
 
@@ -72,6 +74,7 @@ class MainCommandsMixin:
         if not (isinstance(npc, dict) and args):
             return _FALL_THROUGH
         npc["image"] = to_str(args[0])
+        mark_npc_character(npc, False)
         npc.pop("imagepart", None)
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "message", "say")

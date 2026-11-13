@@ -8,7 +8,8 @@
    of the GameClient MRO; ``game.x`` / ``g.x`` / ``self.game.x`` elsewhere)
    must name an annotation or a method/property. There is no
    ``getattr(<game>, 'x', default)`` / ``hasattr(<game>, 'x')`` on a declared
-   name anywhere: read it directly.
+   name anywhere: read it directly, and no three-argument ``getattr`` with a
+   computed name (the two-argument form is legal).
 2. Dynamic. A real offline game is built, then driven through start, frames,
    chat, overlay keys, a push and two warps. It gains no attribute after
    ``__init__`` (``CLASS_LEVEL`` names, which exist on the class from the
@@ -80,6 +81,7 @@ class _Walker(ast.NodeVisitor):
         self.in_mro = [False]
         self.stores = []        # (name, receiver, lineno)
         self.guards = []        # (name, receiver, lineno)
+        self.dynamic = []       # (receiver, lineno): getattr(game, expr, default)
 
     def _receiver(self, node):
         if isinstance(node, ast.Name):
@@ -136,18 +138,32 @@ class _Walker(ast.NodeVisitor):
             receiver = self._receiver(node.args[0])
             if receiver:
                 self.guards.append((node.args[1].value, receiver, node.lineno))
+        elif (isinstance(func, ast.Name) and func.id == "getattr"
+              and len(node.args) >= 3
+              and not (isinstance(node.args[1], ast.Constant)
+                       and isinstance(node.args[1].value, str))):
+            receiver = self._receiver(node.args[0])
+            if receiver:
+                self.dynamic.append((receiver, node.lineno))
         self.generic_visit(node)
+
+
+#: Filled by _walk_tree: (file, receiver, line) of every defaulted getattr
+#: whose attribute name is not a literal.
+_DYNAMIC = []
 
 
 def _walk_tree():
     mro = _mro_classes()
     stores, guards = [], []
+    _DYNAMIC.clear()
     for path in _scanned_files():
         rel = path.relative_to(PKG).as_posix()
         walker = _Walker(rel, mro.get(path, set()))
         walker.visit(ast.parse(path.read_text()))
         stores += [(rel,) + s for s in walker.stores]
         guards += [(rel,) + g for g in walker.guards]
+        _DYNAMIC.extend((rel,) + d for d in walker.dynamic)
     return stores, guards
 
 
@@ -196,6 +212,16 @@ def test_no_getattr_or_hasattr_guard_on_a_declared_attribute():
         "GameClient.__init__. Found: "
         + "; ".join("%s %r x%d" % (k[0], k[1], n)
                     for k, n in sorted(measured.items())))
+
+
+def test_no_defaulted_getattr_with_a_computed_name_on_the_game():
+    """``for attr in (...): getattr(self, attr, None)`` hides which declared
+    attributes the loop touches from the guard test above. Loop over the
+    objects instead, or use the two-argument getattr (no default)."""
+    _walk_tree()
+    assert not _DYNAMIC, (
+        "three-argument getattr with a computed name on the game: "
+        + "; ".join("%s %s line %d" % d for d in _DYNAMIC))
 
 
 # -- part 3 first: it needs only an unstarted game ------------------------------------

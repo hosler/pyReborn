@@ -22,10 +22,9 @@ import pytest
 from unittest.mock import Mock
 
 from pyreborn.game.camera import Camera2D
-from pyreborn.game.hud import HUD, chat_window
+from pyreborn.game.hud import chat_window
 from pyreborn.game.settings_ui import SettingsOverlay
 from pyreborn.prefs import Prefs
-from pyreborn.sounds import SoundManager
 
 
 class _Key:

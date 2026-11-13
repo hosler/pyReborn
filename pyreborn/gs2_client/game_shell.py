@@ -42,6 +42,12 @@ class GameShell(Protocol):
     def selected_weapon_full_index(self) -> int:
         """Equipped weapon's index in the full (hidden-included) weapon list."""
 
+    def mark_script_owned_animation(self, name: str) -> None:
+        """Record that a script set the player's gani to ``name``: a gani with
+        no SETBACKTO then holds its last frame instead of falling back to
+        idle (FourPlay quattroplay/src/TGaniObject.cpp:3224-3230). Both
+        engines' setani call this."""
+
     def dismiss_dialogue(self) -> None:
         """Close the dialogue box."""
 

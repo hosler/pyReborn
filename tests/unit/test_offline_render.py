@@ -572,6 +572,24 @@ def _mutate_nameplate_text(mp):
                    self, font, text + "!", color, *rest))
 
 
+def _mutate_npc_plate_centre(mp):
+    """The old rule: a character NPC's plate centred at x + 16, not x + 24."""
+    original = GameClient._draw_nameplate
+    mp.setattr(GameClient, "_draw_nameplate",
+               lambda self, text, color, centre_x, top_y, frame: original(
+                   self, text, color,
+                   centre_x - 8 if text == "Offline Guard" else centre_x,
+                   top_y, frame))
+
+
+def _mutate_nameplate_y(mp):
+    """A plate 8 px too low (the old 48 px rule was 8 px off for others)."""
+    original = GameClient._nameplate_top
+    mp.setattr(GameClient, "_nameplate_top",
+               lambda self, y, horse=False, own=False: original(
+                   self, y, horse, own) + 8)
+
+
 def _mutate_hearts(mp):
     original = HeartDisplay.render
     mp.setattr(HeartDisplay, "render",
@@ -602,6 +620,8 @@ MUTATIONS = {
                             ["own_player_position", "sprite_cells",
                              "npc_positions"]),
     "nameplate text altered": (_mutate_nameplate_text, ["nameplates"]),
+    "NPC plate centred at +16": (_mutate_npc_plate_centre, ["nameplates"]),
+    "nameplate 8 px low": (_mutate_nameplate_y, ["nameplates"]),
     "HeartDisplay count -1": (_mutate_hearts, ["hearts"]),
     "negated _depth_sort_key": (_mutate_depth_sort, ["z_order"]),
     "no-op _render_debug_overlay": (_mutate_debug_overlay, ["debug_overlay"]),

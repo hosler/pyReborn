@@ -5,6 +5,7 @@ import logging
 from reborn_protocol.gs1.values import to_num, to_str
 
 from .. import npc_flags
+from ..npc_handler import mark_npc_character
 from .objects import _carry_code_for_name
 from .registry import _CHARPROP_NPC, _FALL_THROUGH, _GS1_NPC_COMMANDS, _GS1_NPC_TAIL_COMMANDS, _gs1_command
 
@@ -36,7 +37,7 @@ class NpcCommandsMixin:
 
     @_gs1_command(_GS1_NPC_COMMANDS, "showcharacter")
     def _cmd_showcharacter(self, name, args, ctx, imgs):
-        ctx.this_obj["is_character"] = True
+        mark_npc_character(ctx.this_obj, True)
 
     @_gs1_command(_GS1_NPC_COMMANDS, "setcharprop")
     def _cmd_setcharprop_npc(self, name, args, ctx, imgs):

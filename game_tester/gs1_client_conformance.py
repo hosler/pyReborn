@@ -706,7 +706,7 @@ CASES: List[ClientCase] = [
                "if (playertouchsme) { message ghost; }"),
     ClientCase(
         "character_marker_box", "image '#c#' = character: 2x2 box at +(0.5,1.0)",
-        "GSV scripting/gs1/GS1Commands.cpp:3049 (showcharacter writes IMAGE "
+        "GSV scripting/gs1/GS1Commands.cpp:3192 (showcharacter writes IMAGE "
         "'#c#' - the wire marker, absent from FP's in-process model); "
         "FP TServerNPC.cpp:2106-2112 (character box +0.5,+1.0, 2x2)",
         _chk_character_marker, npc_image="#c#"),

@@ -171,10 +171,8 @@ def wire_client_callbacks(game):
         if game.client.player.hearts <= 0:
             # TPlayer.cpp:5743-5744: death ends the current action and counter.
             game.client.player.action_mode = 0
-            for clear in ('_clear_push_hold', '_clear_grab_state'):
-                callback = getattr(game, clear, None)
-                if callback is not None:
-                    callback()
+            game._clear_push_hold()
+            game._clear_grab_state()
             game._ledge_jump = None
             # Play death sound
             game.sound_mgr.play("dead.wav")

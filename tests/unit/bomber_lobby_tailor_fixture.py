@@ -13,7 +13,7 @@ server, so nothing here may touch the network.
 Manifest notes:
 
 * the NPC's image is "#c#", which is what the wire carries after the server runs
-  `showcharacter`. GServer-v2 GS1Commands.cpp:3049 sets the IMAGE prop, and
+  `showcharacter`. GServer-v2 GS1Commands.cpp:3192 sets the IMAGE prop, and
   scripting-gs1-commands.md lists showcharacter as gs2emu-serverside. The
   level file itself declares no image ("-").
 * `weapons` is an ORDERING, not a capture: the live session had `-tailor` at

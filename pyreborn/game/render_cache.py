@@ -44,7 +44,6 @@ class RenderCache:
 
     # -- group B: effects and layers (render_effects / render_layers; S5)
     combat_surface: Dict[Any, Any] = field(default_factory=dict)
-    hurt_vignette_ready: bool = False
     particle_surf: LruCache = field(
         default_factory=lambda: LruCache(PARTICLE_CACHE_CAP))
     ripple_surface: Dict[Any, Any] = field(default_factory=dict)

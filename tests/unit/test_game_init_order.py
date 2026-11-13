@@ -193,6 +193,11 @@ def test_weapons_streamed_at_login_run_against_a_complete_game(
 
     game.start()
     game.frames(12)
+    # the chat bubble times out, so it is read here, before the long wait
+    chat_shown = (game.local_chat_text == "loaded"
+                  and game.local_chat_time is not None)
+    game.frames(228)
+    ani_after_frames = game.current_anim_name
 
     client_scope = game.gs1._shared["client"]
     sent = {pid for pid, _ in game.client._protocol.sent}
@@ -201,10 +206,14 @@ def test_weapons_streamed_at_login_run_against_a_complete_game(
     # Every expectation is checked, so one run names every script that lost
     # its effect. Label: the script call whose result is missing.
     expected = {
-        # setani after disabledefmovement drives the drawn player (read
-        # before the frames: the synthetic sit gani is not looped, and a
-        # GS2 setani does not hold a finished gani the way GS1's does)
+        # setani after disabledefmovement drives the drawn player, and the
+        # synthetic sit gani (one frame, no SETBACKTO, no LOOP) is still
+        # held after 240 frames: the reference holds a finished gani that
+        # has no setback, and a GS2 setani marks it script-owned
+        # exactly as GS1's does. Mutation: drop game.mark_script_owned_animation
+        # from the GS2 setani in gs2_client/host_bare.py -> "setani held".
         "setani": ani_at_init == "sit",
+        "setani held": ani_after_frames == "sit",
         # GS1 #m, read at start(), sees the gani set at load
         "#m after setani": client_scope.get("loadani") == "sit",
         "GS1 timeout": client_scope.get("loadtimeout") == "yes",
@@ -214,8 +223,7 @@ def test_weapons_streamed_at_login_run_against_a_complete_game(
         "own shot -> onActionProjectile2":
             vms["-init_shoot"].this.get("selfshot") == 1,
         # player.chat -> setplayerprop #c -> the local bubble
-        "player.chat": (game.local_chat_text == "loaded"
-                        and game.local_chat_time is not None),
+        "player.chat": chat_shown,
         "say2": "sign at load" in str(game.dialogue_text or ""),
         # play of a track we do not have: remembered for its download
         "play music": game._current_music_name == "loadtrack.mid",
@@ -240,3 +248,15 @@ def test_a_warp_requested_at_load_is_performed(make_game, engine_errors):
     assert (game.client.x, game.client.y) == (20.0, 21.0)
     assert game.frame_errors == {}
     assert engine_errors() == []
+
+
+def test_a_gs1_setani_is_held_after_240_frames(make_game):
+    """The same hold through the GS1 callback. Mutation: drop
+    game.mark_script_owned_animation from on_setani in
+    game/callbacks/gs1_callbacks.py -> the gani drops to idle."""
+    game = make_game(start=False, weapons=[
+        {"name": "-hold_gs1", "engine": "gs1",
+         "script": "if (created) { disabledefmovement; setani sit,; }"}])
+    game.start()
+    game.frames(240)
+    assert game.current_anim_name == "sit"

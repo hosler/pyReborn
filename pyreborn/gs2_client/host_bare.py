@@ -707,6 +707,7 @@ class HostBareMixin:
             if (game is not None and rt2.gs1 is not None
                     and not rt2.gs1.default_movement):
                 base = ani.split(",")[0].strip()
+                game.mark_script_owned_animation(base)
                 try:
                     game.player_anim.set_animation(
                         base,
