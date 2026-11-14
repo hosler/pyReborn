@@ -104,20 +104,51 @@ def npc_cell(grid, npc) -> Optional[Tuple[int, int]]:
 
 def place_npc(grid, npc) -> None:
     """Set world_x/world_y from the NPC's local x/y and its cell (local +
-    cell * 64). With no grid loaded the local position stands for world
-    until `load_gmap` re-places every NPC. With a grid but no cell (the
-    NPC's level is no segment) the world pair is left as it is."""
+    cell * 64). An NPC with no cell (a plain level off the grid, or no grid
+    loaded yet) sits in map cell (0, 0) in the reference, so its local
+    position is its world position (TServerNPC.cpp:330, TServerNPC.cpp:321-324);
+    `load_gmap` places every NPC again when the grid arrives."""
     cell = npc_cell(grid, npc)
     if cell is not None and grid:
         ox, oy = segment_origin(*cell)
-    elif not grid:
-        ox = oy = 0
     else:
-        return
+        ox = oy = 0
     if 'x' in npc:
         npc['world_x'] = world_from_wire(npc['x'], ox)
     if 'y' in npc:
         npc['world_y'] = world_from_wire(npc['y'], oy)
+
+
+#: How far from the player's map cell a map-owned NPC stays visible, per axis.
+NPC_RANGE_CELLS = 1
+
+
+def npc_in_range(grid, player_cell, npc) -> bool:
+    """The reference's per-NPC `isVisible` for the 3x3 around the player.
+
+    A map-owned NPC is visible while ``|player.map - npc.map| <= 1`` on both
+    axes (TServerNPC.cpp:425-427; TPlayer.cpp:374-387 applies it to the map's
+    whole NPC list on every level entry). The server sends no delete when a
+    cell leaves the 3x3; the client keeps the NPC and hides it. Hidden, in
+    the reference: its images are destroyed (TServerNPC.cpp:842-846,
+    TGaniObject.cpp:424-471), so the body, gani and show-image layers are not
+    drawn, and its script is stopped (TPlayer.cpp:1075-1107) until it is
+    shown again (TServerNPC.cpp:850-851). Blocking and touch are NOT gated
+    by it: they test the script's own `visible` (TServerNPC.cpp:2095)
+    against the world position, which puts a hidden NPC at least 64 tiles
+    from the player.
+
+    An NPC that is not map-owned (a plain level or a segment named as its
+    owner: TServerNPC.cpp:420-422 returns early for it), no known player
+    cell, or an NPC with no cell is always in range.
+    """
+    if player_cell is None or not npc.get('_map_owned'):
+        return True
+    cell = npc_cell(grid, npc)
+    if cell is None:
+        return True
+    return (abs(cell[0] - player_cell[0]) <= NPC_RANGE_CELLS
+            and abs(cell[1] - player_cell[1]) <= NPC_RANGE_CELLS)
 
 
 @dataclass

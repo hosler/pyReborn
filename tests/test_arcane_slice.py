@@ -34,14 +34,15 @@ def weapon_source():
     return WEAPON.read_text().split("//#CLIENTSIDE", 1)[1].rsplit("SCRIPTEND", 1)[0]
 
 
-def runtime(direction=3):
-    client = SimpleNamespace(
-        player=SimpleNamespace(x=20.0, y=20.0, direction=direction, account="mage",
-                               nickname="Mage", id=1),
-        x=20.0, y=20.0, players={}, npcs={}, baddies={}, weapons={},
-        connected=False, _current_level_name="arcane_dungeon.nw",
-        _tiles_level_name="arcane_dungeon.nw", tiles=[0x1FF] * 4096,
-    )
+def runtime(make_client, direction=3):
+    client = make_client(player_xy=(20.0, 20.0))
+    client.player.direction = direction
+    client.player.account = "mage"
+    client.player.nickname = "Mage"
+    client.player.id = 1
+    client._current_level_name = "arcane_dungeon.nw"
+    client._tiles_level_name = "arcane_dungeon.nw"
+    client.tiles = [0x1FF] * 4096
     rt = ClientGS1(client)
     actions = []
     rt.on_triggeraction = lambda x, y, action, npc_id: actions.append(
@@ -61,8 +62,8 @@ def layers(rt):
 
 @pytest.mark.parametrize("direction,dx,dy", [(0, 0, -1), (1, -1, 0),
                                             (2, 0, 1), (3, 1, 0)])
-def test_bolt_emitter_and_facing(direction, dx, dy):
-    rt, _, actions = runtime(direction)
+def test_bolt_emitter_and_facing(make_client, direction, dx, dy):
+    rt, _, actions = runtime(make_client, direction)
     fire(rt)
     image = layers(rt)[200]
     assert image["image"] == "arcane_bolt.png"
@@ -82,9 +83,9 @@ def test_bolt_emitter_and_facing(direction, dx, dy):
     assert not actions
 
 
-def test_baddy_hit_reports_exact_weapon_carrier_and_hides_image():
-    rt, client, actions = runtime()
-    client.baddies[42] = {"x": 23.0, "y": 20.0, "power": 2}
+def test_baddy_hit_reports_exact_weapon_carrier_and_hides_image(make_client):
+    rt, client, actions = runtime(make_client)
+    client.baddies.setdefault(client.current_level_name, {})[42] = {"x": 23.0, "y": 20.0, "power": 2}
     fire(rt)
     rt.process_timeouts(0.05)
     assert actions == [(22.0, 20.0,
@@ -97,8 +98,8 @@ def test_baddy_hit_reports_exact_weapon_carrier_and_hides_image():
     assert 200 in layers(rt)
 
 
-def test_npc_hit_uses_level_index_and_skips_invisible_image():
-    rt, client, actions = runtime()
+def test_npc_hit_uses_level_index_and_skips_invisible_image(make_client):
+    rt, client, actions = runtime(make_client)
     client.npcs[10] = {"x": 22, "y": 20, "image": "body.png", "visible": False}
     client.npcs[20] = {"x": 22, "y": 20, "image": "body.png"}
     fire(rt)
@@ -108,8 +109,8 @@ def test_npc_hit_uses_level_index_and_skips_invisible_image():
     assert 200 not in layers(rt)
 
 
-def test_player_hit_skips_self():
-    rt, client, actions = runtime()
+def test_player_hit_skips_self(make_client):
+    rt, client, actions = runtime(make_client)
     client.players[2] = {"x": 23, "y": 20, "account": "other"}
     fire(rt)
     rt.process_timeouts(0.05)
@@ -119,8 +120,8 @@ def test_player_hit_skips_self():
 
 
 @pytest.mark.parametrize("wall", [False, True])
-def test_range_and_blocking_tiles_stop_the_bolt(wall):
-    rt, client, actions = runtime()
+def test_range_and_blocking_tiles_stop_the_bolt(make_client, wall):
+    rt, client, actions = runtime(make_client)
     if wall:
         client.tiles[20 * 64 + 22] = 0x278
     fire(rt)
@@ -378,8 +379,8 @@ def test_quest_grant_preserves_the_file_backed_weapon(tmp_path):
     asyncio.run(check())
 
 
-def test_npc_hit_skips_a_hidden_character():
-    rt, client, actions = runtime()
+def test_npc_hit_skips_a_hidden_character(make_client):
+    rt, client, actions = runtime(make_client)
     client.npcs[10] = {"x": 21, "y": 19, "image": "body.png",
                        "body_image": "body.png", "visible": False}
     fire(rt)
@@ -387,8 +388,11 @@ def test_npc_hit_skips_a_hidden_character():
     assert not actions
 
 
-def test_client_player_index_hits_the_same_player_on_the_server(tmp_path):
+def test_client_player_index_hits_the_same_player_on_the_server(tmp_path, make_client):
     from pygserver.server import GameServer
+
+    # Built before the event loop starts: the offline world runs its own.
+    rt, client, actions = runtime(make_client)
 
     async def check():
         server = OfflineServer(tmp_path)
@@ -396,7 +400,6 @@ def test_client_player_index_hits_the_same_player_on_the_server(tmp_path):
         target.x, target.y = 22, 19
         target.account_name = "target"
         shooter = server.add_player(2, "mage", 20, 20)
-        rt, client, actions = runtime()
         client.player.id = 2
         client.players[1] = {"x": 22, "y": 19, "account": "target"}
         fire(rt)

@@ -173,19 +173,15 @@ def handle_level_name(client, data):
         # The level scope is the PLO_LEVELNAME target (TClient.cpp:3224-3241).
         # An adjacent preload sets it to the neighbour for the length of that
         # static block (board, links, chests, signs land there); the closing
-        # PLO_LEVELNAME of the block sets it back. Any other level is the
-        # player's entry, and also the NPC owner until PLO_SETACTIVELEVEL
-        # names it. That approximates the reference, which sets the NPC
-        # target at level load only when the scope does not name the loaded
-        # level (TPlayer.cpp:941-946; `_own_warp_moves_targets` does that
-        # for a warp without PLO_LEVELNAME). It differs in one window: an
-        # NPC packet between this PLO_LEVELNAME and PLO_SETACTIVELEVEL is
-        # filed here, where the reference files it under the previous NPC
-        # target.
+        # PLO_LEVELNAME of the block sets it back. The NPC owner is NOT set
+        # here: the level load sets it only when the scope does not name the
+        # loaded level (TPlayer.cpp:941-946), and this packet is what names
+        # it, so until the first PLO_SETACTIVELEVEL the owner is still the
+        # previous one (`_own_warp_moves_targets` does the other case, a
+        # warp without PLO_LEVELNAME).
         client._level_scope = level_name
         if not is_adjacent_preload:
             client._level_scope_segment = level_name
-            client._npc_level = level_name
     elif is_map_name(level_name) and _is_current_map(client, level_name):
         # The current map: the scope is the player's own segment, resolved
         # when read. Another map leaves it unchanged (TClient.cpp:3224-3241).

@@ -21,7 +21,6 @@ TServerNPC.cpp:2093-2226):
 
 import os
 import sys
-import types
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -35,16 +34,14 @@ from pyreborn.gs1_client import ClientGS1
 from pyreborn.npc_handler import NPCHandler
 
 
-def _client(npcs=None):
-    return types.SimpleNamespace(
-        npcs=npcs or {}, x=30.0, y=30.0, tiles=[0] * 4096,
-        _current_level_name='level1.nw',
-        player=types.SimpleNamespace(direction=0, x=30.0, y=30.0, hearts=3),
-        global_flags={})
+def _client(make_client, npcs=None):
+    client = make_client()
+    client.npcs.update(npcs or {})
+    return client
 
 
-def _gs1(npcs=None, image_size=None):
-    client = _client(npcs)
+def _gs1(make_client, npcs=None, image_size=None):
+    client = _client(make_client, npcs)
     gs1 = ClientGS1(client)
     if image_size is not None:
         gs1.image_size_source = lambda name: image_size
@@ -53,8 +50,8 @@ def _gs1(npcs=None, image_size=None):
 
 # -- image footprint blocking ------------------------------------------------
 
-def test_image_npc_blocks_its_image_footprint():
-    _c, gs1 = _gs1({5: {'x': 10.0, 'y': 10.0, 'image': 'trunk.png'}},
+def test_image_npc_blocks_its_image_footprint(make_client):
+    _c, gs1 = _gs1(make_client, {5: {'x': 10.0, 'y': 10.0, 'image': 'trunk.png'}},
                    image_size=(32, 48))    # 2x3 tiles
     assert gs1.npc_blocks_at(10.5, 12.9) is True
     assert gs1.npc_blocks_at(11.9, 10.0) is True
@@ -63,11 +60,11 @@ def test_image_npc_blocks_its_image_footprint():
     assert gs1.npc_blocks_at(9.9, 10.5) is False
 
 
-def test_setimgpart_rect_is_the_footprint():
+def test_setimgpart_rect_is_the_footprint(make_client):
     # setimgpart sizes the NPC (TServerNPC::pixelsize: shape > imgpart >
     # texture size): a 32x32 part of a big sheet is a 2x2-tile footprint,
     # not the sheet's.
-    _c, gs1 = _gs1({5: {'x': 10.0, 'y': 10.0, 'image': 'pics1.png',
+    _c, gs1 = _gs1(make_client, {5: {'x': 10.0, 'y': 10.0, 'image': 'pics1.png',
                         'imagepart': (176, 128, 32, 32)}},
                    image_size=(2048, 512))
     assert gs1.npc_blocks_at(11.9, 11.9) is True
@@ -75,32 +72,32 @@ def test_setimgpart_rect_is_the_footprint():
     assert gs1.npc_blocks_at(10.5, 12.1) is False
 
 
-def test_unknown_image_size_defaults_to_2x2():
+def test_unknown_image_size_defaults_to_2x2(make_client):
     # No size hook (headless) -> the engine's unsized-texture default of
     # 32x32 px (TParticleData::pixelsize).
-    _c, gs1 = _gs1({5: {'x': 10.0, 'y': 10.0, 'image': 'door.png'}})
+    _c, gs1 = _gs1(make_client, {5: {'x': 10.0, 'y': 10.0, 'image': 'door.png'}})
     assert gs1.npc_blocks_at(11.5, 11.5) is True
     assert gs1.npc_blocks_at(12.5, 11.5) is False
 
 
-def test_imageless_npc_has_no_footprint():
-    _c, gs1 = _gs1({5: {'x': 10.0, 'y': 10.0}})
+def test_imageless_npc_has_no_footprint(make_client):
+    _c, gs1 = _gs1(make_client, {5: {'x': 10.0, 'y': 10.0}})
     assert gs1.npc_blocks_at(10.5, 10.5) is False
 
 
-def test_transparent_pixels_do_not_block():
+def test_transparent_pixels_do_not_block(make_client):
     # The reference footprint resolves to !isPixelTransparent inside the
     # rect; art left half transparent -> walkable there.
-    _c, gs1 = _gs1({5: {'x': 10.0, 'y': 10.0, 'image': 'glow.png'}},
+    _c, gs1 = _gs1(make_client, {5: {'x': 10.0, 'y': 10.0, 'image': 'glow.png'}},
                    image_size=(32, 32))
     gs1.image_opaque_source = lambda name, px, py: px >= 16
     assert gs1.npc_blocks_at(10.5, 11.0) is False   # px 8: transparent half
     assert gs1.npc_blocks_at(11.5, 11.0) is True    # px 24: opaque half
 
 
-def test_hidden_npc_neither_blocks_nor_touches():
+def test_hidden_npc_neither_blocks_nor_touches(make_client):
     npcs = {5: {'x': 10.0, 'y': 10.0, 'image': 'door.png', 'visible': False}}
-    client, gs1 = _gs1(npcs)
+    client, gs1 = _gs1(make_client, npcs)
     assert gs1.npc_blocks_at(10.5, 10.5) is False
     handler = NPCHandler(client)
     handler.gs1 = gs1
@@ -108,14 +105,14 @@ def test_hidden_npc_neither_blocks_nor_touches():
     assert handler.npc_shapes == {}
 
 
-def test_dontblock_clears_blockagain_restores_via_script():
+def test_dontblock_clears_blockagain_restores_via_script(make_client):
     # GTA's open-door mechanic: `if (playertouchsme) {hidelocal;
     # dontblocklocal;}` then a timeout re-shows and re-blocks.
     script = ("if (playertouchsme) { hidelocal; dontblocklocal; "
               "drawunderplayer; }\n"
               "if (timeout) { showlocal; blockagainlocal; }")
     npcs = {5: {'x': 10.0, 'y': 10.0, 'image': 'door.png', 'script': script}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     gs1.load_script("npc_5", script, npc_id=5)
 
     assert gs1.npc_blocks_at(10.5, 10.5) is True        # shown: blocks
@@ -130,11 +127,11 @@ def test_dontblock_clears_blockagain_restores_via_script():
     assert gs1.npc_blocks_at(10.5, 10.5) is True        # blocks again
 
 
-def test_local_weapon_showimg_layers_do_not_block():
+def test_local_weapon_showimg_layers_do_not_block(make_client):
     # Weapon showimg layers/effects are not NPCs (they live in the weapon
     # image stores, not client.npcs) — nothing our own scripts draw may
     # start walling the level.
-    _c, gs1 = _gs1({})
+    _c, gs1 = _gs1(make_client, {})
     gs1.load_weapon("-fx", "if (created) { showimg 200,huge.png,10,10; }")
     gs1.trigger_event("created", name="weapon_-fx")
     assert gs1._weapon_imgs.get("weapon_-fx")           # the layer exists
@@ -143,9 +140,9 @@ def test_local_weapon_showimg_layers_do_not_block():
 
 # -- setshape / setshape2 interplay ------------------------------------------
 
-def test_setshape_dontblock_keeps_shape_and_blockagain_restores():
+def test_setshape_dontblock_keeps_shape_and_blockagain_restores(make_client):
     npcs = {7: {'x': 20.0, 'y': 20.0, 'image': 'counter.png'}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     gs1.shapes[7] = (2, 2, [22] * 4)
     gs1._update_shape_blocks(7, npcs[7], 2, 2, [22] * 4)
     assert gs1.npc_blocks_at(20.5, 20.5) is True
@@ -161,19 +158,19 @@ def test_setshape_dontblock_keeps_shape_and_blockagain_restores():
     assert gs1.npc_blocks_at(20.5, 20.5) is True
 
 
-def test_hidden_shape_npc_does_not_block():
+def test_hidden_shape_npc_does_not_block(make_client):
     npcs = {7: {'x': 20.0, 'y': 20.0, 'visible': False}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     gs1.shapes[7] = (2, 2, [22] * 4)
     gs1._update_shape_blocks(7, npcs[7], 2, 2, [22] * 4)
     assert gs1.npc_blocks_at(20.5, 20.5) is False
 
 
-def test_shape2_cells_wall_at_type_20_and_up():
+def test_shape2_cells_wall_at_type_20_and_up(make_client):
     # isOnNPC's shape-2 wall compare is >= 20 (choc blocks use 22, but 20/21
     # wall too); lower published types (chairs = 3) are walkable overlays.
     npcs = {7: {'x': 20.0, 'y': 20.0}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     flags = [22, 21, 20, 3]
     gs1.shapes[7] = (4, 1, flags)
     gs1._update_shape_blocks(7, npcs[7], 4, 1, flags)
@@ -183,11 +180,11 @@ def test_shape2_cells_wall_at_type_20_and_up():
     assert gs1.npc_blocks_at(23.5, 20.5) is False
 
 
-def test_script_shape_overrides_image_footprint():
+def test_script_shape_overrides_image_footprint(make_client):
     # An NPC with a recorded shape never adds its image rect on top
     # (pixelsize precedence): a 1x1 shape on a big image blocks 1x1.
     npcs = {7: {'x': 20.0, 'y': 20.0, 'image': 'big.png'}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     gs1.image_size_source = lambda name: (64, 64)
     gs1.shapes[7] = (1, 1, [22])
     gs1._update_shape_blocks(7, npcs[7], 1, 1, [22])
@@ -197,13 +194,13 @@ def test_script_shape_overrides_image_footprint():
 
 # -- touch vs blocking split -------------------------------------------------
 
-def test_touch_uses_the_footprint_and_ignores_dontblock():
+def test_touch_uses_the_footprint_and_ignores_dontblock(make_client):
     # Touch and wall share the footprint, but only wall reads the blocking
     # flag: a dontblock'ed floor trigger still fires playertouchsme.
     npcs = {5: {'x': 10.0, 'y': 10.0, 'image': 'rug.png',
                 'dontblock': True,
                 'script': 'if (playertouchsme) { message hi; }'}}
-    client, gs1 = _gs1(npcs, image_size=(32, 32))
+    client, gs1 = _gs1(make_client, npcs, image_size=(32, 32))
     assert gs1.npc_blocks_at(10.5, 10.5) is False
     handler = NPCHandler(client)
     handler.gs1 = gs1
@@ -214,14 +211,14 @@ def test_touch_uses_the_footprint_and_ignores_dontblock():
     assert handler.check_touch(8.5, 8.0, 2) == [5]
 
 
-def test_touch_say_sign_talks_from_flush_below():
+def test_touch_say_sign_talks_from_flush_below(make_client):
     # GTA's touch-say signs: image NPC, no setshape — walking up into it
     # must fire playertouchsme. Player flush below a 2x2 sign at (10, 10):
     # sprite y = 10.0 puts the box top (y+1) at the sign's bottom edge; the
     # up probes (y+0.5) land at 10.5, inside the sign.
     npcs = {5: {'x': 10.0, 'y': 10.0, 'image': 'sign.png',
                 'script': 'if (playertouchsme) { say2 Hello; }'}}
-    client, gs1 = _gs1(npcs, image_size=(32, 32))
+    client, gs1 = _gs1(make_client, npcs, image_size=(32, 32))
     handler = NPCHandler(client)
     handler.gs1 = gs1
     fired = []
@@ -237,11 +234,11 @@ def test_touch_say_sign_talks_from_flush_below():
 
 # -- timeout = 0 cancels (GS1) -----------------------------------------------
 
-def test_gs1_npc_timeout_zero_cancels():
+def test_gs1_npc_timeout_zero_cancels(make_client):
     script = ("if (playerenters) { timeout = 0.05; }\n"
               "if (timeout) { this.fires = this.fires + 1; timeout = 0; }")
     npcs = {5: {'x': 10.0, 'y': 10.0, 'script': script}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     gs1.load_script("npc_5", script, npc_id=5)
     gs1.trigger_event("playerenters")
     assert npcs[5]['_timeout'] == pytest.approx(0.05)
@@ -256,9 +253,9 @@ def test_gs1_npc_timeout_zero_cancels():
     assert this["fires"] == 1.0
 
 
-def test_gs1_npc_negative_timeout_also_cancels():
+def test_gs1_npc_negative_timeout_also_cancels(make_client):
     npcs = {5: {'x': 10.0, 'y': 10.0, 'script': ''}}
-    _c, gs1 = _gs1(npcs)
+    _c, gs1 = _gs1(make_client, npcs)
     script = "if (playerenters) { timeout = -1; }"
     npcs[5]['script'] = script
     gs1.load_script("npc_5", script, npc_id=5)
@@ -267,10 +264,10 @@ def test_gs1_npc_negative_timeout_also_cancels():
     assert npcs[5]['_timeout'] is None
 
 
-def test_gs1_weapon_timeout_zero_cancels():
+def test_gs1_weapon_timeout_zero_cancels(make_client):
     script = ("if (created) { timeout = 0.05; }\n"
               "if (timeout) { this.fires = this.fires + 1; timeout = 0; }")
-    _c, gs1 = _gs1({})
+    _c, gs1 = _gs1(make_client, {})
     gs1.load_weapon("-t", script)
     gs1.trigger_event("created", name="weapon_-t")
     assert gs1._weapon_timeouts["weapon_-t"] == pytest.approx(0.05)
@@ -321,7 +318,7 @@ def _npc_props_packet(npc_id, *props):
     return body + b'\n'
 
 
-def test_blockflags_prop_sets_dontblock_and_blocking_npc_still_blocks():
+def test_blockflags_prop_sets_dontblock_and_blocking_npc_still_blocks(make_client):
     from pyreborn.packets import parse_npc_props
     light = parse_npc_props(_npc_props_packet(7, (14, bytes([33]))))
     assert light['dontblock'] is True and light['blockflags'] == 1
@@ -330,7 +327,7 @@ def test_blockflags_prop_sets_dontblock_and_blocking_npc_still_blocks():
 
     # Same footprint, with and without the flag: the flag alone exempts it.
     image = {'x': 10.0, 'y': 10.0, 'image': 'light2.png'}
-    _c, gs1 = _gs1({1: dict(image, **light), 2: {'x': 20.0, 'y': 10.0,
+    _c, gs1 = _gs1(make_client, {1: dict(image, **light), 2: {'x': 20.0, 'y': 10.0,
                                                'image': 'light2.png'}},
                    image_size=(32, 32))
     assert gs1.npc_blocks_at(10.5, 10.5) is False

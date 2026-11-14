@@ -1140,10 +1140,13 @@ class ClientGS1:
         if self.client is None:
             return
         self.process_attachment()
+        in_range = self.client.npc_range_filter()
         for npc_id, npc in list(getattr(self.client, "npcs", {}).items()):
             t = npc.get("_timeout")
             if t is None or not self.clock.timer_counts(npc.get("_timeout_pass")):
                 continue
+            if not in_range(npc):
+                continue  # a hidden NPC's script is stopped; the timer waits
             t -= dt
             # TScriptSpace.cpp:1030-1047: fires once less than 0.0001 is left
             # (a 0.05 timeout fires on the next tick, 0.1 two ticks later).

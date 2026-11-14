@@ -2327,6 +2327,8 @@ class ClientGS2:
                 npc = None
         if not isinstance(npc, dict):
             return False
+        if not client.npc_range_filter()(npc):
+            return True  # outside the 3x3: stopped until it is shown again
         level = getattr(client, "_current_level_name", "") or ""
         npc_level = npc.get("_level") or npc.get("level")
         return bool(npc_level and level and npc_level != level)

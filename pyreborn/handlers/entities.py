@@ -303,8 +303,9 @@ def handle_npc_props(client, data):
     props = _parse_colors_stream(parse_npc_props, client, data)
     if props and 'id' in props:
         npc_id = props['id']
-        npc_level, cell = _npc_level_and_cell(client, npc_id, props)
+        npc_level, cell, owned = _npc_level_and_cell(client, npc_id, props)
         props['_level'] = npc_level
+        props['_map_owned'] = owned
         if cell is not None:
             props['gmaplevelx'], props['gmaplevely'] = cell
         if npc_id in client.npcs:
@@ -341,7 +342,10 @@ def handle_npc_props(client, data):
 
 
 def _npc_level_and_cell(client, npc_id, props):
-    """The level and map cell an NPC props packet leaves the NPC in.
+    """The level, map cell and owner kind an NPC props packet leaves the NPC in.
+    The third value is whether the owner is a map (the reference's
+    `serverLevel` is the map, TServerNPC.cpp:316-319); `npc_in_range` reads
+    it, because only a map-owned NPC is hidden outside the 3x3.
 
     The reference client's rule:
 
@@ -363,12 +367,12 @@ def _npc_level_and_cell(client, npc_id, props):
       NPC level on every props packet, when there is one
       (TClient.cpp:2950-2951). Added to a level it is already in, nothing
       changes; added to a map it keeps its own cell; added to a plain level
-      it takes that level's cell (TServerNPC.cpp:289-325). Here the level of
-      a map-owned NPC is the segment at its cell, so the map case never
-      changes level or cell. pygserver names the owner before every NPC of
-      an entry and sends live updates only to players whose active level is
-      already the gmap or the NPC's own level, so the rule moves none of
-      its NPCs.
+      it takes that level's cell (TServerNPC.cpp:289-325). Added to the map
+      from a plain level it keeps the cell it has (an NPC in a level off
+      the grid has cell (0, 0), so its local position is its world
+      position) and becomes map-owned. Here the level of a map-owned NPC is
+      the segment at its cell, so an NPC already map-owned never changes
+      level or cell under a map target.
 
     The level is the grid's segment at the cell when there is one. A
     ``.gmap`` name is never kept as the level: the NPC falls back to its
@@ -380,11 +384,13 @@ def _npc_level_and_cell(client, npc_id, props):
     known = client.npcs.get(npc_id)
     if known is None:
         level = active
+        owned = is_map_name(active)
         base = grid_of(grid, active)
-        if base is None and is_map_name(active):
+        if base is None and owned:
             base = (0, 0)
     else:
         level = known.get('_level') or active
+        owned = bool(known.get('_map_owned'))
         base = npc_cell(grid, known)
         if base is None and is_map_name(level):
             # A map-owned NPC that never had a cell stamped (the reference
@@ -394,29 +400,41 @@ def _npc_level_and_cell(client, npc_id, props):
             # TLevelObject.cpp:28-31).
             base = (0, 0)
         target = client._npc_level
-        if (npc_id >= 1000 and target and not is_map_name(target)
-                and not same_level(level, target)):
-            level = target
-            base = grid_of(grid, target)
-            if base is None:
-                # A level outside the grid has no cell to copy: drop the
-                # old one, as handle_npc_moved does for a plain level.
-                known.pop('gmaplevelx', None)
-                known.pop('gmaplevely', None)
+        if npc_id >= 1000 and target:
+            if is_map_name(target):
+                if not owned:
+                    # From a plain level into the map: the NPC keeps the
+                    # cell it has (TServerNPC.cpp:316-319); one in a level
+                    # off the grid has cell (0, 0), so its local position
+                    # becomes its world position.
+                    owned = True
+                    if base is None:
+                        base = (0, 0)
+            elif owned or not same_level(level, target):
+                # Out of the map, or between plain levels: it copies the
+                # new level's cell (TServerNPC.cpp:321-324).
+                owned = False
+                level = target
+                base = grid_of(grid, target)
+                if base is None:
+                    # A level outside the grid has no cell to copy: drop the
+                    # old one, as handle_npc_moved does for a plain level.
+                    known.pop('gmaplevelx', None)
+                    known.pop('gmaplevely', None)
     gx, gy = props.get('gmaplevelx'), props.get('gmaplevely')
     if base is None and gx is None and gy is None:
-        return level, None
+        return level, None, owned
     bx, by = base if base is not None else (0, 0)
     cell = (bx if gx is None else gx, by if gy is None else gy)
     segment = grid.get(cell) if grid else None
     if segment is not None:
-        return segment, cell
+        return segment, cell, owned
     if is_map_name(level):
         fallback = known.get('_level') if known is not None else None
         if not fallback or is_map_name(fallback):
             fallback = client._current_level_name or level
         level = fallback
-    return level, cell
+    return level, cell, owned
 
 
 @handles(PacketID.PLO_SHOWIMGNPC)
@@ -667,6 +685,7 @@ def handle_npc_moved(client, data):
     if npc is not None:
         level = info['new_level']
         npc['_level'] = level
+        npc['_map_owned'] = is_map_name(level)
         npc['visible'] = bool(level) and bool(npc.get('visflags', 1) & 1)
         if level:
             npc['x'], npc['y'] = info['x'], info['y']

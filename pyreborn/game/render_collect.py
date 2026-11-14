@@ -338,11 +338,14 @@ class EntityCollectMixin(ClockedMixin):
 
     def _collect_npcs(self, out: List["_Entity"],
                       frame: FrameContext) -> None:
+        in_range = self.client.npc_range_filter()
         for npc_id, npc in self.client.npcs.items():
             npc_level = npc.get('_level')
             if (npc_level and not self.client.in_gmap_segment and
                     npc_level != self.client.current_level_name):
                 continue
+            if not in_range(npc):
+                continue  # outside the 3x3: kept, not drawn
             # Prefer world coords (converted from local + grid offset)
             nx = npc.get('world_x', npc.get('x'))
             ny = npc.get('world_y', npc.get('y'))
@@ -426,11 +429,14 @@ class EntityCollectMixin(ClockedMixin):
         vis-1 layer competes with the player by its own Y instead of riding its
         owner's slot."""
         stores = []
+        in_range = self.client.npc_range_filter()
         for npc in self.client.npcs.values():
             npc_level = npc.get('_level')
             if (npc_level and not self.client.in_gmap_segment and
                     npc_level != self.client.current_level_name):
                 continue  # the level filter _collect_npcs applies to bodies
+            if not in_range(npc):
+                continue  # layers of a hidden NPC are hidden with it
             imgs = npc.get('imgs')
             if imgs and npc.get('visible') is not False:
                 stores.append(imgs)

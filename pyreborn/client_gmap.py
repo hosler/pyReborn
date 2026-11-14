@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Callable, List, Optional, Tuple
 
 from reborn_protocol.coords import local_to_world, segment_at, segment_origin
 
@@ -11,7 +11,7 @@ from .gmap_coords import (
     fold, grid_of, has_level, in_grid, position_is_local, same_level,
     world_from_wire,
 )
-from .npc_handler import is_map_name, npc_cell, place_npc
+from .npc_handler import is_map_name, npc_cell, npc_in_range, place_npc
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,22 @@ class GmapMixin:
         if is_map_name(name):
             return segment or ""
         return name
+
+    def player_map_cell(self) -> Optional[Tuple[int, int]]:
+        """The grid cell of the segment the player's level is, the
+        reference's `activeplayer->mapX/mapY` (TPlayer.cpp:476-479). None
+        with no grid, or while the player is in a level that is no cell."""
+        return grid_of(self.gmap_grid, self._current_level_name)
+
+    def npc_range_filter(self) -> Callable[[dict], bool]:
+        """A predicate ``visible(npc)``: the NPC is inside the 3x3 the
+        reference keeps visible (see `npc_in_range`). The player's cell is
+        read once, so a pass over every NPC costs one grid scan. A cached
+        NPC that left range is kept; it passes again when the player
+        walks back, with no new packet."""
+        grid = self.gmap_grid
+        cell = self.player_map_cell()
+        return lambda npc: npc_in_range(grid, cell, npc)
 
     def _level_scope_name(self) -> str:
         """The level that level-scoped packets (items, chests, signs, links,

@@ -67,6 +67,7 @@ class LayerRenderMixin(GameHost):
     def _render_gui_layers_inner(self):
         client = self.client
         npcs = getattr(client, 'npcs', {}) if client else {}
+        in_range = client.npc_range_filter() if client else None
         for npc_id in sorted(npcs):
             npc = npcs[npc_id]
             if not isinstance(npc, dict) or npc.get('visible') is False:
@@ -75,6 +76,8 @@ class LayerRenderMixin(GameHost):
             if (npc_level and not getattr(client, 'in_gmap_segment', False)
                     and npc_level != getattr(client, 'current_level_name', None)):
                 continue
+            if not in_range(npc):
+                continue  # outside the 3x3: its layers vanish in every band
             imgs = npc.get('imgs')
             if imgs:
                 self._render_npc_layers(imgs, over=True, gui=True)

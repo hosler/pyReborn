@@ -219,7 +219,9 @@ def test_npcs_before_the_grid_are_placed_when_it_loads():
     assert world(npc) == (131.0, 4.0)
 
 
-# -- pygserver's current form: segment-named active level, segment-owned NPCs --
+# -- a server that frames by segment: segment-named active level, segment-owned
+# NPCs. pygserver no longer sends this (it names the gmap before every NPC on
+# a gmap, level_entry.py), so these pin the client's reading of that framing.
 
 def test_segment_owned_npc_copies_the_segment_cell():
     """SETACTIVELEVEL names a segment and no GMAPLEVELX/Y is sent: the NPC

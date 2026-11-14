@@ -1,7 +1,5 @@
 """Arcane flight stays in world space while reports use level-local points."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from pyreborn.gs1_client import ClientGS1
@@ -13,13 +11,12 @@ KEY = "weapon_ArcaneBolt"
 WEAPON = require_workspace_dir("funtimes-pygserver") / "weapons/weapon-ArcaneBolt.txt"
 
 
-def bolt_runtime(x=84, y=84, direction=3):
-    client = SimpleNamespace(
-        x=x, y=y, player=SimpleNamespace(direction=direction, account="mage"),
-        npcs={}, players={}, baddies={}, weapons={}, connected=False,
-        is_gmap=True, gmap_grid={(1, 1): "chicken1.nw"},
-        _current_level_name="chicken1.nw",
-    )
+def bolt_runtime(make_client, x=84, y=84, direction=3):
+    client = make_client(gmap=True, gmap_segment=(1, 1))
+    client.player.x, client.player.y = x, y
+    client.player.direction = direction
+    client.player.account = "mage"
+    client._current_level_name = client.gmap_grid[(1, 1)]
     rt = ClientGS1(client)
     rt.tile_source = lambda x, y: 0x1FF
     actions = []
@@ -34,10 +31,11 @@ def bolt_runtime(x=84, y=84, direction=3):
     ("baddy", "baddy,0,22,20"), ("npc", "npc,0,22,20"),
     ("player", "player,1,23.5,22"),
 ])
-def test_gmap_carrier_is_local_while_flight_and_wire_position_stay_world(kind, tail):
-    rt, client, actions = bolt_runtime()
+def test_gmap_carrier_is_local_while_flight_and_wire_position_stay_world(
+        make_client, kind, tail):
+    rt, client, actions = bolt_runtime(make_client)
     if kind == "baddy":
-        client.baddies[0] = {"x": 87, "y": 84, "power": 2}
+        client.baddies.setdefault(client.current_level_name, {})[0] = {"x": 87, "y": 84, "power": 2}
     elif kind == "npc":
         client.npcs[10] = {"x": 86, "y": 84, "image": "arcane_bolt.png"}
     else:
@@ -59,8 +57,8 @@ def test_gmap_carrier_is_local_while_flight_and_wire_position_stay_world(kind, t
     (84, 126, 2, False), (84, 65, 0, False),
 ])
 def test_bolt_stops_before_spawning_or_advancing_into_another_segment(
-        x, y, direction, spawn_crosses):
-    rt, _, actions = bolt_runtime(x, y, direction)
+        make_client, x, y, direction, spawn_crosses):
+    rt, _, actions = bolt_runtime(make_client, x, y, direction)
     rt.trigger_event("weaponfired", name=KEY)
     if not spawn_crosses:
         assert 200 in rt._weapon_imgs[KEY]
@@ -70,8 +68,8 @@ def test_bolt_stops_before_spawning_or_advancing_into_another_segment(
     assert not actions
 
 
-def test_player_stand_point_cannot_wrap_into_the_next_segment():
-    rt, client, actions = bolt_runtime(x=125)
+def test_player_stand_point_cannot_wrap_into_the_next_segment(make_client):
+    rt, client, actions = bolt_runtime(make_client, x=125)
     client.players[2] = {"x": 63, "y": 20, "account": "target"}
     rt.trigger_event("weaponfired", name=KEY)
     rt.process_timeouts(0.05)
