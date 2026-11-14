@@ -60,6 +60,9 @@ _GS2EMU_BIN = _REPO / "GServer-v2" / "bin"              # prebuilt oracle server
 _PYGSERVER_DIR = Path(os.environ.get("PYGSERVER_DIR", _REPO / "pygserver"))
 
 DEST_LEVEL = "qa_gs1_dest.nw"   # empty warp destination (no NPC)
+# putnpc reads its script from a file on the reference (fn_putnpc opens the
+# FILE category); the gmap cases ship this one beside their levels.
+GMAP_PUT_SCRIPT = "qa_gs1_put.txt"
 
 
 def _issue(sev: str, desc: str) -> Issue:
@@ -95,6 +98,11 @@ class GS1Case:
     # only needs the two to differ.
     pinned: Optional[Tuple[str, str]] = None
     note: str = ""
+    # Run the script on a 3x3 gmap instead of a plain level: the NPC sits in
+    # the centre cell (1,1) at local (30,30) and the bot warps there. The
+    # gmap files are written into each spawned server's world directory
+    # (write_gmap_fixtures), not into the tracked fixture folder.
+    gmap: bool = False
 
 
 CASES: List[GS1Case] = [
@@ -204,6 +212,31 @@ CASES: List[GS1Case] = [
             "hurt 1;", "player", "hearts",
             note="fn_hurt hits for N half-hearts: 3 - 0.5 = 2.5 (the old bug "
                  "subtracted N full hearts -> 2)."),
+    # --- gmap: script coordinates are whole-map tiles -------------------------
+    # The reference loads a gmap as ONE level (Level.h sizeInTiles), so on a
+    # 3x3 map an NPC at local (30,30) of the centre cell reads x = 94, and
+    # tiles[]/updateboard/putnpc name the cell by whole-map tile. Each value
+    # below differs from the old segment-local frame (30, the cell-(2,2)
+    # neighbour, a local 100,102).
+    GS1Case("wm_npc_xy", "gmap: NPC x/y are whole-map tiles",
+            "message #v(x)_#v(y);", "npc", "message", gmap=True),
+    GS1Case("wm_npc_write", "gmap: x/y writes are whole-map (cell 0,0)",
+            "setimg qa_wm.png;\nx = 20;\ny = 22;", "npcimg", "qa_wm.png",
+            gmap=True),
+    GS1Case("wm_player_x", "gmap: players[0].x/y are whole-map tiles",
+            "message #v(players[0].x)_#v(players[0].y);", "npc", "message",
+            gmap=True),
+    GS1Case("wm_tiles", "gmap: tiles[] write + updateboard, whole-map",
+            "tiles[70,72] = 7;\nupdateboard 70,72,1,1;", "tile", "6,8",
+            gmap=True),
+    GS1Case("wm_putnpc", "gmap: putnpc places by whole-map tile",
+            f"putnpc qa_put.png,{GMAP_PUT_SCRIPT},100,102;", "npcimg",
+            "qa_put.png", gmap=True),
+    GS1Case("wm_putnpc_next", "gmap: putnpc into a neighbouring cell",
+            f"putnpc qa_put.png,{GMAP_PUT_SCRIPT},140,78;", "npcimg",
+            "qa_put.png", gmap=True),
+    GS1Case("wm_npc_neg_write", "gmap: a small negative x write lands in cell 0",
+            "setimg qa_wm.png;\nx = -5;", "npcimg", "qa_wm.png", gmap=True),
 ]
 
 
@@ -238,6 +271,8 @@ def generate_fixtures(dest: Path = _FIXTURES) -> List[str]:
     dest.mkdir(parents=True, exist_ok=True)
     written = []
     for c in CASES:
+        if c.gmap:
+            continue  # written per server by write_gmap_fixtures
         fn = f"qa_gs1_{c.name}.nw"
         (dest / fn).write_text(build_level_nw(c.body))
         written.append(fn)
@@ -245,6 +280,40 @@ def generate_fixtures(dest: Path = _FIXTURES) -> List[str]:
     (dest / DEST_LEVEL).write_text(f"GLEVNW01\n{_empty_board()}\n")
     written.append(DEST_LEVEL)
     return written
+
+
+def gmap_segment(case: GS1Case, x: int, y: int) -> str:
+    return f"qa_gs1_{case.name}_{x}{y}.nw"
+
+
+def gmap_cases() -> List[GS1Case]:
+    return [c for c in CASES if c.gmap]
+
+
+def write_gmap_fixtures(world: Path) -> List[str]:
+    """Write every gmap case's 3x3 map into a server's world directory and
+    return the .gmap names for the `gmaps` option. Only the centre cell
+    (1,1) holds the case NPC, at local (30,30)."""
+    names = []
+    for case in gmap_cases():
+        rows = []
+        for y in range(3):
+            row = []
+            for x in range(3):
+                seg = gmap_segment(case, x, y)
+                body = (build_level_nw(case.body) if (x, y) == (1, 1)
+                        else f"GLEVNW01\n{_empty_board()}\n")
+                (world / seg).write_text(body)
+                row.append(f'"{seg}"')
+            rows.append(",".join(row))
+        gmap = f"qa_gs1_{case.name}.gmap"
+        (world / gmap).write_text(
+            "GRMAP001\nWIDTH 3\nHEIGHT 3\nLEVELNAMES\n" + ",\n".join(rows)
+            + "\nLEVELNAMESEND\n")
+        names.append(gmap)
+    if names:
+        (world / GMAP_PUT_SCRIPT).write_text("// qa putnpc script\n")
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +365,17 @@ def _observe(bot: GameBot, case: GS1Case) -> str:
         return _fmt(npc.get(case.field))
     if case.kind == "warp":
         return _basename(bot.client._current_level_name)
+    if case.kind == "tile":
+        # field "x,y": that tile of the board the bot stands on
+        tx, ty = (int(v) for v in case.field.split(","))
+        return _fmt(bot.client.get_tile(tx, ty))
+    if case.kind == "npcimg":
+        # the NPC showing image `field`: "cellx,celly:localx,localy"
+        for npc in bot.client.npcs.values():
+            if npc.get("image") == case.field:
+                return (f"{npc.get('gmaplevelx')},{npc.get('gmaplevely')}:"
+                        f"{_fmt(npc.get('x'))},{_fmt(npc.get('y'))}")
+        return "<no-npc>"
     return "<?>"
 
 
@@ -309,7 +389,8 @@ def _pump(bot: GameBot, seconds: float):
 
 
 def _run_case(bot: GameBot, case: GS1Case, settle: float) -> str:
-    level = f"qa_gs1_{case.name}.nw"
+    level = (gmap_segment(case, 1, 1) if case.gmap
+             else f"qa_gs1_{case.name}.nw")
     if case.kind == "warp":
         # the NPC warps us straight back off this level, so don't use the
         # strict warp_to (which waits for level==source); just fire the warp
@@ -419,6 +500,7 @@ def spawn_pygserver(fixtures: Path) -> Optional[_Server]:
         shutil.copy(start, workdir / "world" / "onlinestartlocal.nw")
     for nw in fixtures.glob("*.nw"):
         shutil.copy(nw, workdir / "world" / nw.name)
+    gmaps = write_gmap_fixtures(workdir / "world")
     port = _free_port()
     (workdir / "config" / "serveroptions.txt").write_text(
         f"serverport = {port}\n"
@@ -428,6 +510,7 @@ def spawn_pygserver(fixtures: Path) -> Optional[_Server]:
         "staff = testbot1,testbot2\n"
         # omitted, these two withhold links and signs from the client
         "clientsidelinks = true\nclientsidesigns = true\n"
+        + (f"gmaps = {','.join(gmaps)}\n" if gmaps else "")
     )
     log = workdir / "server.log"
     env = dict(os.environ)
@@ -456,6 +539,8 @@ def spawn_gs2emu(fixtures: Path) -> Optional[_Server]:
     shutil.copytree(_GS2EMU_BIN, run)
     cfg = run / "servers" / "default" / "config" / "serveroptions.txt"
     port = _free_port()
+    world = run / "servers" / "default" / "world"
+    gmaps = write_gmap_fixtures(world)
     lines = cfg.read_text(encoding="latin-1").split("\n")
     patched = []
     for ln in lines:
@@ -464,9 +549,15 @@ def spawn_gs2emu(fixtures: Path) -> Optional[_Server]:
             patched.append("listip = 127.0.0.1"); continue   # no public listserver
         if s.startswith("serverport"):
             patched.append(f"serverport = {port}"); continue
+        if s.startswith("gmaps") and "=" in s and gmaps:
+            # keep the shipped maps, add the gmap cases' maps
+            current = [g.strip() for g in s.split("=", 1)[1].split(",") if g.strip()]
+            patched.append("gmaps = " + ",".join(current + gmaps)); gmaps = []
+            continue
         patched.append(ln)
+    if gmaps:
+        patched.append("gmaps = " + ",".join(gmaps))
     cfg.write_text("\n".join(patched), encoding="latin-1")
-    world = run / "servers" / "default" / "world"
     for nw in fixtures.glob("*.nw"):
         shutil.copy(nw, world / nw.name)
     log = workdir / "gs2emu.log"
@@ -485,12 +576,26 @@ def spawn_gs2emu(fixtures: Path) -> Optional[_Server]:
 # ---------------------------------------------------------------------------
 # Orchestration + diff
 # ---------------------------------------------------------------------------
+def _broken_gmap_result(value: str) -> bool:
+    """A sentinel or empty observation: the gmap setup itself failed (no NPC
+    seen, no level, a client error), which is not an effect to compare."""
+    text = (value or "").strip()
+    return not text or text.startswith("<")
+
+
 def _diff_results(pyg: Dict[str, str],
                   oracle: Optional[Dict[str, str]]) -> List[TestResult]:
     results: List[TestResult] = []
     for case in CASES:
         got = pyg.get(case.name, "<missing>")
         name = f"gs1conf_{case.name}"
+        if oracle is None and case.gmap and _broken_gmap_result(got):
+            results.append(TestResult(
+                name, False, 0.0,
+                f"[GMAP SETUP BROKEN] {case.family}: pygserver={got!r}",
+                [_issue("HIGH", f"{case.family}: no usable observation "
+                                f"(pygserver={got!r})")]))
+            continue
         if oracle is None:
             # oracle unavailable -> informational, non-failing
             results.append(TestResult(
@@ -500,6 +605,15 @@ def _diff_results(pyg: Dict[str, str],
         want = oracle.get(case.name, "<missing>")
         differ = got != want
         detail = f"{case.family}: pygserver={got!r} gs2emu(oracle)={want!r}"
+        if case.gmap and (_broken_gmap_result(got) or _broken_gmap_result(want)):
+            # Both servers returning the same sentinel is a broken gmap
+            # setup, not agreement.
+            results.append(TestResult(
+                name, False, 0.0,
+                f"[GMAP SETUP BROKEN] {detail}",
+                [_issue("HIGH", f"{case.family}: no usable observation "
+                                f"(pygserver={got!r}, oracle={want!r})")]))
+            continue
         if case.pinned is not None:
             passed = (got, want) == case.pinned
             if passed:
@@ -552,14 +666,17 @@ def run_gs1_conformance(host: Optional[str] = None, port: Optional[int] = None,
     generate_fixtures()
 
     if explicit_target:
-        cap = capture_effects(host or "localhost", port or 14900)
+        # A hand-run server has no gmap case maps (they are written per
+        # spawned server), so only the plain-level cases run there.
+        cap = capture_effects(host or "localhost", port or 14900,
+                              [c for c in CASES if not c.gmap])
         if cap is None:
             return [TestResult("gs1conf_connect", False, 0.0,
                                f"could not connect to {host}:{port}", [])]
         _print_capture(f"{host}:{port}", cap)
         return [TestResult(f"gs1conf_{c.name}", True, 0.0,
                            f"{c.family}: {cap.get(c.name)!r}", [])
-                for c in CASES]
+                for c in CASES if not c.gmap]
 
     # ---- full differential run -------------------------------------------
     pyg_srv = spawn_pygserver(_FIXTURES)
