@@ -104,12 +104,15 @@ def npc_cell(grid, npc) -> Optional[Tuple[int, int]]:
 
 def place_npc(grid, npc) -> None:
     """Set world_x/world_y from the NPC's local x/y and its cell (local +
-    cell * 64). An NPC with no cell (a plain level off the grid, or no grid
-    loaded yet) sits in map cell (0, 0) in the reference, so its local
-    position is its world position (TServerNPC.cpp:330, TServerNPC.cpp:321-324);
-    `load_gmap` places every NPC again when the grid arrives."""
+    cell * 64). The cell is the NPC's stored cell props even before the grid
+    loads (TServerNPC.cpp:1271-1282). An NPC with no cell (a plain level off
+    the grid, or no cell props and no grid yet) sits in map cell (0, 0) in
+    the reference, so its local position is its world position
+    (TServerNPC.cpp:330, TServerNPC.cpp:321-324). Local x/y never change
+    here: `load_gmap` places every NPC again when the grid arrives, which
+    re-stamps cells only (TServerLevel.cpp:946-953)."""
     cell = npc_cell(grid, npc)
-    if cell is not None and grid:
+    if cell is not None:
         ox, oy = segment_origin(*cell)
     else:
         ox = oy = 0

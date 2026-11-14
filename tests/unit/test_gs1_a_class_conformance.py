@@ -71,10 +71,30 @@ class _ServerNpc(SimpleNamespace):
         self.dirty = True
 
 
+_MAKE = {}
+
+
+@pytest.fixture(autouse=True)
+def _client_factory(make_client, monkeypatch):
+    """The client side of every pair runs over a real Client (the repo rule:
+    a test double never stands in for client state)."""
+    monkeypatch.setitem(_MAKE, "make", make_client)
+
+
+def _client_with_player():
+    """A real Client whose player holds `_PLAYER_VALUES`."""
+    client = _MAKE["make"]()
+    for name, value in _PLAYER_VALUES.items():
+        setattr(client.player, name, value)
+    client.player.account = "account"
+    return client
+
+
 def _run_pair(source):
-    client_player = SimpleNamespace(**_PLAYER_VALUES, account="account")
+    client = _client_with_player()
+    client_player = client.player
     client_npc = dict(_NPC_VALUES)
-    client_runtime = ClientGS1(SimpleNamespace(player=client_player))
+    client_runtime = ClientGS1(client)
     client_vars = VarStore()
     client_context = Context(
         client_runtime._host, client_vars, this_obj=client_npc,
@@ -161,9 +181,10 @@ def test_known_divergence_move_past_the_level_edge_server_clamps_client_does_not
     start = {"x": 1.0, "y": 1.0}
     source = "move 1.5,-2;"
 
-    client_player = SimpleNamespace(**_PLAYER_VALUES, account="account")
+    client = _client_with_player()
+    client_player = client.player
     client_npc = {**_NPC_VALUES, **start}
-    client_runtime = ClientGS1(SimpleNamespace(player=client_player))
+    client_runtime = ClientGS1(client)
     run(source, ctx=Context(client_runtime._host, VarStore(), this_obj=client_npc,
                             player=client_player))
     assert (client_npc["x"], client_npc["y"]) == (2.5, -1.0)      # instant, no clamp

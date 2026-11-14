@@ -9,6 +9,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import host_value
 
 from ..palette import REBORN_PALETTE, REBORN_PALETTE_ALIASES
+from .frame import _write_npc_attr, npc_axis, write_npc_axis
 from .registry import NPC_ATTR, PLAYER_ATTR, _NPC_WRITE
 from ..logutil import log_swallowed
 
@@ -65,26 +66,6 @@ def _write_npc_command(npc, name, value):
     npc[_NPC_WRITE[name]] = to_str(value)
 
 
-def _write_npc_attr(npc, key, value):
-    """Store a script write to an NPC attribute. x/y also move world_x/world_y
-    by the same delta: the renderer, touch tests and collision all read the
-    world pair first (render_collect._collect_npcs, npc_handler, runtime
-    npc_image_rect), so a bare `x = 34.5;` used to change nothing on screen
-    until the server re-stamped the position. The delta keeps whatever gmap
-    segment offset the pair already carries, in either coordinate frame."""
-    if key in ("x", "y"):
-        world_key = "world_" + key
-        try:
-            offset = float(npc[world_key]) - float(npc.get(key, 0))
-        except (KeyError, TypeError, ValueError):
-            offset = None
-        npc[key] = value
-        if offset is not None:
-            npc[world_key] = to_num(value) + offset
-        return
-    npc[key] = value
-
-
 def _set_npc_sprite(npc, value):
     sprite = npc["sprite"] = to_num(value)
     gani = _NPC_SPRITE_ANIS.get(sprite)
@@ -106,16 +87,22 @@ class _GS1ObjectRef:
         "account": "account", "nickname": "nickname", "chat": "chat",
     }
 
-    def __init__(self, kind, target, *, writable=True, label=""):
+    def __init__(self, kind, target, *, writable=True, label="", client=None):
         self.kind = kind
         self.target = target
         self.writable = writable
         self.label = label
+        # The session an NPC target lives in: its x/y are whole-map tiles
+        # on a gmap (see frame.py).
+        self.client = client
 
     def get(self, name):
         table = NPC_ATTR if self.kind == "npc" else self._PLAYER_MEMBERS
         if name not in table:
             return UNSET
+        if (self.kind == "npc" and name in ("x", "y")
+                and isinstance(self.target, dict)):
+            return npc_axis(self.client, self.target, name)
         attr = table[name]
         if isinstance(self.target, dict):
             return _num_or_str(self.target.get(attr, 0))
@@ -135,6 +122,8 @@ class _GS1ObjectRef:
         if isinstance(self.target, dict):
             if self.kind == "npc" and name == "sprite":
                 _set_npc_sprite(self.target, value)
+            elif self.kind == "npc" and name in ("x", "y"):
+                write_npc_axis(self.client, self.target, name, value)
             elif self.kind == "npc":
                 _write_npc_attr(self.target, attr, value)
             else:

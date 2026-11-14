@@ -35,7 +35,10 @@ def test_gmap_carrier_is_local_while_flight_and_wire_position_stay_world(
         make_client, kind, tail):
     rt, client, actions = bolt_runtime(make_client)
     if kind == "baddy":
-        client.baddies.setdefault(client.current_level_name, {})[0] = {"x": 87, "y": 84, "power": 2}
+        # Stored level-local like every baddy (the wire frame); compus[] reads
+        # it whole-map like players[] (gs1_client/frame.py): local 23 in
+        # cell (1,1) is whole-map 87.
+        client.baddies.setdefault(client.current_level_name, {})[0] = {"x": 23, "y": 20, "power": 2}
     elif kind == "npc":
         client.npcs[10] = {"x": 86, "y": 84, "image": "arcane_bolt.png"}
     else:

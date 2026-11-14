@@ -206,6 +206,17 @@ def handle_level_name(client, data):
         if cached_gmap:
             _load_cached_gmap(client, level_name, cached_gmap)
         else:
+            # A copy in the download cache builds the grid NOW, before the
+            # NPC packets that follow: the reference loads a map it holds
+            # on disk synchronously (getMap, unsorted.cpp:2593, through its
+            # map loader, whose getGameFile is at :2530; an uncached map is
+            # downloaded instead, :2534). The request still goes out: its
+            # FILEUPTODATE (or a fresh copy) confirms the cache against the
+            # server.
+            on_disk = client.get_file(level_name)
+            if on_disk:
+                from .files import adopt_gmap
+                adopt_gmap(client, level_name, on_disk)
             client.request_file(level_name)
     # Leaving a gmap: a .nw level that isn't one of the gmap's segments
     # (e.g. warping into a cave/house) means we've left gmap mode. Clear

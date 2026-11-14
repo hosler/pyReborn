@@ -11,7 +11,8 @@ from ..script_player_props import sync_script_player_stat
 from ..tiletypes import selection_for
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
-from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number, _write_npc_attr
+from .frame import _write_npc_attr, board_probe, level_object_xy, npc_axis, write_npc_axis
+from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
 from ..logutil import log_swallowed
 
@@ -53,6 +54,8 @@ class BuiltinsMixin:
             handler = _GS1_NPC_BUILTINS.get(name)
             if handler is not None:
                 return handler(self, name, indices, ctx)
+            if name in ("x", "y"):
+                return npc_axis(self.rt.client, npc, name)
             if name in NPC_ATTR:
                 return _num_or_str(npc.get(NPC_ATTR[name], 0))
         handler = _GS1_BUILTINS.get(name)
@@ -118,6 +121,8 @@ class BuiltinsMixin:
             j = int(indices[1]) if len(indices) > 1 else 0
             return float(slots[j]) if 0 <= j < len(slots) else 0.0
         npc = self.rt.client.npcs.get(ids[i])
+        if isinstance(npc, dict) and attr in ("x", "y"):
+            return npc_axis(self.rt.client, npc, attr)
         if isinstance(npc, dict) and attr in NPC_ATTR:
             return _num_or_str(npc.get(NPC_ATTR[attr], 0))
         return 0.0
@@ -192,7 +197,10 @@ class BuiltinsMixin:
         if not isinstance(baddy, dict):
             return 0.0
         key = {"dir": "direction", "headdir": "direction"}.get(attr, attr)
-        if key in ("x", "y", "power", "mode", "type", "direction"):
+        if key in ("x", "y"):
+            x, y = level_object_xy(self.rt.client, baddy)
+            return x if key == "x" else y
+        if key in ("power", "mode", "type", "direction"):
             return to_num(baddy.get(key, 0))
         if key == "image":
             return to_str(baddy.get("image", ""))
@@ -229,8 +237,8 @@ class BuiltinsMixin:
         # no dedicated swim-state on the core Client (that lives on
         # GameClient, which this host can't see) -- approximate it with the
         # same tile-water check onwater()/is_wall() already use.
-        px = float(getattr(self.rt.client, "x", 0)) % 64
-        py = float(getattr(self.rt.client, "y", 0)) % 64
+        px, py = board_probe(self.rt.client, float(self.rt.client.x),
+                             float(self.rt.client.y))
         return bool(self.rt.is_water_at(px, py))
 
     @_gs1_builtin(_GS1_PLAYER_BUILTINS, "playeronhorse")
@@ -535,6 +543,9 @@ class BuiltinsMixin:
                 setattr(p, name[-1], to_num(value))
                 return True
             return False
+        if isinstance(npc, dict) and name in ("x", "y"):
+            write_npc_axis(self.rt.client, npc, name, value)
+            return True
         if isinstance(npc, dict) and name in NPC_ATTR:
             _write_npc_attr(npc, NPC_ATTR[name], value)
             return True

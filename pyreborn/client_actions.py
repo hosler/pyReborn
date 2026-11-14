@@ -847,10 +847,13 @@ class ActionsMixin:
 
     def send_item_add(self, x: float, y: float, item_id: int) -> bool:
         """Drop a level item (PLI_ITEMADD and GS1 lay/lay2). The server relays a
-        PLO_ITEMADD to the rest of the level."""
+        PLO_ITEMADD to the rest of the level. x/y are LEVEL-LOCAL tiles and
+        go out as given, even outside 0..63: the reference sends the local
+        position of the item it filed (TServerLevel.cpp:1392), and the caller
+        files its own copy under the same pair."""
         if not self.connected or not self._authenticated:
             return False
-        data = build_item_add(*world_to_local(x, y), item_id)
+        data = build_item_add(x, y, item_id)
         return self._protocol.send_packet(PacketID.PLI_ITEMADD, data)
 
     def shoot_arrow(self, x: Optional[float] = None, y: Optional[float] = None,

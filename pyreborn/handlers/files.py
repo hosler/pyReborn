@@ -264,7 +264,8 @@ def handle_file_uptodate(client, data):
         cached = client.get_file(filename)
         # The answer to a .gmap revalidation carries no bytes, so this is the
         # only place the grid can be built on a warm cache (see adopt_gmap).
-        if cached and filename.endswith('.gmap'):
+        if (cached and filename.endswith('.gmap')
+                and not (client.gmap_width and client.gmap_name == filename)):
             adopt_gmap(client, filename, cached)
         client._uptodate_files.add(filename)
         key = normalize_asset_name(filename)

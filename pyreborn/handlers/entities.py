@@ -308,6 +308,13 @@ def handle_npc_props(client, data):
         props['_map_owned'] = owned
         if cell is not None:
             props['gmaplevelx'], props['gmaplevely'] = cell
+            props['_cell_derived'] = False
+        elif npc_id not in client.npcs:
+            # Declared here with the NPC's other state: True only while the
+            # stored cell was stamped from the loaded grid
+            # (client_gmap._update_npc_world_coords), so a new grid can
+            # derive it again. A cell this packet carries is never derived.
+            props['_cell_derived'] = False
         if npc_id in client.npcs:
             if 'x' in props or 'y' in props:
                 client.npcs[npc_id].pop('_move_queue', None)
@@ -694,6 +701,9 @@ def handle_npc_moved(client, data):
             # TServerLevel.cpp:945-946, :959-960). What a .gmap name here
             # does to the cell is not established; the NPC keeps its own.
             cell = grid_of(client.gmap_grid, level)
+            # A cell taken from the level's name is derived from the grid;
+            # the NPC's own cell under a .gmap name is not.
+            npc['_cell_derived'] = not is_map_name(level)
             if cell is not None:
                 npc['gmaplevelx'], npc['gmaplevely'] = cell
             elif not is_map_name(level):

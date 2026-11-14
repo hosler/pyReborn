@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import math
 
-from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.gs1.values import to_num, to_str
 
 from ..client_callbacks import emit
 from ..npc_handler import mark_npc_character
 from ..palette import REBORN_PALETTE
+from .frame import board_probe, level_object_xy, npc_xy, to_level
 from .objects import _BADDY_DEFAULT_IMAGE, _BADDY_DEFAULT_POWER, _baddy_type_from_name, _color_name, _current_baddies, _item_ids, _push_dir
 from .registry import _FALL_THROUGH, _GS1_MAIN_COMMANDS, _gs1_command
 from ..logutil import log_swallowed
@@ -232,8 +232,12 @@ class MainCommandsMixin:
         if not 1 <= idx <= len(others):
             return
         pid = others[idx - 1]
-        target = rt.client.players.get(pid) or {}
-        dx, dy = _push_dir(target.get("x", 0), target.get("y", 0), fx, fy)
+        # players[idx]: the same record, in the same whole-map frame as the
+        # script's fromx/fromy (host._player_list).
+        records = self._player_list()
+        if idx >= len(records):
+            return
+        dx, dy = _push_dir(records[idx]["x"], records[idx]["y"], fx, fy)
         try:
             rt.client.attack_player(
                 pid, damage=max(0.0, math.floor(hh) / 2.0),
@@ -259,7 +263,7 @@ class MainCommandsMixin:
         bid = ids[idx]
         hh = max(0, math.floor(to_num(args[1])))
         baddy = _current_baddies(rt.client).get(bid) or {}
-        dx, dy = _push_dir(baddy.get("x", 0), baddy.get("y", 0),
+        dx, dy = _push_dir(*level_object_xy(rt.client, baddy),
                            to_num(args[2]) if len(args) > 2 else None,
                            to_num(args[3]) if len(args) > 3 else None)
         try:
@@ -314,7 +318,7 @@ class MainCommandsMixin:
                 rt.client.put_bomb(x, y, power, consume_ammo=False)
             except Exception:
                 log_swallowed(logger)
-        if rt.is_water_at((x + 1) % 64, (y + 1) % 64):
+        if rt.is_water_at(*board_probe(rt.client, x + 1, y + 1)):
             if rt.on_putleaps:
                 rt.on_putleaps(5, x, y)
             return
@@ -386,22 +390,20 @@ class MainCommandsMixin:
                 log_swallowed(logger)
             make_explosion = getattr(cl, "make_explosion", None)
             if callable(make_explosion):
-                wx, wy = x, y
-                if getattr(cl, "in_gmap_segment", False):
-                    # TClient.cpp:3616-3618: script coordinates are level-local.
-                    ox, oy = segment_origin(*segment_at(cl.player.x, cl.player.y))
-                    wx, wy = x + ox, y + oy
+                # Script coordinates are already whole-map tiles, the frame
+                # makeExplosion takes (the wire handler adds the level origin
+                # to its LOCAL wire values first, TClient.cpp:3616-3618).
                 bomb_type = power & 7  # TClient.cpp:3599-3603.
                 bomb_type = 1 if bomb_type == 0 else min(bomb_type, 3)
-                make_explosion(wx, wy, radius, bomb_type,
+                make_explosion(x, y, radius, bomb_type,
                                getattr(getattr(cl, "player", None), "id", 0), True)
             for npc_id, npc in list(getattr(cl, "npcs", {}).items()):
                 if not isinstance(npc, dict):
                     continue
                 if npc.get("visible", True) is False or npc.get("dontblock"):
                     continue
-                if (abs(to_num(npc.get("x", 0)) - x) <= radius
-                        and abs(to_num(npc.get("y", 0)) - y) <= radius):
+                nx, ny = npc_xy(cl, npc)
+                if abs(nx - x) <= radius and abs(ny - y) <= radius:
                     rt.trigger_npc_event(npc_id, "washit")
         if rt.on_putexplosion:
             rt.on_putexplosion(power, radius, x, y)
@@ -447,18 +449,23 @@ class MainCommandsMixin:
         else:
             npc = ctx.this_obj if isinstance(ctx.this_obj, dict) else None
             if npc is not None:
-                x, y = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+                x, y = npc_xy(rt.client, npc)
             else:
                 x = float(getattr(rt.client, "x", 0))
                 y = float(getattr(rt.client, "y", 0))
+        # (x, y) is whole-map; the item belongs to the player's level at
+        # x - that level's origin, which may leave 0..63
+        # (TServerLevel.cpp:1348-1351 putExtra). The level's copy and the
+        # wire carry that same local pair (TServerLevel.cpp:1392).
+        local = to_level(rt.client, x, y)
         items = getattr(rt.client, "items", None)
         if items is not None:
             from ..packets import LEVEL_ITEM_NAMES
             level_name = getattr(rt.client, "_current_level_name", "") or ""
-            items.setdefault(level_name, {})[(x, y)] = LEVEL_ITEM_NAMES.get(
-                item_id, f"item{item_id}")
+            items.setdefault(level_name, {})[local] = (
+                LEVEL_ITEM_NAMES.get(item_id, f"item{item_id}"))
         try:
-            rt.client.send_item_add(x, y, item_id)
+            rt.client.send_item_add(*local, item_id)
         except Exception:
             log_swallowed(logger)
 

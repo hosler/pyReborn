@@ -332,7 +332,12 @@ def test_putexplosion_wire_and_visual(segment):
     client.player.x = 50.0 + ox
     client.player.y = 50.0 + oy
     client.on_explosion = Mock()
-    gs1 = _npc_gs1(client, 5, "if (playertouchsme) { putexplosion 1,20,20; }")
+    # Script coordinates are whole-map tiles on a gmap: the level's explosion
+    # cells subtract the level origin from them (Preagonal/FourPlay/
+    # quattroplay/src/TServerLevel.cpp:1600-1601), and the wire carries the
+    # level-local value.
+    gs1 = _npc_gs1(client, 5, "if (playertouchsme) { putexplosion 1,"
+                   f"{ox + 20},{oy + 20}; }}")
     gs1.on_putexplosion = Mock()
     gs1.trigger_npc_event(5, "playertouchsme")
     assert _sent(client, PacketID.PLI_EXPLOSION) == [
@@ -345,7 +350,7 @@ def test_putexplosion_wire_and_visual(segment):
     assert all(e['type'] == 1 for e in client.active_explosions)
     assert client.player.hearts == 3.0
     client.on_explosion.assert_called_once_with(ox + 20, oy + 20, 1, 1)
-    gs1.on_putexplosion.assert_called_once_with(1, 1, 20, 20)
+    gs1.on_putexplosion.assert_called_once_with(1, 1, ox + 20, oy + 20)
 
 
 def test_putexplosion2_arg_order_is_power_radius_x_y():

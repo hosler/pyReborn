@@ -7,7 +7,7 @@ from reborn_protocol.coords import segment_origin
 from .npc_handler import npc_cell
 
 from .attachments import update_attachments
-from .gs1_client.objects import _write_npc_attr
+from .gs1_client.frame import _write_npc_attr
 
 
 def _position(npc, x, y):

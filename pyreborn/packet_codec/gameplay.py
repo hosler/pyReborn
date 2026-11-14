@@ -1086,10 +1086,13 @@ def build_item_add(x: float, y: float, item_id: int) -> bytes:
     Format (GServer-v2 msgPLI_ITEMADD, PlayerClientPackets.cpp:345-349):
     {GUChar x*2}{GUChar y*2}{GUChar item_id}. x/y are level-local tiles at
     half-tile precision; item_id is the LevelItemType (LEVEL_ITEM_NAMES).
+    A local outside 0..63 (an item laid past the level's edge) goes out
+    unclamped: the reference writes each coordinate as a raw char
+    (TClient.cpp:976-980), so the byte wraps instead of saturating.
     """
     builder = PacketBuilder()
-    builder.write_gchar(int(x * 2))
-    builder.write_gchar(int(y * 2))
+    builder.write_byte(int(x * 2) + 32)
+    builder.write_byte(int(y * 2) + 32)
     builder.write_gchar(max(0, int(item_id)) & 0x7F)
     return builder.build()
 

@@ -30,6 +30,7 @@ from ..tiletypes import (
     tilestype_for_level, type_is_blocking,
 )
 from .board import board_tile_read, board_layer_tile_ids, _board_locate
+from .frame import level_object_xy, level_origin, npc_xy
 from .host import GS1ClientHost
 from .objects import _ClientScopeVarStore, _PlayerFlagScope, _RefNamespaceInterpreter, _ServerFlagScope, _current_baddies
 from .registry import _DEFAULT_IMAGE_PX, _GS1_PREEMPT_BOARD_WAIT_FRAMES, _GS1_STATEMENTS_PER_SLICE, _TIMEOUT_CANCEL, _report_gs1_error
@@ -1079,11 +1080,7 @@ class ClientGS1:
         cx = to_num(npc.get("world_x", npc.get("x", 0))) + width / 2.0
         cy = to_num(npc.get("world_y", npc.get("y", 0))) + height / 2.0
         reach = math.hypot(width, height) * 0.5 + 10.0
-        ox = oy = 0.0
-        if getattr(cl, "in_gmap_segment", False):
-            from reborn_protocol.coords import segment_at, segment_origin
-            ox, oy = segment_origin(*segment_at(
-                getattr(cl, "x", 0), getattr(cl, "y", 0)))
+        ox, oy = level_origin(cl)
         for (ix, iy), kind in list(items.items()):
             if str(kind).lower() != name:
                 continue
@@ -1220,10 +1217,10 @@ class ClientGS1:
         """`hitobjects power,x,y` (also used to emulate a sword hit, see
         npcserver.md "Emulating sword hits"): fire `washit` on visible,
         blocking NPCs at (x, y) and PLI_BADDYHURT on baddies there.
-        Coordinates are level-local (0-63), matching npc/baddy x,y and
-        playerx/playery. `power` is hearts of damage (GS1Commands.cpp doubles
-        it to half-hearts only for the network PLO_HITOBJECTS relay. Our
-        hurt_baddy() already takes hearts)."""
+        Coordinates are script coordinates: whole-map tiles on a gmap, like
+        NPC x/y and playerx/playery (frame.py). `power` is hearts of damage
+        (GS1Commands.cpp doubles it to half-hearts only for the network
+        PLO_HITOBJECTS relay. Our hurt_baddy() already takes hearts)."""
         cl = self.client
         if cl is None:
             return
@@ -1232,13 +1229,13 @@ class ClientGS1:
                 continue
             if npc.get("visible", True) is False or npc.get("dontblock"):
                 continue
-            nx, ny = to_num(npc.get("x", 0)), to_num(npc.get("y", 0))
+            nx, ny = npc_xy(cl, npc)
             if abs(nx - x) <= 1.0 and abs(ny - y) <= 1.0:
                 self.trigger_npc_event(npc_id, "washit")
         for baddy_id, baddy in list(_current_baddies(cl).items()):
             if not isinstance(baddy, dict):
                 continue
-            bx, by = to_num(baddy.get("x", 0)), to_num(baddy.get("y", 0))
+            bx, by = level_object_xy(cl, baddy)
             if abs(bx - x) <= 1.0 and abs(by - y) <= 1.0:
                 try:
                     cl.hurt_baddy(baddy_id, damage=power)

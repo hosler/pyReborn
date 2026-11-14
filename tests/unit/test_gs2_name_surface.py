@@ -6,6 +6,8 @@ Preagonal/FourPlay/quattroplay/ before it was written down.
 """
 from types import SimpleNamespace
 
+import pytest
+
 from reborn_protocol.gs2 import GS2Object, gs2_eq, to_num, to_str
 
 from pyreborn.gs2_client import ClientGS2, _LayerImage, _NpcThisObject
@@ -13,24 +15,35 @@ from pyreborn.gs1_client import ClientGS1
 from pyreborn.player import Player
 
 
+@pytest.fixture(autouse=True)
+def _real_client(make_client, monkeypatch):
+    """Every `_runtime` below sits on a real `Client` (the repo rule: a test
+    double never stands in for client state), built once per test."""
+    monkeypatch.setitem(_CLIENT, "client", make_client())
+
+
+_CLIENT = {}
+
+
 def _runtime(**client_kwargs):
-    """A ClientGS2 with a stub client and a live GS1 runtime, which is what
-    the flag scopes and the shared player builtins resolve through."""
+    """A ClientGS2 over a real Client with a live GS1 runtime, which is what
+    the flag scopes and the shared player builtins resolve through. The
+    keyword arguments replace the world the fixture built: an empty one,
+    then whatever the test names."""
+    client = _CLIENT["client"]
     client_kwargs.setdefault("player", Player())
-    client_kwargs.setdefault("players", {})
-    client_kwargs.setdefault("weapons", {})
-    client_kwargs.setdefault("npcs", {})
-    client_kwargs.setdefault("signs", {})
-    client_kwargs.setdefault("items", {})
-    client_kwargs.setdefault("bombs", {})
+    for name in ("players", "weapons", "npcs", "signs", "items", "bombs",
+                 "board_layers"):
+        client_kwargs.setdefault(name, {})
     client_kwargs.setdefault("active_explosions", [])
-    client_kwargs.setdefault("board_layers", {})
     client_kwargs.setdefault("gmap_width", 0)
     client_kwargs.setdefault("gmap_height", 0)
     client_kwargs.setdefault("_current_level_name", "")
-    client_kwargs.setdefault("x", 0.0)
-    client_kwargs.setdefault("y", 0.0)
-    client = SimpleNamespace(**client_kwargs)
+    x = client_kwargs.pop("x", 0.0)
+    y = client_kwargs.pop("y", 0.0)
+    for name, value in client_kwargs.items():
+        setattr(client, name, value)
+    client.player.x, client.player.y = x, y
     gs1 = ClientGS1(client)
     return ClientGS2(client, gs1)
 
@@ -103,10 +116,8 @@ def test_flag_scopes_keep_flag_behaviour():
     clientr.set("x", 99)
     assert rt.client.player.x == 99.0
     assert "x" not in rt.gs1._shared["client"]
-    # (clientr.get("x") reads client.x, which on the real Client is a
-    # property over player.x -- this harness's SimpleNamespace stub does not
-    # delegate, so the read-back is pinned in
-    # test_clientr_engine_properties.py against the real Client instead.)
+    # (the read-back of clientr.get("x") is pinned in
+    # test_clientr_engine_properties.py.)
     # ... and has() still reports flags only, so `with(client){...}` locals
     # do not get redirected into player properties
     assert clientr.has("myflag") and not clientr.has("nick")

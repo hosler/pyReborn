@@ -6,6 +6,7 @@ import math
 from reborn_protocol.gs1.runtime import NAMESPACES, UNSET
 from reborn_protocol.gs1.values import to_num, to_str
 
+from .frame import level_object_xy, npc_xy
 from .objects import _GS1ObjectRef, _color_code_slot, _color_name, _current_baddies, _is_color_code, _pcode
 from .registry import _CHARPROP_NPC, _CHARPROP_PLAYER, _ONWALL2_EDGE_TOL
 from ..logutil import log_swallowed
@@ -252,7 +253,7 @@ class FunctionsMixin:
             values = (npc.get("name", ""), npc.get("nickname", ""),
                       npc.get("id", npc_id), npc_id)
             if any(to_str(value).lower() == wanted for value in values):
-                return _GS1ObjectRef("npc", npc)
+                return _GS1ObjectRef("npc", npc, client=client)
         return 0.0
 
     def _test_projectile_at(self, name, args):
@@ -269,8 +270,11 @@ class FunctionsMixin:
         else:
             objects = list(enumerate(self._explo_list()))
         for item_id, item in objects:
-            if (abs(to_num(item.get("x", 0)) - x) <= 1.0
-                    and abs(to_num(item.get("y", 0)) - y) <= 1.0):
+            if name == "testcompu":
+                ix, iy = level_object_xy(self.rt.client, item)
+            else:
+                ix, iy = to_num(item.get("x", 0)), to_num(item.get("y", 0))
+            if abs(ix - x) <= 1.0 and abs(iy - y) <= 1.0:
                 return float(item_id)
         return -1.0
 
@@ -301,12 +305,13 @@ class FunctionsMixin:
             return None
         if npc.get("visible", True) is False:
             return None
-        x, y = to_num(npc.get("x", 0)) * 16, to_num(npc.get("y", 0)) * 16
+        tile_x, tile_y = npc_xy(self.rt.client, npc)
+        x, y = tile_x * 16, tile_y * 16
         shape = self.rt.shapes.get(npc_id)
         if shape and len(shape) >= 2:
             return x, y, to_num(shape[0]) * 16, to_num(shape[1]) * 16
         if npc.get("gani") or npc.get("body_image") or npc.get("head_image"):
-            return self._char_rect(npc.get("x", 0), npc.get("y", 0))
+            return self._char_rect(tile_x, tile_y)
         rect = self.rt.npc_image_rect(npc)
         if rect is not None:
             rx, ry, rw, rh = rect

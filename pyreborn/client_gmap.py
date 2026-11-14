@@ -225,11 +225,21 @@ class GmapMixin:
         reference client stamps a segment's cell on that segment's NPCs
         when it learns the segment is part of a map
         (FourPlay quattroplay/src/TServerLevel.cpp:945-953). World is
-        recomputed from the local x/y, so a second run changes nothing."""
+        recomputed from the local x/y, so a second run changes nothing.
+
+        A cell the NPC was sent (props 41/42) stays authoritative. A cell
+        stamped here is marked `_cell_derived` and taken from the grid again
+        each time a grid is adopted, because an adopted copy from the
+        download cache can be replaced by a newer map."""
         for npc in self.npcs.values():
+            if npc.get('_cell_derived'):
+                npc.pop('gmaplevelx', None)
+                npc.pop('gmaplevely', None)
             cell = npc_cell(self.gmap_grid, npc)
             if cell is None:
                 continue  # a plain level: its local frame is the world
+            if npc.get('gmaplevelx') is None and npc.get('gmaplevely') is None:
+                npc['_cell_derived'] = True
             npc['gmaplevelx'], npc['gmaplevely'] = cell
             segment = self.gmap_grid.get(cell)
             if segment is not None:

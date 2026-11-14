@@ -90,6 +90,8 @@ PLAYER_X, PLAYER_Y = 40, 40    # warp-in point, clear of every footprint
 _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 
+GMAP_ORIGIN = 64                # whole-map tile of cell (1,1)'s corner
+
 # ---------------------------------------------------------------------------
 # Case table
 # ---------------------------------------------------------------------------
@@ -106,6 +108,10 @@ class ClientCase:
     board: Dict = field(default_factory=dict)   # {(x, y): tile_id}
     settle: int = 8                # pump frames after script delivery
     divergence: str = ""           # non-empty = pinned-divergence row
+    # Run on a 3x3 gmap: the case level is the centre cell (1,1), whose
+    # origin is whole-map tile (64,64). The map is written into the
+    # spawned server's world (_write_gmap_fixtures), not the fixture dir.
+    gmap: bool = False
 
 
 class CaseEnv:
@@ -611,6 +617,41 @@ def _chk_destroy(env):
             "destroy flags visible=False or removes the NPC from active entities")
 
 
+def _npc_place(env):
+    npc = env.npc()
+    return (npc.get("x"), npc.get("y"), npc.get("world_x"), npc.get("world_y"),
+            npc.get("gmaplevelx"), npc.get("gmaplevely"))
+
+
+def _chk_gmap_npc_read(env):
+    this = env.npc_this()
+    want = (float(NPC_X + GMAP_ORIGIN), float(NPC_Y + GMAP_ORIGIN))
+    _expect((this.get("rx"), this.get("ry")) == want,
+            f"x/y must read local + (mapX << 6) = {want} "
+            f"(got {(this.get('rx'), this.get('ry'))})")
+    player = (env.client.player.x, env.client.player.y)
+    _expect((this.get("px"), this.get("py")) == player
+            and player[0] >= GMAP_ORIGIN,
+            f"playerx/playery must read the whole-map player position "
+            f"{player} (got {(this.get('px'), this.get('py'))})")
+    _expect(this.get("dx") == abs(player[0] - want[0]),
+            f"abs(playerx - x) must compare one frame (got {this.get('dx')})")
+
+
+def _chk_gmap_npc_write(env):
+    got = _npc_place(env)
+    want = (36.5, 26.5, 100.5, 90.5, 1, 1)
+    _expect(got == want, f"x = 100.5; y = 90.5 must store local (x - 64) in "
+            f"cell (1,1): want (x, y, world_x, world_y, cell) {want}, got {got}")
+
+
+def _chk_gmap_npc_cross_write(env):
+    got = _npc_place(env)
+    want = (76.0, float(NPC_Y), 140.0, float(NPC_Y + GMAP_ORIGIN), 1, 1)
+    _expect(got == want, f"x = 140 must keep cell (1,1) with local 76: "
+            f"want {want}, got {got}")
+
+
 def _chk_lay(env):
     # AND, not OR: the engine's contract is BOTH the PLI_ITEMADD report and
     # the client.items registry entry (the same store PLO_ITEMADD fills) at
@@ -1107,6 +1148,29 @@ CASES: List[ClientCase] = [
         "dispatch stage, no ismale/gender key on the NPC dict, and nothing "
         "in the renderer would consume it (character NPCs composite from "
         "explicit body/head images)"),
+    # --- gmap: an NPC's x/y are whole-map tiles in the reference client ---
+    ClientCase(
+        "gmap_npc_xy_read", "gmap: NPC x/y and playerx/playery read whole-map",
+        "FP TServerNPCProperties.cpp:331-332 (x/y read getlocalx() + "
+        "(mapX << 6)); TServerPlayerProperties.cpp:230-232 (playerx is the "
+        "whole-map player position)",
+        _chk_gmap_npc_read, gmap=True,
+        script="if (playerenters) { this.rx = x; this.ry = y; "
+               "this.px = playerx; this.py = playery; "
+               "this.dx = abs(playerx - x); }"),
+    ClientCase(
+        "gmap_npc_xy_write", "gmap: an NPC x/y write stores x - (mapX << 6)",
+        "FP TServerNPCProperties.cpp:334-345 (setlocalx(x - (mapX << 6)) "
+        "for a map NPC)",
+        _chk_gmap_npc_write, gmap=True,
+        script="if (playerenters) { x = 100.5; y = 90.5; }"),
+    ClientCase(
+        "gmap_npc_cross_write", "gmap: a write into the next cell keeps the "
+        "NPC's cell",
+        "FP TServerNPCProperties.cpp:334-338 + TGaniObject.cpp:1346-1358 "
+        "(setlocalx only stores; the cell is not recomputed)",
+        _chk_gmap_npc_cross_write, gmap=True,
+        script="if (playerenters) { x = 140; }"),
 ]
 
 
@@ -1152,7 +1216,39 @@ def _weapon_text(case: ClientCase) -> str:
 
 
 def _level_name(case: ClientCase) -> str:
+    if case.gmap:
+        return _gmap_segment(case, 1, 1)
     return f"qa_c_{case.name}.nw"
+
+
+def _gmap_segment(case: ClientCase, x: int, y: int) -> str:
+    return f"qa_c_{case.name}_{x}{y}.nw"
+
+
+def _write_gmap_fixtures(world: Path) -> List[str]:
+    """Write every gmap case's 3x3 map into a server's world directory and
+    return the .gmap names for the `gmaps` option. Only the centre cell
+    (1,1) holds the case level (and its fixture NPC)."""
+    names = []
+    for case in CASES:
+        if not case.gmap:
+            continue
+        rows = []
+        for y in range(3):
+            row = []
+            for x in range(3):
+                seg = _gmap_segment(case, x, y)
+                body = (_level_text(case) if (x, y) == (1, 1)
+                        else f"GLEVNW01\n{_board_rows({})}\n")
+                (world / seg).write_text(body)
+                row.append(f'"{seg}"')
+            rows.append(",".join(row))
+        gmap = f"qa_c_{case.name}.gmap"
+        (world / gmap).write_text(
+            "GRMAP001\nWIDTH 3\nHEIGHT 3\nLEVELNAMES\n" + ",\n".join(rows)
+            + "\nLEVELNAMESEND\n")
+        names.append(gmap)
+    return names
 
 
 # The 2-line fixture weapon behind the weapon_multiline_truncation pin.
@@ -1176,8 +1272,8 @@ def generate_fixtures(dest: Path = _FIXTURES) -> List[str]:
     (dest / "weapons").mkdir(parents=True, exist_ok=True)
     written = []
     for case in CASES:
-        if case.channel == "none":
-            continue
+        if case.channel == "none" or case.gmap:
+            continue   # gmap levels: written per server (_write_gmap_fixtures)
         fn = _level_name(case)
         (dest / "world" / fn).write_text(_level_text(case))
         written.append(fn)
@@ -1211,6 +1307,7 @@ def _spawn_server(fixtures: Path):
         shutil.copy(nw, workdir / "world" / nw.name)
     for wt in (fixtures / "weapons").glob("*.txt"):
         shutil.copy(wt, workdir / "weapons" / wt.name)
+    gmaps = _write_gmap_fixtures(workdir / "world")
     now = time.time()
     for bc in (fixtures / "weapons").glob("*.gs2bc"):
         target = workdir / "weapons" / bc.name
@@ -1233,7 +1330,8 @@ def _spawn_server(fixtures: Path):
         "startx = 30\nstarty = 30.5\n"
         "staff = testbot1\n"
         # omitted, these two withhold links and signs from the client
-        "clientsidelinks = true\nclientsidesigns = true\n")
+        "clientsidelinks = true\nclientsidesigns = true\n"
+        + (f"gmaps = {','.join(gmaps)}\n" if gmaps else ""))
     log = workdir / "server.log"
     env = dict(os.environ)
     env["PYGSERVER_QA"] = "1"
@@ -1318,12 +1416,27 @@ def _run_case(env: CaseEnv, case: ClientCase) -> None:
             else:
                 raise AssertionError(f"never arrived on {env.level} "
                                      f"(at {client._current_level_name!r})")
+            if case.gmap:
+                # The .gmap can land after the level (a copy fetched while
+                # the player stood elsewhere is refused and fetched again,
+                # handlers/files.py adopt_gmap). These rows pin the frame,
+                # so the script waits for the grid.
+                deadline = time.time() + 8.0
+                while not client.in_gmap_segment:
+                    if time.time() >= deadline:
+                        raise AssertionError(
+                            f"gmap grid never loaded for {env.level} "
+                            f"(grid {sorted(client.gmap_grid.values())[:3]})")
+                    _pump(game, 1)
 
         if case.channel == "npc":
             # the fixture NPC = the one living on this level nearest the anchor
             candidates = [
                 (nid, n) for nid, n in client.npcs.items()
-                if isinstance(n, dict) and n.get("_level") == env.level]
+                if isinstance(n, dict) and (
+                    n.get("_level") == env.level
+                    or (case.gmap and (n.get("gmaplevelx"),
+                                       n.get("gmaplevely")) == (1, 1)))]
             if not candidates:
                 raise AssertionError(f"fixture NPC never arrived on {env.level}")
             env.npc_id = min(candidates, key=lambda kv: (

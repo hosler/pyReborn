@@ -7,6 +7,7 @@ from reborn_protocol.gs2 import GS2Object
 from typing import Optional
 from ..gs1_client import board_tile_read
 from ..gs1_client import board_tile_write
+from ..gs1_client.frame import npc_axis, write_npc_axis
 from ..particles import emitter_for_record
 from reborn_protocol.gs2 import to_bool
 from reborn_protocol.gs2 import to_num
@@ -195,6 +196,11 @@ class _NpcThisObject(_ThisObject):
         attr = _NPC_THIS_ATTR.get(k)
         if attr is not None:
             npc = self._npc()
+            if npc is not None and attr in ("x", "y"):
+                # One property table serves both script languages
+                # (TServerNPCProperties.cpp:1245): the whole-map read of
+                # gs1_client/frame.py.
+                return to_num(npc_axis(self._rt2.client, npc, attr))
             if npc is not None and attr in npc:
                 v = npc.get(attr)
                 return v if isinstance(v, str) else to_num(v)
@@ -240,16 +246,10 @@ class _NpcThisObject(_ThisObject):
             npc = self._npc()
             if npc is not None:
                 if attr in ("x", "y"):
-                    # Keep the renderer's preferred world_x/world_y in step
-                    # (client.py stamps them on every PLO_NPCPROPS, world ==
-                    # local + segment offset), and snap the visual position —
-                    # a script placement is not movement to lerp across.
-                    new = to_num(value)
-                    wkey = "world_" + attr
-                    if wkey in npc and npc.get(wkey) is not None:
-                        old = to_num(npc.get(attr, 0) or 0)
-                        npc[wkey] = to_num(npc.get(wkey, 0) or 0) + (new - old)
-                    npc[attr] = new
+                    # The shared gated whole-map write (frame.py); it keeps
+                    # world_x/world_y in step. A script placement is not
+                    # movement to lerp across, so snap the visual position.
+                    write_npc_axis(self._rt2.client, npc, attr, value)
                     mark = getattr(self._rt2.client, "_mark_npc_pos_snap", None)
                     if mark is not None:
                         mark(npc)
