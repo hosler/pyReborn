@@ -166,6 +166,72 @@ def test_reset_account_chests_strips_only_loot_lines(tmp_path, monkeypatch):
     assert account.read_text() == "GRACC001\nX 5\n"
 
 
+@pytest.mark.parametrize("header_eol,body_eol", [
+    ("\r\n", "\n"), ("\r\n", "\r\n"), ("\n", "\n"),
+], ids=["mixed", "crlf", "lf"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+@pytest.mark.parametrize("duplicate_keys", [False, True])
+def test_account_position_handles_line_endings_and_duplicates(
+        tmp_path, monkeypatch, header_eol, body_eol, trailing_newline,
+        duplicate_keys):
+    _isolate_account_dirs(monkeypatch, tmp_path)
+    account = tmp_path / "testbot1.txt"
+    body = ["LEVEL chicken.gmap", "X 5", "Y 6", "NICK changed",
+            "CHEST 1 2 chicken1.nw", "KILLS 8", "DEATHS 9",
+            "RATING 1800", "DEVIATION 80", "LASTSPARTIME 123", "MP 1",
+            "ARROWS 0", "BOMBS 20", "FLAG quest=done",
+            "CHEST 3 4 chicken2.nw"]
+    replacements = {
+        "LEVEL": "LEVEL onlinestartlocal.nw", "X": "X 30", "Y": "Y 30.5",
+        "NICK": "NICK testbot1", "KILLS": "KILLS 0", "DEATHS": "DEATHS 0",
+        "RATING": "RATING 1500", "DEVIATION": "DEVIATION 350",
+        "LASTSPARTIME": "LASTSPARTIME 0", "MP": "MP 7",
+        "ARROWS": "ARROWS 5", "BOMBS": "BOMBS 20",
+    }
+    original = body + ([f"{key} 999" for key in replacements]
+                       if duplicate_keys else [])
+    text = "GRACC001" + header_eol + body_eol.join(original)
+    if trailing_newline:
+        text += body_eol
+    account.write_bytes(text.encode())
+
+    assert reset_account_position("testbot1", x=30, y=30.5, mp=7)
+
+    written = account.read_bytes().decode()
+    lines = written.splitlines()
+    expected = ["GRACC001"] + [
+        replacements.get(line.split(" ", 1)[0], line) for line in body]
+    assert lines == expected
+    for key in replacements:
+        assert sum(line.split(" ", 1)[0] == key for line in lines) == 1
+    output_eol = "\r\n" if "\r\n" in text else "\n"
+    assert written == output_eol.join(expected) + (
+        output_eol if trailing_newline else "")
+
+
+@pytest.mark.parametrize("header_eol,body_eol", [
+    ("\r\n", "\n"), ("\r\n", "\r\n"), ("\n", "\n"),
+], ids=["mixed", "crlf", "lf"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+def test_account_chests_handles_line_endings(
+        tmp_path, monkeypatch, header_eol, body_eol, trailing_newline):
+    _isolate_account_dirs(monkeypatch, tmp_path)
+    account = tmp_path / "testbot1.txt"
+    body = ["LEVEL chicken.gmap", "CHEST 1 2 chicken1.nw", "X 5", "Y 6",
+            "NICK changed", "CHEST 3 4 chicken2.nw", "FLAG quest=done"]
+    text = "GRACC001" + header_eol + body_eol.join(body)
+    if trailing_newline:
+        text += body_eol
+    account.write_bytes(text.encode())
+
+    assert reset_account_chests("testbot1")
+
+    expected = ["GRACC001"] + [line for line in body
+                               if not line.startswith("CHEST ")]
+    assert account.read_bytes() == (
+        "\n".join(expected) + ("\n" if trailing_newline else "")).encode()
+
+
 # --------------------------------------------------------------------------
 # movement_all_directions must not depend on where the last session ended
 # --------------------------------------------------------------------------

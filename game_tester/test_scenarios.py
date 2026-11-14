@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 from dataclasses import dataclass
 
-from .game_bot import GameBot, Issue
+from .game_bot import GameBot, Issue, chat_nonce
 from .bug_detector import BugDetector
 from .reporter import TestResult
 import logging
@@ -61,7 +61,7 @@ def reset_account_chests(account_name: str) -> bool:
     path = os.path.join(accounts_dir, f"{account_name}.txt")
     try:
         with open(path) as f:
-            lines = f.readlines()
+            lines = f.read().splitlines(keepends=True)
         kept = [l for l in lines if not l.startswith("CHEST ")]
         if len(kept) != len(lines):
             with open(path, "w") as f:
@@ -166,7 +166,7 @@ def reset_account_position(account_name: str,
         with open(path, newline="") as f:
             text = f.read()
         eol = "\r\n" if "\r\n" in text else "\n"
-        lines = text.split(eol)
+        lines = text.splitlines()
         # Restock ammo to the same floor the pygserver twin above uses. GServer
         # persists the post-fire count, so a suite that shoots leaves the
         # account at ARROWS 0 and the next run's projectile checks fail with no
@@ -179,8 +179,9 @@ def reset_account_position(account_name: str,
         for line in lines:
             key = line.split(" ", 1)[0]
             if key in repl:
-                out.append(repl[key])
-                seen[key] = True
+                if not seen[key]:
+                    out.append(repl[key])
+                    seen[key] = True
             else:
                 out.append(line)
         # Insert any missing keys after the GRACC001 header (line 0).
@@ -189,6 +190,8 @@ def reset_account_position(account_name: str,
             out[1:1] = missing
         with open(path, "w", newline="") as f:
             f.write(eol.join(out))
+            if text.endswith(("\r", "\n")):
+                f.write(eol)
         return True
     except OSError:
         return False
@@ -555,7 +558,7 @@ class TestScenarios:
         start = time.time()
         issues = []
         success = False
-        test_msg = f"Test_{int(time.time())}"
+        test_msg = chat_nonce("Test_")
 
         listener = GameBot(f"{bot.name}_chatlistener", bot.host, bot.port, bot.password)
         try:

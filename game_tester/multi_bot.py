@@ -8,7 +8,7 @@ import time
 from typing import List, Optional
 from dataclasses import dataclass
 
-from .game_bot import GameBot, Issue
+from .game_bot import GameBot, Issue, chat_nonce
 from .bug_detector import BugDetector, CheckResult
 
 
@@ -364,9 +364,7 @@ class MultiBotTest:
         receiver = self.bots[receiver_idx]
 
         # Generate unique test message
-        import random
-        unique_id = random.randint(100000, 999999)
-        test_message = f"ChatTest_{unique_id}"
+        test_message = chat_nonce("ChatTest_")
         
         # Clear chat logs completely before test
         sender.chat_received.clear()

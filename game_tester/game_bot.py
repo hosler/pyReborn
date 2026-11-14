@@ -15,6 +15,8 @@ Key parity features:
 """
 
 import math
+import secrets
+import string
 import sys
 import time
 from pathlib import Path
@@ -42,6 +44,14 @@ from .world_graph import Hop, WorldGraph
 import logging
 from pyreborn.logutil import log_swallowed
 logger = logging.getLogger(__name__)
+
+
+def chat_nonce(prefix: str) -> str:
+    # Avoid chat truncation when a message contains its own decimal length.
+    message = prefix + "".join(secrets.choice(string.ascii_letters) for _ in range(12))
+    if str(len(message)) in message:
+        raise ValueError("Chat prefix contains the message length")
+    return message
 
 
 @dataclass

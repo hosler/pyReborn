@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from typing import List, Optional, Tuple
 
-from .game_bot import GameBot, Issue
+from .game_bot import GameBot, Issue, chat_nonce
 from .reporter import TestResult
 from .test_scenarios import reset_account_position
 import logging
@@ -246,7 +246,7 @@ def test_gmap_cross_segment_chat(bot0: GameBot, bot1: GameBot) -> TestResult:
     issues: List[Issue] = []
     _place_adjacent(bot0, bot1)
 
-    msg = f"gmapchat_{int((time.time() % 100000))}"
+    msg = chat_nonce("gmapchat_")
     before = len(bot1.chat_received)
     bot0.say(msg)
     deadline = time.time() + 2.5
