@@ -9,6 +9,7 @@ import pygame
 from ..alignment import alignment_color
 from ..classic_sprites import draw_sprite, swamp_index, swamp_sprite
 from ..gani import AnimationState
+from ..hurt import HURT_TICKS
 from ..ground_items import GIVE_SPRITES, giveaway_icon_offset
 from ..npc_script_display import take_display, timer_text
 from ..carrying import BOMB_CODES, carry_position, carry_tiles
@@ -26,6 +27,16 @@ from .constants import (
 
 # ATTRn sprite-layer slots shared by player and NPC ganis.
 ATTR_SLOTS = 30
+
+# A character NPC draws no nick while its gani is of type 0x0b or 0x0d. For a
+# server NPC TServerPlayer::draw sets the hurt flag from exactly that test
+# (TServerPlayer.cpp:1213-1218) and skips the nick while it is set (:1416).
+# calcGaniType (Preagonal/FourPlay/quattroplay/src/TGr*Ani.cpp:859-884)
+# with defanis/the type table (TInitStatics.cpp:1043, :1459) maps those two
+# types to the stock ganis
+# "hiddenstill" and "hidden". Another player's flag is never set true
+# (setIsHurt has no other true caller), so its nick is never hidden.
+_NICK_HIDING_GANIS = frozenset({'hiddenstill', 'hidden'})
 
 
 # Baddy mode (BDMODE) -> gani animation name. Mirrors GServer-v2's BaddyMode
@@ -249,21 +260,23 @@ class EntityRenderMixin(
         """115 for a hidden (STATUS bit 0x02) or ghost-mode-1 entity, else 255."""
         return 115 if ghost or (int(status or 0) & 0x02) else 255
 
-    def _nameplate_label(self, name: str, paused: bool, status) -> str:
-        """name, " (paused)", " [status-list label]": the player label rules.
+    @staticmethod
+    def _nameplate_label(name: str, paused: bool, player_id: int) -> str:
+        """name, then " (paused)": the player label rules.
 
-        A player with an empty nick shows "unknown"; the " (paused)" suffix
-        follows it (TServerPlayer.cpp:957-972). The reference cuts the nick
-        to `nicknamelimit` (default 12) only when the `limitnicknames`
-        preference is on (default off, TOptions.cpp:32, :35); this client has
-        neither preference, so it never cuts.
+        An empty nick of a player (id > 0, not a character NPC) reads
+        "unknown"; the " (paused)" suffix follows it, with its separating
+        space only after non-empty text (TServerPlayer.cpp:957-972). Nothing
+        else is ever appended: the reference reads no status list in this
+        path. The reference cuts the nick to `nicknamelimit` (default 12) only
+        when the `limitnicknames` preference is on (default off,
+        TOptions.cpp:32, :35); this client has neither preference, so it never
+        cuts.
         """
-        name = name or 'unknown'
+        if not name and player_id > 0:
+            name = 'unknown'
         if paused:
-            name = f"{name} (paused)"
-        status_label = self._status_label(status)
-        if status_label:
-            name = f"{name} [{status_label}]" if name else f"[{status_label}]"
+            name = f"{name} (paused)" if name else "(paused)"
         return name
 
     # Nickname plate: the TOP of the text line box (the glyph top is
@@ -290,16 +303,51 @@ class EntityRenderMixin(
             tiles = self._NAMEPLATE_DY_TILES
         return y + TILE_SIZE * tiles
 
-    def _draw_nameplate(self, text: str, color, centre_x: float, top_y: float,
-                        frame: FrameContext) -> None:
-        """Outlined small-font label centred on centre_x, staggered by
-        _place_nameplate, blitted. No-op for empty text."""
+    def _local_nick_visible(self) -> bool:
+        """Whether the local player's nick is drawn this frame.
+
+        TPlayer::draw sets the hurt flag to `actionMode == 3 && counter > 30`
+        (TPlayer.cpp:3947) and TServerPlayer::draw skips the nick while it is
+        set (TServerPlayer.cpp:1416). The counter starts at 40 on a hit
+        (:6575) and drops one per tick, so the nick is hidden for the first
+        10 ticks of a hurt (HURT_TICKS - hurt.ticks > 30).
+
+        TPlayer::draw then draws the nick a second time with no hurt test
+        while a counter, set to 60 at construction and at loadStartLevel
+        (:785, :5636) and decremented once per tick (:7250), is still >= 0
+        (:3962). That repaints the nick over the hurt hide for the first 61
+        ticks. `nick_grace_ticks` is the counter: armed in `GameClient.__init__`
+        and again on the respawn after death (the restart, :2166), never by a
+        plain warp. The other loadStartLevel callers, TAdventure.cpp:34 and
+        TServerList.cpp:340 (session start), have no separate pyReborn site.
+        """
+        if self.nick_grace_ticks >= 0:
+            return True
+        player = self.client.player
+        hurt = player.hurt
+        return not (player.action_mode == 3 and hurt.generation
+                    and HURT_TICKS - hurt.ticks > 30)
+
+    #: Ticks (counter 60..0) the local nick ignores the hurt hide.
+    _NICK_START_GRACE_TICKS = 60
+
+    def _draw_nameplate(self, text: str, color, centre_x: float,
+                        top_y: float) -> None:
+        """Outlined small-font label centred on centre_x, drawn at once.
+
+        The reference draws each plate immediately, with no overlap test, and
+        only keeps it inside the view: a centre outside [0, view width] draws
+        nothing, and the text is shifted to stay within that span
+        (TPlayer.cpp:4105-4165, drawTextTokenAbsolute). No-op for empty text.
+        """
         if not text:
             return
+        view_w = self.screen.get_width()
+        if centre_x < 0 or centre_x > view_w:
+            return
         surf = self._render_text_outlined_cached(self.font_small, text, color)
-        x, y = self._place_nameplate(centre_x - surf.get_width() // 2, top_y,
-                                     surf.get_size(), frame)
-        self.screen.blit(surf, (x, y))
+        x = min(centre_x - surf.get_width() // 2, view_w - surf.get_width())
+        self.screen.blit(surf, (max(0, x), top_y))
 
     def _render_player(self, x: float, y: float, player: Player,
                        anim: AnimationState,
@@ -307,7 +355,6 @@ class EntityRenderMixin(
         """Render the local player with animation."""
         if getattr(self.client, 'ghost_mode', 0) == 2:
             return
-        frame = self._frame_context() if frame is None else frame
         z_offset = 0 if getattr(player, '_attachment', None) else getattr(player, 'z', 0) * getattr(self.camera, 'scale', TILE_SIZE)
         y -= z_offset
         anchor_x = x + self._PLAYER_ANCHOR_FIX  # speech-bubble anchor only
@@ -354,12 +401,15 @@ class EntityRenderMixin(
         # Render nickname below local player
         # Centre on the box/sprite's true horizontal centre, x+1.5 tiles
         # (24px): the sprite is 3 tiles wide, top-left anchored at x.
-        self._draw_nameplate(
-            self._nameplate_label(player.nickname,
-                                  bool(player.status & 1), player.status),
-            alignment_color(getattr(player, 'ap', 0)),
-            x + int(TILE_SIZE * 1.5),
-            self._nameplate_top(y + z_offset, own=True), frame)
+        if self._local_nick_visible():
+            self._draw_nameplate(
+                # The local player is a logged-in player, so its id is > 0
+                # (TServerPlayer.cpp:957); `player.id` is not always set.
+                self._nameplate_label(player.nickname,
+                                      bool(player.status & 1), 1),
+                alignment_color(getattr(player, 'ap', 0)),
+                x + int(TILE_SIZE * 1.5),
+                self._nameplate_top(y + z_offset, own=True))
 
         # Debug visualization (feet marker, collision box, tile grid) - F1 only
         if self.debug_mode:
@@ -465,7 +515,6 @@ class EntityRenderMixin(
     def _render_other_player(self, x: float, y: float, pdata: dict, pid: int,
                              frame: Optional[FrameContext] = None):
         """Render another player."""
-        frame = self._frame_context() if frame is None else frame
         z_offset = 0 if pdata.get('_attachment') else pdata.get('z', 0) * getattr(self.camera, 'scale', TILE_SIZE)
         y -= z_offset
         imgs = pdata.get('imgs')
@@ -538,10 +587,10 @@ class EntityRenderMixin(
         self._draw_nameplate(
             self._nameplate_label(
                 pdata.get('nick') or pdata.get('nickname') or '',
-                bool(pdata.get('status', 0) & 1), pdata.get('status')),
+                bool(pdata.get('status', 0) & 1), pid),
             alignment_color(pdata.get('ap', 0)),
             x + int(TILE_SIZE * 1.5),
-            self._nameplate_top(y, horse=bool(pdata.get('horse_image'))), frame)
+            self._nameplate_top(y, horse=bool(pdata.get('horse_image'))))
         if imgs:
             self._render_npc_layers(imgs, over=True)
 
@@ -905,12 +954,12 @@ class EntityRenderMixin(
         # default 50 (TServerPlayer.cpp:249). nick_anchor is None for undrawn
         # NPCs, so they get no label. y: see _nameplate_top.
         nickname = npc.get('nickname')
-        if is_character and nickname and nick_anchor:
+        if (is_character and nickname and nick_anchor
+                and (gani_name or '').lower() not in _NICK_HIDING_GANIS):
             self._draw_nameplate(nickname, alignment_color(npc.get('ap', 50)),
                                  x + int(TILE_SIZE * 1.5),
                                  self._nameplate_top(
-                                     y, horse=bool(npc.get('horseimage'))),
-                                 frame)
+                                     y, horse=bool(npc.get('horseimage'))))
 
         self._render_npc_script_overlays(npc, x, y, nick_anchor)
 

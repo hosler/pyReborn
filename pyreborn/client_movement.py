@@ -9,7 +9,7 @@ from reborn_protocol import PLPROP
 from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.props import PLAYER_PROPS, payload_len
 
-from .gmap_coords import grid_of
+from .gmap_coords import get_ci, grid_of, has_level, same_level
 from .packets import PacketID, build_movement
 
 #: Asset and file requests do not depend on where we stand, so they do not
@@ -168,8 +168,8 @@ class MovementMixin:
         file with a mod time, TClient.cpp:1323-1347), because a hop sends no
         level data back; the same test applies to a walked seam and to a
         door or script."""
-        return (from_level != to_level
-                and to_level in self.levels
+        return (not same_level(from_level, to_level)
+                and has_level(self.levels, to_level)
                 and grid_of(self.gmap_grid, from_level) is not None
                 and grid_of(self.gmap_grid, to_level) is not None)
 
@@ -213,7 +213,7 @@ class MovementMixin:
         # first time - so nothing else ever updates _tiles_level_name for a
         # re-crossing. Live-traced on hastur 2026-07-25: walking e6 -> d6 left
         # the active board naming e6 for the remaining 2.4 s of the session.
-        cached_board = self.levels.get(level_name)
+        cached_board = get_ci(self.levels, level_name)
         if cached_board:
             self.tiles = cached_board
             self._tiles_level_name = level_name

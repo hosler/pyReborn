@@ -33,7 +33,6 @@ class RenderCache:
     text_surf: LruCache = field(default_factory=lambda: LruCache(500))        # render_text
     text_outline: LruCache = field(default_factory=lambda: LruCache(500))     # render_text
     wrap: LruCache = field(default_factory=lambda: LruCache(300))             # render_text
-    nameplate_grid: Optional[Any] = None                                      # render_text
     gani_layer: LruCache = field(default_factory=lambda: LruCache(2000))      # render_gani
     entity_alpha: LruCache = field(default_factory=lambda: LruCache(600))     # render_gani
     npc_gani_split: LruCache = field(default_factory=lambda: LruCache(300))   # render_entities

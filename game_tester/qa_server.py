@@ -276,7 +276,10 @@ def start(name="dev", port=14900, pygserver=None, serverside=True, world=None):
                 raise ValueError(f"accounts directory already used by {record['name']!r}: "
                                  f"{_identity(_process(record['pid']))}; use --world for isolation")
     config = state_dir() / f"{name}.serveroptions.txt"
-    options = ""
+    # A config file that omits these two keys withholds links and signs from
+    # the client; the reference's shipped default config sets both. A world's
+    # own config (below) overrides them.
+    options = "clientsidelinks = true\nclientsidesigns = true\n"
     if world is not None:
         world = str(Path(world).expanduser().resolve())
         original = Path(world) / "config" / "serveroptions.txt"

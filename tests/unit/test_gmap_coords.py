@@ -37,7 +37,7 @@ INTERIOR = "house.nw"       # a door target that is in no grid
     (SQUARE, "c2.nw", (2, 0)),             # outer rim, right edge
     (WIDE, "Mixed.nw", (2, 1)),            # non-square, last cell
     (WIDE, "dup.nw", (1, 0)),              # duplicate: first cell, row-major
-    (WIDE, "mixed.nw", None),              # exact match by default
+    (WIDE, "mixed.nw", (2, 1)),            # case-insensitive by default
     (SINGLE, "only.nw", (0, 0)),
     (SQUARE, INTERIOR, None),              # gmap loaded, interior level
     (SQUARE, "", None),
@@ -47,6 +47,10 @@ INTERIOR = "house.nw"       # a door target that is in no grid
 ])
 def test_grid_of(grid, level, expected):
     assert grid_of(grid, level) == expected
+
+
+def test_grid_of_exact_when_asked():
+    assert grid_of(WIDE, "mixed.nw", casefold=False) is None
 
 
 @pytest.mark.parametrize("grid, level, expected", [
@@ -139,12 +143,15 @@ def test_world_from_local_and_back(grid, level, local, world):
     (10.0, 64, 74.0),          # local: origin added
     (0.0, 128, 128.0),
     (63.9375, 64, 127.9375),
-    (64.0, 64, 64.0),          # already world: passed through
-    (130.5, 64, 130.5),
-    (-0.5, 64, -0.5),          # negative: taken as world
+    (64.0, 64, 128.0),         # just past the east edge: still local
+    (70.25, 64, 134.25),
+    (-0.5, 64, 63.5),          # just past the west edge: still local
     (10.0, 0, 10.0),           # cell (0, 0)
 ])
 def test_world_from_wire(raw, origin, expected):
+    """NPC X2/Y2 are always local (NPC.h:702-703); the client adds the cell
+    origin whatever the value (TServerNPC.cpp:330). Mutation: restore the
+    "outside 0..63 is world" pass-through and the edge rows fail."""
     assert world_from_wire(raw, origin) == expected
 
 
@@ -186,10 +193,11 @@ def test_world_of_an_on_board_local_lands_in_its_level(grid, data, x, y):
 
 
 @given(st.integers(min_value=0, max_value=20), _wire)
-def test_world_from_wire_is_idempotent(cell, raw):
+def test_world_from_wire_is_local_plus_origin(cell, raw):
+    """Every wire value, on the board or past its edge, is local: world
+    minus the origin gives the wire value back."""
     origin = cell * LEVEL_SIZE
-    once = world_from_wire(raw, origin)
-    assert world_from_wire(once, origin) == once
+    assert world_from_wire(raw, origin) - origin == raw
 
 
 @given(_wire, _wire)
@@ -239,17 +247,19 @@ def test_no_gmap_loaded():
     assert c._level_world_origin("plain.nw") == (0, 0)
 
 
-def test_update_npc_world_coords_tolerates_both_frames():
+def test_update_npc_world_coords_places_local_values():
+    """Every wire value is local to its cell, including one past the
+    segment edge, and a re-run does not add the origin again."""
     c = _client("c4.nw", 100.0, 70.0)
     c.npcs = {
         1: {'_level': "c4.nw", 'x': 10.0, 'y': 20.0},            # local
-        2: {'_level': "c4.nw", 'x': 74.0, 'y': 84.0},            # already world
+        2: {'_level': "c4.nw", 'x': 70.0, 'y': -1.5},            # past the edges
         3: {'gmaplevelx': 2, 'gmaplevely': 1, 'x': 1.0, 'y': 2.0},
         4: {'_level': INTERIOR, 'x': 5.0, 'y': 5.0},             # not a segment
     }
     c._update_npc_world_coords()
     assert (c.npcs[1]['world_x'], c.npcs[1]['world_y']) == (74.0, 84.0)
-    assert (c.npcs[2]['world_x'], c.npcs[2]['world_y']) == (74.0, 84.0)
+    assert (c.npcs[2]['world_x'], c.npcs[2]['world_y']) == (134.0, 62.5)
     assert (c.npcs[3]['world_x'], c.npcs[3]['world_y']) == (129.0, 66.0)
     assert c.npcs[3]['_level'] == "c5.nw"
     assert 'world_x' not in c.npcs[4]

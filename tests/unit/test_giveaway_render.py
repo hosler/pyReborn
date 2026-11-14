@@ -48,6 +48,7 @@ def _renderer(player, selected, sprite):
         _render_player_chat=Mock(), _status_label=lambda status: '',
         _hidden_alpha=EntityRenderMixin._hidden_alpha,
         _nameplate_label=Mock(return_value=''), _draw_nameplate=Mock(),
+        _local_nick_visible=Mock(return_value=True),
         _nameplate_top=Mock(return_value=0),
     )
 

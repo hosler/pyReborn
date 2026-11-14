@@ -91,7 +91,9 @@ def start_server():
     port = _free_port()
     (d / "config" / "serveroptions.txt").write_text(
         f"serverport = {port}\nnoverifylogin = true\n"
-        "startlevel = onlinestartlocal.nw\nstartx = 30\nstarty = 30.5\n")
+        "startlevel = onlinestartlocal.nw\nstartx = 30\nstarty = 30.5\n"
+        # omitted, these two withhold links and signs from the client
+        "clientsidelinks = true\nclientsidesigns = true\n")
     logf = open(d / "server.log", "wb")
     env = dict(os.environ, PYGSERVER_QA="1",
                PYGSERVER_ACCOUNTS_DIR=str(d / "accounts"))

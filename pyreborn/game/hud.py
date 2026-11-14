@@ -176,6 +176,28 @@ class StatsPanel(Widget):
         txt = render_outlined_text(self.game.font_small, label, theme.TEXT_DIM)
         surf.blit(txt, (x, y - 12))
 
+    #: Plate width with up to nine hearts, and what the weapon box takes at the
+    #: plate's right edge (the box, 36 wide, and a margin of 7). The reference
+    #: client draws no HUD (its decompile has no heart row or weapon box), so
+    #: this layout is our own and is not reference-derived.
+    MIN_PANEL_W = 218
+    SLOT_RESERVE = 43
+    #: Where the first heart sits (HeartDisplay(10, 10)) relative to the plate,
+    #: which starts at (6, 6), plus a gap of 2 px before the box.
+    HEARTS_TO_SLOT = 4 + 2
+
+    @classmethod
+    def panel_width(cls, hearts_w: int) -> int:
+        """Plate width: the row of hearts (a row holds ten) ends before the
+        weapon box starts, so a full row never runs under the box."""
+        return max(cls.MIN_PANEL_W,
+                   hearts_w + cls.HEARTS_TO_SLOT + cls.SLOT_RESERVE)
+
+    @classmethod
+    def weapon_slot_rect(cls, panel_w: int) -> 'pygame.Rect':
+        """The weapon box, in screen pixels, on a plate `panel_w` wide."""
+        return pygame.Rect(6 + panel_w - cls.SLOT_RESERVE, 12, 36, 36)
+
     def _draw(self, surf):
         mask = stats_mask(self.game)
         if not (mask & _STATS_PANEL_BITS):
@@ -185,7 +207,7 @@ class StatsPanel(Widget):
         player = self.game.client.player
         hd = self.game.heart_display
         hearts_w = min(hd.HEARTS_PER_ROW, int(player.max_hearts)) * (hd.HEART_SIZE + hd.HEART_SPACING)
-        panel_w = max(218, hearts_w + 16)
+        panel_w = self.panel_width(hearts_w)
         heart_rows = max(1, (int(player.max_hearts) + hd.HEARTS_PER_ROW - 1) // hd.HEARTS_PER_ROW)
 
         # Tier 3a: MP (magic) / AP (alignment) bars, from PLPROP_MAGICPOINTS(26)
@@ -261,7 +283,7 @@ class StatsPanel(Widget):
             # art when it lands. Text stays only for weapons with no icon or
             # a server-side failed file.
             self.game._request_asset(image)
-        slot = pygame.Rect(6 + panel_w - 43, 12, 36, 36)
+        slot = self.weapon_slot_rect(panel_w)
         pygame.draw.rect(surf, theme.SLOT_BG, slot, border_radius=4)
         pygame.draw.rect(surf, theme.EMERALD_DEEP, slot, 1, border_radius=4)
         if weapon is not None:

@@ -70,6 +70,7 @@ def test_start_list_stop(managed, capsys):
     assert abs(record["started"] - time.time()) < 5
     assert qa.READY_MARKER in Path(record["log_path"]).read_text()
     assert Path(record["config_path"]).read_text() == (
+        "clientsidelinks = true\nclientsidesigns = true\n"
         "name = dev\nserverport = 14900\nnoverifylogin = true\nserverside = true\n")
     assert qa.main(["list"]) == 0
     output = capsys.readouterr().out

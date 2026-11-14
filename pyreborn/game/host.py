@@ -96,6 +96,7 @@ class GameHost:
     _frame_dt: float
     _dbg: bool
     _was_dead: bool
+    nick_grace_ticks: int
     _frame_ctx: Optional["FrameContext"]
     _overlay_stack: Optional[Any]
     _requested_assets: Set[str]
@@ -447,13 +448,6 @@ class GameHost:
         def clock(self): ...
 
         # RenderTextMixin
-        def _place_nameplate(
-            self,
-            name_x: float,
-            name_y: float,
-            size: Tuple[int, int],
-            frame: Optional[FrameContext] = None,
-        ) -> Tuple[float, float]: ...
         def _render_speech_bubble(self, x: float, y: float, text: str): ...
         def _render_text_outlined_cached(
             self,

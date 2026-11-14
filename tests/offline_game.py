@@ -191,7 +191,7 @@ TRACKED_BUNDLED = ("baddies", "emblem.png", "rebornfont.ttf")
 
 #: Player ganis the synthetic content tier carries.
 SYNTHETIC_GANIS = ("idle", "walk", "sword", "hurt", "dead", "grab", "pull",
-                   "push", "lift", "carry", "sit", "carrystill")
+                   "push", "lift", "carry", "sit", "carrystill", "hiddenstill")
 
 
 #: Every synthetic sheet: file name -> (pixel size, cell size). Each CELL of a

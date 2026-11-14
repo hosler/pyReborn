@@ -11,6 +11,7 @@ from typing import Dict, Optional
 
 from .asset_paths import normalize_asset_name, server_cache_dir
 from . import update_packages as _packages
+from .gmap_coords import get_ci
 from .packets import (
     PacketBuilder, PacketID, build_board_modify, gupd_name_reserved, build_update_class, build_update_file,
     build_update_gani, build_update_package_request, build_update_script,
@@ -100,7 +101,7 @@ class FileTransferMixin:
 
         # GUInt5 mod time (0 when we hold no copy) + level name
         data = bytearray(PacketBuilder().write_gint5(
-            self.level_modtimes.get(level_name, 0)).build())
+            get_ci(self.level_modtimes, level_name, 0)).build())
         data.extend(level_name.encode('latin-1'))
 
         sent = self._protocol.send_packet(PacketID.PLI_ADJACENTLEVEL, data)

@@ -576,10 +576,10 @@ def _mutate_npc_plate_centre(mp):
     """The old rule: a character NPC's plate centred at x + 16, not x + 24."""
     original = GameClient._draw_nameplate
     mp.setattr(GameClient, "_draw_nameplate",
-               lambda self, text, color, centre_x, top_y, frame: original(
+               lambda self, text, color, centre_x, top_y: original(
                    self, text, color,
                    centre_x - 8 if text == "Offline Guard" else centre_x,
-                   top_y, frame))
+                   top_y))
 
 
 def _mutate_nameplate_y(mp):

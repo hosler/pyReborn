@@ -247,13 +247,8 @@ def test_bigmap_and_minimap_images_load_from_the_sheet(make_game):
 
 # -- game/render_text -------------------------------------------------------------
 
-def test_nameplates_stagger_and_text_caches(make_game):
+def test_text_caches(make_game):
     game = make_game()
-    frame = game._frame_context()
-    first = game._place_nameplate(100.0, 100.0, (60, 12), frame)
-    second = game._place_nameplate(100.0, 100.0, (60, 12), frame)
-    far = game._place_nameplate(400.0, 300.0, (60, 12), frame)
-    assert first == (100, 100) and second[1] > first[1] and far == (400, 300)
     font = game.font_small
     a = game._render_text_cached(font, "hello", (1, 2, 3))
     assert game._render_text_cached(font, "hello", (1, 2, 3)) is a

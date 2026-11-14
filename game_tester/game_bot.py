@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyreborn import Client
 from pyreborn.client_warp import LINK_PROBE_OFFSETS
-from pyreborn.gmap_coords import grid_index, grid_of, local_from_world
+from pyreborn.gmap_coords import get_ci, grid_index, grid_of, local_from_world
 from pyreborn.game.constants import (
     PLAYER_COLLISION_LEFT, PLAYER_COLLISION_RIGHT,
     PLAYER_COLLISION_TOP, PLAYER_COLLISION_BOTTOM,
@@ -981,7 +981,7 @@ class GameBot:
         # client._current_level_name on a GMAP.
         if self.client.is_gmap:
             level_name = self._resolve_level_name(x, y)
-            tiles = self.client.levels.get(level_name, self.client.tiles)
+            tiles = get_ci(self.client.levels, level_name, self.client.tiles)
         else:
             tiles = self.client.tiles
 
@@ -1022,7 +1022,7 @@ class GameBot:
                 check_x, check_y = max(left, tx), max(top, ty)
                 if c.in_gmap_segment:
                     level = c.gmap_grid.get(segment_at(check_x, check_y))
-                    if not level or not c.levels.get(level):
+                    if not level or not get_ci(c.levels, level):
                         return True
                 elif not in_level_bounds(check_x, check_y):
                     return True

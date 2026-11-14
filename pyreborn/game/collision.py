@@ -12,7 +12,7 @@ from reborn_protocol.coords import (
     segment_at, segment_origin,
 )
 
-from ..gmap_coords import grid_of, level_at, origin_at
+from ..gmap_coords import get_ci, grid_of, level_at, origin_at
 
 from ..tiletypes import (
     TileType, get_tile_type, type_is_blocking, selection_for, effective_tile_type,
@@ -148,10 +148,10 @@ class CollisionMixin(GameHost):
         if self.client.in_gmap_segment:
             seg = level_at(self.client.gmap_grid, x, y)
             if seg:
-                return seg, self.client.levels.get(seg)
+                return seg, get_ci(self.client.levels, seg)
             return None, None
         name = self.client.current_level_name
-        return name, (self.client.levels.get(name) or self.client.tiles)
+        return name, (get_ci(self.client.levels, name) or self.client.tiles)
 
     def _world_to_level_local(self, x: float, y: float) -> Tuple[int, int]:
         """Floor (x, y) to the level-local tile frame (0-63) that per-level

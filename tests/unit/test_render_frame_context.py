@@ -268,38 +268,12 @@ class TestEntityPass:
 
 
 class _BareHarness(EntityRenderMixin):
-    """Just enough for _place_nameplate / the frame lifecycle."""
+    """Just enough for the frame lifecycle."""
 
     def __init__(self):
         self.render_cache = RenderCache()
         self._frame_ctx = None
         self._frame_dt = 0.0
-
-
-class TestNameplateStaggering:
-    def test_overlapping_plates_stagger_within_one_frame(self):
-        h = _BareHarness()
-        frame = h._begin_frame()
-        first = h._place_nameplate(100, 200, (40, 12), frame)
-        second = h._place_nameplate(100, 200, (40, 12), frame)
-        third = h._place_nameplate(100, 200, (40, 12), frame)
-        assert first == (100, 200)
-        assert second == (100, 214)   # nudged down by height + 2
-        assert third == (100, 228)
-        assert len(frame.nameplate_rects) == 3
-
-    def test_a_new_frame_starts_with_no_placed_plates(self):
-        h = _BareHarness()
-        h._place_nameplate(100, 200, (40, 12), h._begin_frame())
-        assert h._place_nameplate(100, 200, (40, 12),
-                                  h._begin_frame()) == (100, 200)
-
-    def test_idle_callers_share_one_accumulating_context(self):
-        """Harnesses outside the render loop still stagger, the way the
-        lazily-created list used to (see FrameContextMixin._frame_context)."""
-        h = _BareHarness()
-        assert h._place_nameplate(100, 200, (40, 12)) == (100, 200)
-        assert h._place_nameplate(100, 200, (40, 12)) == (100, 214)
 
 
 class _LightHarness(EntityRenderMixin):

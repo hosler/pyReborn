@@ -8,7 +8,10 @@ from typing import Optional, Tuple
 
 from reborn_protocol.coords import world_to_local
 
-from .gmap_coords import local_from_world, world_from_local
+from .gmap_coords import (
+    fold, get_ci, has_level, in_grid, local_from_world, same_level,
+    world_from_local,
+)
 from .packets import PacketID, build_level_warp, build_level_warp_mod
 from .logutil import log_swallowed
 
@@ -95,9 +98,8 @@ class WarpMixin:
         # Both ends inside the loaded gmap: a hop within one map, which the
         # reference client sends as props and not as a warp (see
         # _send_gmap_hop). Read before the grid is rebuilt or cleared below.
-        map_segments = set(self.gmap_grid.values())
-        same_map = (level_name in map_segments
-                    and self._current_level_name in map_segments)
+        same_map = (in_grid(self.gmap_grid, level_name)
+                    and in_grid(self.gmap_grid, self._current_level_name))
         hop = self._is_gmap_hop(self._current_level_name, level_name)
         self._local_level_transition_direction = None
 
@@ -132,7 +134,7 @@ class WarpMixin:
         # host then thinks the room is full and never settles to host it). GMAP
         # segment hops keep the roster (you see players across the whole gmap).
         if (level_name != self._current_level_name
-                and level_name not in self.gmap_grid.values()):
+                and not in_grid(self.gmap_grid, level_name)):
             self.players.clear()
 
         self._current_level_name = level_name
@@ -151,7 +153,7 @@ class WarpMixin:
         # via #L (the Bomber arena weapon re-armed its "Joining..." curtain in
         # the lobby that way). Gmap convention keeps player.level = .gmap name,
         # so segment hops don't touch it.
-        if level_name not in self.gmap_grid.values():
+        if not in_grid(self.gmap_grid, level_name):
             self.player.level = level_name
 
         # If we've visited this level before, repopulate its board from cache
@@ -159,8 +161,8 @@ class WarpMixin:
         # the player while the server re-streams the board (the "warped before
         # the new tiles render" glitch). First-visit levels stay flagged stale
         # (tiles_level_name != current) so the client can show a loading state.
-        if level_name in self.levels:
-            self.tiles = self.levels[level_name]
+        if has_level(self.levels, level_name):
+            self.tiles = get_ci(self.levels, level_name)
             self._tiles_level_name = level_name
 
         # Restore any NPCs we cached for this level (and, for a gmap segment,
@@ -177,7 +179,7 @@ class WarpMixin:
         # from before the server processed this warp would be mis-attributed
         # to the new level. On the confirming PLO_LEVELNAME we re-reset to
         # purge them (TCP order guarantees they arrive before it).
-        if level_name not in self.gmap_grid.values():
+        if not in_grid(self.gmap_grid, level_name):
             self._awaiting_warp_confirm = level_name
             self._warp_fallback = pre_warp_state
             if level_name != pre_warp_state[0]:
@@ -227,8 +229,8 @@ class WarpMixin:
         reference sends no warp at all for a hop (see _send_gmap_hop), and for
         a warp to the level we stand in it is unclear, so it stays the plain
         warp that pygserver and gs2emu both accept."""
-        mod_time = self.level_modtimes.get(level_name, 0)
-        if level_name in self.levels and not same_map:
+        mod_time = get_ci(self.level_modtimes, level_name, 0)
+        if has_level(self.levels, level_name) and not same_map:
             return self._protocol.send_packet(
                 PacketID.PLI_LEVELWARPMOD,
                 build_level_warp_mod(x, y, level_name, mod_time))
@@ -273,7 +275,7 @@ class WarpMixin:
             return
         if self._tiles_level_name != lvl:
             return
-        if lvl in self._known_gmap_segments and not self.in_gmap_segment:
+        if fold(lvl) in self._known_gmap_segments and not self.in_gmap_segment:
             return
         self._local_level_transition = ""
         self._local_level_transition_epoch += 1
@@ -300,7 +302,8 @@ class WarpMixin:
         # `.gmap` names the world; it confirms any destination known to be one
         # of that world's segments. _known_gmap_segments (not gmap_grid) is the
         # right table: the grid is cleared while we're inside the interior.
-        return level.endswith('.gmap') and pending in self._known_gmap_segments
+        return (level.endswith('.gmap')
+                and fold(pending) in self._known_gmap_segments)
 
     def note_client_warp(self, level_name: str) -> None:
         """Record a level change WE told the server about (a seam crossing via
@@ -341,9 +344,9 @@ class WarpMixin:
         target, sent_at = echo
         matched = (level == target
                    or (grid_pos is not None
-                       and self.gmap_grid.get(grid_pos) == target)
+                       and same_level(self.gmap_grid.get(grid_pos), target))
                    or (level.endswith('.gmap')
-                       and target in self._known_gmap_segments))
+                       and fold(target) in self._known_gmap_segments))
         if not matched:
             return False
         self._warp_echo = None
@@ -369,14 +372,14 @@ class WarpMixin:
         self._pending_level_name = prev_level
         # Mirror warp_to_level's optimistic player.level flip on rollback
         # (same gmap-name convention: only plain levels are stored there).
-        if prev_level and prev_level not in self.gmap_grid.values():
+        if prev_level and not in_grid(self.gmap_grid, prev_level):
             self.player.level = prev_level
         self.player.x = prev_x
         self.player.y = prev_y
         # Re-point the render board and restore cached NPCs; the server-side
         # state never changed, so the cached data is still authoritative.
-        if prev_level in self.levels:
-            self.tiles = self.levels[prev_level]
+        if has_level(self.levels, prev_level):
+            self.tiles = get_ci(self.levels, prev_level)
             self._tiles_level_name = prev_level
         # The target's layers may already be live (a held level re-entered
         # without a board); put the previous level's back.
@@ -439,6 +442,11 @@ class WarpMixin:
             for nid, npc in self.npcs.items():
                 lvl = npc.get('_level')
                 if lvl:
+                    # An id lives in one bucket: a seam crossing re-files an
+                    # NPC under another segment, and the older copy would
+                    # win a later restore.
+                    for bucket in self._npc_cache.values():
+                        bucket.pop(nid, None)
                     self._npc_cache.setdefault(lvl, {})[nid] = npc.copy()
         from .attachments import detach
         detach(self, self.player)
@@ -461,7 +469,7 @@ class WarpMixin:
         left it, so a re-entry the server answers with no board still shows
         them. A fresh board stream replaces them (handlers/level.py)."""
         layers = self.level_state.level_layers.get(level_name)
-        if layers and level_name in self.levels:
+        if layers and has_level(self.levels, level_name):
             self.board_layers = dict(layers)
             self._board_layers_level_name = level_name
 
@@ -474,8 +482,9 @@ class WarpMixin:
         if not level_name:
             return
         names = [level_name]
-        if self.gmap_grid and level_name in self.gmap_grid.values():
-            names = list(self.gmap_grid.values())
+        if in_grid(self.gmap_grid, level_name):
+            names = [name for name in self._npc_cache
+                     if in_grid(self.gmap_grid, name)]
         for name in names:
             cached = self._npc_cache.get(name)
             if cached:
@@ -586,7 +595,7 @@ class WarpMixin:
         and land on the opposite boundary of a standalone destination.
         """
         if (self.in_gmap_segment
-                or link.get('dest_level', '') in self._known_gmap_segments):
+                or fold(link.get('dest_level', '')) in self._known_gmap_segments):
             return None
         try:
             x = float(link.get('x', 0))

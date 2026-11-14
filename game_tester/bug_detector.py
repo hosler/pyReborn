@@ -44,10 +44,10 @@ class BugDetector:
 
         The same conversion as the client's NPC path
         (`pyreborn.gmap_coords.world_from_wire` on the level's segment). A
-        value that is already world (>=64 or negative) is passed through
-        unchanged, so this is safe to call on positions that might already
-        be normalized. Returns (x, y) unchanged if `level` is not in
-        `gmap_grid` (non-gmap, or an unknown segment).
+        value outside 0..63 is still local (a position just past the
+        segment's edge), so pass only wire values, never a world position.
+        Returns (x, y) unchanged if `level` is not in `gmap_grid` (non-gmap,
+        or an unknown segment).
         """
         cell = grid_of(gmap_grid, level)
         if cell is None:

@@ -7,6 +7,7 @@ from reborn_protocol.coords import level_index, segment_at, world_to_local
 from reborn_protocol.gs1.values import to_num
 
 from ..client_callbacks import emit
+from ..gmap_coords import get_ci, same_level
 
 
 
@@ -66,8 +67,8 @@ def _board_list(client, level_name):
     Client._apply_board_modify changes both lists.
     """
     levels = getattr(client, "levels", None) or {}
-    board = levels.get(level_name)
-    if board is None and level_name == getattr(client, "_tiles_level_name", ""):
+    board = get_ci(levels, level_name)
+    if board is None and same_level(level_name, getattr(client, "_tiles_level_name", "")):
         board = getattr(client, "tiles", None)
     return board if board is not None and len(board) >= 4096 else None
 

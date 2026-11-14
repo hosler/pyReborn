@@ -47,12 +47,13 @@ class TestToWorldPos:
         x, y = BugDetector.to_world_pos(6.0, 6.0, "chicken4.nw", _GRID)
         assert (x, y) == (6.0, 6.0)
 
-    def test_already_world_value_is_not_double_offset(self):
-        """Mirrors the _update_npc_world_coords guard: a value >=64 (or
-        negative) came off a high-precision prop that was already world and
-        must pass through unchanged."""
-        x, y = BugDetector.to_world_pos(70.0, 70.0, "chicken1.nw", _GRID)
-        assert (x, y) == (70.0, 70.0)
+    def test_local_value_past_the_edge_is_still_local(self):
+        """A wire X2/Y2 outside 0..63 is a position just past the segment
+        edge, not a world value (pyreborn.gmap_coords.world_from_wire):
+        chicken1.nw is grid (1, 1), so local (70, -1.5) is world
+        (134, 62.5)."""
+        x, y = BugDetector.to_world_pos(70.0, -1.5, "chicken1.nw", _GRID)
+        assert (x, y) == (134.0, 62.5)
 
     def test_unknown_level_passes_through_unchanged(self):
         x, y = BugDetector.to_world_pos(6.0, 6.0, "not_in_grid.nw", _GRID)

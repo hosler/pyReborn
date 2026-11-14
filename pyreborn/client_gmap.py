@@ -7,7 +7,10 @@ from typing import List
 
 from reborn_protocol.coords import local_to_world, segment_at, segment_origin
 
-from .gmap_coords import grid_of, position_is_local, world_from_wire
+from .gmap_coords import (
+    fold, grid_of, has_level, position_is_local, world_from_wire,
+)
+from .npc_handler import npc_cell, place_npc
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class GmapMixin:
 
         Returns True if the grid was restored.
         """
-        if self.gmap_width or spawn_level not in self._known_gmap_segments:
+        if self.gmap_width or fold(spawn_level) not in self._known_gmap_segments:
             return False
         blob = self._received_files.get(self._last_gmap_name)
         if not blob:
@@ -109,7 +112,7 @@ class GmapMixin:
             y = i // self.gmap_width
             self.gmap_grid[(x, y)] = name
         # Remember segment membership across _exit_gmap (see __init__).
-        self._known_gmap_segments.update(level_names)
+        self._known_gmap_segments.update(fold(name) for name in level_names)
 
 
         # With GMAP-relative coordinates, there's no offset needed
@@ -154,50 +157,30 @@ class GmapMixin:
         self._maybe_release_local_transition()
 
     def _update_npc_world_coords(self):
-        """Update NPC world coordinates based on their level's grid position.
+        """Place every NPC again once load_gmap has built the grid.
 
-        Runs after load_gmap builds the grid, fixing up NPCs that arrived
-        BEFORE the .gmap file download finished. NPCs carrying GMAPLEVELX/
-        GMAPLEVELY props (gs2emu gmap streams - see the PLO_NPCPROPS handler)
-        are re-attributed from those. At stream time the grid was empty so
-        they were stamped with the .gmap name and local-as-world coords."""
-        for npc_id, npc in self.npcs.items():
-            gx = npc.get('gmaplevelx')
-            gy = npc.get('gmaplevely')
-            if gx is not None and gy is not None and (gx, gy) in self.gmap_grid:
-                npc['_level'] = self.gmap_grid[(gx, gy)]
-                self._npc_world_from_wire(npc, (gx, gy))
-                # Re-attribution, not movement: the NPC didn't actually walk,
-                # we just learned its real world position now that the grid
-                # is built. Snap the renderer's visual position (see
-                # _mark_npc_pos_snap) instead of letting it lerp across the
-                # jump from the interim local-as-world guess.
-                self._mark_npc_pos_snap(npc)
-                continue
-            npc_level = npc.get('_level')
-            if not npc_level:
-                continue  # No level info
-            cell = grid_of(self.gmap_grid, npc_level)
-            if cell is not None:
-                # Same guard as the PLO_NPCPROPS handler (BUG 4): only fold
-                # in the segment offset for a still-local value, so a re-run
-                # of this (e.g. gmap grid arriving/reloading after an NPC's
-                # coords were already normalized to world) can't
-                # double-offset it.
-                self._npc_world_from_wire(npc, cell)
-                # Re-attribution, not movement - see the snap comment on
-                # the gmaplevelx/y branch above.
-                self._mark_npc_pos_snap(npc)
-
-    @staticmethod
-    def _npc_world_from_wire(npc: dict, cell) -> None:
-        """Set an NPC's world_x/world_y from its wire x/y on segment
-        `cell`, per axis, with `world_from_wire`'s frame tolerance."""
-        seg_ox, seg_oy = segment_origin(*cell)
-        if 'x' in npc:
-            npc['world_x'] = world_from_wire(npc['x'], seg_ox)
-        if 'y' in npc:
-            npc['world_y'] = world_from_wire(npc['y'], seg_oy)
+        NPCs can arrive before the .gmap file does; they then hold their
+        local position as world. Each NPC's cell is its stored cell (props
+        41/42, or the cell of the segment that owned it), else the cell of
+        the segment its level names, which it now also stores: the
+        reference client stamps a segment's cell on that segment's NPCs
+        when it learns the segment is part of a map
+        (FourPlay quattroplay/src/TServerLevel.cpp:945-953). World is
+        recomputed from the local x/y, so a second run changes nothing."""
+        for npc in self.npcs.values():
+            cell = npc_cell(self.gmap_grid, npc)
+            if cell is None:
+                continue  # a plain level: its local frame is the world
+            npc['gmaplevelx'], npc['gmaplevely'] = cell
+            segment = self.gmap_grid.get(cell)
+            if segment is not None:
+                npc['_level'] = segment
+            place_npc(self.gmap_grid, npc)
+            # Re-attribution, not movement: the NPC did not walk, we just
+            # learned its world position. Snap the renderer's visual
+            # position (see _mark_npc_pos_snap) instead of letting it lerp
+            # across the jump from the interim local-as-world guess.
+            self._mark_npc_pos_snap(npc)
 
     def get_adjacent_levels(self, level_name: str) -> List[str]:
         """
@@ -239,7 +222,7 @@ class GmapMixin:
         adjacent = self.get_adjacent_levels(self._current_level_name)
         count = 0
         for level_name in adjacent:
-            if (level_name not in self.levels
+            if (not has_level(self.levels, level_name)
                     and level_name not in self._adjacent_level_requests):
                 self.request_level(level_name)
                 count += 1

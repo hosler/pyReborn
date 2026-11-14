@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from reborn_protocol.coords import segment_index, segment_origin
+from ..gmap_coords import get_ci, in_grid, same_level
 
 from ..tiletypes import TileType, get_tile_type, selection_for
 from . import theme
@@ -58,7 +59,7 @@ class WorldRenderMixin(ClockedMixin):
         # "warped before the new tiles render" glitch). Show a loading state
         # instead. Cached levels are repopulated synchronously in warp_to_level,
         # so this only triggers on genuinely-new levels.
-        in_gmap = c._current_level_name in c.gmap_grid.values()
+        in_gmap = in_grid(c.gmap_grid, c._current_level_name)
         if (not in_gmap and c._current_level_name
                 and c._tiles_level_name != c._current_level_name):
             self._render_level_loading()
@@ -186,8 +187,8 @@ class WorldRenderMixin(ClockedMixin):
         """The authoritative tile list backing a segment, mirroring how
         client.py itself resolves "current" tiles vs the per-level cache."""
         c = self.client
-        tiles = c.levels.get(level_name)
-        if tiles is None and level_name == c._tiles_level_name:
+        tiles = get_ci(c.levels, level_name)
+        if tiles is None and same_level(level_name, c._tiles_level_name):
             tiles = c.tiles
         return tiles
 

@@ -27,6 +27,7 @@ from ..packets import (
     parse_set_active_level,
 )
 from ..client_callbacks import emit
+from ..gmap_coords import get_ci, has_level, in_grid, same_level
 from .registry import handles
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,13 @@ def handle_level_name(client, data):
         client.level_state.streaming_level_name = level_name
     # .nw files are actual levels, .gmap is the world map name
     if level_name.endswith('.nw'):
-        is_adjacent_preload = level_name in client._adjacent_level_requests
+        # The request carries the spelling the .gmap used; the server may
+        # answer in another case (it lower-cases map names).
+        requested = next((r for r in client._adjacent_level_requests
+                          if same_level(r, level_name)), None)
+        is_adjacent_preload = requested is not None
         if is_adjacent_preload:
-            client._adjacent_level_requests.discard(level_name)
+            client._adjacent_level_requests.discard(requested)
             client._pending_board_level_name = level_name
         # A real level transition (server push via PLO_PLAYERWARP/
         # PLO_PLAYERWARP2 for RC warps/respawn, or a client-initiated
@@ -71,7 +76,7 @@ def handle_level_name(client, data):
         # NPCs on every segment hop); distinguish the two by checking
         # whether level_name is one of the loaded gmap's segments.
         is_gmap_segment = (client.gmap_width > 0 and
-                            level_name in client.gmap_grid.values())
+                            in_grid(client.gmap_grid, level_name))
         if is_adjacent_preload:
             # The explicit request marker is authoritative even outside a
             # loaded gmap: an adjacent static-data answer never moves us.
@@ -158,8 +163,8 @@ def handle_level_name(client, data):
         if (not is_gmap_segment
                 and level_name == client._current_level_name
                 and client._tiles_level_name != level_name
-                and level_name in client.levels):
-            client.tiles = client.levels[level_name]
+                and has_level(client.levels, level_name)):
+            client.tiles = get_ci(client.levels, level_name)
             client._tiles_level_name = level_name
         # Track for tile storage
         if not is_adjacent_preload:
@@ -189,7 +194,7 @@ def handle_level_name(client, data):
     # (e.g. warping into a cave/house) means we've left gmap mode. Clear
     # the grid so is_gmap/coordinates reflect the standalone level.
     elif (level_name.endswith('.nw') and client.gmap_width > 0 and
-          level_name not in client.gmap_grid.values()):
+          not in_grid(client.gmap_grid, level_name)):
         client._exit_gmap(level_name)
     # A cached-board destination already has its tiles active (set
     # synchronously in warp_to_level), so this announcement is the

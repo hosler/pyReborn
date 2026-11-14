@@ -1,7 +1,7 @@
-"""Frame scenes for the two render scaling paths: nameplate staggering with
-many overlapping plates, and the water/lava shimmer pass on a level and on a
-gmap. The existing offline scenes carry few of either, so these are the ones a
-change to `_place_nameplate` or `_render_animated_tiles` has to leave
+"""Frame scenes for the two render scaling paths: many overlapping nameplates,
+and the water/lava shimmer pass on a level and on a gmap. The existing offline
+scenes carry few of either, so these are the ones a change to
+`_draw_nameplate` or `_render_animated_tiles` has to leave
 pixel-identical (frame-baseline captures) and that the invalidation tests in
 test_render_animated_tiles.py build on."""
 

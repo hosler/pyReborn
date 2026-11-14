@@ -22,7 +22,7 @@ from reborn_protocol.coords import (
 from .clock import Clock
 from .protocol import Protocol, WebSocketProtocol, IS_BROWSER
 from .player import Player
-from .gmap_coords import level_at
+from .gmap_coords import get_ci, in_grid, level_at, same_level
 # BoundedLRU / MAX_CACHED_* keep their old client.py names for callers and
 # tests that reach for them there (tests/unit/test_security_correctness.py).
 from .client_state import (  # noqa: F401  (BoundedLRU/MAX_CACHED_* re-exported)
@@ -263,7 +263,7 @@ class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, Actions
         real segments stitch together with their neighbors and span past 64.
         """
         return (self.gmap_width > 0 and
-                self._current_level_name in self.gmap_grid.values())
+                in_grid(self.gmap_grid, self._current_level_name))
 
     # =========================================================================
     # Authentication
@@ -507,10 +507,10 @@ class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, Actions
                         board[level_index(tx, ty)] = tiles[i]
                     i += 1
 
-        board = self.levels.get(level_name)
+        board = get_ci(self.levels, level_name)
         if board is not None and len(board) >= 4096:
             _patch(board)
-        if level_name == self._tiles_level_name and self.tiles and len(self.tiles) >= 4096:
+        if same_level(level_name, self._tiles_level_name) and self.tiles and len(self.tiles) >= 4096:
             _patch(self.tiles)
 
     def get_current_level_from_position(self) -> str:
@@ -525,7 +525,7 @@ class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, Actions
         # _pending_level_name/active_level here: adjacent-level preloads change
         # those stream-routing fields without moving the player.
         current_is_gmap = (
-            self._current_level_name in self.gmap_grid.values()
+            in_grid(self.gmap_grid, self._current_level_name)
             or bool(self.gmap_name and self._current_level_name == self.gmap_name)
         )
         if not self.gmap_grid or not current_is_gmap:

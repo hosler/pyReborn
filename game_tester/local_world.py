@@ -24,7 +24,8 @@ READY_MARKER = "Server listening on"
 STARTUP_TIMEOUT = 20.0
 FORWARDED_OPTIONS = frozenset({
     "name", "description", "language", "swordlimit", "shieldlimit",
-    "healswords", "heartlimit", "putnpcenabled", "serverside"})
+    "healswords", "heartlimit", "putnpcenabled", "serverside",
+    "clientsidelinks", "clientsidesigns"})
 SHUTDOWN_TIMEOUT = 10.0
 _WORLDS = weakref.WeakSet()
 
@@ -81,6 +82,7 @@ class LocalWorld:
         self.server_dir_source = (Path(server_dir_source).resolve()
                                   if server_dir_source is not None else None)
         defaults = {}
+        self.has_source_config = False
         if self.server_dir_source is not None:
             if not self.server_dir_source.is_dir():
                 raise NotADirectoryError(self.server_dir_source)
@@ -92,6 +94,7 @@ class LocalWorld:
                 npcs_dir = self.server_dir_source / "npcs"
             options_path = self.server_dir_source / "config" / "serveroptions.txt"
             if options_path.is_file():
+                self.has_source_config = True
                 for line in options_path.read_text(encoding="utf-8", errors="replace").splitlines():
                     key, separator, value = line.strip().partition("=")
                     if separator and not key.startswith(("#", "//")):
@@ -185,7 +188,12 @@ class LocalWorld:
             for name in self.accounts:
                 self._seed_account(name)
             self._prepared = True
-        options = dict(self.forwarded_options)
+        # A config file that omits these two keys withholds links and signs
+        # from the client. A hosted server's own config decides; a bare world
+        # gets what the reference's shipped default config sets.
+        options = {} if self.has_source_config else {
+            "clientsidelinks": "true", "clientsidesigns": "true"}
+        options.update(self.forwarded_options)
         options.update(self.extra_options)
         options.update(serverport=self.port if self.port is not None else 0,
                        noverifylogin="true", staff=",".join(self.accounts),

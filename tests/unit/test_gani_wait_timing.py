@@ -1,8 +1,9 @@
 """WAIT is parsed as metadata but deliberately ignored for frame timing.
 
-The canonical directive chain does not parse WAIT (TGraalAni.cpp:419-442),
-and each animation step defaults to one tick (TGraalAniStep.cpp:5). Playback
-therefore remains one 0.05-second tick per frame regardless of stored WAIT.
+The reference parser has no WAIT branch
+(Preagonal/FourPlay/quattroplay/src/TGr*Ani.cpp:419-445); every step lasts
+one tick (TGr*AniStep.cpp:10, read at TGaniObject.cpp:3207). Playback is one
+0.05-second tick per frame regardless of stored WAIT.
 """
 
 import os
@@ -64,6 +65,10 @@ class TestWaitParses:
 
 class TestWaitTiming:
     def test_wait_values_do_not_change_flat_cadence(self):
+        """A frame with WAIT n still lasts one tick.
+
+        Mutation: make `AnimationState.update` hold a frame for 1 + WAIT
+        ticks; frame 0 (WAIT 2) then stays after 0.05 s and this fails."""
         anim = _anim(_WAITING, "waiting")
         anim.update(0.049)
         assert anim.frame == 0

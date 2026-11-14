@@ -412,6 +412,8 @@ def spawn_pygserver(fixtures: Path) -> Optional[_Server]:
         "startlevel = onlinestartlocal.nw\n"
         "startx = 30\nstarty = 30.5\n"
         "staff = testbot1,testbot2\n"
+        # omitted, these two withhold links and signs from the client
+        "clientsidelinks = true\nclientsidesigns = true\n"
     )
     log = workdir / "server.log"
     env = dict(os.environ)

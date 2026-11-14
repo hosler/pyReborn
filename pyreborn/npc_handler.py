@@ -22,7 +22,10 @@ import math
 import os
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
+from reborn_protocol.coords import segment_origin
 from reborn_protocol.gs1.values import to_num
+
+from .gmap_coords import fold, grid_of, world_from_wire
 
 # NPC-touch probe points: the reference client's `touchtestd` table verbatim
 # (TPlayer::touchNPCs probes touchtestd[dir] and touchtestd[dir+4] each
@@ -74,6 +77,47 @@ def mark_npc_character(npc_data: dict, character: bool) -> None:
         npc_data['is_character'] = True
     else:
         npc_data.pop('is_character', None)
+
+
+# -- An NPC's gmap cell and world position ------------------------------------
+#
+# The reference client keeps each server NPC's map cell in its own mapX/mapY
+# and its position in a level-local x/y that it never wraps or reinterprets;
+# the world position is always ``(mapX << 6) + local`` (FourPlay
+# quattroplay/src/TServerNPC.cpp:330). This client stores that cell in the
+# NPC's 'gmaplevelx'/'gmaplevely' keys, the same keys props 41/42 write.
+
+def is_map_name(name) -> bool:
+    """Whether a level name names a gmap file. The reference client picks
+    the map owner for a ``.gmap`` extension (TClient.cpp:3777-3784)."""
+    return isinstance(name, str) and fold(name).endswith('.gmap')
+
+
+def npc_cell(grid, npc) -> Optional[Tuple[int, int]]:
+    """The NPC's map cell: its stored cell, else the cell of the segment its
+    level names, else None (a plain level, or a grid not loaded yet)."""
+    gx, gy = npc.get('gmaplevelx'), npc.get('gmaplevely')
+    if gx is not None and gy is not None:
+        return gx, gy
+    return grid_of(grid, npc.get('_level'))
+
+
+def place_npc(grid, npc) -> None:
+    """Set world_x/world_y from the NPC's local x/y and its cell (local +
+    cell * 64). With no grid loaded the local position stands for world
+    until `load_gmap` re-places every NPC. With a grid but no cell (the
+    NPC's level is no segment) the world pair is left as it is."""
+    cell = npc_cell(grid, npc)
+    if cell is not None and grid:
+        ox, oy = segment_origin(*cell)
+    elif not grid:
+        ox = oy = 0
+    else:
+        return
+    if 'x' in npc:
+        npc['world_x'] = world_from_wire(npc['x'], ox)
+    if 'y' in npc:
+        npc['world_y'] = world_from_wire(npc['y'], oy)
 
 
 @dataclass

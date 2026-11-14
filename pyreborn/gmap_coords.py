@@ -20,11 +20,15 @@ Rules, with their reference:
   reference server's ``string_map::insert`` keeps the first entry
   (GServer-v2 server/src/level/Map.cpp:65). `load_gmap` fills the grid in
   that same order, so dict iteration order is file order.
-* The match is exact by default. Both references compare lower-cased names.
-  This client keeps level names in the spelling the server sent and compares
-  them exactly everywhere else (`in_gmap_segment`, the warp handlers), so the
-  library stays exact until those change together. ``casefold=True`` is the
-  reference comparison. The QA harness uses it.
+* The match is case-insensitive. The reference server lower-cases every
+  name it puts in the grid (GServer-v2 server/src/level/Map.cpp:67-68, :154,
+  :193, :337) and the reference client lower-cases the name it looks up
+  (FourPlay quattroplay/src/unsorted.cpp:1014-1020, TClient.cpp:1281-1282,
+  :1354). The grid keeps the spelling the .gmap file used, because that
+  spelling goes back to the server (`request_level`); only the COMPARISON
+  folds (`fold`: ASCII `lower()`, as the references do, not `casefold()`).
+  `in_grid`, `same_level` and `get_ci` are the same comparison for a name, a
+  pair of names and a dict keyed by level name.
 * A level that is not a segment (an interior, an unknown name, or no gmap at
   all) has no cell. Position conversions then leave the value unchanged,
   because that level's local frame IS the client's frame.
@@ -47,39 +51,90 @@ Cell = Tuple[int, int]
 Grid = Mapping[Cell, str]
 
 __all__ = [
-    'Cell', 'Grid', 'grid_of', 'grid_index', 'level_at', 'level_origin',
-    'origin_at', 'world_from_local', 'local_from_world', 'world_from_wire',
-    'position_is_local',
+    'Cell', 'Grid', 'fold', 'same_level', 'in_grid', 'get_ci', 'has_level', 'grid_of',
+    'grid_index', 'LevelIndex', 'level_at', 'level_origin', 'origin_at', 'world_from_local',
+    'local_from_world', 'world_from_wire', 'position_is_local',
 ]
 
+_MISSING = object()
 
-def _key(name, casefold: bool):
-    if casefold and isinstance(name, str):
-        return name.casefold()
-    return name
+
+def fold(name):
+    """The comparison key of a level name: ASCII lower case. A value that is
+    not a string is returned as it is."""
+    return name.lower() if isinstance(name, str) else name
+
+
+def same_level(a, b) -> bool:
+    """Whether two level names are one level, whatever their case."""
+    return fold(a) == fold(b)
+
+
+def in_grid(grid: Optional[Grid], level) -> bool:
+    """Whether `level` names a segment of `grid` (False when there is no grid
+    or no name)."""
+    if not grid or not level:
+        return False
+    wanted = fold(level)
+    return any(fold(name) == wanted for name in grid.values())
+
+
+def get_ci(mapping, name, default=None):
+    """`mapping[name]` for a dict keyed by level name: the exact spelling
+    first, else the first key that folds to the same name."""
+    if name in mapping:
+        return mapping[name]
+    wanted = fold(name)
+    for key, value in mapping.items():
+        if fold(key) == wanted:
+            return value
+    return default
+
+
+def has_level(mapping, name) -> bool:
+    """`name in mapping`, ignoring case (see `get_ci`)."""
+    return get_ci(mapping, name, _MISSING) is not _MISSING
 
 
 def grid_of(grid: Optional[Grid], level, *,
-            casefold: bool = False) -> Optional[Cell]:
+            casefold: bool = True) -> Optional[Cell]:
     """Grid cell of segment `level`: its first cell, or None when `level` is
-    empty or not a segment of `grid` (including no gmap loaded)."""
+    empty or not a segment of `grid` (including no gmap loaded). Case is
+    ignored unless `casefold` is False."""
     if not grid or not level:
         return None
-    wanted = _key(level, casefold)
+    wanted = fold(level) if casefold else level
     for cell, name in grid.items():
-        if _key(name, casefold) == wanted:
+        if (fold(name) if casefold else name) == wanted:
             return cell
     return None
 
 
+class LevelIndex(dict):
+    """A name -> cell dict that ignores the case of the name it is asked
+    about: its keys are stored folded, and `get`, `[]` and `in` fold the
+    probe. Iteration yields the folded names."""
+
+    def __getitem__(self, name):
+        return dict.__getitem__(self, fold(name))
+
+    def get(self, name, default=None):
+        return dict.get(self, fold(name), default)
+
+    def __contains__(self, name):
+        return dict.__contains__(self, fold(name))
+
+
 def grid_index(grid: Optional[Grid], *,
-               casefold: bool = False) -> Dict[str, Cell]:
+               casefold: bool = True) -> Dict[str, Cell]:
     """Level name -> cell for every segment, first cell winning like
-    `grid_of`. For callers that resolve many names per pass (a frame's
-    entity collection); a single lookup should call `grid_of`."""
-    index: Dict[str, Cell] = {}
+    `grid_of`. The result ignores the case of the name it is asked about
+    (`LevelIndex`) unless `casefold` is False. For callers that resolve many
+    names per pass (a frame's entity collection); a single lookup should call
+    `grid_of`."""
+    index: Dict[str, Cell] = LevelIndex() if casefold else {}
     for cell, name in (grid or {}).items():
-        index.setdefault(_key(name, casefold), cell)
+        index.setdefault(fold(name) if casefold else name, cell)
     return index
 
 
@@ -125,16 +180,17 @@ def local_from_world(grid: Optional[Grid], level, x: float,
 
 
 def world_from_wire(raw: float, origin: float) -> float:
-    """One axis of an NPC wire position, tolerating either frame.
+    """One axis of a wire position: the level-local `raw` plus the segment
+    `origin`.
 
-    A value inside 0..63 is taken as level-local and gets the segment
-    `origin` added. A value at or past LEVEL_SIZE, or below 0, is taken as
-    already world and passed through. That keeps a re-run idempotent
-    (`_update_npc_world_coords` after the grid reloads) and accepted servers
-    that sent NPC X2/Y2 in the world frame. Players do NOT use this: their
-    X2/Y2 are always level-local (see handlers/entities.py)."""
-    if raw >= LEVEL_SIZE or raw < 0:
-        return raw
+    NPC X/Y and X2/Y2 are always level-local: the reference server keeps
+    them in the NPC's local pixel position and sends its cell separately in
+    GMAPLEVELX/Y (GServer-v2 server/include/object/NPC.h:668-669, :702-703).
+    The reference client adds ``mapX << 6`` to the local value it stores,
+    whatever its size (FourPlay quattroplay/src/TServerNPC.cpp:330), so a
+    value outside 0..63 is a position just past the segment's edge, never a
+    world value. Callers recompute from the stored local value, so a re-run
+    does not add the origin twice."""
     return raw + origin
 
 

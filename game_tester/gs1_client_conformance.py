@@ -1231,7 +1231,9 @@ def _spawn_server(fixtures: Path):
         "noverifylogin = true\n"
         "startlevel = onlinestartlocal.nw\n"
         "startx = 30\nstarty = 30.5\n"
-        "staff = testbot1\n")
+        "staff = testbot1\n"
+        # omitted, these two withhold links and signs from the client
+        "clientsidelinks = true\nclientsidesigns = true\n")
     log = workdir / "server.log"
     env = dict(os.environ)
     env["PYGSERVER_QA"] = "1"

@@ -470,6 +470,8 @@ class GameClient(
         self._low_hearts_next_beep = 0.0
         self._dbg = False                  # start() reads PYREBORN_DEBUG
         self._was_dead = False
+        # Local nick grace counter (TPlayer.cpp:785); see `_local_nick_visible`.
+        self.nick_grace_ticks = self._NICK_START_GRACE_TICKS
         self._frame_ctx = None
         self._swamp_pos = None
         self._swamp_slot = None
@@ -703,6 +705,9 @@ class GameClient(
                     # The Client's own tick: NPC moves, items, sword, arrows,
                     # bombs, hideplayer, explosions, the emoticon counter.
                     self.client.run_tick()
+                    # TPlayer.cpp:7250: counted down once per tick, not below -1.
+                    if self.nick_grace_ticks >= 0:
+                        self.nick_grace_ticks -= 1
                     # Load + run NPCs that streamed in after startup (slow
                     # server).
                     self._load_new_npcs()
@@ -713,6 +718,9 @@ class GameClient(
                         # We respawned! Reset animation to idle
                         self.player_anim.set_animation("idle", self.client.player.direction)
                         self._was_dead = False
+                        # The restart after death is loadStartLevel
+                        # (TPlayer.cpp:2166, :5636): the nick grace re-arms.
+                        self.nick_grace_ticks = self._NICK_START_GRACE_TICKS
                     self._was_dead = self.client.player.hearts <= 0
                     # One gani step for every animation, then bombs, arrows,
                     # flying objects, thrown objects and the pushaway nudge.

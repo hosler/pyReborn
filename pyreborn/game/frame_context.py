@@ -1,9 +1,8 @@
 """FrameContext — the per-frame scratch the render passes hand each other.
 
-The entity pass produces data that later passes consume: nameplate rectangles
-(so two players on one tile stagger their labels), additive light draws that
-must land *after* the ambient tint, and the light footprints that tint can
-erase. That used to live in ``_frame_*`` attributes on the GameClient, which
+The entity pass produces data that later passes consume: additive light draws
+that must land *after* the ambient tint, and the light footprints that tint
+can erase. That used to live in ``_frame_*`` attributes on the GameClient, which
 made EntityRenderMixin and EffectsRenderMixin one indivisible unit whose output
 depended on the order render.py happened to call them in. Here the same data is
 one object, created per frame by render.py's `_render_scene` and passed into
@@ -37,8 +36,6 @@ class FrameContext:
     level_to_grid: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     segment_offset: Tuple[float, float] = (0.0, 0.0)
     npc_positions: Dict[int, Tuple[float, float]] = field(default_factory=dict)
-    # (rect,) nameplates already placed, in placement order.
-    nameplate_rects: List[Any] = field(default_factory=list)
     # (eraser_mask, screen_x, screen_y) drawaslight footprints the ambient
     # tint may punch out of itself.
     light_sources: List[Tuple[Any, float, float]] = field(default_factory=list)
@@ -87,9 +84,7 @@ class FrameContextMixin(GameHost):
     def _frame_context(self) -> FrameContext:
         """The frame in progress, or an idle context for callers outside the
         render loop (harnesses, unit tests driving one renderer). The idle
-        context is remembered rather than rebuilt per call, so nameplate
-        staggering still accumulates across such calls the way the old
-        lazily-created ``_frame_nameplate_rects`` list did."""
+        context is remembered rather than rebuilt per call."""
         ctx = self._frame_ctx
         if ctx is None:
             ctx = self._frame_ctx = FrameContext(

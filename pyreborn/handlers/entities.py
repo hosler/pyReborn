@@ -6,7 +6,7 @@ baddies, and ground items.
 
 from reborn_protocol.coords import local_to_world, segment_origin
 
-from ..gmap_coords import grid_of, level_origin, origin_at, world_from_wire
+from ..gmap_coords import grid_of, in_grid, level_origin, origin_at
 
 from ..packets import (
     PacketID,
@@ -27,7 +27,8 @@ from ..packets import (
 from reborn_protocol import PLPROP, PLSTATUS
 
 from ..client_callbacks import emit
-from ..npc_handler import CHARACTER_IMAGE, mark_npc_character
+from ..npc_handler import (CHARACTER_IMAGE, is_map_name, mark_npc_character,
+                           npc_cell, place_npc)
 from .registry import STOP, handles
 from ..colors_width import colors_width_policy
 from ..attachments import (apply_attachment_props, update_attachments,
@@ -297,62 +298,19 @@ def handle_npc_props(client, data):
     props = _parse_colors_stream(parse_npc_props, client, data)
     if props and 'id' in props:
         npc_id = props['id']
-        # Associate the NPC with a level. Preference order:
-        #   1. GMAPLEVELX/GMAPLEVELY props (41/42) -> gmap segment.
-        #      gs2emu streams a gmap's NPCs under PLO_SETACTIVELEVEL
-        #      <map>.gmap (the whole gmap is one level server-side,
-        #      PlayerClient.cpp sendDynamicLevelData), so the pending
-        #      level name is the .gmap - useless for placement. The
-        #      grid cell carried in the props is the real attribution.
-        #   2. The level this (already-known) NPC was previously
-        #      attributed to - a partial runtime update without level
-        #      info must not re-stamp it with whatever level happened
-        #      to stream last (e.g. a stale neighbour-preload name).
-        #   3. The pending/current level (fresh NPC on a plain level).
-        npc_level = client._pending_level_name or client._current_level_name
-        grid_cell = None
-        gx = props.get('gmaplevelx')
-        gy = props.get('gmaplevely')
-        if gx is not None and gy is not None and (gx, gy) in client.gmap_grid:
-            grid_cell = (gx, gy)
-            npc_level = client.gmap_grid[grid_cell]
-        else:
-            known = client.npcs.get(npc_id)
-            if (known is not None and known.get('_level')
-                    and gx is None and gy is None):
-                npc_level = known['_level']
-            grid_cell = grid_of(client.gmap_grid, npc_level)
+        npc_level, cell = _npc_level_and_cell(client, npc_id, props)
         props['_level'] = npc_level
-
-        # Convert NPC local coords to world coords if in GMAP.
-        # parse_npc_props writes both NPCPROP.X/Y (props 2/3,
-        # always LEVEL-LOCAL) and NPCPROP.X2/Y2 (props 75/76,
-        # pixel-precision - LOCAL on this server, but WORLD per the
-        # general protocol on a real GServer-v2) into the same
-        # 'x'/'y' keys. Blindly adding the segment offset here
-        # double-counts it whenever 'x'/'y' is already a world
-        # value: seen live as an NPC's world_x/world_y reading
-        # exactly +64,+64 past its true position for one update,
-        # then reverting. Guard the same way as the OTHERPLPROPS
-        # merge (BUG 1): only fold in the segment offset for a
-        # value that's still in the local 0-63 range.
-        if grid_cell is not None:
-            seg_ox, seg_oy = segment_origin(*grid_cell)
-            if 'x' in props:
-                props['world_x'] = world_from_wire(props['x'], seg_ox)
-            if 'y' in props:
-                props['world_y'] = world_from_wire(props['y'], seg_oy)
-        elif not client.gmap_grid:
-            # Not in GMAP - local coords are world coords
-            if 'x' in props:
-                props['world_x'] = props['x']
-            if 'y' in props:
-                props['world_y'] = props['y']
+        if cell is not None:
+            props['gmaplevelx'], props['gmaplevely'] = cell
         if npc_id in client.npcs:
             if 'x' in props or 'y' in props:
                 client.npcs[npc_id].pop('_move_queue', None)
             client.npcs[npc_id].update(props)
+            # A cell change moves the NPC even when its local x/y did not
+            # change, so both axes are placed from the merged record.
+            place_npc(client.gmap_grid, client.npcs[npc_id])
         else:
+            place_npc(client.gmap_grid, props)
             # First sighting of this NPC (not an in-play movement
             # update of an already-known one) - mark it so the
             # renderer snaps its visual position rather than lerping
@@ -375,6 +333,74 @@ def handle_npc_props(client, data):
             # here; the client pulls each one (PLI_UPDATECLASS). A present but
             # empty list replaces the old one; an absent prop changes nothing.
             host.npc_classes(npc_id, props['classes'])
+
+
+def _npc_level_and_cell(client, npc_id, props):
+    """The level and map cell an NPC props packet leaves the NPC in.
+
+    The reference client's rule:
+
+    * A new NPC joins the active NPC level, the last PLO_SETACTIVELEVEL
+      (TClient.cpp:2894-2922). A ``.gmap`` name makes the map its owner
+      (TClient.cpp:3777-3784) and the NPC keeps its own cell, which starts at
+      (0, 0) (TServerNPC.cpp:316-319, TLevelObject.cpp:28-31); the reference
+      server sends GMAPLEVELX/Y only when the cell is not (0, 0)
+      (GServer-v2 server/src/object/NPC.cpp:146-150). A segment name makes
+      that segment the owner and the NPC copies the segment's cell
+      (TServerNPC.cpp:321-324, the segment's cell from
+      TServerLevel.cpp:945-946).
+    * Props 41/42 then set the cell one axis at a time
+      (TServerNPC.cpp:1271-1282): a packet with only GMAPLEVELX keeps the
+      other axis. The reference server sends only the axis that changed
+      when an NPC crosses a seam (GServer-v2 server/src/object/NPC.cpp:458-467).
+    * A known NPC keeps the level and cell it has, then takes the props.
+      The reference client does the same for ids below 1000, but moves a
+      known NPC with an id of 1000 or more into the active NPC level on
+      every props packet (TClient.cpp:2950-2951). That part is not done
+      here: pygserver sends the live updates of an NPC that walked onto a
+      neighbouring segment to the players it left behind with no
+      PLO_SETACTIVELEVEL, so the reference rule would move the NPC into
+      their segment's cell, 64 tiles from where it is. Against the reference
+      server the two rules agree: every NPC of a gmap is owned by the gmap,
+      so the move is to the level it is already in.
+
+    The level is the grid's segment at the cell when there is one. A
+    ``.gmap`` name is never kept as the level: the NPC falls back to its
+    known level, else the player's level, until the grid is loaded and
+    `_update_npc_world_coords` places it again.
+    """
+    grid = client.gmap_grid
+    active = client._pending_level_name or client._current_level_name
+    known = client.npcs.get(npc_id)
+    if known is None:
+        level = active
+        base = grid_of(grid, active)
+        if base is None and is_map_name(active):
+            base = (0, 0)
+    else:
+        level = known.get('_level') or active
+        base = npc_cell(grid, known)
+        if base is None and is_map_name(level):
+            # A map-owned NPC that never had a cell stamped (the reference
+            # loader stamps only gmap-loaded NPCs, LevelLoader.cpp:386-392;
+            # an unchanged value is not sent, NPC.cpp:1458-1462) re-joins the
+            # map at cell (0, 0) (TServerNPC.cpp:316-319,
+            # TLevelObject.cpp:28-31).
+            base = (0, 0)
+    gx, gy = props.get('gmaplevelx'), props.get('gmaplevely')
+    if base is None and gx is None and gy is None:
+        return level, None
+    bx, by = base if base is not None else (0, 0)
+    cell = (bx if gx is None else gx, by if gy is None else gy)
+    segment = grid.get(cell) if grid else None
+    if segment is not None:
+        return segment, cell
+    if is_map_name(level):
+        fallback = known.get('_level') if known is not None else None
+        if not fallback or is_map_name(fallback):
+            fallback = client._current_level_name or level
+        level = fallback
+    return level, cell
 
 
 @handles(PacketID.PLO_SHOWIMGNPC)
@@ -440,6 +466,14 @@ def _drop_npc_bytecode(client, npc_id):
     client.gs2_bytecode['npc'].pop(npc_id, None)
 
 
+def _purge_cached_npc(client, npc_id, level=None):
+    """Drop `npc_id` from the per-level NPC cache: from every bucket, or
+    only from `level`'s when one is given."""
+    for name, bucket in client._npc_cache.items():
+        if level is None or name == level:
+            bucket.pop(npc_id, None)
+
+
 @handles(PLO_NPCDEL)
 def handle_npc_del(client, data):
     # NPC deleted
@@ -450,11 +484,10 @@ def handle_npc_del(client, data):
         delete_npc_attachments(client, npc_id)
         _drop_npc_bytecode(client, npc_id)
         npc = client.npcs.pop(npc_id, None)
+        # The reference deletes by id from the global NPC table
+        # (TClient.cpp:5171-5175, 2795-2799), so no level's cache keeps it.
+        _purge_cached_npc(client, npc_id)
         if npc is not None:
-            level = npc.get('_level')
-            cached = client._npc_cache.get(level) if level else None
-            if cached is not None:
-                cached.pop(npc_id, None)
             emit(client, 'on_npc_del', npc_id)
 
 
@@ -473,9 +506,14 @@ def handle_npc_del2(client, data):
     if npc_id in client.npcs:
         del client.npcs[npc_id]
         emit(client, 'on_npc_del', npc_id)
-    cached = client._npc_cache.get(level)
-    if cached is not None:
-        cached.pop(npc_id, None)
+    # The reference deletes from the named level's roster only
+    # (TClient.cpp:2802-2811, :5233-5250). A map owns every NPC placed in it,
+    # and this client files those under the map's segments, so a map or
+    # segment name purges every bucket; a plain level purges its own.
+    if is_map_name(level) or in_grid(client.gmap_grid, level):
+        _purge_cached_npc(client, npc_id)
+    else:
+        _purge_cached_npc(client, npc_id, level)
 
 
 @handles(PacketID.PLO_OTHERPLPROPS)
@@ -616,8 +654,18 @@ def handle_npc_moved(client, data):
         npc['visible'] = bool(level) and bool(npc.get('visflags', 1) & 1)
         if level:
             npc['x'], npc['y'] = info['x'], info['y']
-        ox, oy = level_origin(client.gmap_grid, level)
-        if level:
+            # Joining a plain level copies that level's cell: a segment's
+            # own, (0, 0) for any other (TServerNPC.cpp:321-324,
+            # TServerLevel.cpp:945-946, :959-960). What a .gmap name here
+            # does to the cell is not established; the NPC keeps its own.
+            cell = grid_of(client.gmap_grid, level)
+            if cell is not None:
+                npc['gmaplevelx'], npc['gmaplevely'] = cell
+            elif not is_map_name(level):
+                npc.pop('gmaplevelx', None)
+                npc.pop('gmaplevely', None)
+            cell = npc_cell(client.gmap_grid, npc)
+            ox, oy = segment_origin(*cell) if cell is not None else (0, 0)
             npc['world_x'], npc['world_y'] = info['x'] + ox, info['y'] + oy
         npc.pop('_move_queue', None)
         client._mark_npc_pos_snap(npc)

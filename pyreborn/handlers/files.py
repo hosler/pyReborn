@@ -19,6 +19,7 @@ from ..packets import (
     parse_large_file_size,
 )
 from ..client_callbacks import emit
+from ..gmap_coords import fold
 from .registry import handles
 from ..logutil import log_swallowed
 
@@ -78,7 +79,8 @@ def adopt_gmap(client, filename: str, blob: bytes) -> bool:
     # belongs to. The bytes stay in the download cache; clearing the request
     # marker lets the next announcement of this gmap request it again.
     current = getattr(client, '_current_level_name', '') or ''
-    if current and current != filename and current not in _gmap_segments(text):
+    if (current and current != filename
+            and fold(current) not in {fold(n) for n in _gmap_segments(text)}):
         logger.info("ignoring %s: current level %s is not one of its segments",
                     filename, current)
         if getattr(client, '_requested_gmap', '') == filename:

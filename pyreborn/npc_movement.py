@@ -2,7 +2,9 @@
 
 import math
 
-from .gmap_coords import level_origin
+from reborn_protocol.coords import segment_origin
+
+from .npc_handler import npc_cell
 
 from .attachments import update_attachments
 from .gs1_client.objects import _write_npc_attr
@@ -42,7 +44,10 @@ def queue_moves(client, info):
                 move['remaining'] *= factor
         queue.append(move)
     if was_empty:
-        ox, oy = level_origin(client.gmap_grid, npc.get('_level'))
+        # PLO_MOVE/MOVE2 positions are local to the NPC's cell, which a
+        # move never changes (TClient.cpp:5202-5230).
+        cell = npc_cell(client.gmap_grid, npc)
+        ox, oy = segment_origin(*cell) if cell is not None else (0, 0)
         npc.setdefault('world_x', npc.get('x', 0) + ox)
         npc.setdefault('world_y', npc.get('y', 0) + oy)
         _position(npc, queue[0]['x'], queue[0]['y'])

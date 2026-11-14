@@ -71,6 +71,5 @@ def test_default_factories_build_the_call_site_types():
     assert PARTICLE_CACHE_CAP == 400
     assert cache.prefetched_gani_names == set()
     assert cache.baddy_sheets == {}
-    assert cache.nameplate_grid is None
     # Two instances never share a container.
     assert RenderCache().baddy_sheets is not cache.baddy_sheets

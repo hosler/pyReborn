@@ -128,9 +128,9 @@ class Gani:
         frame_count = self.get_frame_count(direction)
         if frame_count == 0:
             return 0
-        # Canonical decompiled playback parses no WAIT directive
-        # (TGraalAni.cpp:419-442); TGraalAniStep.cpp:5 defaults every step to
-        # one tick. Keep parsed WAIT metadata, but never apply it to timing.
+        # One tick per frame: the reference parses no WAIT and every step lasts 1
+        # (Preagonal/FourPlay/quattroplay/src/TGr*Ani.cpp:419-445, TGr*AniStep.cpp:10,
+        # read at TGaniObject.cpp:3207).
         frame_index = int(max(0.0, elapsed) / AnimationState.FRAME_DURATION)
         if self.loops:
             return frame_index % frame_count
@@ -740,8 +740,7 @@ class AnimationState:
         if frame_count == 0:
             return sounds
 
-        # Advance all frames at the canonical flat 20fps cadence. Parsed WAIT
-        # values are metadata only; frame_index_at documents the oracle.
+        # One tick per frame, WAIT ignored (see frame_index_at).
         while self.frame_time >= self.FRAME_DURATION:
             self.frame_time -= self.FRAME_DURATION
             old_frame = self.frame

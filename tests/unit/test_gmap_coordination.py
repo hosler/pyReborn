@@ -11,9 +11,11 @@ findings (chicken.gmap, segment (1,1) = chicken1.nw):
    PLO_LEVELNAME + PLO_BOARDPACKET for a neighbour, no PLO_PLAYERWARP2)
    used to unconditionally overwrite self.tiles, so the ACTIVE render/
    collision board flip-flopped to whichever neighbour last streamed.
-4. NPC world-coord double-offset - PLO_NPCPROPS' X2/Y2 (75/76) can carry an
-   already-world value on a real GServer-v2. Adding the segment offset on
-   top of that double-counted it.
+4. NPC world coords - PLO_NPCPROPS' X2/Y2 (75/76) are always local to the
+   NPC's cell (GServer-v2 NPC.h:702-703), including a value past the
+   segment edge; the segment offset is added once, from the stored local
+   value, so a re-run cannot add it twice. (This item first assumed the
+   reference server sent world X2/Y2; it does not.)
 
 See pyReborn/pyreborn/client.py's PLO_OTHERPLPROPS/PLO_BOARDPACKET/
 PLO_NPCPROPS handlers and _sword_hit_players for the fixes.
@@ -298,7 +300,7 @@ class TestBoardAttributionStaysOnCurrentSegment:
 
 
 # =============================================================================
-# BUG 4 - NPC world-coord double-offset
+# BUG 4 - NPC world coords: local plus the cell origin, exactly once
 # =============================================================================
 
 class TestNpcWorldCoordDoubleOffsetGuard:
@@ -313,24 +315,25 @@ class TestNpcWorldCoordDoubleOffsetGuard:
         assert npc['world_x'] == 20.0 + 64
         assert npc['world_y'] == 30.0 + 64
 
-    def test_already_world_npc_coords_are_not_double_offset(self):
-        """A real-GServer-v2 style NPCPROPS where X2/Y2 (75/76) already
-        carries a world value must not get the segment offset added again."""
+    def test_npc_x2_past_the_edge_is_local(self):
+        """X2/Y2 (75/76) past the segment edge are still local to the NPC's
+        segment: grid (1, 1) local (84, 94) is world (148, 158). Mutation:
+        restore the "outside 0..63 is world" pass-through in world_from_wire
+        and this reads (84, 94)."""
         c = _client_with_grid()
         c._current_level_name = "chicken1.nw"  # grid (1, 1)
         c._pending_level_name = "chicken1.nw"
-        # 84.0/94.0 is already world (grid (1,1) local (20, 30) + 64).
         c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
             42, _pixel_pos(75, 84.0), _pixel_pos(76, 94.0)))
         npc = c.npcs[42]
-        assert npc['world_x'] == 84.0
-        assert npc['world_y'] == 94.0
+        assert npc['world_x'] == 148.0
+        assert npc['world_y'] == 158.0
 
     def test_update_npc_world_coords_rerun_does_not_double_offset(self):
         """_update_npc_world_coords() (called again e.g. on gmap grid
-        reload) must be idempotent for an NPC whose 'x' is already world."""
+        reload) must be idempotent: world comes from the stored local x/y."""
         c = _client_with_grid()
-        c.npcs[42] = {'id': 42, '_level': 'chicken1.nw', 'x': 84.0, 'y': 94.0}
+        c.npcs[42] = {'id': 42, '_level': 'chicken1.nw', 'x': 20.0, 'y': 30.0}
         c._update_npc_world_coords()
         c._update_npc_world_coords()
         assert c.npcs[42]['world_x'] == 84.0

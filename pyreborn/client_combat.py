@@ -22,7 +22,7 @@ from .constants import (
     PLAYER_COLLISION_BOTTOM, PLAYER_COLLISION_LEFT,
     PLAYER_COLLISION_RIGHT, PLAYER_COLLISION_TOP,
 )
-from .gmap_coords import level_origin
+from .gmap_coords import fold, get_ci, level_origin, same_level
 from .packets import PacketID, build_baddy_props, build_sword_attack
 from .sword import SwordState, npc_probe, owns_spin
 from .arrowflight import overlaps_player, shield_blocks, arrow_damage
@@ -167,8 +167,8 @@ class CombatMixin:
         level = self.get_current_level_from_position()
         if not level:
             return None
-        board = self.levels.get(level)
-        if board is None and self._tiles_level_name == level:
+        board = get_ci(self.levels, level)
+        if board is None and same_level(self._tiles_level_name, level):
             board = self.tiles
         if board is None or len(board) < 4096:
             return None
@@ -382,11 +382,12 @@ class CombatMixin:
             return
         if now is None:
             now = self.clock.sim_now()
-        live_levels = {self._current_level_name, self._pending_level_name}
+        live_levels = {fold(self._current_level_name),
+                       fold(self._pending_level_name)}
         if self.in_gmap_segment:
-            live_levels.update(self.gmap_grid.values())
+            live_levels.update(fold(name) for name in self.gmap_grid.values())
         for record in list(self._bomb_records()):
-            if record['level'] not in live_levels:
+            if fold(record['level']) not in live_levels:
                 # The reference frees a level's bombs when the player leaves.
                 self._drop_bomb_record(record)
                 continue
