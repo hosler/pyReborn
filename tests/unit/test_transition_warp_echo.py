@@ -1,7 +1,8 @@
 """A level change we announced must not be un-done by the server's echo.
 
-Both a GMAP seam crossing (`Client.enter_gmap_segment`) and a door/script warp
-(`Client.warp_to_level`) tell the server where we went with PLI_LEVELWARP. One
+A door/script warp (`Client.warp_to_level`) tells the server where we went
+with PLI_LEVELWARP. (A GMAP seam crossing inside the loaded gmap sends props
+and no warp, so nothing echoes it.) One
 round trip later the server replies with PLO_PLAYERWARP/PLAYERWARP2 carrying
 those same coordinates, re-quantised to half-tiles. Adopting them rewinds the
 player by whatever they walked during the round trip.
@@ -72,40 +73,45 @@ def _gmap_client():
     return client
 
 
-def test_seam_echo_does_not_rewind_the_player():
+def test_a_seam_hop_expects_no_echo():
+    """A seam crossing inside the loaded gmap sends props, not a warp, so the
+    server sends no PLO_PLAYERWARP2 for it and none is absorbed: one that does
+    arrive is a genuine server reposition and moves the player.
+    Mutation: record a warp echo for the hop (note_client_warp in the hop
+    path) and the later reposition is swallowed, so this fails."""
     client = _gmap_client()
 
     # Cross west -> east, then keep walking for the length of a round trip.
     assert client.move(1, 0, step=0.5)
     assert client._current_level_name == "east.nw"
+    assert not [1 for pid, _ in client._protocol.sent
+                if pid in (PacketID.PLI_LEVELWARP, PacketID.PLI_LEVELWARPMOD)]
     for _ in range(4):
         client.move(1, 0, step=0.5)
-    walked_to = (client.player.x, client.player.y)
-    assert walked_to[0] > 64.0
 
-    # The server's acknowledgement replays the crossing coordinates.
-    client._handle_packet(PacketID.PLO_PLAYERWARP2,
-                          _warp2(0.0, 20.0, 1, 0, "world.gmap"))
-
-    assert (client.player.x, client.player.y) == walked_to
-    # The bookkeeping in the packet is still adopted.
-    assert (client._gmap_spawn_x, client._gmap_spawn_y) == (1, 0)
-    assert client._current_level_name == "east.nw"
-
-
-def test_seam_echo_is_one_shot():
-    """Only the acknowledgement is absorbed. A later reposition still moves
-    the player, so a server-side unstick/script warp is never swallowed."""
-    client = _gmap_client()
-    assert client.move(1, 0, step=0.5)
-    client.move(1, 0, step=0.5)
-
-    client._handle_packet(PacketID.PLO_PLAYERWARP2,
-                          _warp2(0.0, 20.0, 1, 0, "world.gmap"))
     client._handle_packet(PacketID.PLO_PLAYERWARP2,
                           _warp2(40.0, 12.0, 1, 0, "world.gmap"))
 
     assert (client.player.x, client.player.y) == (64 + 40.0, 12.0)
+    assert (client._gmap_spawn_x, client._gmap_spawn_y) == (1, 0)
+    assert client._current_level_name == "east.nw"
+
+
+def test_door_echo_is_one_shot():
+    """Only the acknowledgement is absorbed. A later reposition still moves
+    the player, so a server-side unstick/script warp is never swallowed."""
+    client = _client(level="house.nw", x=30.5, y=37.5)
+    client.levels["outside.nw"] = [3] * 4096
+    assert client.warp_to_level("outside.nw", 22.5, 33.0)
+    client.player.y = 36.5
+
+    client._handle_packet(PacketID.PLO_PLAYERWARP,
+                          _warp(22.5, 33.0, "outside.nw"))
+    assert (client.player.x, client.player.y) == (22.5, 36.5)
+    client._handle_packet(PacketID.PLO_PLAYERWARP,
+                          _warp(40.0, 12.0, "outside.nw"))
+
+    assert (client.player.x, client.player.y) == (40.0, 12.0)
 
 
 def test_unannounced_server_warp_still_teleports():

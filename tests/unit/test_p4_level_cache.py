@@ -18,7 +18,11 @@ Mutations (each fails the named assertion):
   * make handle_level_board (id 0) call handle_board_packet on empty data
     -> test_an_empty_level_board_keeps_the_cached_level (levels unchanged)
   * drop ``and not same_map`` in _send_level_warp (``if level_name in self.levels:``)
-    -> test_a_hop_inside_the_loaded_gmap_sends_the_plain_warp
+    -> test_a_warp_to_the_level_we_stand_in_on_the_gmap_stays_a_plain_warp
+  * make warp_to_level send a warp for a hop inside the loaded gmap
+    -> test_a_hop_inside_the_loaded_gmap_sends_props_and_no_warp
+  * make _is_gmap_hop true for a level outside the grid
+    -> test_a_warp_out_of_the_loaded_gmap_is_still_a_warp
   * drop the ``_restore_cached_layers`` call in warp_to_level
     -> test_extra_layers_survive_leaving_and_returning
   * key handle_level_mod_time on ``client.active_level`` again (drop
@@ -156,13 +160,41 @@ def test_extra_layers_survive_leaving_and_returning(make_client):
     assert client.board_layers == {1: b"layer-one"}
 
 
-def test_a_hop_inside_the_loaded_gmap_sends_the_plain_warp(make_client):
+def test_a_hop_inside_the_loaded_gmap_sends_props_and_no_warp(make_client):
+    """A held neighbour that is a cell of the loaded gmap: the reference sends
+    no warp (TClient.cpp:1354-1358), only the position in the new cell's
+    frame and the changed GMAPLEVELX (fixture_a is cell (0, 0), fixture_b is
+    (1, 0)). Mutation: send the plain or the mod-time warp and this fails."""
+    from offline_game import sent_player_props
     client = make_client(gmap=True)
     assert "fixture_b.nw" in client.levels          # preloaded neighbour
     client._protocol.sent.clear()
     assert client.warp_to_level("fixture_b.nw", 10.0, 12.0)
+    assert not _packets(client, PacketID.PLI_LEVELWARP)
+    assert not _packets(client, PacketID.PLI_LEVELWARPMOD)
+    (pairs,) = sent_player_props(client._protocol.sent)
+    props = dict(pairs)
+    assert (props[78], props[79]) == (10.0, 12.0)
+    assert props[43] == 1 and 44 not in props
+
+
+def test_a_warp_to_the_level_we_stand_in_on_the_gmap_stays_a_plain_warp(make_client):
+    """Not a hop: the reference's same-level branch is unclear, so it keeps
+    the plain warp."""
+    client = make_client(gmap=True)
+    client._protocol.sent.clear()
+    assert client.warp_to_level("fixture_a.nw", 10.0, 12.0)
     assert len(_packets(client, PacketID.PLI_LEVELWARP)) == 1
     assert not _packets(client, PacketID.PLI_LEVELWARPMOD)
+
+
+def test_a_warp_out_of_the_loaded_gmap_is_still_a_warp(make_client):
+    """A level that is no cell of the gmap is warped to, never hopped to."""
+    client = make_client(gmap=True, extra_levels={"elsewhere.nw": None})
+    client._protocol.sent.clear()
+    assert client.warp_to_level("elsewhere.nw", 10.0, 12.0)
+    assert len(_packets(client, PacketID.PLI_LEVELWARP)) == 1
+    assert not _packets(client, PacketID.PLI_PLAYERPROPS)
 
 
 def test_a_resent_board_clears_the_live_layers_of_its_level(make_client):

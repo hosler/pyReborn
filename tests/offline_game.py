@@ -368,6 +368,24 @@ def _props(table, props: Dict[str, Any]) -> bytes:
                     for pid, payload in sorted(pairs))
 
 
+def sent_player_props(sent) -> List[List[Tuple[int, Any]]]:
+    """Every PLI_PLAYERPROPS the client sent (``client._protocol.sent``) as a
+    list of ``(prop id, decoded value)`` pairs in wire order, one list per
+    packet. For tests that pin which props went out and in what order."""
+    from reborn_protocol.props import decode_value
+    out = []
+    for packet_id, data in sent:
+        if packet_id != PacketID.PLI_PLAYERPROPS:
+            continue
+        pairs, pos = [], 0
+        while pos < len(data):
+            prop_id = data[pos] - 32
+            value, pos = decode_value(PLAYER_PROPS[prop_id], data, pos + 1)
+            pairs.append((prop_id, value))
+        out.append(pairs)
+    return out
+
+
 def _default_tiles(tx: int, ty: int) -> int:
     if tx in (0, 63) or ty in (0, 63):
         return 2
@@ -574,7 +592,7 @@ def _new_player(server, player_id: int, account: str):
 
 async def _build_server(world: ServerWorld, *, levels: Dict[str, Any],
                         gmap: bool, start: str, player_xy, hearts: float,
-                        me: Dict[str, Any], npcs, chests, items, players,
+                        me: Dict[str, Any], npcs, chests, preplaced_items, players,
                         baddies, signs, links, options, weapons=()) -> None:
     from pygserver.baddy import BaddyManager
     from pygserver.combat import CombatManager
@@ -583,7 +601,6 @@ async def _build_server(world: ServerWorld, *, levels: Dict[str, Any],
     from pygserver.horse import HorseManager
     from pygserver.items import ItemManager
     from pygserver.level import Level
-    from pygserver.protocol.constants import LevelItemType
     from pygserver.server import GameServer
     from pygserver.world import GMap
 
@@ -623,15 +640,20 @@ async def _build_server(world: ServerWorld, *, levels: Dict[str, Any],
     if gmap:
         server.world.add_gmap(GMap.load(str(world_dir / GMAP_NAME)))
 
-    start_level = server.world.get_level(start)
     for x, y, opened in chests:
         if opened:
             for chest in server.item_manager.get_chests_on_level(start):
                 if (chest.x, chest.y) == (x, y):
                     chest.opened_by.add(ACCOUNT)
-    for x, y, item in items:
-        await server.item_manager.spawn_item(start_level, x, y,
-                                             LevelItemType(item))
+    # Items that exist BEFORE we log in. The reference server sends no level
+    # item to a player who enters, so none may reach the client's stream
+    # (a revert would restore ItemManager.send_level_items in
+    # pygserver/items.py, the loop that sent build_item_add per level item on
+    # entry; test_an_item_present_before_login_is_not_sent_on_entry catches it).
+    from pygserver.protocol.constants import LevelItemType
+    for x, y, item in preplaced_items:
+        await server.item_manager.spawn_item(
+            server.world.get_level(start), x, y, LevelItemType(item))
     by_name = {d.name.lower(): d for d in NPC_PROPS.values()}
     for spec in npcs:
         spec = dict(spec)
@@ -725,13 +747,32 @@ async def _peers_chat(world: "ServerWorld") -> None:
                                                {"curchat": peer._fixture_chat}))
 
 
-def _send_events(client, bombs, arrows) -> None:
-    """What happens after we arrive: other players talk, drop bombs and
-    shoot. Sent once the game exists, because the game learns of a relayed
-    bomb or arrow through the client callbacks it wires at construction."""
+def _spawn_items(world, items, level_name: str) -> None:
+    """Create the ground items while we are in the level, so the server sends
+    the item-add packet then. The reference server never sends a level's items
+    to a player who enters (GServer-v2 Level.cpp addItem is the only item-add
+    sender besides a player's own drop), so an item that exists before we
+    arrive would never reach the client."""
+    from pygserver.protocol.constants import LevelItemType
+
+    async def _spawn(w):
+        level = w.server.world.get_level(level_name)
+        for x, y, item in items:
+            await w.server.item_manager.spawn_item(level, x, y,
+                                                   LevelItemType(item))
+    if items:
+        world.run(_spawn)
+
+
+def _send_events(client, bombs, arrows, items=(), level_name="") -> None:
+    """What happens after we arrive: other players talk, ground items are
+    created, bombs drop and arrows fly. Sent once the game exists, because the
+    game learns of a relayed bomb or arrow (or a new item) through the client
+    callbacks it wires at construction."""
     from pygserver.protocol.packets import build_arrow_add, build_bomb_add
     world = client.server
     world.run(_peers_chat)
+    _spawn_items(world, list(items), level_name)
     for x, y in bombs:
         # Owner 77, power 1 from a player (bit 3), 20 ticks of fuse.
         world.send(build_bomb_add(77, x, y, 1 | 8, 20))
@@ -752,6 +793,7 @@ def build_client(*,
                  npcs: Iterable[Dict[str, Any]] = (),
                  chests: Iterable[Tuple[int, int, bool]] = (),
                  items: Iterable[Tuple[float, float, int]] = (),
+                 preplaced_items: Iterable[Tuple[float, float, int]] = (),
                  players: Iterable[Dict[str, Any]] = (),
                  baddies: Iterable[Dict[str, Any]] = (),
                  bombs: Iterable[Tuple[float, float]] = (),
@@ -776,7 +818,10 @@ def build_client(*,
     extra_levels        ``{name: tiles fn or None}`` more levels to warp to.
     npcs                specs (see IMAGE_NPC / GANI_NPC / NAMED_NPC).
     chests              ``(x, y, opened)``; opened = already opened by us.
-    items               ``(x, y, item id)`` ground items.
+    items               ``(x, y, item id)`` ground items, created after we
+                        arrive (the server sends no item on entry).
+    preplaced_items     same shape, created BEFORE we log in: a test that the
+                        server sends none of them on entry.
     players             other players ``{"id", "x", "y", ...}``; the rest are
                         PLAYER_PROPS names their client sends (``curchat``
                         is said after we arrive).
@@ -826,13 +871,15 @@ def build_client(*,
             world.run(lambda w: _build_server(
                 w, levels=levels, gmap=gmap, start=start,
                 player_xy=player_xy, hearts=hearts, me=me or {},
-                npcs=npcs, chests=chests, items=items, players=players,
+                npcs=npcs, chests=chests, preplaced_items=list(preplaced_items),
+                players=players,
                 baddies=baddies, signs=signs, links=links,
                 options=server_options or {}, weapons=list(weapons)))
             if defer_events:
-                client._fixture_events = (list(bombs), list(arrows))
+                client._fixture_events = (list(bombs), list(arrows),
+                                          list(items), start)
             else:
-                _send_events(client, bombs, arrows)
+                _send_events(client, bombs, arrows, list(items), start)
         except BaseException:
             world.close()
             raise
@@ -908,7 +955,8 @@ def build_game(*, flying: Iterable[Tuple[float, float, int, int]] = (),
         with _running(game):
             game.start()
     with _running(game):
-        _send_events(client, *client._fixture_events)
+        bombs, arrows, items, start_level = client._fixture_events
+        _send_events(client, bombs, arrows, items, start_level)
     return game
 
 

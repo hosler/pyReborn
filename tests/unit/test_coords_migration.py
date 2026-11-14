@@ -103,7 +103,7 @@ class TestCurrentLevelFromPosition:
 class TestMoveSeamCrossing:
     def test_crossing_a_seam_announces_the_new_segment(self):
         """A step from world x=63.9 to 64.15 crosses grid (0,1) -> (1,1), so
-        move() must re-home us on chicken1.nw."""
+        move() must follow into chicken1.nw."""
         c = _gmap_client()
         c._current_level_name = "chicken2.nw"
         c.player.x, c.player.y = 63.9, 70.0
@@ -118,18 +118,23 @@ class TestMoveSeamCrossing:
         assert c._current_level_name == "chicken1.nw"
 
     def test_seam_crossing_sends_local_coords_not_world(self):
-        """The LEVELWARP that announces the crossing carries local (0-63)
-        coords: world 64.15 -> local 0.15, encoded as a gchar half-tile."""
+        """The crossing step carries local (0-63) coords of the NEW segment,
+        never world ones: world 64.15 -> local 0.15 (one pixel-prop step of
+        1/16 tile, so 0.125), next to the GMAPLEVELX that changed, and no
+        warp. Mutation: send the world coords (64.125) or the PLI_LEVELWARP
+        and this fails."""
+        from offline_game import sent_player_props
         c = _gmap_client()
+        c._use_pixel_props = True
         c._current_level_name = "chicken2.nw"
         c.player.x, c.player.y = 63.9, 70.0
         c.move(1, 0, step=0.25)
-        warps = [d for pid, d in c._protocol.sent
-                 if pid == PacketID.PLI_LEVELWARP]
-        assert len(warps) == 1
-        # build_level_warp: byte = int(coord*2) + 32
-        assert warps[0][0] == int(0.15 * 2) + 32
-        assert warps[0][1] == int(6.0 * 2) + 32
+        assert not [d for pid, d in c._protocol.sent
+                    if pid == PacketID.PLI_LEVELWARP]
+        (pairs,) = sent_player_props(c._protocol.sent)
+        props = dict(pairs)
+        assert (props[78], props[79]) == (0.125, 6.0)
+        assert props[43] == 1 and 44 not in props
 
 
 # =============================================================================

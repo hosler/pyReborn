@@ -193,10 +193,29 @@ def _t1b(game, c1, c2):
     other_entries_before = {k: v for k, v in segments.items() if k != level_name}
 
     tx, ty = int(c1.x) % 60 + 1, int(c1.y) % 60 + 1
-    new_tile = 5
+    original = c2.get_tile(tx, ty)
+    new_tile = 5 if original != 5 else 6
     c2.modify_board(tx, ty, 1, 1, [new_tile])
-    _pump(game, 6)
+    try:
+        _pump(game, 6)
+        _t1b_patched_in_place(game, level_name, tx, ty, new_tile, surface_before,
+                              other_entries_before)
+    finally:
+        # Put the tile back. A 1x1 board change never respawns on the server
+        # (GServer-v2 Level.cpp:1665-1666: only a 2x2 change does), so the
+        # painted tile would stay in the server's copy of the shared fixture
+        # level until the server stops. It lands one tile south-east of
+        # testbot1, on the open ground around the spawn. Tile 5 is blocking:
+        # at (31, 33) a later base run on the same server fails
+        # collision_detection (no step south from (30, 30)) and
+        # chest_interaction (the chest bot cannot leave (30, 30.5)).
+        c2.modify_board(tx, ty, 1, 1, [original])
+        _pump(game, 6)
 
+
+def _t1b_patched_in_place(game, level_name, tx, ty, new_tile, surface_before,
+                          other_entries_before):
+    segments = game._segments()
     entry_after = segments.get(level_name)
     assert entry_after is not None and entry_after['surface'] is surface_before, \
         "expected an in-place patch (Tier 1b), got a full segment rebuild"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
+from reborn_protocol import PLPROP
 from reborn_protocol.coords import segment_at, segment_origin, world_to_local
 from reborn_protocol.props import PLAYER_PROPS, payload_len
 
@@ -108,10 +109,10 @@ class MovementMixin:
         elif home_grid is not None:
             # Local to the segment the server still homes us in, unwrapped,
             # like the reference client's getlocalx() (world - (mapX << 6)).
-            # The step that crosses a seam is sent as e.g. 64.0 or -0.5 on
-            # the old segment, and the PLI_LEVELWARP below re-homes us.
-            # Wrapping it to 0.0 on the OLD segment showed us a whole
-            # segment back to everyone else until that warp landed.
+            # A step that crosses a seam INTO another segment of the loaded
+            # gmap is not sent this way: it goes out below as a map hop in the
+            # new segment's own frame. A step off the grid's edge keeps the
+            # unwrapped form (64.0 or -0.5 on the old segment).
             origin_x, origin_y = segment_origin(*home_grid)
             local_x, local_y = new_x - origin_x, new_y - origin_y
         else:
@@ -120,36 +121,90 @@ class MovementMixin:
         # props (78/79); classic servers only understand X/Y (15/16).
         data = build_movement(local_x, local_y, direction,
                               use_new_format=self._use_pixel_props)
-        if self._send_position_props(data):
+        hop = (crossing_boundary and new_level_name
+               and not sends_attachment(self)
+               and self._is_gmap_hop(self._current_level_name, new_level_name))
+        if hop:
+            sent = self._send_gmap_hop(self._current_level_name,
+                                       new_level_name,
+                                       *world_to_local(new_x, new_y),
+                                       direction)
+        else:
+            sent = self._send_position_props(data)
+        if sent:
             # Update local state
             self.player.x = new_x
             self.player.y = new_y
             self.player.direction = direction
             self._note_position_sent()
 
-            # If crossing GMAP boundary, send a level warp to notify server
-            if crossing_boundary and new_level_name:
+            # Crossing into another segment of the gmap: the hop props above
+            # told the server; follow it locally.
+            if hop:
+                self._arrive_in_gmap_segment(new_level_name)
+            # Crossing out of the grid's known cells: a level warp re-homes us.
+            elif crossing_boundary and new_level_name:
                 self.enter_gmap_segment(new_level_name, *world_to_local(new_x, new_y))
 
             return True
 
         return False
 
-    def enter_gmap_segment(self, level_name: str, local_x: float,
-                           local_y: float) -> bool:
-        """Tell the server we walked into gmap segment `level_name`.
+    # -- gmap hops ----------------------------------------------------------
+    #
+    # The reference client sends no warp when it walks into a neighbouring
+    # level of the gmap it has loaded: it tests the target against the map's
+    # level-name list (TClient.cpp:1354-1358, the list is built from the .gmap
+    # file, TServerLevel.cpp:2112-2132), enters the level locally, and its
+    # next property packet carries the changed GMAPLEVELX / GMAPLEVELY
+    # (TPlayer.cpp:7794-7811) plus the position in the new level's frame, all
+    # in ascending prop id order (TPlayer.cpp:2462-2468). The server learns
+    # the hop from those props (GServer-v2 PlayerProps.cpp:906-973).
 
-        A seam crossing is NOT a warp: no level-state reset, no roster drop —
-        just PLI_LEVELWARP so the server re-homes us, plus a request for the
-        newly-adjacent segments. Factored out of move_to() so scripted
-        movement (which never calls move_to. See
-        ActionsMixin._check_scripted_gmap_segment) announces crossings the
-        exact same way."""
-        if not self.connected or not self._authenticated:
-            return False
-        if not self._send_level_warp(local_x, local_y, level_name,
-                                     same_map=True):
-            return False
+    def _is_gmap_hop(self, from_level: str, to_level: str) -> bool:
+        """True when both levels are cells of the loaded gmap, differ, and we
+        hold the target's board. The reference falls back to a plain warp
+        when the target is not held locally (no loaded level and no cached
+        file with a mod time, TClient.cpp:1323-1347), because a hop sends no
+        level data back; the same test applies to a walked seam and to a
+        door or script."""
+        return (from_level != to_level
+                and to_level in self.levels
+                and grid_of(self.gmap_grid, from_level) is not None
+                and grid_of(self.gmap_grid, to_level) is not None)
+
+    def _send_gmap_hop(self, from_level: str, to_level: str, local_x: float,
+                       local_y: float, direction: int) -> bool:
+        """Send the props of a hop from `from_level` into `to_level`: the
+        position in `to_level`'s frame and the GMAPLEVELX/Y that changed.
+
+        The cell comes from the level NAME, first grid match (`grid_of`), not
+        from the position: the reference sends setMapX(serverLevel->mapX)
+        (TPlayer.cpp:465-490, 7794-7811) and a level's mapX is its first match
+        in the map's name list (TServerLevel::updateMapPos, TServerLevel.cpp:
+        930-960, TStringList indexOf). A gmap that lists one name in two cells
+        therefore always reports the first."""
+        old = grid_of(self.gmap_grid, from_level)
+        new = grid_of(self.gmap_grid, to_level)
+        data = build_movement(local_x, local_y, direction,
+                              use_new_format=self._use_pixel_props)
+        props = {}
+        pos = 0
+        while pos < len(data):
+            pid = data[pos] - 32
+            end = pos + 1 + payload_len(PLAYER_PROPS[pid], data, pos + 1)
+            props[pid] = data[pos + 1:end]
+            pos = end
+        if new[0] != old[0]:
+            props[int(PLPROP.GMAPLEVELX)] = bytes([new[0] + 32])
+        if new[1] != old[1]:
+            props[int(PLPROP.GMAPLEVELY)] = bytes([new[1] + 32])
+        return self._send_position_props(b''.join(
+            bytes([pid + 32]) + props[pid] for pid in sorted(props)))
+
+    def _arrive_in_gmap_segment(self, level_name: str) -> None:
+        """Local state after walking into segment `level_name`: no level
+        reset, no roster drop, no warp echo to expect (none was sent)."""
         self._current_level_name = level_name
         # Point the ACTIVE board at the segment we just walked into. The
         # neighbour's board is already in self.levels (preloaded by
@@ -162,8 +217,36 @@ class MovementMixin:
         if cached_board:
             self.tiles = cached_board
             self._tiles_level_name = level_name
-        self.note_client_warp(level_name)
         self.request_adjacent_levels()
+
+    def enter_gmap_segment(self, level_name: str, local_x: float,
+                           local_y: float) -> bool:
+        """Tell the server we walked into gmap segment `level_name`.
+
+        A seam crossing is NOT a warp: no level-state reset, no roster drop.
+        Inside the loaded gmap it sends only our props (see _send_gmap_hop),
+        like the reference client, and no warp. From outside the grid's known
+        cells (the current level is no cell, or `level_name` is not one) it
+        is the PLI_LEVELWARP that re-homes us. Either way the newly-adjacent
+        segments are requested. Factored out of move() so scripted movement
+        (which never calls move_to. See
+        ActionsMixin._check_scripted_gmap_segment) announces crossings the
+        exact same way."""
+        if not self.connected or not self._authenticated:
+            return False
+        if self._is_gmap_hop(self._current_level_name, level_name):
+            if not self._send_gmap_hop(self._current_level_name, level_name,
+                                       local_x, local_y,
+                                       self.player.direction):
+                return False
+            self._note_position_sent()
+            self._arrive_in_gmap_segment(level_name)
+            return True
+        if not self._send_level_warp(local_x, local_y, level_name,
+                                     same_map=True):
+            return False
+        self._arrive_in_gmap_segment(level_name)
+        self.note_client_warp(level_name)
         return True
 
     def send_position(self) -> bool:
@@ -218,7 +301,7 @@ class MovementMixin:
             props, hold['props'] = hold['props'], {}
             if props:
                 original(PacketID.PLI_PLAYERPROPS, b''.join(
-                    bytes([pid + 32]) + payload for pid, payload in props.items()))
+                    bytes([pid + 32]) + props[pid] for pid in sorted(props)))
 
         def send_packet(packet_id, *args, **kwargs):
             if int(packet_id) not in _ORDER_FREE_PACKETS:

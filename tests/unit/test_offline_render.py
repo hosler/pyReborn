@@ -1007,9 +1007,34 @@ def _prop_ids(table, data, pos=0):
     return ids
 
 
+def test_an_item_present_before_login_is_not_sent_on_entry(make_client):
+    """The reference server never sends a level's ground items to a player
+    who enters (GServer-v2 Level.cpp:2430 is the only level-item send, at
+    creation). The item exists in the in-process world BEFORE the login, so
+    the recorded entry stream must hold no PLO_ITEMADD and the client no item.
+
+    Falsifiable: if pygserver restored `ItemManager.send_level_items`
+    (pygserver/items.py, the per-item build_item_add loop on level entry) the
+    stream would carry the packet and both assertions fail. The `items=` knob
+    cannot test that, because it creates its item after login."""
+    client = make_client(preplaced_items=[(14.0, 14.0, 0)])
+    held = []
+
+    async def server_items(world):
+        held.extend(world.server.item_manager.get_items_on_level(
+            world.me.level.name))
+    client.server.run(server_items)
+    assert len(held) == 1                                 # it is in the world
+    ids = [packet_id for packet_id, _ in client._protocol.received]
+    assert PacketID.PLO_LEVELNAME in ids                  # we did enter
+    assert PacketID.PLO_ITEMADD not in ids
+    assert not any(client.items.values())
+
+
 def test_fixture_stream_is_what_pygserver_sends(make_client):
     """The packets reach the client in pygserver's own order and shapes,
-    because pygserver produced them: the gmap entry order, our login props
+    because pygserver produced them: the gmap entry order (warp, level send,
+    mod time, NPC delta, and no item on entry), our login props
     (no position, the gear in its biased form), other players' X2/Y2 with
     the gmap and its grid cell, and the NPC position/sprite props."""
     from reborn_protocol.props import NPC_PROPS, PLAYER_PROPS
@@ -1024,14 +1049,27 @@ def test_fixture_stream_is_what_pygserver_sends(make_client):
     seg = GMAP_SEGMENTS[1].encode()
     entry = ids.index(PacketID.PLO_LEVELNAME)
     assert names[0][1] == seg
-    assert ids[entry:entry + 3] == [PacketID.PLO_LEVELNAME, PacketID.PLO_RAWDATA,
-                                    PacketID.PLO_BOARDPACKET]
+    # A login is a server warp: PLAYERWARP2 first, then the full level send
+    # (server-spec.md 1.7: LEVELNAME(sub), the empty LEVELBOARD of a first
+    # load, the board, signs, LEVELMODTIME, LEVELNAME(gmap)), then the delta
+    # block (NPCs between SETACTIVELEVELs, then the player exchange).
+    assert ids[entry:entry + 4] == [
+        PacketID.PLO_LEVELNAME, PacketID.PLO_LEVELBOARD,
+        PacketID.PLO_RAWDATA, PacketID.PLO_BOARDPACKET]
     warp = ids.index(PacketID.PLO_PLAYERWARP2)
     gmap_name = next(i for i, (pid, data) in enumerate(stream)
                      if pid == PacketID.PLO_LEVELNAME and data == GMAP_NAME.encode())
-    first_entity = min(ids.index(p) for p in (
-        PacketID.PLO_LEVELSIGN, PacketID.PLO_NPCPROPS, PacketID.PLO_ITEMADD))
-    assert entry < warp < gmap_name < first_entity
+    sign = ids.index(PacketID.PLO_LEVELSIGN)
+    modtime = ids.index(PacketID.PLO_LEVELMODTIME)
+    npc = ids.index(PacketID.PLO_NPCPROPS)
+    assert warp < entry < ids.index(PacketID.PLO_BOARDPACKET) < sign
+    assert sign < modtime < gmap_name < npc
+    # The server sends no ground item to a player who enters: the add packet
+    # comes when the item is created, after the whole entry (GServer-v2
+    # Level.cpp:2430 is the only level-item send).
+    assert ids.count(PacketID.PLO_ITEMADD) == 1
+    assert ids.index(PacketID.PLO_ITEMADD) > max(
+        i for i, pid in enumerate(ids[:-1]) if pid == PacketID.PLO_OTHERPLPROPS)
 
     own = [data for pid, data in stream if pid == PacketID.PLO_PLAYERPROPS][0]
     own_ids = set(_prop_ids(PLAYER_PROPS, own))

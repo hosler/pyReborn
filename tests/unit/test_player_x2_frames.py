@@ -172,29 +172,45 @@ class TestOwnPlayerEdgeLocals:
         assert (c.player.x, c.player.y) == (30.5, 40.0)
 
 
-class TestSeamStepEncodesHomeSegmentLocal:
-    """The step that crosses a seam goes out local to the segment the server
-    still homes us in (64.0, -0.5), like the reference client's getlocalx();
-    wrapping it to the far edge of the OLD segment showed us a whole segment
-    away to everyone else until the PLI_LEVELWARP landed."""
+class TestSeamStepEncodesNewSegmentLocal:
+    """The step that crosses a seam into another cell of the loaded gmap goes
+    out as ONE property packet in the NEW cell's frame, with the changed
+    GMAPLEVELX/Y (43/44) after the sprite and before the position, ascending
+    by id, and no PLI_LEVELWARP. The reference client does exactly that: it
+    enters the level locally (TClient.cpp:1354-1382), its map cell setters
+    flag the two props (TPlayer.cpp:7794-7811), and the next packet carries
+    them with getlocalx()/y() measured from the new cell
+    (TPlayer.cpp:2457-2468, :3336-3339, updateMapPosImpl :465-490).
 
-    @pytest.mark.parametrize("start, step, expect, level", [
-        ((127.5, 96.0), (1, 0), (64.0, 32.0), "chicken7.nw"),
-        ((64.0, 96.0), (-1, 0), (-0.5, 32.0), "chicken2.nw"),
-        ((96.0, 127.5), (0, 1), (32.0, 64.0), "chicken9.nw"),
-        ((96.0, 64.0), (0, -1), (32.0, -0.5), "chicken5.nw"),
+    Mutation: send the step in the OLD cell's frame (64.0 / -0.5) again, or
+    drop the GMAPLEVELX/Y props, or send the PLI_LEVELWARP, and each row
+    fails."""
+
+    @pytest.mark.parametrize("start, step, expect, grid_prop, level", [
+        ((127.5, 96.0), (1, 0), (0.0, 32.0), (43, 2), "chicken7.nw"),
+        ((64.0, 96.0), (-1, 0), (63.5, 32.0), (43, 0), "chicken2.nw"),
+        ((96.0, 127.5), (0, 1), (32.0, 0.0), (44, 2), "chicken9.nw"),
+        ((96.0, 64.0), (0, -1), (32.0, 63.5), (44, 0), "chicken5.nw"),
     ])
-    def test_crossing_step(self, start, step, expect, level):
-        from pyreborn.packets import parse_player_props
+    def test_crossing_step(self, start, step, expect, grid_prop, level):
+        from offline_game import sent_player_props
         c = _client()
+        # A hop needs the target held (TClient.cpp:1323-1347 warps otherwise).
+        c.levels[level] = [0] * 4096
         c.player.x, c.player.y = start
         c._use_pixel_props = True
         assert c.move(*step, step=0.5)
         sent = c._protocol.sent
-        props_packets = [d for pid, d in sent if pid == int(PacketID.PLI_PLAYERPROPS)]
-        sent_props = parse_player_props(props_packets[0])
-        assert (sent_props['x'], sent_props['y']) == expect
-        assert int(PacketID.PLI_LEVELWARP) in [pid for pid, _ in sent]
+        assert int(PacketID.PLI_LEVELWARP) not in [pid for pid, _ in sent]
+        assert int(PacketID.PLI_LEVELWARPMOD) not in [pid for pid, _ in sent]
+        (pairs,) = sent_player_props(sent)       # exactly one props packet
+        ids = [prop for prop, _ in pairs]
+        assert ids == sorted(ids)
+        props = dict(pairs)
+        # Only the axis that changed is sent.
+        assert {k: v for k, v in props.items() if k in (43, 44)} == \
+            {grid_prop[0]: grid_prop[1]}
+        assert (props[78], props[79]) == expect
         assert c._current_level_name == level
 
     def test_in_segment_step_is_plain_local(self):

@@ -922,6 +922,20 @@ PLI_TOALL = 24           # Send chat
 PLI_LEVELWARP = 29       # Warp request
 ```
 
+A move between two levels of the loaded gmap sends NO warp (the reference
+client tests the target against the map's level-name grid, TClient.cpp:1354-1358):
+`Client._send_gmap_hop` sends one PLI_PLAYERPROPS with the position in the new
+level's frame and the changed GMAPLEVELX/Y (43/44), ascending by id. The cell
+is the level name's FIRST grid match, not the position (TPlayer.cpp:465-490,
+TServerLevel.cpp:930-960). A hop needs the target's board in `levels`: the
+reference falls back to a plain warp for a level it does not hold
+(TClient.cpp:1323-1347), for a walked seam and a door or script alike. A warp
+also stays for entering a gmap from outside, leaving it, a level that is no cell
+of the grid and a warp to the level we stand in. A hop records no warp echo,
+resets no level state (items and baddies stay, TPlayer::enterServerLevel keeps
+them) and ends in `_arrive_in_gmap_segment` (board re-point, adjacent levels)
+whether walked or by door.
+
 ## Client callbacks
 
 `client.on_x = fn` is still how an app installs its hook (a slot holds one
@@ -1249,7 +1263,7 @@ death state, one gani step and the combat objects; then held-key movement
 (`clock.script_dt`; timeouts fire below 0.0001 left); then a script's warp,
 the link checks and level change. It sends at most ONE position packet
 (`Client.movement_batch`): `move()`/`send_position()` build their packet when
-called (frame, seam crossing and its PLI_LEVELWARP, attachment), the batch
+called (frame, seam crossing and its hop props, attachment), the batch
 only holds the finished props and merges them, any other packet sends them
 first, and a warp ends the tick's movement. Never make a flush re-read the
 player.

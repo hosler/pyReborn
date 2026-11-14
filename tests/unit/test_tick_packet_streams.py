@@ -91,12 +91,17 @@ def merge_positions(tick_packets):
 
 class Recorder:
     """Records sent packets per tick, with the level the server has us on
-    (replayed from our own LEVELWARPs, starting at the level we logged in to)."""
+    (replayed from our own LEVELWARPs and from the GMAPLEVELX/Y of our
+    property packets, as the server does, starting at the level we logged in
+    to)."""
 
     def __init__(self, game):
         self.game = game
         self.loopback = game.client._protocol
         self.level = game.client.current_level_name
+        self.grid = dict(game.client.gmap_grid)
+        self.cell = next((c for c, name in self.grid.items()
+                          if name == self.level), None)
         self.mark = len(self.loopback.sent)
         self.ticks = []
 
@@ -112,6 +117,15 @@ class Recorder:
             out.append(decode(pid, data, self.level))
             if pid == PacketID.PLI_LEVELWARP:
                 self.level = data[2:].decode("latin-1")
+                self.cell = next((c for c, name in self.grid.items()
+                                  if name == self.level), None)
+            elif pid == PacketID.PLI_PLAYERPROPS and self.cell is not None:
+                for name, value in _props(data):
+                    if name == "gmaplevelx":
+                        self.cell = (value, self.cell[1])
+                    elif name == "gmaplevely":
+                        self.cell = (self.cell[0], value)
+                self.level = self.grid.get(self.cell, self.level)
         return out
 
 
@@ -282,6 +296,14 @@ def dump():
 #     tick went out AFTER the PLI_LEVELWARP, as a position on the destination
 #     level (10.25, 12). A warp now ends the tick's movement (the reference
 #     tests links once per tick, after the whole step, TPlayer.cpp:7375-7379).
+#   seam_right, seam_left, seam_down, seam_up, scripted_seam: a crossing into
+#     another cell of the loaded gmap used to send the step in the old cell's
+#     frame (64.0, -0.25), a PLI_LEVELWARP, and the rest of the tick on the
+#     new level. It is now ONE property packet in the new cell's frame with
+#     the changed GMAPLEVELX/Y between the sprite and the position, and no
+#     warp (the reference client's hop: TClient.cpp:1354-1382,
+#     TPlayer.cpp:7794-7811, :2457-2468). The two half-tile steps of the
+#     crossing tick merge into that one packet (seam_left: 63.5, the second).
 #   scripted_seam: before, the script-position announce (GS2
 #     _sync_script_position) skipped every other tick (its float throttle);
 #     it now sends on every tick the position changed (ticks 1 and 3).
@@ -360,8 +382,7 @@ EXPECTED = {
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 63.25), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 63.5), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 63.75), ('y2', 30.0))],
-            [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 0.0), ('y2', 30.0)),
-             ('LEVELWARP', 0.0, 30.0, 'fixture_b.nw')],
+            [('PROPS', 'fixture_a.nw', ('sprite', 2), ('gmaplevelx', 1), ('x2', 0.0), ('y2', 30.0))],
         ]},
     'seam_down': {
         'end': (30.0, 64.5), 'level': 'fixture_c.nw',
@@ -369,8 +390,7 @@ EXPECTED = {
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 30.0), ('y2', 62.5))],
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 30.0), ('y2', 63.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 30.0), ('y2', 63.5))],
-            [('PROPS', 'fixture_a.nw', ('sprite', 2), ('x2', 30.0), ('y2', 64.0)),
-             ('LEVELWARP', 30.0, 0.0, 'fixture_c.nw')],
+            [('PROPS', 'fixture_a.nw', ('sprite', 2), ('gmaplevely', 1), ('x2', 30.0), ('y2', 0.0))],
             [('PROPS', 'fixture_c.nw', ('sprite', 2), ('x2', 30.0), ('y2', 0.5))],
         ]},
     'seam_left': {
@@ -378,9 +398,7 @@ EXPECTED = {
         'ticks': [
             [('PROPS', 'fixture_b.nw', ('sprite', 1), ('x2', 0.5), ('y2', 30.0))],
             [('PROPS', 'fixture_b.nw', ('sprite', 1), ('x2', 0.0), ('y2', 30.0))],
-            [('PROPS', 'fixture_b.nw', ('sprite', 1), ('x2', -0.25), ('y2', 30.0)),
-             ('LEVELWARP', 63.5, 30.0, 'fixture_a.nw'),
-             ('PROPS', 'fixture_a.nw', ('sprite', 1), ('x2', 63.5), ('y2', 30.0))],
+            [('PROPS', 'fixture_b.nw', ('sprite', 1), ('gmaplevelx', 0), ('x2', 63.5), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 1), ('x2', 63.0), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 1), ('x2', 62.5), ('y2', 30.0))],
         ]},
@@ -390,8 +408,7 @@ EXPECTED = {
             [('PROPS', 'fixture_a.nw', ('sprite', 3), ('x2', 62.5), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 3), ('x2', 63.0), ('y2', 30.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 3), ('x2', 63.5), ('y2', 30.0))],
-            [('PROPS', 'fixture_a.nw', ('sprite', 3), ('x2', 64.0), ('y2', 30.0)),
-             ('LEVELWARP', 0.0, 30.0, 'fixture_b.nw')],
+            [('PROPS', 'fixture_a.nw', ('sprite', 3), ('gmaplevelx', 1), ('x2', 0.0), ('y2', 30.0))],
             [('PROPS', 'fixture_b.nw', ('sprite', 3), ('x2', 0.5), ('y2', 30.0))],
         ]},
     'seam_up': {
@@ -399,9 +416,7 @@ EXPECTED = {
         'ticks': [
             [('PROPS', 'fixture_c.nw', ('sprite', 0), ('x2', 30.0), ('y2', 0.5))],
             [('PROPS', 'fixture_c.nw', ('sprite', 0), ('x2', 30.0), ('y2', 0.0))],
-            [('PROPS', 'fixture_c.nw', ('sprite', 0), ('x2', 30.0), ('y2', -0.25)),
-             ('LEVELWARP', 30.0, 63.5, 'fixture_a.nw'),
-             ('PROPS', 'fixture_a.nw', ('sprite', 0), ('x2', 30.0), ('y2', 63.5))],
+            [('PROPS', 'fixture_c.nw', ('sprite', 0), ('gmaplevely', 0), ('x2', 30.0), ('y2', 63.5))],
             [('PROPS', 'fixture_a.nw', ('sprite', 0), ('x2', 30.0), ('y2', 63.0))],
             [('PROPS', 'fixture_a.nw', ('sprite', 0), ('x2', 30.0), ('y2', 62.5))],
         ]},
@@ -478,10 +493,15 @@ def test_a_door_link_on_a_gmap_segment_sends_no_phantom_seam_crossing(
     assert result["client_level"] == result["server_level"] == "elsewhere.nw"
 
 
-def test_a_scripted_seam_crossing_sends_one_levelwarp(make_game, monkeypatch):
+def test_a_scripted_seam_crossing_sends_one_hop_and_no_warp(make_game,
+                                                           monkeypatch):
+    """Mutation: send a PLI_LEVELWARP for the crossing, or announce it twice,
+    and this fails."""
     result = _session(make_game, monkeypatch, "scripted_seam")
-    warps = [p for p in _all(result) if p[0] == "LEVELWARP"]
-    assert warps == [["LEVELWARP", 0.0, 30.0, "fixture_b.nw"]]
+    assert [p for p in _all(result) if p[0] == "LEVELWARP"] == []
+    hops = [p for p in _all(result)
+            if p[0] == "PROPS" and ["gmaplevelx", 1] in p[2:]]
+    assert len(hops) == 1
     assert result["client_level"] == result["server_level"] == "fixture_b.nw"
 
 
@@ -510,7 +530,12 @@ def test_a_script_move_in_the_tick_of_a_door_warp_is_sent_the_tick_after(
     scenario["setup"] = setup
     result = run_scenario(make_game, monkeypatch, scenario)
     warp_tick = result["ticks"][0]
-    assert warp_tick[-1][0] == "LEVELWARP"
+    # The door is a hop (fixture_d is a cell of the gmap): the tick ends with
+    # the props that carry it, not with a warp.
+    assert warp_tick[-1][0] == "PROPS"
+    assert ["gmaplevelx", 1] in warp_tick[-1][2:]
+    assert not [p for tick in result["ticks"] for p in tick
+                if p[0] == "LEVELWARP"]
     later = [p for tick in result["ticks"][1:] for p in tick]
     positions = [p for p in later if p[0] == "PROPS"]
     assert positions, "the script's position never reached the wire"

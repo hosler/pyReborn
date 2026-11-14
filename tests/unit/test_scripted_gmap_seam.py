@@ -41,14 +41,23 @@ def sent_ids(c):
     return [pid for pid, _ in c._protocol.sent]
 
 
-#: A seam crossing announces itself with the PLAIN level warp, even though the
-#: preloaded neighbour is held: the reference sends no warp for a hop inside
-#: its map, and a mod-time warp would make the server resend the board.
-WARPS = (PacketID.PLI_LEVELWARP,)
+#: A seam crossing announces itself with the changed GMAPLEVELX/Y in a
+#: property packet and NO warp: the reference sends no warp for a hop inside
+#: its map (TClient.cpp:1354-1358).
+WARPS = (PacketID.PLI_LEVELWARP, PacketID.PLI_LEVELWARPMOD)
+GMAPLEVELX, GMAPLEVELY = 43, 44
 
 
 def warped(c):
     return any(pid in WARPS for pid in sent_ids(c))
+
+
+def hopped(c):
+    """True when a property packet carried GMAPLEVELX or GMAPLEVELY."""
+    from offline_game import sent_player_props
+    return any(prop in (GMAPLEVELX, GMAPLEVELY)
+               for pairs in sent_player_props(c._protocol.sent)
+               for prop, _ in pairs)
 
 
 def test_staying_in_the_same_cell_announces_nothing(seam_game):
@@ -58,18 +67,20 @@ def test_staying_in_the_same_cell_announces_nothing(seam_game):
     c._protocol.sent.clear()
     c.player.x, c.player.y = 80.0, 90.0        # still cell (1, 1)
     h._check_scripted_link_warp()
-    assert not warped(c)
+    assert not warped(c) and not hopped(c)
     assert c._current_level_name == SPAWN
 
 
-def test_crossing_west_re_homes_us_in_the_new_segment(seam_game):
+def test_crossing_west_announces_the_hop_in_the_new_segment(seam_game):
+    """Mutation: send a PLI_LEVELWARP, or no GMAPLEVELX, and this fails."""
     c, h = seam_game()
     c.player.x, c.player.y = 70.0, 70.0
     h._check_scripted_link_warp()
     c._protocol.sent.clear()
     c.player.x, c.player.y = 60.0, 70.0        # cell (0, 1)
     h._check_scripted_link_warp()
-    assert warped(c)
+    assert hopped(c)
+    assert not warped(c)
     assert c._current_level_name == WEST
 
 
@@ -82,7 +93,7 @@ def test_unknown_cell_says_nothing_and_does_not_re_probe(seam_game):
     c._protocol.sent.clear()
     c.player.x, c.player.y = 700.0, 70.0       # cell (10, 1): no segment
     h._check_scripted_link_warp()
-    assert not warped(c)
+    assert not warped(c) and not hopped(c)
     assert c._current_level_name == SPAWN
     assert h.arrival.scripted_gmap_cell == (10, 1)
 
@@ -95,7 +106,7 @@ def test_default_movement_worlds_are_untouched(seam_game):
     c._protocol.sent.clear()
     c.player.x, c.player.y = 60.0, 70.0
     h._check_scripted_link_warp()
-    assert not warped(c)
+    assert not warped(c) and not hopped(c)
 
 
 def test_inside_a_house_local_coords_announce_nothing(seam_game):
@@ -115,7 +126,7 @@ def test_inside_a_house_local_coords_announce_nothing(seam_game):
     h._check_scripted_link_warp()
     c.player.x, c.player.y = 30.5, 37.5        # local step != segment (0,0)
     h._check_scripted_link_warp()
-    assert not warped(c)
+    assert not warped(c) and not hopped(c)
     assert c._current_level_name == "linkshouse.nw"
 
 
@@ -127,12 +138,12 @@ def test_non_gmap_worlds_are_untouched(make_game):
     c._protocol.sent.clear()
     c.player.x, c.player.y = 60.0, 70.0
     h._check_scripted_link_warp()
-    assert not warped(c)
+    assert not warped(c) and not hopped(c)
 
 
 def test_enter_gmap_segment_is_not_a_level_reset(seam_game):
-    """A seam hop keeps level state (unlike warp_to_level): the server just
-    re-homes us and streams the newly-adjacent segments."""
+    """A seam hop keeps level state (unlike warp_to_level): only our props go
+    out and the newly-adjacent segments are requested."""
     c, _ = seam_game(npcs=[IMAGE_NPC])
     before = dict(c.npcs)
     assert before

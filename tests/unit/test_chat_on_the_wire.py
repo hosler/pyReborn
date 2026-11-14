@@ -18,6 +18,7 @@ R, L, U, D = pygame.K_RIGHT, pygame.K_LEFT, pygame.K_UP, pygame.K_DOWN
 SPACE = pygame.K_SPACE
 LINK = "fixture_d.nw 32 28 2 4 10 12"
 CURCHAT = 12
+GMAPLEVELX, GMAPLEVELY = 43, 44
 
 
 def _text(length: int) -> str:
@@ -100,4 +101,10 @@ def test_every_chat_length_goes_out_whole(make_game, held, inside_tick):
     got = _chat_on_wire(loop.sent[mark:])
     assert got == expected
     pids = {pid for pid, _ in loop.sent[mark:]}
-    assert PacketID.PLI_LEVELWARP in pids, "the walk never reached the door"
+    # LINK leads to a cell of the loaded gmap (fixture_d.nw), and the
+    # reference client sends no warp for that: the door shows as a hop, the
+    # changed GMAPLEVELX/Y in a property packet.
+    hopped = {prop for pairs in offline_game.sent_player_props(loop.sent[mark:])
+              for prop, _ in pairs} & {GMAPLEVELX, GMAPLEVELY}
+    assert hopped, "the walk never reached the door"
+    assert PacketID.PLI_LEVELWARP not in pids

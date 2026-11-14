@@ -546,7 +546,6 @@ class ActionsMixin(ClockedMixin):
         self.arrival.scripted_gmap_cell = grid
         if not level or level == client.current_level_name:
             return False
-        client.send_position()
         return client.enter_gmap_segment(level, *world_to_local(client.x, client.y))
 
     def _stone_npcs_at(self, x, y):

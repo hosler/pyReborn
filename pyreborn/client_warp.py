@@ -92,15 +92,22 @@ class WarpMixin:
         # Snapshot the authoritative pre-warp state BEFORE the optimistic
         # flip below, so a PLO_WARPFAILED rejection can restore it.
         pre_warp_state = (self._current_level_name, self.player.x, self.player.y)
-        # Both ends inside the loaded gmap: a hop within one map (see
-        # _send_level_warp). Read before the grid is rebuilt or cleared below.
+        # Both ends inside the loaded gmap: a hop within one map, which the
+        # reference client sends as props and not as a warp (see
+        # _send_gmap_hop). Read before the grid is rebuilt or cleared below.
         map_segments = set(self.gmap_grid.values())
         same_map = (level_name in map_segments
                     and self._current_level_name in map_segments)
+        hop = self._is_gmap_hop(self._current_level_name, level_name)
         self._local_level_transition_direction = None
 
-        # Update local state
-        if level_name != self._current_level_name:
+        # Update local state. A hop keeps the level state like a walked hop
+        # does: the reference's hop path only enters the held level
+        # (TClient.cpp:1346-1357 -> TPlayer::enterServerLevel,
+        # TPlayer.cpp:918-960) and never clears items or baddies.
+        if hop:
+            pass
+        elif level_name != self._current_level_name:
             self._reset_level_state()
         elif self.gs2_host is not None:
             self.gs2_host.begin_level_visit()
@@ -159,8 +166,9 @@ class WarpMixin:
         # Restore any NPCs we cached for this level (and, for a gmap segment,
         # its sibling segments) on a previous visit. If the server re-streams
         # them, the fresh PLO_NPCPROPS just overwrites these.
-        self._restore_cached_npcs(level_name)
-        self._restore_cached_layers(level_name)
+        if not hop:
+            self._restore_cached_npcs(level_name)
+            self._restore_cached_layers(level_name)
 
         # Mark the warp as awaiting the server's authoritative confirmation.
         # We flipped _current_level_name above optimistically (for instant
@@ -179,13 +187,22 @@ class WarpMixin:
                     self._local_level_transition_direction = transition_direction
 
         # The LEVELWARP packet carries LOCAL coords within the target segment.
-        sent = self._send_level_warp(x, y, level_name, same_map)
+        if hop:
+            sent = self._send_gmap_hop(pre_warp_state[0], level_name, x, y,
+                                       self.player.direction)
+        else:
+            sent = self._send_level_warp(x, y, level_name, same_map)
         if not sent:
             self._restore_failed_warp("send_failed")
             return False
         # The warp ends this tick's movement (see Client.movement_batch).
         self.end_tick_movement()
-        self.note_client_warp(level_name)
+        if hop:
+            # Same local arrival as a walked hop; no warp was sent, so the
+            # server sends no echo to absorb.
+            self._arrive_in_gmap_segment(level_name)
+        else:
+            self.note_client_warp(level_name)
         # Everything the renderer needs may already be in hand: a destination
         # we've visited this session had its board re-pointed synchronously
         # above. Offer the release now instead of waiting for the server's
@@ -205,12 +222,11 @@ class WarpMixin:
         time, 0 included: an explicit 0 makes the server compare and resend
         the board, while the plain form lets it default to the level's own
         time and never resend. A level we do not hold is the plain PLI_LEVELWARP,
-        and so is a segment of the loaded gmap. The reference sends the
-        mod-time warp only when the current level's name list (filled from the
-        map's level-name lines) lacks the target; otherwise it enters the
-        level locally and sends no warp (TClient.cpp:1355-1363). pygserver
-        still needs a warp to re-home us, and a mod-time warp for a preloaded
-        neighbour would make it resend that board."""
+        and so is `same_map` (both ends inside the loaded gmap), which only
+        reaches here for a warp that is not a hop to another cell: the
+        reference sends no warp at all for a hop (see _send_gmap_hop), and for
+        a warp to the level we stand in it is unclear, so it stays the plain
+        warp that pygserver and gs2emu both accept."""
         mod_time = self.level_modtimes.get(level_name, 0)
         if level_name in self.levels and not same_map:
             return self._protocol.send_packet(
@@ -377,8 +393,9 @@ class WarpMixin:
         baddies, horses and NPCs from the old level do not leak into the new
         one.
 
-        Not called on seamless GMAP segment crossing (that goes through move(),
-        not warp_to_level), so the stitched world keeps its entities.
+        Not called for a hop between held cells of the loaded gmap, walked
+        (move()) or by door/script (warp_to_level), so the stitched world keeps
+        its entities, as the reference does.
 
         cache_npcs=False skips the per-level NPC snapshot: on a client-warp
         confirmation the NPCs present may be transit-window leaks stamped with
