@@ -11,8 +11,9 @@ from ..script_player_props import sync_script_player_stat
 from ..tiletypes import selection_for
 
 from .board import GS1NoBoard, board_tile_read, board_tile_write
-from .frame import _write_npc_attr, board_probe, level_object_xy, npc_axis, write_npc_axis
-from .objects import _current_baddies, _num_or_str, _set_npc_sprite, _version_number
+from .frame import (_write_npc_attr, board_probe, level_object_xy, level_origin, npc_axis,
+                    write_npc_axis, write_player_axis)
+from .objects import _GS1ObjectRef, _current_baddies, _num_or_str, _set_npc_sprite, _version_number
 from .registry import NPC_ATTR, PLAYER_ATTR, _GS1_BUILTINS, _GS1_NPC_BUILTINS, _GS1_PLAYER_BUILTINS, _TIMEOUT_CANCEL, _gs1_builtin
 from ..logutil import log_swallowed
 
@@ -68,6 +69,13 @@ class BuiltinsMixin:
             i = int(indices[0]) if indices else 0
             attr = self._PLAYER_MEMBER_ALIASES.get(attr, attr)
             return _num_or_str(pl[i].get(attr, 0)) if 0 <= i < len(pl) else 0.0
+        # npcs[i] on its own: the i-th NPC as an object, so `with (npcs[i])`
+        # reads and writes its members (the reference's array cell is the
+        # TServerNPC itself, TScriptUniverse.cpp:75-82). Out of range is 0,
+        # which makes the block not run, as findnpc's miss does.
+        if name == "npcs" and indices:
+            ref = self._npc_ref(indices[0])
+            return 0.0 if ref is None else ref
         # npcs[i].x / npcs[i].save[j] / ... -> the i-th NPC in the level.
         if name.startswith("npcs."):
             return self._npc_array_attr(name.split(".", 1)[1], indices)
@@ -108,6 +116,15 @@ class BuiltinsMixin:
             return []
         return sorted(getattr(cl, "npcs", {}) or {})
 
+    def _npc_ref(self, index):
+        """The i-th NPC in `npcs[]` order as a with-target, None out of range."""
+        ids = self._npc_ids()
+        i = int(index)
+        npc = self.rt.client.npcs.get(ids[i]) if 0 <= i < len(ids) else None
+        if not isinstance(npc, dict):
+            return None
+        return _GS1ObjectRef("npc", npc, client=self.rt.client)
+
     def _npc_array_attr(self, attr, indices):
         """npcs[i].<attr>. `indices` is [i] plus, for `save`, the slot index:
         the interpreter forwards every index across the whole reference, so
@@ -143,7 +160,11 @@ class BuiltinsMixin:
         bombs_in_level = getattr(cl, "bombs_in_level", None)
         bombs = (bombs_in_level(level) if bombs_in_level is not None
                  else getattr(cl, "bombs", {}).get(level, {}))
-        return list((bombs or {}).values())
+        # Without a game shell the records are the wire's level-local ones;
+        # a script reads whole-map tiles (frame.py), so add the level origin.
+        ox, oy = level_origin(cl)
+        return [dict(b, x=to_num(b.get("x", 0)) + ox, y=to_num(b.get("y", 0)) + oy)
+                for b in (bombs or {}).values()]
 
     def _explo_list(self):
         """Active explosions in explos[] index order (client-level registry,
@@ -477,6 +498,32 @@ class BuiltinsMixin:
             return True
         if name == "sprite" and isinstance(npc, dict):
             _set_npc_sprite(npc, value)
+            return True
+        # players[i].x / .y = v: the property write of TServerPlayer, on the
+        # local player (index 0) or the cached record of another one
+        # (TServerPlayerProperties.cpp:230-241); a remote record is replaced by
+        # that player's next update.
+        if name in ("players.x", "players.y"):
+            cl = self.rt.client
+            i = int(indices[0]) if indices else 0
+            if i == 0:
+                target = self._player
+            else:
+                remotes = [op for op in cl.players.values()
+                           if isinstance(op, dict)]
+                target = remotes[i - 1] if 1 <= i <= len(remotes) else None
+            if target is not None:
+                write_player_axis(cl, target, name[-1], value,
+                                  weapon_script=getattr(ctx, "_is_weapon", False))
+                self._remote_records = None
+            return True
+        # npcs[i].<member> = v: the same property write as on the script's
+        # own NPC (propfun_servernpc_x_w, TServerNPCProperties.cpp:334-345),
+        # so x/y go through frame.write_npc_axis (frame, gate, queued moves).
+        if name.startswith("npcs.") and indices and name[5:] in NPC_ATTR:
+            ref = self._npc_ref(indices[0])
+            if ref is not None:
+                ref.set(name[5:], value)
             return True
         # Bare `save[i] = n` — the running NPC's persistent slots. Without this
         # the write reached VarStore.set(None, "save", ...), which drops an

@@ -33,9 +33,9 @@ class FunctionsMixin:
                 return res
         lowered = name.lower()
         if lowered in ("getplayer", "findplayer"):
-            return self._object_ref(args, "player")
+            return self._object_ref(args, "player", ctx)
         if lowered in ("getnpc", "findnpc"):
-            return self._object_ref(args, "npc")
+            return self._object_ref(args, "npc", ctx)
         if name == "findimg" and ctx is not None:
             # era new-GS1 particle scripts reach the layer/emitter objects
             # this way (`with (findimg(200)) { with (emitter) {...} }`,
@@ -217,7 +217,7 @@ class FunctionsMixin:
                 return float(index)
         return miss
 
-    def _object_ref(self, args, kind):
+    def _object_ref(self, args, kind, ctx):
         wanted = to_str(args[0]).strip('"').lower() if args else ""
         if not wanted:
             return 0.0
@@ -244,7 +244,9 @@ class FunctionsMixin:
                 if any(to_str(value).lower() == wanted for value in values):
                     return _GS1ObjectRef(
                         "player", player, writable=writable,
-                        label=to_str(values[0]) or wanted)
+                        label=to_str(values[0]) or wanted,
+                        client=self.rt.client,
+                        weapon_script=getattr(ctx, "_is_weapon", False))
             return 0.0
         client = self.rt.client
         for npc_id, npc in (getattr(client, "npcs", {}) or {}).items():

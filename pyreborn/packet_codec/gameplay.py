@@ -456,8 +456,8 @@ def build_triggeraction(x: float, y: float, action: str, npc_id: int = 0) -> byt
     Build PLI_TRIGGERACTION (packet 38) - trigger a server-side action.
 
     Args:
-        x: X position in tiles
-        y: Y position in tiles
+        x: X position in tiles, local to the sender's level (0..110)
+        y: Y position in tiles, local to the sender's level (0..110)
         action: Action string (e.g., "warp,level.nw,30,30" or "serverside,funcname")
         npc_id: NPC ID to trigger on (0 for level/weapon triggers)
 
@@ -474,11 +474,15 @@ def build_triggeraction(x: float, y: float, action: str, npc_id: int = 0) -> byt
     packet.append(((npc_id >> 7) & 0x7F) + 32)
     packet.append((npc_id & 0x7F) + 32)
 
-    # Position in half-tiles
-    local_x = x % 64
-    local_y = y % 64
-    packet.append(int(local_x * 2) + 32)
-    packet.append(int(local_y * 2) + 32)
+    # Position in half-tiles, local to the sender's level and clamped to
+    # 0..110 (220 half-tiles) like the reference sender
+    # (Preagonal/FourPlay/quattroplay/src/TClient.cpp:4338-4362); a position
+    # outside the level is NOT wrapped back in, the receiver adds the
+    # sender's level origin (GServer-v2 PlayerClientPackets.cpp:1056-1058).
+    for value in (x, y):
+        half_tiles = (0 if value < 0 else
+                      int(value * 2 + 0.0001) if value <= 110 else 220)
+        packet.append(half_tiles + 32)
 
     # Action string
     packet.extend(action.encode('latin-1'))

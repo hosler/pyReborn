@@ -11,6 +11,7 @@ from reborn_protocol.gs1.values import to_num
 from reborn_protocol.gs2 import GS2Object
 
 from ..gmap_coords import grid_index
+from ..handlers.entities import _player_segment
 from .objects import _GS1ObjectRef
 from .registry import _FALL_THROUGH, _GS1_LAYER_COMMANDS, _GS1_MAIN_COMMANDS, _GS1_NPC_COMMANDS, _GS1_NPC_TAIL_COMMANDS, _GS1_PRE_COMMANDS, _report_gs1_error
 from .host_builtins import BuiltinsMixin
@@ -196,7 +197,8 @@ class GS1ClientHost(
             if isinstance(op, dict):
                 x, y = local_to_world(float(op.get("x", 0) or 0),
                                       float(op.get("y", 0) or 0),
-                                      *segments.get(op.get("level"), current_segment))
+                                      *(_player_segment(cl, op)
+                                        or segments.get(op.get("level"), current_segment)))
                 if getattr(cl, "is_gmap", False):
                     if op.get("world_x") is not None:
                         x = float(op["world_x"])

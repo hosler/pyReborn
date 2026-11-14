@@ -9,7 +9,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 from reborn_protocol.gs1.host_shared import host_value
 
 from ..palette import REBORN_PALETTE, REBORN_PALETTE_ALIASES
-from .frame import _write_npc_attr, npc_axis, write_npc_axis
+from .frame import _write_npc_attr, npc_axis, player_record_axis, write_npc_axis, write_player_axis
 from .registry import NPC_ATTR, PLAYER_ATTR, _NPC_WRITE
 from ..logutil import log_swallowed
 
@@ -87,11 +87,15 @@ class _GS1ObjectRef:
         "account": "account", "nickname": "nickname", "chat": "chat",
     }
 
-    def __init__(self, kind, target, *, writable=True, label="", client=None):
+    def __init__(self, kind, target, *, writable=True, label="", client=None,
+                 weapon_script=False):
         self.kind = kind
         self.target = target
         self.writable = writable
         self.label = label
+        # Whether the script that made this handle is a weapon's: it decides
+        # the clamp on a player position write (frame.write_player_axis).
+        self.weapon_script = weapon_script
         # The session an NPC target lives in: its x/y are whole-map tiles
         # on a gmap (see frame.py).
         self.client = client
@@ -104,6 +108,9 @@ class _GS1ObjectRef:
                 and isinstance(self.target, dict)):
             return npc_axis(self.client, self.target, name)
         attr = table[name]
+        if (self.kind == "player" and name in ("x", "y")
+                and isinstance(self.target, dict)):
+            return player_record_axis(self.client, self.target, name)
         if isinstance(self.target, dict):
             return _num_or_str(self.target.get(attr, 0))
         return _num_or_str(getattr(self.target, attr, 0))
@@ -112,6 +119,10 @@ class _GS1ObjectRef:
         table = NPC_ATTR if self.kind == "npc" else self._PLAYER_MEMBERS
         if name not in table:
             return False
+        if self.kind == "player" and name in ("x", "y"):
+            write_player_axis(self.client, self.target, name, value,
+                              weapon_script=self.weapon_script)
+            return True
         if not self.writable:
             log_key = self.label.lower()
             if log_key not in self._remote_write_logs:

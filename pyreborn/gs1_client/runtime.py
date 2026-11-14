@@ -75,6 +75,8 @@ class ClientGS1:
 
     def __init__(self, client=None):
         self.client = client
+        if client is not None:
+            client.gs1_runtime = self
         self.scripts: dict = {}        # name -> raw code (back-compat)
         self._progs: dict = {}         # name -> entry dict
         self._PARSE_CACHE_MAX = 512
@@ -810,6 +812,40 @@ class ClientGS1:
         nx = to_num(npc.get("world_x", npc.get("x", 0)))
         ny = to_num(npc.get("world_y", npc.get("y", 0)))
         return (nx, ny, w_px / 16.0, h_px / 16.0)
+
+    @staticmethod
+    def npc_character_mode(npc) -> bool:
+        """The reference's character mode (`m_serverNpc_unknown8`): set by
+        showcharacter and by an empty image prop, cleared by any image
+        (TServerNPCProperties.cpp:763-775, TServerNPC.cpp:918-936)."""
+        return bool(isinstance(npc, dict)
+                    and (npc.get("is_character") or npc.get("image") == "#c#"))
+
+    def npc_tile_size(self, npc_id, npc):
+        """`TServerNPC::tilesize()`: pixelsize() / 16 as (w, h) tiles
+        (TServerNPC.cpp:1993-2014). A character NPC is 48x48 pixels; else a
+        shape's size, a setimgpart rect, the image's own size, and 48x48 for
+        an NPC with no image. An image of unknown size is 2x2 tiles, as in
+        `npc_image_rect`."""
+        if self.npc_character_mode(npc):
+            return 3.0, 3.0
+        geom = self.shapes.get(npc_id)
+        if geom and geom[0] > 0 and geom[1] > 0:
+            return float(geom[0]), float(geom[1])
+        part = npc.get("imagepart")
+        if part and part[2] > 0 and part[3] > 0:
+            return part[2] / 16.0, part[3] / 16.0
+        image = npc.get("image") or ""
+        if not image or image == "-":
+            return 3.0, 3.0
+        size = None
+        if self.image_size_source is not None:
+            try:
+                size = self.image_size_source(image)
+            except Exception:
+                log_swallowed(logger, level=logging.DEBUG)
+        w_px, h_px = size if size else (_DEFAULT_IMAGE_PX, _DEFAULT_IMAGE_PX)
+        return w_px / 16.0, h_px / 16.0
 
     def npc_footprint_hit(self, npc, x, y) -> bool:
         """Is world point (x, y) inside `npc`'s footprint (rect, refined by

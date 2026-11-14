@@ -231,17 +231,25 @@ def test_noop_commands_are_swallowed(rt):
     assert "serverwarp" not in _NOOP
 
 
-def test_hide_show_move_are_the_last_stage(rt):
+def test_hide_show_move_are_the_last_stage(make_client):
+    # `move` queues a timed move (TServerNPCProperties.cpp:558-561): the
+    # position changes when the queue is stepped, not when the command runs.
+    from pyreborn.npc_movement import tick_moves
+    client = make_client()
+    rt = ClientGS1(client)
     npc = {"x": 10.0, "y": 20.0}
+    client.npcs[7] = npc
     ctx = _npc_ctx(npc)
     rt._host._dispatch("hide", [], ctx)
     assert npc["visible"] is False
     rt._host._dispatch("show", [], ctx)
     assert npc["visible"] is True
     rt._host._dispatch("move", [1.5, -2.0], ctx)
+    assert (npc["x"], npc["y"]) == (10.0, 20.0)
+    tick_moves(client, npc["_move_clock"] + 1.0)
     assert (npc["x"], npc["y"]) == (11.5, 18.0)
     rt._host._dispatch("move", [1.5], ctx)          # too few: no-op
-    assert (npc["x"], npc["y"]) == (11.5, 18.0)
+    assert not npc.get("_move_queue")
 
 
 # --- get_builtin ------------------------------------------------------------

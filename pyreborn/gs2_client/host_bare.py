@@ -9,6 +9,7 @@ import random
 import re
 from reborn_protocol.gs2 import to_num
 from reborn_protocol.gs2 import to_str
+from ..gs1_client.frame import to_level
 from .helpers import _csv_flatten
 from .objects_player import PLATFORM_NAME, _engine_object
 from .registry import _GS1_PURE, _GS2_BARE, _GS2_BARE_GUI, _TIMER_CANCEL, _WORD_BORDER, _gs2_builtin, logger
@@ -628,7 +629,10 @@ class HostBareMixin:
         rt2 = self.rt2
         if rt2.client is not None and len(args) >= 3:
             action = ",".join(_csv_flatten(args[2:]))
-            rt2.client.triggeraction(action, x=to_num(args[0]), y=to_num(args[1]))
+            # Whole-map script tiles -> local to the player's level
+            # (TInitStatics.cpp:3974-3977).
+            x, y = to_level(rt2.client, to_num(args[0]), to_num(args[1]))
+            rt2.client.triggeraction(action, x=x, y=y)
         return 0.0
 
     @_gs2_builtin(_GS2_BARE, "serverwarp")

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from typing import List
+from reborn_protocol.coords import world_to_local
 
 from .game_bot import GameBot
 
@@ -54,7 +55,7 @@ def run_exercise_battery(bot: GameBot, verbose: bool = True) -> List[str]:
     _step(notes, "bomb", lambda: (c.drop_bomb(1), bot.update(0.6)), verbose)
     _step(notes, "shoot", lambda: (c.shoot(2), bot.update(0.3)), verbose)
     _step(notes, "triggeraction",
-          lambda: (c.triggeraction("gr.appletree", c.x, c.y), bot.update(0.3)), verbose)
+          lambda: (c.triggeraction("gr.appletree", *world_to_local(c.x, c.y)), bot.update(0.3)), verbose)
 
     # --- flags ------------------------------------------------------------
     _step(notes, "flag_set",

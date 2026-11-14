@@ -259,7 +259,7 @@ def test_with_getplayer_writes_the_live_player():
     assert c.player.x == 22.0
 
 
-def test_remote_getplayer_reads_live_record_drops_writes_and_falls_through():
+def test_remote_getplayer_reads_live_record_clamps_position_writes_and_falls_through():
     c, gs1 = _engine({
         5: ('if (timeout) { with (getplayer("bob")) {'
             ' this.before=x; x=99; this.after=x; this.mouse=mousex;'
@@ -271,9 +271,11 @@ def test_remote_getplayer_reads_live_record_drops_writes_and_falls_through():
     gs1.trigger_npc_event(5, "timeout")
 
     assert _this(gs1, 5)["before"] == 33.0
-    assert _this(gs1, 5)["after"] == 33.0
+    # A position write lands on the cached record, clamped to 0..64 off a map
+    # (TServerPlayerProperties.cpp:17-34); the player's next update replaces it.
+    assert _this(gs1, 5)["after"] == 64.0
     assert _this(gs1, 5)["mouse"] == 12.0
-    assert c.players[7]["x"] == 33.0
+    assert c.players[7]["x"] == 64.0
     assert gs1._weapon_timeouts["npc_5"] == pytest.approx(0.5)
 
 

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../reborn-prot
 import pytest
 
 from pyreborn.gs1_client import ClientGS1
+from pyreborn.npc_movement import tick_moves
 from pygserver import npc_motion
 from pygserver.config import ServerConfig
 from pygserver.gs1.host import GS1Host
@@ -90,6 +91,15 @@ def _client_with_player():
     return client
 
 
+def _settle_client_moves(client, npc):
+    """Run the client NPC's queued `move`s to their end: the client queues a
+    script `move` like the server does (TServerNPCProperties.cpp:558-561) and
+    steps it once per tick."""
+    client.npcs[1] = npc
+    tick_moves(client, client.clock.sim_now() + 10.0)
+    client.npcs.pop(1)
+
+
 def _run_pair(source):
     client = _client_with_player()
     client_player = client.player
@@ -112,6 +122,7 @@ def _run_pair(source):
 
     run(source, ctx=client_context)
     run(source, ctx=server_context)
+    _settle_client_moves(client, client_npc)
     return (
         client_context, client_npc, client_player,
         server_context, server_npc, server_player,
@@ -157,9 +168,9 @@ def test_tokenscount_matches_through_the_real_interpreter():
 )
 def test_npc_command_contracts_match_through_the_real_interpreter(script, fields):
     _, client_npc, _, _, server_npc, _ = _run_pair(script)
-    # The server queues `move` (50 ms slices, announced with PLO_MOVE2) where
-    # the client applies it at once, so compare the end state once the server's
-    # queue has run dry.
+    # Both sides queue `move` (the server in 50 ms slices announced with
+    # PLO_MOVE2, the client one step per tick), so compare the end state once
+    # the server's queue has run dry (the client's ran in _run_pair).
     npc_motion.process_queue(server_npc, None, 10_000)
     assert not server_npc.move_queue
     for field in fields:
@@ -174,7 +185,8 @@ def test_known_divergence_move_past_the_level_edge_server_clamps_client_does_not
     position the queue leaves behind is then clamped to local pixels 0..976 on a
     plain level (GServer-v2 NPC.cpp:2038-2091 testForLinks, cc20c9d0), so
     `move 1.5,-2` from y=1 ends at y=0.
-    Client: applies the move at once and has no level clamp, so it keeps y=-1.
+    Client: queues the move too (TServerNPCProperties.cpp:558-561) and has no
+    level clamp, so once its queue has run it keeps y=-1.
 
     Both halves assert exact values: this goes red when either side changes,
     and the pair should then be reconciled (or the divergence re-documented)."""
@@ -187,7 +199,9 @@ def test_known_divergence_move_past_the_level_edge_server_clamps_client_does_not
     client_runtime = ClientGS1(client)
     run(source, ctx=Context(client_runtime._host, VarStore(), this_obj=client_npc,
                             player=client_player))
-    assert (client_npc["x"], client_npc["y"]) == (2.5, -1.0)      # instant, no clamp
+    assert (client_npc["x"], client_npc["y"]) == (1.0, 1.0)       # queued, not applied
+    _settle_client_moves(client, client_npc)
+    assert (client_npc["x"], client_npc["y"]) == (2.5, -1.0)      # the queue's result, no clamp
 
     server_player = SimpleNamespace(**_PLAYER_VALUES, account_name="account",
                                     weapons_disabled=False)

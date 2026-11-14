@@ -89,6 +89,7 @@ OLD_STATE_ALIASES = {
     'gmap_name': ('gmap_state', 'gmap_name'),
     'gmap_width': ('gmap_state', 'gmap_width'),
     'gs1_host': ('scripts', 'gs1_host'),
+    'gs1_runtime': ('scripts', 'gs1_runtime'),
     'gs2_bytecode': ('scripts', 'gs2_bytecode'),
     'gs2_host': ('scripts', 'gs2_host'),
     'gs2_script_headers': ('scripts', 'gs2_script_headers'),
@@ -304,7 +305,7 @@ OLD_PACKET_EXPORTS = [
 
 def test_derived_aliases_equal_old_hand_table():
     assert _STATE_ALIASES == OLD_STATE_ALIASES
-    assert len(_STATE_ALIASES) == 179
+    assert len(_STATE_ALIASES) == 180
 
 
 def test_every_alias_is_an_installed_property():

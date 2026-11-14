@@ -652,6 +652,24 @@ def _chk_gmap_npc_cross_write(env):
             f"want {want}, got {got}")
 
 
+def _chk_gmap_npc_move(env):
+    got = _npc_place(env)
+    want = (NPC_X + 4.0, NPC_Y + 2.0, NPC_X + 4.0 + GMAP_ORIGIN,
+            NPC_Y + 2.0 + GMAP_ORIGIN, 1, 1)
+    _expect(all(abs(a - b) < 1e-6 for a, b in zip(got[:4], want[:4]))
+            and got[4:] == want[4:],
+            f"move 4,2,0.5,0 must end {want} (x, y, world_x, "
+            f"world_y, cell) after its queue ran, got {got}")
+    _expect(not env.npc().get("_move_queue"), "the move queue must be empty")
+
+
+def _chk_gmap_other_npc_write(env):
+    got = _npc_place(env)
+    want = (36.5, 26.5, 100.5, 90.5, 1, 1)
+    _expect(got == want, f"npcs[0].x / with (npcs[0]) y must store local "
+            f"(x - 64) in cell (1,1): want {want}, got {got}")
+
+
 def _chk_lay(env):
     # AND, not OR: the engine's contract is BOTH the PLI_ITEMADD report and
     # the client.items registry entry (the same store PLO_ITEMADD fills) at
@@ -661,8 +679,11 @@ def _chk_lay(env):
     _expect(PLI.ITEMADD in env.wire_ids(),
             f"lay must report the drop via PLI_ITEMADD (wire={env.wire_ids()!r})")
     items = env.client.items_in_level(env.client._current_level_name)
-    _expect((float(NPC_X), float(NPC_Y)) in items,
-            f"and register the item at the NPC's feet in client.items (got {items!r})")
+    # The 3x3 NPC at (30,30) has its centre at (31.5, 31.5), the player's
+    # centre column; the reference files the item at the centre's right edge
+    # one tile above it (TServerNPCProperties.cpp:502-548): (33.0, 30.5).
+    _expect((33.0, 30.5) in items,
+            f"and register the item at the lay point in client.items (got {items!r})")
 
 
 def _chk_canbecarried(env):
@@ -1115,7 +1136,7 @@ CASES: List[ClientCase] = [
         script="if (playerenters) { destroy; }"),
     ClientCase(
         "lay_item", "lay item drops item on floor",
-        "FP TServerNPCProperties.cpp:489-510 (scriptfun_servernpc_lay)",
+        "FP TServerNPCProperties.cpp:489-510 (scriptfun_servernpc_lay); lay point :502-548",
         _chk_lay,
         script="if (playerenters) { lay bomb; }"),
     ClientCase(
@@ -1171,6 +1192,22 @@ CASES: List[ClientCase] = [
         "(setlocalx only stores; the cell is not recomputed)",
         _chk_gmap_npc_cross_write, gmap=True,
         script="if (playerenters) { x = 140; }"),
+    ClientCase(
+        "gmap_npc_move", "gmap: `move` is a queued timed move, local to the "
+        "NPC's cell",
+        "FP TServerNPCProperties.cpp:558-561 (move -> addNPCMove, not a "
+        "position write) + TServerNPC.cpp:1628-1664,1753-1775 (doNPCMove "
+        "steps dx/steps per tick; the cell is kept)",
+        _chk_gmap_npc_move, gmap=True, settle=24,
+        script="if (playerenters) { move 4,2,0.5,0; }"),
+    ClientCase(
+        "gmap_other_npc_write", "gmap: a write on npcs[i] / with (npcs[i]) is "
+        "the NPC's own x/y setter",
+        "FP TServerNPCProperties.cpp:334-345 (propfun_servernpc_x_w on the "
+        "array cell object, TScriptUniverse.cpp:75-82)",
+        _chk_gmap_other_npc_write, gmap=True,
+        script="if (playerenters) { npcs[0].x = 100.5; "
+               "with (npcs[0]) { y = 90.5; } }"),
 ]
 
 

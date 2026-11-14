@@ -6,6 +6,7 @@ from reborn_protocol.gs1.values import to_num, to_str
 
 from ..tiletypes import selection_for, register_tiledef, remove_tiledefs
 from .board import board_update_region
+from .frame import to_level
 from .objects import _pcode, _write_npc_command
 from .registry import _FALL_THROUGH, _GS1_PRE_COMMANDS, _NOOP, _NPC_WRITE, _gs1_command
 from ..logutil import log_swallowed
@@ -248,10 +249,15 @@ class PreCommandsMixin:
         self.rt.hit_objects_at(x, y, power)
         cl = self.rt.client
         if cl is not None:
-            try:
-                cl.send_hit_objects(power, x, y)
-            except Exception:
-                log_swallowed(logger)
+            # The wire probe is local to the player's level, and the
+            # reference sends nothing for one outside it
+            # (TInitStatics.cpp:3417-3421, TClient.cpp:1462-1464).
+            local_x, local_y = to_level(cl, x, y)
+            if 0 <= local_x < 64 and 0 <= local_y < 64:
+                try:
+                    cl.send_hit_objects(power, local_x, local_y)
+                except Exception:
+                    log_swallowed(logger)
 
     @_gs1_command(_GS1_PRE_COMMANDS, "setminimap")
     def _cmd_setminimap(self, name, args, ctx, imgs):

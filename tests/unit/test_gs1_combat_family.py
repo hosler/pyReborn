@@ -454,14 +454,18 @@ def test_compus_array_reads():
 
 # -- lay / lay2 -------------------------------------------------------------
 
-def test_lay_drops_item_at_npc_feet():
+def test_lay_drops_item_at_the_npc_edge_nearest_the_player():
     client = _fake_connected_client()
     gs1 = _npc_gs1(client, 5, "if (playertouchsme) { lay bombs; }",
                    x=12.0, y=14.0)
     gs1.trigger_npc_event(5, "playertouchsme")
     # bombs = LevelItemType 3 (scripting-gs1-variables.md "Item names")
-    assert _sent(client, PacketID.PLI_ITEMADD) == [build_item_add(12, 14, 3)]
-    assert client.items_in_level(client._current_level_name)[(12.0, 14.0)] == "bombs"
+    # The NPC has no image, so its box is 3x3 tiles (centre 13.5,15.5); the
+    # player (30,30) is right of it and below its centre, so the item goes to
+    # the left edge, one tile below the centre
+    # (TServerNPCProperties.cpp:502-548): (12.5, 17).
+    assert _sent(client, PacketID.PLI_ITEMADD) == [build_item_add(12.5, 17, 3)]
+    assert client.items_in_level(client._current_level_name)[(12.5, 17.0)] == "bombs"
 
 
 def test_lay2_drops_item_at_position():

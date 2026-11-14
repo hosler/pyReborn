@@ -417,7 +417,7 @@ def test_gui_profile_warning_sample_is_formatted(tmp_path):
         "GS2 GUI: script aborted; dropping 3 unfinished control(s)")
 
 
-def test_compiled_gs2_local_transition_with_send_gate(tmp_path):
+def test_compiled_gs2_local_transition_with_send_gate(tmp_path, make_client):
     compiler = find_compiler()
     if compiler is None:
         import pytest
@@ -445,15 +445,9 @@ function onCreated() {
     protocol.connected = True
     protocol.outbound_policy = policy
 
-    class Client:
-        connected = True
-        _authenticated = True
-
-        def triggeraction(self, action, x=None, y=None, npc_id=0):
-            return protocol.send_packet(PacketID.PLI_TRIGGERACTION,
-                                        action.encode("utf-8"))
-
-    runtime = ClientGS2(client=Client())
+    client = make_client()
+    client._protocol = protocol
+    runtime = ClientGS2(client=client)
     assert runtime.load_bytecode("weapon", "explorer", bytecode.read_bytes())
     button = runtime.gui.roots[0]
     assert InputDriver(runtime.gui).click_control(button).success

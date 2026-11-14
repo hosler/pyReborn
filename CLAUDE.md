@@ -489,13 +489,13 @@ The structural invariants alone would NOT have caught either one.
 decompiled reference client. It runs `pyreborn/gs1_client.py` inside the real
 Client, GameClient and NPCHandler stack, with the SDL dummy driver.
 
-Each of the 77 rows in `game_tester/gs1_client_conformance.py` is an executable
+Each of the 79 rows in `game_tester/gs1_client_conformance.py` is an executable
 transcription of one FourPlay citation. The row carries that citation as a
 `Preagonal/FourPlay/quattroplay/src/...` file:line reference. The rows cover
 footprint blocking and dontblock, touchtestd touch, timeout=0 cancel,
 setani-vs-setcharani, say/say2/message/sign ordering, tiles[]/updateboard, hurt
 half-hearts, putbomb/putexplosion wire+local pairs, hideimg(s),
-hidelocal/showlocal, selectedweapon and an NPC's whole-map x/y on a 3x3 gmap.
+hidelocal/showlocal, selectedweapon, an NPC's whole-map x/y on a 3x3 gmap, a queued `move` and a write on `npcs[i]`.
 A semantic change that breaks a row therefore contradicts a cited reference
 line, not a guess.
 

@@ -141,7 +141,11 @@ class MainCommandsMixin:
         if len(args) < 3 or rt.client is None:
             return _FALL_THROUGH
         btype = _baddy_type_from_name(args[0])
-        x, y = to_num(args[1]), to_num(args[2])
+        # The script's whole-map tiles go out local to the player's level:
+        # the server files the baddy in the sender's level and wraps the wire
+        # position into it (GServer-v2 PlayerClientPackets.cpp:550,565,
+        # Extents.h:432-436).
+        x, y = to_level(rt.client, to_num(args[1]), to_num(args[2]))
         if name == "putnewcomp" and len(args) >= 5:
             image = to_str(args[3])
             power = int(to_num(args[4]))
@@ -449,7 +453,7 @@ class MainCommandsMixin:
         else:
             npc = ctx.this_obj if isinstance(ctx.this_obj, dict) else None
             if npc is not None:
-                x, y = npc_xy(rt.client, npc)
+                x, y = self._lay_point(npc, getattr(ctx, "_npc_id", 0))
             else:
                 x = float(getattr(rt.client, "x", 0))
                 y = float(getattr(rt.client, "y", 0))
@@ -468,6 +472,27 @@ class MainCommandsMixin:
             rt.client.send_item_add(*local, item_id)
         except Exception:
             log_swallowed(logger)
+
+    def _lay_point(self, npc, npc_id):
+        """Where `lay` files the item, whole-map: the NPC's centre moved to
+        one edge of its box, chosen by where the player stands
+        (scriptfun_servernpc_lay, TServerNPCProperties.cpp:502-548; constants
+        0.5, 1.0, 1.5, 2.0 from TInitStatics.cpp:1253,1274,1277-1278)."""
+        cl = self.rt.client
+        width, height = self.rt.npc_tile_size(npc_id, npc)
+        half_w, half_h = width * 0.5, height * 0.5
+        nx, ny = npc_xy(cl, npc)
+        center_x, center_y = nx + half_w, ny + half_h
+        player_x, player_y = float(cl.x), float(cl.y)
+        if center_y < player_y:
+            player_center_x = player_x + 1.5
+            if player_center_x == center_x:
+                return center_x + half_w, center_y - 1.0
+            if ((player_y + 2.0 - center_y) * width
+                    < abs(player_center_x - center_x) * height):
+                return center_x - 1.0, center_y + half_h
+            return center_x + half_w, center_y - 1.0
+        return center_x - 1.0, center_y + half_h
 
     @_gs1_command(_GS1_MAIN_COMMANDS, "putleaps")
     def _cmd_putleaps(self, name, args, ctx, imgs):

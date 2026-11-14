@@ -511,6 +511,11 @@ class ScriptTransport(StateComponent):
         # PLO_TRIGGERACTION fires the matching clientside `action<name>`
         # event on loaded scripts.
         self.gs1_host = None
+        # The ClientGS1 engine running this session's NPC scripts
+        # (ClientGS1.__init__ registers itself here). The NPC move queue asks
+        # it for the wall and water probes of a blocking `move` and fires the
+        # `movementfinished` event through it.
+        self.gs1_runtime = None
         # Optional GS2 host attachment point (pyreborn.gs2_client.ClientGS2
         # sets this via attach()): inbound PLO_TRIGGERACTION also fires the
         # matching `onAction<name>` function on loaded GS2 VMs.

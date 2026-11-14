@@ -4,6 +4,7 @@ import os
 
 from ...colors_width import colors_len_in_force
 from ...flyingobjects import NOT_BOUNCING
+from ...gs1_client.frame import to_level
 from ...sprites import strip_tiledef_image
 from .client_callbacks import route_gs2_source
 import logging
@@ -165,7 +166,9 @@ def wire_gs1_callbacks(game):
             import sys
             print(f"[trigger] -> server: {action!r}", file=sys.stderr)
         try:
-            game.client.triggeraction(action, x, y, npc_id)
+            # The script's x,y are whole-map tiles; the wire carries them
+            # local to the player's level (TInitStatics.cpp:3974-3977).
+            game.client.triggeraction(action, *to_level(game.client, x, y), npc_id)
         except Exception:
             log_swallowed(logger)
 

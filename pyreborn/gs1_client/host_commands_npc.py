@@ -223,7 +223,15 @@ class NpcCommandsMixin:
 
     @_gs1_command(_GS1_NPC_TAIL_COMMANDS, "move")
     def _cmd_move(self, name, args, ctx, imgs):
-        npc = ctx.this_obj
-        if len(args) >= 2:
-            npc["x"] = to_num(npc.get("x", 0)) + to_num(args[0])
-            npc["y"] = to_num(npc.get("y", 0)) + to_num(args[1])
+        # move dx,dy,time,options: queue a timed relative move
+        # (scriptfun_servernpc_move, TServerNPCProperties.cpp:558-561, signature
+        # "dddi" at :1488-1495). Not a position write: the write gate does not
+        # apply and nothing is dropped. The queue is the server-move queue
+        # (npc_movement.add_npc_move), so the NPC steps once per tick.
+        from ..npc_movement import add_npc_move
+        if len(args) < 2:
+            return
+        duration = to_num(args[2]) if len(args) > 2 else 0.0
+        options = int(to_num(args[3])) if len(args) > 3 else 0
+        add_npc_move(self.rt.client, ctx.this_obj, to_num(args[0]),
+                     to_num(args[1]), duration, options)

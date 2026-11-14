@@ -305,8 +305,9 @@ class ActionsMixin:
 
         Args:
             action: Action string (e.g., "warp,level.nw,30,30" or "serverside,func")
-            x: X position (default: player position)
-            y: Y position (default: player position)
+            x: X position in tiles local to the player's level, 0..110
+               (default: the player's position in its level)
+            y: Y position in tiles local to the player's level, 0..110
             npc_id: NPC ID to trigger on (0 for level/weapon triggers)
 
         Returns:
@@ -315,10 +316,11 @@ class ActionsMixin:
         if not self.connected or not self._authenticated:
             return False
 
+        local_x, local_y = world_to_local(self.player.x, self.player.y)
         if x is None:
-            x = self.player.x
+            x = local_x
         if y is None:
-            y = self.player.y
+            y = local_y
 
         data = build_triggeraction(x, y, action, npc_id)
         return self._protocol.send_packet(PacketID.PLI_TRIGGERACTION, data)

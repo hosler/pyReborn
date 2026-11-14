@@ -40,6 +40,7 @@ from reborn_protocol.gs1.host_shared import host_value
 from reborn_protocol.gs1.values import to_num
 
 from ..gmap_coords import grid_of
+from ..handlers.entities import _player_segment
 from ..npc_handler import npc_cell
 
 
@@ -126,6 +127,49 @@ def write_npc_axis(client, npc, key, value) -> None:
         return
     npc[key] = whole - origin
     npc["world_" + key] = whole
+
+
+def player_record_axis(client, record, key):
+    """What a script reads for `x` or `y` of a remote player's record: the
+    whole-map tile, the value `players[i]` reports (host.py
+    `_build_remote_records`): the record's own world pair on a gmap, else its
+    local position plus the origin of its level (the player's own level when
+    the record names none)."""
+    if client.is_gmap and record.get("world_" + key) is not None:
+        return to_num(record["world_" + key])
+    cell = _player_segment(client, record)
+    if cell is not None:
+        origin = segment_origin(*cell)
+    else:
+        origin = level_origin(client)
+    return to_num(record.get(key, 0)) + origin[1 if key == "y" else 0]
+
+
+def write_player_axis(client, player, key, value, *, weapon_script) -> None:
+    """A script write of a player's `x` or `y` (`players[i].x = v`, a
+    with-target): the property of `TServerPlayer`, which also holds the local
+    player and the cached records of the other players. The value is the
+    whole-map tile; the player is stored at ``value - (mapX << 6)``. Unless
+    the player is on a map, or the script is a weapon's, it is clamped to
+    0..64 (y: -1..64) first (TServerPlayerProperties.cpp:17-34, :36-52).
+    `player` is the local Player, or a remote player's record: a remote
+    record is this client's cache, replaced by the player's next update."""
+    whole = to_num(value)
+    if isinstance(player, dict):
+        cell = _player_segment(client, player)
+        map_owned = cell is not None
+    else:
+        cell = None
+        map_owned = client.in_gmap_segment
+    if not (map_owned or weapon_script):
+        whole = min(max(whole, -1.0 if key == "y" else 0.0), 64.0)
+    if not isinstance(player, dict):
+        setattr(player, key, whole)
+        return
+    ox, oy = segment_origin(*cell) if cell is not None else (0, 0)
+    player[key] = whole - (oy if key == "y" else ox)
+    if cell is not None or "world_" + key in player:
+        player["world_" + key] = whole
 
 
 def level_origin(client) -> Tuple[int, int]:
