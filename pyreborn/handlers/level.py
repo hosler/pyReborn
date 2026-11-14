@@ -303,10 +303,18 @@ def _own_warp_moves_targets(client, level):
     """What the reference client does to its two level targets when the
     server warps the player (PLO_PLAYERWARP / PLO_PLAYERWARP2).
 
-    A warp naming a loaded ``.gmap`` sets the level scope to that map and
-    clears the bound level; the entry stream then re-binds it
-    (TClient.cpp:3003-3004 and :3401-3402 for the plain warp, :3054-3060 for
-    the warp with a map position). A map that is not loaded changes nothing.
+    A warp naming a loaded ``.gmap`` sets the level scope and clears the bound
+    level; the entry stream then re-binds it (TClient.cpp:3003-3004 and
+    :3401-3402 for the plain warp). The warp with a map position
+    (TClient.cpp:3054-3060) sets the scope to the destination segment, or,
+    when it is the echo of a map warp this client requested on the player's
+    current map (TClient.cpp:3052), to the player's current level with the
+    bound level kept. Here the scope names the map and resolves to the
+    player's own segment when read (`_level_scope_name`), which is the same
+    segment in all three cases: the destination for a warp whose position is
+    adopted, the current level for an echo whose position is not. The echo
+    branch and a map that is loaded but not the current one (the port holds
+    one grid) therefore change nothing observable and are not modelled.
     A plain level leaves the scope alone: the level load then sets the NPC
     target to the new level only when the scope does not already name it
     (TPlayer.cpp:941-946). A modern-flow server names every level, so the
@@ -323,7 +331,19 @@ def _own_warp_moves_targets(client, level):
         # is served by that flow, so there is no reference behaviour to
         # port: the warp itself names the player's level, and everything
         # level-scoped lands there instead of stranding on the first level.
-        if not same_level(client._current_level_name, level):
+        if client.warp_names_pending_destination(level):
+            # The confirmation of a warp we requested, which this flow never
+            # gets as PLO_LEVELNAME. warp_to_level already flipped the name,
+            # so the change test below would skip the reset: purge here what
+            # the PLO_LEVELNAME branch purges, and release the pending state.
+            client._awaiting_warp_confirm = ""
+            client._warp_fallback = None
+            client._current_level_name = level
+            client._plain_level_change_epoch += 1
+            client._reset_level_state(cache_npcs=False)
+            client._restore_cached_npcs(level)
+            client._restore_cached_layers(level)
+        elif not same_level(client._current_level_name, level):
             client._current_level_name = level
             client._plain_level_change_epoch += 1
             client._reset_level_state()

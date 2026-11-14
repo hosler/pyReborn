@@ -6,7 +6,8 @@ baddies, and ground items.
 
 from reborn_protocol.coords import local_to_world, segment_origin
 
-from ..gmap_coords import grid_of, in_grid, level_origin, origin_at
+from ..gmap_coords import (grid_of, in_grid, level_origin, origin_at,
+                           same_level)
 
 from ..packets import (
     PacketID,
@@ -357,16 +358,17 @@ def _npc_level_and_cell(client, npc_id, props):
       (TServerNPC.cpp:1271-1282): a packet with only GMAPLEVELX keeps the
       other axis. The reference server sends only the axis that changed
       when an NPC crosses a seam (GServer-v2 server/src/object/NPC.cpp:458-467).
-    * A known NPC keeps the level and cell it has, then takes the props.
-      The reference client does the same for ids below 1000, but moves a
-      known NPC with an id of 1000 or more into the active NPC level on
-      every props packet (TClient.cpp:2950-2951). That part is not done
-      here: pygserver sends the live updates of an NPC that walked onto a
-      neighbouring segment to the players it left behind with no
-      PLO_SETACTIVELEVEL, so the reference rule would move the NPC into
-      their segment's cell, 64 tiles from where it is. Against the reference
-      server the two rules agree: every NPC of a gmap is owned by the gmap,
-      so the move is to the level it is already in.
+    * A known NPC with an id below 1000 keeps the level and cell it has, then
+      takes the props. One with an id of 1000 or more is added to the active
+      NPC level on every props packet, when there is one
+      (TClient.cpp:2950-2951). Added to a level it is already in, nothing
+      changes; added to a map it keeps its own cell; added to a plain level
+      it takes that level's cell (TServerNPC.cpp:289-325). Here the level of
+      a map-owned NPC is the segment at its cell, so the map case never
+      changes level or cell. pygserver names the owner before every NPC of
+      an entry and sends live updates only to players whose active level is
+      already the gmap or the NPC's own level, so the rule moves none of
+      its NPCs.
 
     The level is the grid's segment at the cell when there is one. A
     ``.gmap`` name is never kept as the level: the NPC falls back to its
@@ -391,6 +393,16 @@ def _npc_level_and_cell(client, npc_id, props):
             # map at cell (0, 0) (TServerNPC.cpp:316-319,
             # TLevelObject.cpp:28-31).
             base = (0, 0)
+        target = client._npc_level
+        if (npc_id >= 1000 and target and not is_map_name(target)
+                and not same_level(level, target)):
+            level = target
+            base = grid_of(grid, target)
+            if base is None:
+                # A level outside the grid has no cell to copy: drop the
+                # old one, as handle_npc_moved does for a plain level.
+                known.pop('gmaplevelx', None)
+                known.pop('gmaplevely', None)
     gx, gy = props.get('gmaplevelx'), props.get('gmaplevely')
     if base is None and gx is None and gy is None:
         return level, None

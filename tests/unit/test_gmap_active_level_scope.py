@@ -236,18 +236,20 @@ def test_the_gmap_entry_stream_in_reference_order_files_under_the_segment():
         assert set(store) == {SEGMENT}
 
 
-def _warp_without_level_name(version):
+def _enter_first_level(version):
+    """Login: the first level's own stream. LEVELNAME is the one every flow
+    sends (PlayerClientOriginal.cpp:158-160 sends it for the first level only)."""
     client = Client("localhost", 14900, version=version)
     client._handle_packet(PacketID.PLO_LEVELNAME, b"first.nw")
-    client._current_level_name = "first.nw"
+    client._handle_packet(PacketID.PLO_BOARDPACKET, bytes(8192))
     client.player.level = "first.nw"
-    client._handle_packet(PacketID.PLO_PLAYERWARP, _g(20, 20) + b"second.nw")
-    # A modern flow's LEVELNAME sets this; only the original flow lacks it.
-    client._current_level_name = "second.nw"
     client.make_explosion = Mock()
+    return client
+
+
+def _item_then_explosion(client):
     client._handle_packet(PacketID.PLO_ITEMADD, _g(20, 22, 1))
     client._handle_packet(PacketID.PLO_EXPLOSION, bytes((32, 32, 33, 52, 52, 35)))
-    return client
 
 
 def test_an_original_flow_session_follows_its_warp_without_level_name():
@@ -255,32 +257,36 @@ def test_an_original_flow_session_follows_its_warp_without_level_name():
     PLO_LEVELNAME once (PlayerClientOriginal.cpp:158-160). The warp names the
     level, so items, explosions and the own level name follow it."""
     for version in ("1.411", "2.17"):
-        client = _warp_without_level_name(version)
+        client = _enter_first_level(version)
+        assert client._current_level_name == "first.nw"
+        client._handle_packet(PacketID.PLO_PLAYERWARP, _g(20, 20) + b"second.nw")
+        client._handle_packet(PacketID.PLO_BOARDPACKET, bytes(8192))
+        _item_then_explosion(client)
         assert client._current_level_name == "second.nw"
         assert client._level_scope == "second.nw"
         assert client._npc_level == "second.nw"
         assert set(client.items) == {"second.nw"}
         client.make_explosion.assert_called_once()
-        client._handle_packet(PacketID.PLO_BOARDPACKET, bytes(8192))
-        assert "second.nw" in client.levels and "first.nw" not in client.levels
+        assert "second.nw" in client.levels and "first.nw" in client.levels
         assert client._tiles_level_name == "second.nw"
 
 
-def test_a_modern_flow_session_keeps_the_reference_drop_after_a_warp():
-    """Every other version is served by PlayerClient, which names every level.
-    A warp alone leaves the scope on the first level and binds only the NPC
-    target (TPlayer.cpp:941-946), so a later item or explosion is dropped
-    (TClient.cpp:3595)."""
+def test_a_modern_flow_session_applies_items_after_the_levels_own_level_name():
+    """A modern flow names every level: PLAYERWARP, then LEVELNAME (which
+    moves the own level name and the scope together), then the board, then
+    the dynamic data. Both packets are applied to the new level."""
     for version in ("2.21", "2.22", "6.037"):
-        client = _warp_without_level_name(version)
-        assert client._level_scope == "first.nw"
-        assert client._npc_level == "second.nw"
-        assert client.items == {}
-        client.make_explosion.assert_not_called()
-        # the level name that does follow is applied
+        client = _enter_first_level(version)
+        client._handle_packet(PacketID.PLO_PLAYERWARP, _g(20, 20) + b"second.nw")
         client._handle_packet(PacketID.PLO_LEVELNAME, b"second.nw")
-        client._handle_packet(PacketID.PLO_ITEMADD, _g(20, 22, 1))
+        client._handle_packet(PacketID.PLO_BOARDPACKET, bytes(8192))
+        _item_then_explosion(client)
+        assert client._current_level_name == "second.nw"
+        assert client._level_scope == "second.nw"
+        assert client._npc_level == "second.nw"
         assert set(client.items) == {"second.nw"}
+        client.make_explosion.assert_called_once()
+        assert client._tiles_level_name == "second.nw"
 
 
 def test_a_warp_naming_the_current_map_moves_the_scope_to_the_map():

@@ -250,14 +250,14 @@ def test_local_value_outside_the_board_is_not_world(x2, y2, expect):
 
 
 def test_live_update_after_the_npc_moved_segments_keeps_its_cell():
-    """pygserver moves an NPC to the next segment with PLO_NPCMOVED, then
-    keeps sending its props to the players it left with no SETACTIVELEVEL.
-    The NPC keeps the moved-to cell. Mutation: re-join the active NPC level
-    on a props packet for a known NPC (the reference client's rule for ids
-    of 1000 and up, TClient.cpp:2950-2951) and it lands in s11's cell."""
+    """pygserver owns a gmap's NPCs by the gmap, so its NPC that NPCMOVED took
+    to the next segment keeps sending props under SETACTIVELEVEL <gmap>: the
+    NPC is added to the map, which keeps its own cell
+    (TServerNPC.cpp:289-325). Mutation: give a known NPC the cell of the
+    segment it was first seen in and it lands in s11's cell."""
     c = make_client()
-    active(c, seg(1, 1))
-    props(c, X2=63.0, Y2=30.0)
+    active(c, GMAP)
+    props(c, GMAPLEVELX=1, GMAPLEVELY=1, X2=63.0, Y2=30.0)
     moved = _gint3(NPC) + bytes([int(0.0 * 2) + 32, int(30.0 * 2) + 32]) \
         + seg(2, 1).encode()
     c._handle_packet(PacketID.PLO_NPCMOVED, moved)
@@ -266,6 +266,79 @@ def test_live_update_after_the_npc_moved_segments_keeps_its_cell():
     npc = props(c, X2=0.5)
     assert npc['_level'] == seg(2, 1)
     assert world(npc) == (128.5, 94.0)
+
+
+def _walked_off(c, npc_id=NPC):
+    """An NPC first seen in s11 that NPCMOVED took to s21."""
+    props(c, npc_id=npc_id, GMAPLEVELX=1, GMAPLEVELY=1, X2=63.0, Y2=30.0)
+    moved = _gint3(npc_id) + bytes([32, int(30.0 * 2) + 32]) \
+        + seg(2, 1).encode()
+    c._handle_packet(PacketID.PLO_NPCMOVED, moved)
+    assert c.npcs[npc_id]['_level'] == seg(2, 1)
+
+
+def test_known_global_npc_joins_the_active_plain_level_and_copies_its_cell():
+    """TClient.cpp:2950-2951: a known NPC with an id of 1000 or more is added
+    to the active NPC level on every props packet; added to a plain level it
+    copies that level's cell (TServerNPC.cpp:289-325). Mutation: drop the
+    ``npc_id >= 1000`` branch of _npc_level_and_cell and it stays in s21."""
+    c = make_client()
+    active(c, GMAP)
+    _walked_off(c)
+    active(c, seg(1, 1))
+    npc = props(c, X2=0.5)
+    assert npc['_level'] == seg(1, 1)
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (1, 1)
+    assert world(npc) == (64.5, 94.0)
+
+
+def test_known_global_npc_under_the_gmap_keeps_its_cell():
+    c = make_client()
+    active(c, GMAP)
+    _walked_off(c)
+    npc = props(c, X2=0.5)
+    assert npc['_level'] == seg(2, 1)
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (2, 1)
+
+
+def test_known_global_npc_already_in_the_active_level_is_unchanged():
+    c = make_client()
+    active(c, seg(2, 1))
+    props(c, X2=10.0, Y2=10.0)
+    npc = props(c, X2=11.0)
+    assert npc['_level'] == seg(2, 1)
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (2, 1)
+    assert world(npc) == (139.0, 74.0)
+
+
+def test_known_npc_below_1000_is_not_moved_by_the_active_level():
+    c = make_client()
+    active(c, GMAP)
+    _walked_off(c, npc_id=999)
+    active(c, seg(1, 1))
+    npc = props(c, npc_id=999, X2=0.5)
+    assert npc['_level'] == seg(2, 1)
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (2, 1)
+
+
+def test_known_global_npc_joining_a_level_outside_the_grid_drops_its_cell():
+    c = make_client()
+    active(c, GMAP)
+    _walked_off(c)
+    active(c, "house.nw")
+    npc = props(c, X2=5.0, Y2=6.0)
+    assert npc['_level'] == "house.nw"
+    assert 'gmaplevelx' not in npc and 'gmaplevely' not in npc
+
+
+def test_known_global_npc_without_an_active_level_is_not_moved():
+    """The reference skips the join while the NPC target is null."""
+    c = make_client()
+    active(c, GMAP)
+    _walked_off(c)
+    c._npc_level = ""
+    npc = props(c, X2=0.5)
+    assert npc['_level'] == seg(2, 1)
 
 
 def test_npc_move_queue_starts_from_the_npc_cell():
@@ -436,3 +509,41 @@ def test_npcdel2_naming_the_gmap_clears_every_segment_bucket():
     assert 777 in c._npc_cache[seg(1, 1)]
     c._restore_cached_npcs(seg(1, 1))
     assert NPC not in c.npcs
+
+
+def test_pygserver_npc_walking_across_a_seam_keeps_its_world_position(
+        make_game):
+    """A live walk in the offline gmap world. The NPC (id 1500, so the
+    reference client's re-join rule applies to it, TClient.cpp:2950-2951)
+    starts in the player's segment, cell (1, 1). pygserver rolls it into the
+    west neighbour, cell (0, 1), as props only under the gmap's active level
+    (npc.py relocate_npc / confine_position), and keeps updating it there.
+    Mutation: apply the re-join with the player's segment as the target and
+    the NPC reads cell (1, 1) again, 64 tiles east of where it is."""
+    from offline_game import GMAP_SEGMENTS
+    game = make_game(gmap=True, gmap_segment=(1, 1), player_xy=(30.0, 30.0),
+                     npcs=[{"id": 1500, "x": 2.0, "y": 24.0,
+                            "image": "pics1.png",
+                            "imagepart": (0, 0, 32, 32)}])
+    npc = game.client.npcs[1500]
+    assert game.client._npc_level.endswith(".gmap")
+    assert npc['_level'] == GMAP_SEGMENTS[3]
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (1, 1)
+    assert world(npc) == (66.0, 88.0)
+
+    async def cross(w):
+        server_npc = w.server.npc_manager.get_npc(1500)
+        server_npc.x = -1.5
+        await w.server.npc_manager.confine_position(server_npc)
+    game.server.run(cross)
+    npc = game.client.npcs[1500]
+    assert npc['_level'] == GMAP_SEGMENTS[2]
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (0, 1)
+    assert world(npc) == (62.5, 88.0)
+
+    # the walk goes on in X2 alone: no cell prop is repeated
+    game.client._handle_packet(PacketID.PLO_NPCPROPS,
+                               npc_props(1500, X2=61.0))
+    npc = game.client.npcs[1500]
+    assert (npc['gmaplevelx'], npc['gmaplevely']) == (0, 1)
+    assert world(npc) == (61.0, 88.0)
