@@ -1135,24 +1135,25 @@
         },
         "assets": {
           "names": [
-            "block.png",
+            "bomb.png",
             "guiblue_window.png",
-            "head32.png"
+            "head32.png",
+            "sen_piano.png"
           ],
-          "refused": 3
+          "refused": 4
         },
         "bytecodes": {
           "class": 1,
           "gani": 0,
-          "npc": 5,
+          "npc": 11,
           "weapon": 8
         },
         "connected_at_end": true,
         "events": {
-          "calls": 6436,
+          "calls": 4996,
           "distinct": 13,
           "kinds": [
-            "npc.onlogmessage",
+            "npc.oncreated",
             "weapon.oncreated",
             "weapon.onplayerenters",
             "weapon.ontimeout",
@@ -1173,7 +1174,7 @@
             "weapon:lantern.oncreated"
           ]
         },
-        "frames": 1500,
+        "frames": 1240,
         "gui": {
           "classes": {
             "GuiCheckBoxCtrl": 2,
@@ -1221,7 +1222,7 @@
           "window_overlaps": []
         },
         "host_calls": {
-          "distinct": 38,
+          "distinct": 41,
           "missing": [],
           "names": [
             "addcontrol",
@@ -1252,20 +1253,23 @@
             "playlooped",
             "replaceani",
             "setani",
+            "setcharani",
             "seteffect",
             "setframetick",
             "setselectedrow",
+            "setshape2",
             "setspritesimage",
             "settimer",
             "showimg",
             "showstats",
             "showtext",
             "tiletype",
+            "timereverywhere",
             "triggerserver"
           ],
-          "total": 624653
+          "total": 629015
         },
-        "level": "zlttp-g3.nw",
+        "level": "zlttp-h4.nw",
         "logs": {
           "errors": 0,
           "kinds": [],
@@ -1281,7 +1285,7 @@
             "door"
           ],
           "gani_count": 0,
-          "npc_count": 5,
+          "npc_count": 11,
           "weapon": [
             "*system",
             "-player/functions",
@@ -1296,8 +1300,8 @@
         "wall_seconds": 25.0,
         "world": {
           "gs1_scripts": 0,
-          "npcs": 6,
-          "weapons": 8
+          "npcs": 14,
+          "weapons": 10
         }
       },
       "open_ui": [],
@@ -1348,7 +1352,7 @@
           "mobspawn"
         ]
       },
-      "recorded_at": "2026-08-06T04:04:10.675313+00:00",
+      "recorded_at": "2026-11-14T22:18:31.795633+00:00",
       "seconds": 25.0,
       "tolerance": {},
       "version": "6.037"
