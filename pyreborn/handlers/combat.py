@@ -106,7 +106,9 @@ def handle_explosion(client, data):
     # Explosion effect (packet 36). TClient.cpp:3593-3620 makeExplosion: the
     # same board, chain-detonation and self-damage path a fused bomb takes.
     exp = parse_explosion(data)
-    if exp:
+    # Dropped unless the level scope is the player's own level
+    # (TClient.cpp:3595).
+    if exp and client._scope_is_own_level():
         # PLO_EXPLOSION is level-local; bush cutting and presentation use
         # world coordinates on a map, like locally detonated bombs.
         if client.in_gmap_segment:
@@ -151,8 +153,9 @@ def handle_baddy_hurt(client, data):
 def handle_bomb_add(client, data):
     # Bomb placed by another player (packet 11). TClient.cpp:3555-3576: it
     # ticks here too (putBomb with sendToServer=false), with the wire fuse.
+    # It goes to the player's action level, not the level scope (:3558).
     info = parse_bomb_add(data)
-    level_name = client._pending_level_name or client._current_level_name
+    level_name = client.own_level_name()
     position = client._bomb_half_tile(info['x'], info['y'])
     for existing in client.bombs.get(level_name, {}).values():
         if (existing.get('local') and not existing.get('echoed')
@@ -176,7 +179,8 @@ def handle_bomb_del(client, data):
     # Bomb removed (packet 12): a plain removal, GServer-v2
     # PlayerClientPackets.cpp:251 - it stops ticking and does not explode.
     info = parse_bomb_del(data)
-    level_name = client._pending_level_name or client._current_level_name
+    # The player's action level (TClient.cpp:3584), not the level scope.
+    level_name = client.own_level_name()
     client._remove_bombs_at(level_name, info['x'], info['y'])
     emit(client, 'on_bomb_del', info['x'], info['y'])
 
@@ -197,7 +201,7 @@ def handle_arrow_add(client, data):
 def handle_horse_add(client, data):
     # Horse placed/mounted by another player (packet 17).
     info = parse_horse_add(data)
-    level_name = client._pending_level_name or client._current_level_name
+    level_name = client._level_scope_name()
     client.horses.setdefault(level_name, {})[(info['x'], info['y'])] = info
     emit(client, 'on_horse_add', info)
 
@@ -206,7 +210,7 @@ def handle_horse_add(client, data):
 def handle_horse_del(client, data):
     # Horse removed (packet 18).
     info = parse_horse_del(data)
-    level_name = client._pending_level_name or client._current_level_name
+    level_name = client._level_scope_name()
     client.horses.setdefault(level_name, {}).pop((info['x'], info['y']), None)
     emit(client, 'on_horse_del', info['x'], info['y'])
 

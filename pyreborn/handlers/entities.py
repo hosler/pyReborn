@@ -217,9 +217,11 @@ def handle_item_add(client, data):
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
         item_type = item_info.get('type', '')
-        # Pending names represent genuine entry streams; adjacent board
-        # preloads are routed separately and cannot poison this attribution.
-        level_name = client._pending_level_name or client._current_level_name
+        # Items of a level that is not the player's own are dropped
+        # (TClient.cpp:3665): an adjacent preload's scope is the neighbour.
+        if not client._scope_is_own_level():
+            return
+        level_name = client._level_scope_name()
         client.items.setdefault(level_name, {})[(x, y)] = item_type
         # The reference starts a fresh lifetime on receipt (putExtra 0xa4,
         # TClient.cpp:3685), including for items already lying there on entry.
@@ -234,9 +236,11 @@ def handle_item_del(client, data):
     if item_info:
         x = item_info.get('x', 0)
         y = item_info.get('y', 0)
-        # Use the same transfer owner as additions so matching local positions
-        # in different levels remain independent.
-        level_name = client._pending_level_name or client._current_level_name
+        # Same gate and level scope as additions (TClient.cpp:3719), so
+        # matching local positions in different levels stay independent.
+        if not client._scope_is_own_level():
+            return
+        level_name = client._level_scope_name()
         # The reference server relays a take to the OTHER players only; the
         # taker already removed its copy when it sent PLI_ITEMTAKE, and an
         # item that expired locally is gone too, so an unknown spot is a no-op.
@@ -286,8 +290,8 @@ def handle_baddy_props(client, data):
             baddy.update(props)
         else:
             # Preserve the per-level-store rule: search existing buckets first
-            # and use the genuine transfer/current level only for a new id.
-            level_name = client._pending_level_name or client._current_level_name
+            # and use the level scope only for a new id.
+            level_name = client._level_scope_name()
             client.baddies.setdefault(level_name, {})[baddy_id] = props
         emit(client, 'on_baddy', baddy_id, props)
 
@@ -370,7 +374,7 @@ def _npc_level_and_cell(client, npc_id, props):
     `_update_npc_world_coords` places it again.
     """
     grid = client.gmap_grid
-    active = client._pending_level_name or client._current_level_name
+    active = client._npc_level or client._current_level_name
     known = client.npcs.get(npc_id)
     if known is None:
         level = active
@@ -634,7 +638,7 @@ def _canonical_level_name(client, name):
     if not name:
         return name
     lowered = name.lower()
-    known = (client._current_level_name, client._pending_level_name,
+    known = (client._current_level_name, client._npc_level,
              *client.gmap_grid.values(), *client.levels)
     for candidate in known:
         if isinstance(candidate, str) and candidate.lower() == lowered:

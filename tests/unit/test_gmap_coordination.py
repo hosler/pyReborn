@@ -239,7 +239,7 @@ class TestBoardAttributionStaysOnCurrentSegment:
         """Simulate a real warp/spawn: PLO_LEVELNAME then PLO_BOARDPACKET,
         exactly like warp_to_level()'s optimistic flip + confirming board."""
         c._current_level_name = level_name
-        c._pending_level_name = level_name
+        c._level_scope = level_name
         c._handle_packet(PacketID.PLO_LEVELNAME, level_name.encode('latin-1'))
         c._handle_packet(PacketID.PLO_BOARDPACKET, _board(fill_tile))
 
@@ -307,7 +307,7 @@ class TestNpcWorldCoordDoubleOffsetGuard:
     def test_local_npc_coords_get_segment_offset_once(self):
         c = _client_with_grid()
         c._current_level_name = "chicken1.nw"  # grid (1, 1)
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
             42, _classic_pos(2, 20.0), _classic_pos(3, 30.0)))
         npc = c.npcs[42]
@@ -322,7 +322,7 @@ class TestNpcWorldCoordDoubleOffsetGuard:
         and this reads (84, 94)."""
         c = _client_with_grid()
         c._current_level_name = "chicken1.nw"  # grid (1, 1)
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
             42, _pixel_pos(75, 84.0), _pixel_pos(76, 94.0)))
         npc = c.npcs[42]
@@ -363,7 +363,7 @@ class TestNpcPosEpochSnapMark:
         """A genuinely new NPC's first PLO_NPCPROPS stamps a _pos_epoch."""
         c = _client_with_grid()
         c._current_level_name = "chicken1.nw"
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
             42, _classic_pos(2, 20.0), _classic_pos(3, 30.0)))
         assert c.npcs[42].get('_pos_epoch') is not None
@@ -374,7 +374,7 @@ class TestNpcPosEpochSnapMark:
         the renderer needs to keep lerping this one smoothly."""
         c = _client_with_grid()
         c._current_level_name = "chicken1.nw"
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c._handle_packet(PacketID.PLO_NPCPROPS, _npc_props(
             42, _classic_pos(2, 20.0), _classic_pos(3, 30.0)))
         epoch_after_create = c.npcs[42]['_pos_epoch']

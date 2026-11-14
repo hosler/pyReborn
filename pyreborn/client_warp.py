@@ -138,13 +138,13 @@ class WarpMixin:
             self.players.clear()
 
         self._current_level_name = level_name
-        # _pending_level_name is NOT flipped here: it routes level-scoped
-        # stream data (board/chest/sign/link/baddy/NPC) and everything the
+        # _level_scope and _npc_level are NOT flipped here: they route
+        # level-scoped stream data (board/chest/sign/link/baddy/NPC) and everything the
         # server sends before its PLO_LEVELNAME for this warp is, by
         # construction, data for the level we are LEAVING (its login/entry
         # stream is still in flight when a warp follows a login within
         # milliseconds). The server's PLO_LEVELNAME / PLO_SETACTIVELEVEL set
-        # the key when the new stream really starts (handlers/level.py).
+        # them when the new stream really starts (handlers/level.py).
         # Flipping it early filed chicken1.nw's chest under the warp target.
         # Keep player.level (the source of client.level and GS1 #L) in step
         # with the optimistic flip: it is otherwise only assigned on
@@ -369,7 +369,9 @@ class WarpMixin:
         logger.info("Warp to %r rejected by server (%s); restoring %r",
                     target, reason, prev_level)
         self._current_level_name = prev_level
-        self._pending_level_name = prev_level
+        self._level_scope = prev_level
+        self._level_scope_segment = prev_level
+        self._npc_level = prev_level
         # Mirror warp_to_level's optimistic player.level flip on rollback
         # (same gmap-name convention: only plain levels are stored there).
         if prev_level and not in_grid(self.gmap_grid, prev_level):

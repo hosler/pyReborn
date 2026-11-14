@@ -20,7 +20,7 @@ KEY = (7.0, 9.0)
 def make_client():
     client = Client("localhost", 14900)
     client._current_level_name = "A.nw"
-    client._pending_level_name = "A.nw"
+    client._level_scope = "A.nw"
     clock = [100.0]
     client.item_clock = lambda: clock[0]
     client.on_item = Mock()
@@ -103,7 +103,7 @@ def test_a_redrop_at_the_same_spot_gets_a_fresh_timer():
 def test_items_present_on_entry_start_their_timer_on_receipt():
     client, clock = make_client()
     clock[0] = 500.0
-    client._pending_level_name = "B.nw"
+    client._level_scope = client._current_level_name = "B.nw"
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)        # entry stream, long after the drop
     clock[0] += 5.0
     client.expire_items()
@@ -117,7 +117,9 @@ def test_levels_age_independently():
     client, clock = make_client()
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)
     clock[0] += 5.0
-    client._pending_level_name = "B.nw"
+    # the player moves to B: items are filed under the player's own level
+    # (the reference drops items of any other, TClient.cpp:3665)
+    client._level_scope = client._current_level_name = "B.nw"
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)
     clock[0] += 4.0
     client.expire_items()
@@ -263,8 +265,9 @@ def test_level_change_sends_no_burst_for_the_old_levels_items():
 
 def test_a_bucket_for_another_level_is_pruned_silently():
     client, clock = make_connected_client()
-    client._pending_level_name = "B.nw"
+    client._level_scope = client._current_level_name = "B.nw"
     client._handle_packet(PacketID.PLO_ITEMADD, ADD)      # stored under B.nw
+    client._level_scope = client._current_level_name = "A.nw"   # then the player leaves
     clock[0] += 9.0
     assert client.expire_items() == [("B.nw", 7.0, 9.0, "bluerupee")]
     assert sent_itemdels(client) == []

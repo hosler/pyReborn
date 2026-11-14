@@ -25,7 +25,7 @@ def test_chest_helpers_keep_identical_coordinates_independent():
 def test_chest_packet_uses_the_sign_stream_attribution_rule():
     client = Client("localhost", 14900)
     client._current_level_name = "player.nw"
-    client._pending_level_name = "preloaded.nw"
+    client._level_scope = "preloaded.nw"
 
     client._handle_packet(
         PacketID.PLO_LEVELCHEST, _chest_packet(False, 7, 9, item=1))
@@ -38,18 +38,22 @@ def test_chest_packet_uses_the_sign_stream_attribution_rule():
 def test_live_item_packet_ignores_stale_adjacent_preload_attribution():
     client = Client("localhost", 14900)
     client._current_level_name = "chicken1.nw"
-    client._pending_level_name = "chicken1.nw"
+    client._level_scope = "chicken1.nw"
     client.gmap_width = 2
     client.gmap_height = 1
     client.gmap_grid = {(0, 0): "chicken1.nw", (1, 0): "chicken8.nw"}
     client._adjacent_level_requests.add("chicken8.nw")
 
     client._handle_packet(PacketID.PLO_LEVELNAME, b"chicken8.nw")
+    # The block of the neighbour ends with the player's own level name
+    # (GServer-v2 server/src/player/PlayerClient.cpp:1518); without it the
+    # scope would still be the neighbour and the item would be dropped.
+    client._handle_packet(PacketID.PLO_LEVELNAME, b"world.gmap")
 
     # PLO_ITEMADD carries gchar half-tile coordinates followed by item id.
     client._handle_packet(PacketID.PLO_ITEMADD, bytes((32 + 14, 32 + 18, 33)))
 
-    assert client._pending_level_name == "chicken1.nw"
+    assert client._level_scope_name() == "chicken1.nw"
     assert client.items == {"chicken1.nw": {(7.0, 9.0): "bluerupee"}}
     assert "chicken8.nw" not in client.items
 

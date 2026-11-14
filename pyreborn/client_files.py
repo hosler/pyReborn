@@ -46,7 +46,7 @@ class FileTransferMixin:
         # The level the SERVER will apply this to is the one the player is
         # standing in (its own `self.level`), so the optimistic local patch
         # has to use that same level - segment-aware, because on a gmap the
-        # board is one segment. It used to read _pending_level_name first,
+        # board is one segment. It used to read the level scope first,
         # but that is stream-routing state: an adjacent-level PRELOAD moves
         # it without moving the player, and the edit then patched the
         # preloaded neighbour's cached board while the painter's own view

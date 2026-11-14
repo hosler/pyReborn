@@ -97,7 +97,7 @@ def test_an_adjacent_preload_answered_in_another_case_is_still_a_preload(
     client._adjacent_level_requests.add("Fixture_Far.nw")
     handle_level_name(client, b"fixture_far.nw")
     assert client._adjacent_level_requests == set()
-    assert client._pending_board_level_name == "fixture_far.nw"
+    assert client._level_scope == "fixture_far.nw"
 
 
 def test_the_adjacent_request_keeps_the_spelling_the_grid_gave(make_client):

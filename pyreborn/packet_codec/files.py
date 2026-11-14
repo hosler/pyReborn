@@ -111,8 +111,10 @@ def parse_level_modtime(data: bytes) -> int:
 
 
 def parse_set_active_level(data: bytes) -> str:
-    """PLO_SETACTIVELEVEL (156): raw level name. Routes subsequent
-    chest/baddy/npc/board packets to this level."""
+    """PLO_SETACTIVELEVEL (156): raw level name. It names the owner of the
+    NPC packets that follow (a ``.gmap`` name is a map object). Level-scoped
+    data (items, chests, signs, links, board changes) is not routed by it; see
+    ``GmapMixin._level_scope_name``."""
     return data.decode('latin-1', errors='replace')
 
 

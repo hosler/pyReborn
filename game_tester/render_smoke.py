@@ -683,7 +683,7 @@ def _t5b_editor_paint(game, c1, c2):
         assert editor.read_tile(x, y) == painted, (
             f"the painter's own board: read {editor.read_tile(x, y)}, "
             f"wanted {painted} (level {level}, tiles level "
-            f"{c1._tiles_level_name}, pending {c1._pending_level_name})")
+            f"{c1._tiles_level_name}, pending {c1._level_scope})")
         assert c2.get_tile(x, y) == painted, (
             "the edit never reached the other client")
 
@@ -769,7 +769,7 @@ def _run_checks(stack: ExitStack) -> int:
     #   tier1a_server_arrow_renders   (server consumes ammo before relaying;
     #                                  0 arrows -> no PLO_ARROWADD at all)
     #   tier1b_board_modify_...       (packet-7 delta on a gmap gets routed by
-    #                                  a stale _pending_level_name, so the
+    #                                  a stale _level_scope, so the
     #                                  active segment is never patched)
     #   tier3a_mp_ap_hud_...          (the mp=7 fixture pin never landed)
     # Detect that up front and say so, instead of letting those failures

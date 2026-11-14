@@ -383,7 +383,7 @@ class CombatMixin:
         if now is None:
             now = self.clock.sim_now()
         live_levels = {fold(self._current_level_name),
-                       fold(self._pending_level_name)}
+                       fold(self.own_level_name())}
         if self.in_gmap_segment:
             live_levels.update(fold(name) for name in self.gmap_grid.values())
         for record in list(self._bomb_records()):

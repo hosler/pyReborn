@@ -48,7 +48,7 @@ def move_record(version, x, y, dx, dy, ticks, options):
 def client(request):
     result = Client('127.0.0.1', 14900, version=request.param)
     result.player.level = result._current_level_name = 'a.nw'
-    result._pending_level_name = 'a.nw'
+    result._level_scope = 'a.nw'
     result.test_version = request.param
     return result
 

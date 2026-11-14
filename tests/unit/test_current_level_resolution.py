@@ -15,8 +15,8 @@ def _client_with_configured_grid() -> Client:
 def test_configured_grid_does_not_override_standalone_current_level():
     client = _client_with_configured_grid()
     client._current_level_name = "standalone.nw"
-    client._pending_level_name = "east.nw"
-    client.active_level = "east.nw"
+    client._level_scope = "east.nw"
+    client._npc_level = "east.nw"
     client.player.x = 70.0
     client.player.y = 5.0
 

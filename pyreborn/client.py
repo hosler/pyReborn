@@ -522,7 +522,7 @@ class Client(CallbackMixin, MovementMixin, CombatMixin, AppearanceMixin, Actions
         # (for example after a server-side warp to a standalone level).  Only
         # interpret player coordinates as world coordinates while the
         # authoritative current level still identifies that world.  Do not use
-        # _pending_level_name/active_level here: adjacent-level preloads change
+        # _level_scope/_npc_level here: adjacent-level preloads change
         # those stream-routing fields without moving the player.
         current_is_gmap = (
             in_grid(self.gmap_grid, self._current_level_name)
@@ -704,7 +704,7 @@ for _alias_name, (_alias_component, _alias_field) in _STATE_ALIASES.items():
 # Public names for the state the game layer reads. The flat names above that
 # carry a leading underscore are historical; the game layer uses these.
 _PUBLIC_STATE_ALIASES = (
-    'current_level_name', 'pending_level_name', 'board_layers_level_name',
+    'current_level_name', 'board_layers_level_name',
     'local_level_transition', 'local_level_transition_epoch',
     'local_level_transition_started', 'local_level_transition_direction',
     'plain_level_change_epoch', 'gmap_offset_x', 'gmap_offset_y',

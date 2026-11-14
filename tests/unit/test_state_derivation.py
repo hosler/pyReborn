@@ -10,7 +10,10 @@ import pytest
 from pyreborn import client_state as cs
 from pyreborn.client import Client, _STATE_ALIASES
 
-# _STATE_ALIASES as it was hand-written before it was derived (178 rows).
+# _STATE_ALIASES as it was hand-written before it was derived (178 rows). The level
+# targets were later reworked: _level_scope replaced _pending_level_name, and
+# _npc_level and _level_scope_segment replaced _pending_board_level_name and
+# active_level.
 OLD_STATE_ALIASES = {
     '_adjacent_level_requests': ('level_state', 'adjacent_level_requests'),
     '_arrow_hurt_suppress': ('combat_state', 'arrow_hurt_suppress'),
@@ -44,9 +47,10 @@ OLD_STATE_ALIASES = {
     '_npc_pos_epoch': ('entities', 'npc_pos_epoch'),
     '_own_recent_arrows': ('combat_state', 'own_recent_arrows'),
     '_pending_arrow_hits': ('combat_state', 'pending_arrow_hits'),
-    '_pending_board_level_name': ('level_state', 'pending_board_level_name'),
     '_pending_files': ('file_transfers', 'pending_files'),
-    '_pending_level_name': ('level_state', 'pending_level_name'),
+    '_level_scope': ('level_state', 'level_scope'),
+    '_level_scope_segment': ('level_state', 'level_scope_segment'),
+    '_npc_level': ('level_state', 'npc_level'),
     '_plain_level_change_epoch': ('warp_state', 'plain_level_change_epoch'),
     '_raw_data_expected': ('session', 'raw_data_expected'),
     '_received_files': ('file_transfers', 'received_files'),
@@ -56,11 +60,11 @@ OLD_STATE_ALIASES = {
     '_update_packages': ('file_transfers', 'update_packages'),
     '_uptodate_files': ('file_transfers', 'uptodate_files'),
     '_use_pixel_props': ('session', 'use_pixel_props'),
+    '_original_flow': ('session', 'original_flow'),
     '_warned_packet_errors': ('instrumentation', 'warned_packet_errors'),
     '_warp_echo': ('warp_state', 'warp_echo'),
     '_warp_fallback': ('warp_state', 'warp_fallback'),
     'active_explosions': ('entities', 'active_explosions'),
-    'active_level': ('level_state', 'active_level'),
     'all_players': ('entities', 'all_players'),
     'arrows': ('entities', 'arrows'),
     'auto_respond_hurt': ('combat_state', 'auto_respond_hurt'),
@@ -300,7 +304,7 @@ OLD_PACKET_EXPORTS = [
 
 def test_derived_aliases_equal_old_hand_table():
     assert _STATE_ALIASES == OLD_STATE_ALIASES
-    assert len(_STATE_ALIASES) == 178
+    assert len(_STATE_ALIASES) == 179
 
 
 def test_every_alias_is_an_installed_property():

@@ -76,17 +76,17 @@ class TestLevelLinkDedup:
         assert len(c.links["chicken1.nw"]) == 3
 
     def test_revisit_across_pending_and_current_level_name(self):
-        """Full re-stream on entry uses _pending_level_name. A subsequent
+        """Full re-stream on entry uses _level_scope. A subsequent
         revisit that resolves through _current_level_name instead must
         still be recognized as the same level's link list."""
         c = _fake_connected_client()
         link_bytes = _link_packet("chicken7.nw", 62, 30, 2, 2, 1, 30)
 
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c._current_level_name = None
         c._handle_packet(PacketID.PLO_LEVELLINK, link_bytes)
 
-        c._pending_level_name = None
+        c._level_scope = None
         c._current_level_name = "chicken1.nw"
         c._handle_packet(PacketID.PLO_LEVELLINK, link_bytes)
 

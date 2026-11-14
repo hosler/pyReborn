@@ -38,7 +38,7 @@ def _client(level="outside.nw", x=30.0, y=30.0):
     client._protocol = _ProtocolStub()
     client._authenticated = True
     client._current_level_name = level
-    client._pending_level_name = level
+    client._level_scope = level
     client.player.x = x
     client.player.y = y
     client.tiles = [1] * 4096

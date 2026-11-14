@@ -103,7 +103,7 @@ def _connected_client():
 def test_failed_warp_send_restores_previous_state():
     client = _connected_client()
     client._current_level_name = "before.nw"
-    client._pending_level_name = "before.nw"
+    client._level_scope = "before.nw"
     client.player.x = 12.0
     client.player.y = 13.0
     client.levels["before.nw"] = [1] * 4096

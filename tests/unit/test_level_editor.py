@@ -515,7 +515,7 @@ def test_export_falls_back_to_no_chest_sign_when_the_wire_never_sent_one():
 def test_modify_board_patches_the_level_the_server_will_apply_it_to():
     """The server applies PLI_BOARDMODIFY to the player's OWN level.
 
-    `_pending_level_name` is stream-routing state: preloading an adjacent
+    `_level_scope` is stream-routing state: preloading an adjacent
     gmap segment moves it without moving the player. Patching that level
     instead sent the edit to the server correctly but painted the wrong
     cached board, so the painter's own view never changed.
@@ -533,7 +533,7 @@ def test_modify_board_patches_the_level_the_server_will_apply_it_to():
     # Minimal state: standing in "here", preloading the neighbour "there".
     client.get_current_level_from_position = lambda: "here.nw"
     client.level_state = SimpleNamespace(current_level_name="here.nw",
-                                         pending_level_name="there.nw")
+                                         level_scope="there.nw")
 
     assert Client.modify_board(client, 5, 5, 1, 1, [42]) is True
     assert patched['level'] == "here.nw", (
@@ -620,18 +620,19 @@ def test_a_stroke_stops_at_the_seam_instead_of_wrapping():
 def test_an_inbound_delta_lands_on_the_level_we_are_standing_in():
     """PLO_BOARDMODIFY carries no level either, and the same trap applies.
 
-    The receiving side used to route it by `_pending_level_name`, which an
-    adjacent-segment preload moves without moving the player - so another
+    The receiving side used to route it by a stream field that an
+    adjacent-segment preload moved without moving the player - so another
     builder's edit was applied to whichever neighbour streamed last and never
-    appeared where it was painted.
+    appeared where it was painted. It now reads the level scope, which a
+    `.gmap` scope resolves to the player's segment and which a preload only
+    holds for the length of its own block.
     """
     from pyreborn.handlers.level import handle_board_modify
     from pyreborn.packets import build_board_modify
 
     patched = {}
     client = SimpleNamespace(
-        get_current_level_from_position=lambda: "here.nw",
-        _pending_level_name="there.nw",
+        _level_scope_name=lambda: "here.nw",
         _current_level_name="here.nw",
         on_board_modify=None,
         _apply_board_modify=lambda name, info: patched.update({'level': name}),

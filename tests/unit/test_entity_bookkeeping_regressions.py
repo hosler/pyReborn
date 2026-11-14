@@ -34,11 +34,12 @@ def test_adjacent_request_in_flight_is_not_sent_again_after_crossing():
         (0, 1): "C.nw", (1, 1): "D.nw",
     }
     client._current_level_name = "A.nw"
-    client._pending_level_name = "A.nw"
+    client._level_scope = "A.nw"
 
     client.request_adjacent_levels()
     client._current_level_name = "B.nw"
-    client._pending_level_name = "B.nw"
+    client._level_scope = "B.nw"
+    client._level_scope_segment = "B.nw"
     client.request_adjacent_levels()
 
     requests = [call.args[1][5:].decode("latin-1")
@@ -46,6 +47,7 @@ def test_adjacent_request_in_flight_is_not_sent_again_after_crossing():
     for level_name in requests:
         if level_name == "D.nw":
             client._handle_packet(PacketID.PLO_LEVELNAME, b"D.nw")
+            client._handle_packet(PacketID.PLO_LEVELNAME, b"world.gmap")
     client._handle_packet(PacketID.PLO_ITEMADD, bytes((46, 50, 33)))
 
     assert requests.count("D.nw") == 1
@@ -56,8 +58,7 @@ def test_adjacent_request_in_flight_is_not_sent_again_after_crossing():
 def test_bombs_are_independent_per_level_and_ignore_stale_preload():
     client = Client("localhost", 14900)
     client._current_level_name = "chicken1.nw"
-    client._pending_level_name = "chicken1.nw"
-    client._pending_board_level_name = "chicken8.nw"
+    client._level_scope = "chicken1.nw"
     payload = bytes((32, 32, 32 + 12, 32 + 44, 33, 32 + 60))
 
     client._handle_packet(PacketID.PLO_BOMBADD, payload)
@@ -74,7 +75,7 @@ def _board_layer_payload(layer: int, tile_byte: int) -> bytes:
 def test_adjacent_preload_layers_do_not_replace_active_level_layers():
     client = Client("localhost", 14900)
     client._current_level_name = "myown.nw"
-    client._pending_level_name = "myown.nw"
+    client._level_scope = "myown.nw"
     client.board_layers = {1: b"own-layer"}
     client._board_layers_level_name = "myown.nw"
     client._adjacent_level_requests.add("neighbor.nw")
@@ -86,13 +87,13 @@ def test_adjacent_preload_layers_do_not_replace_active_level_layers():
 
     assert client.board_layers == {1: b"own-layer"}
     assert client._board_layers_level_name == "myown.nw"
-    assert client._pending_board_level_name == "neighbor.nw"
+    assert client._level_scope == "neighbor.nw"
 
 
 def test_genuine_level_transfer_attributes_every_board_layer():
     client = Client("localhost", 14900)
     client._current_level_name = "old.nw"
-    client._pending_level_name = "old.nw"
+    client._level_scope = "old.nw"
     client.board_layers = {1: b"old-layer"}
     client._board_layers_level_name = "old.nw"
 
@@ -112,7 +113,7 @@ def test_genuine_level_transfer_attributes_every_board_layer():
 def test_genuine_transfer_clears_layers_when_next_level_has_none():
     client = Client("localhost", 14900)
     client._current_level_name = "A.nw"
-    client._pending_level_name = "A.nw"
+    client._level_scope = "A.nw"
     client.board_layers = {1: b"old-layer"}
     client._board_layers_level_name = "A.nw"
 

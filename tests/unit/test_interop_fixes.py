@@ -168,7 +168,7 @@ class TestWarpFailedRestore:
     def _client_in_level(self, level="qa_testlevel.nw", x=30.0, y=30.0):
         c = _fake_connected_client()
         c._current_level_name = level
-        c._pending_level_name = level
+        c._level_scope = level
         c.player.x = x
         c.player.y = y
         c.levels[level] = [0] * 4096
@@ -284,7 +284,7 @@ class TestGmapAdjacentPreloadLevelName:
     def test_adjacent_preload_does_not_relabel_current_level(self):
         c = self._client_with_grid()
         c._current_level_name = "chicken1.nw"
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c.player.x, c.player.y = 94.0, 94.5  # world coords, grid (1, 1)
 
         # Adjacent-preload push for a diagonal neighbour: PLO_LEVELNAME alone,
@@ -293,22 +293,26 @@ class TestGmapAdjacentPreloadLevelName:
         c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken8.nw")
 
         assert c._current_level_name == "chicken1.nw"
-        assert c._pending_level_name == "chicken1.nw"
-        assert c._pending_board_level_name == "chicken8.nw"
+        # the block streams the neighbour's data into the neighbour; its
+        # closing PLO_LEVELNAME (the player's own level) puts the scope back
+        assert c._level_scope == "chicken8.nw"
+        c._handle_packet(PacketID.PLO_LEVELNAME, b"world.gmap")
+        assert c._level_scope_name() == "chicken1.nw"
 
     def test_adjacent_preload_of_every_neighbour_leaves_level_alone(self):
         # request_adjacent_levels() fires one PLI_ADJACENTLEVEL per neighbour;
         # simulate all 8 responses landing after the real spawn segment.
         c = self._client_with_grid()
         c._current_level_name = "chicken1.nw"
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c.player.x, c.player.y = 94.0, 94.5
         for name in ["chicken4.nw", "chicken5.nw", "chicken6.nw", "chicken2.nw",
                      "chicken7.nw", "chicken3.nw", "chicken9.nw", "chicken8.nw"]:
             c._adjacent_level_requests.add(name)
             c._handle_packet(PacketID.PLO_LEVELNAME, name.encode('latin-1'))
+            c._handle_packet(PacketID.PLO_LEVELNAME, b"world.gmap")
         assert c._current_level_name == "chicken1.nw"
-        assert c._pending_level_name == "chicken1.nw"
+        assert c._level_scope_name() == "chicken1.nw"
 
     def test_real_gmap_warp_still_updates_current_level(self):
         # A genuine server-initiated warp within the gmap (RC teleport,
@@ -317,7 +321,7 @@ class TestGmapAdjacentPreloadLevelName:
         # signal and must still relabel the current level.
         c = self._client_with_grid()
         c._current_level_name = "chicken1.nw"
-        c._pending_level_name = "chicken1.nw"
+        c._level_scope = "chicken1.nw"
         c.player.x, c.player.y = 94.0, 94.5
 
         c._handle_packet(PacketID.PLO_LEVELNAME, b"chicken6.nw")

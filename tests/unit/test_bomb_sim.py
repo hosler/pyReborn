@@ -317,7 +317,7 @@ def test_bombs_of_a_level_we_left_are_dropped_silently(client, clock):
     exploded = Mock()
     client.on_bomb_exploded = exploded
     client.put_bomb(30.0, 30.0)
-    client._current_level_name = client._pending_level_name = 'elsewhere.nw'
+    client._current_level_name = client._level_scope = 'elsewhere.nw'
     clock.now += 5
     client._tick_bomb_sims()
     assert client.bombs[LEVEL] == {}

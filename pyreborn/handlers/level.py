@@ -28,6 +28,7 @@ from ..packets import (
 )
 from ..client_callbacks import emit
 from ..gmap_coords import get_ci, has_level, in_grid, same_level
+from ..npc_handler import is_map_name
 from .registry import handles
 
 logger = logging.getLogger(__name__)
@@ -47,13 +48,17 @@ def _load_cached_gmap(client, filename: str, blob: bytes) -> None:
         client.request_file(filename)
 
 
+def _is_current_map(client, map_name):
+    """Whether `.gmap` name `map_name` is the map the player is on. A map is
+    taken for the current one until another is known to be."""
+    known = client.gmap_name or client._requested_gmap
+    return not known or same_level(known, map_name)
+
+
 @handles(PacketID.PLO_LEVELNAME)
 def handle_level_name(client, data):
     # Level name - track which level we're receiving data for
     level_name = parse_level_name(data)
-    # Every LEVELNAME starts a new static-data context. An adjacent .nw
-    # announcement below immediately replaces this with its preload target.
-    client._pending_board_level_name = ""
     if level_name.endswith('.nw'):
         client.level_state.streaming_level_name = level_name
     # .nw files are actual levels, .gmap is the world map name
@@ -65,7 +70,6 @@ def handle_level_name(client, data):
         is_adjacent_preload = requested is not None
         if is_adjacent_preload:
             client._adjacent_level_requests.discard(requested)
-            client._pending_board_level_name = level_name
         # A real level transition (server push via PLO_PLAYERWARP/
         # PLO_PLAYERWARP2 for RC warps/respawn, or a client-initiated
         # warp_to_level()) always (re-)announces the destination via
@@ -108,7 +112,7 @@ def handle_level_name(client, data):
             # evidence that a client-requested warp failed.  In
             # particular, link-touch can race an old/adjacent board
             # response queued before PLI_LEVELWARP.  Route its board
-            # through _pending_level_name below, but keep the requested
+            # through the level scope below, but keep the requested
             # destination active and the camera held.  A PLAYERWARP
             # naming another level is the authoritative rejection.
             pass
@@ -166,9 +170,26 @@ def handle_level_name(client, data):
                 and has_level(client.levels, level_name)):
             client.tiles = get_ci(client.levels, level_name)
             client._tiles_level_name = level_name
-        # Track for tile storage
+        # The level scope is the PLO_LEVELNAME target (TClient.cpp:3224-3241).
+        # An adjacent preload sets it to the neighbour for the length of that
+        # static block (board, links, chests, signs land there); the closing
+        # PLO_LEVELNAME of the block sets it back. Any other level is the
+        # player's entry, and also the NPC owner until PLO_SETACTIVELEVEL
+        # names it. That approximates the reference, which sets the NPC
+        # target at level load only when the scope does not name the loaded
+        # level (TPlayer.cpp:941-946; `_own_warp_moves_targets` does that
+        # for a warp without PLO_LEVELNAME). It differs in one window: an
+        # NPC packet between this PLO_LEVELNAME and PLO_SETACTIVELEVEL is
+        # filed here, where the reference files it under the previous NPC
+        # target.
+        client._level_scope = level_name
         if not is_adjacent_preload:
-            client._pending_level_name = level_name
+            client._level_scope_segment = level_name
+            client._npc_level = level_name
+    elif is_map_name(level_name) and _is_current_map(client, level_name):
+        # The current map: the scope is the player's own segment, resolved
+        # when read. Another map leaves it unchanged (TClient.cpp:3224-3241).
+        client._level_scope = level_name
     # Set player.level to GMAP name if available, else level name
     if level_name.endswith('.gmap') or not client.player.level:
         client.player.level = level_name
@@ -238,10 +259,8 @@ def handle_board_packet(client, data):
     # compressed/raw path - PLO_RAWDATA's payload is re-emitted with this
     # same packet_id once its byte count is satisfied, see protocol.py).
     tiles = parse_board_packet(data)
-    # Store in levels dict using the pending level name
-    level_for_tiles = (client._pending_board_level_name
-                       or client._pending_level_name
-                       or client._current_level_name)
+    # Store in levels dict under the level scope
+    level_for_tiles = client._level_scope_name()
     if level_for_tiles:
         client.levels[level_for_tiles] = tiles
         # A real board means the level changed since the mod time we sent (or
@@ -280,6 +299,43 @@ def handle_board_packet(client, data):
     emit(client, 'on_level', tiles)
 
 
+def _own_warp_moves_targets(client, level):
+    """What the reference client does to its two level targets when the
+    server warps the player (PLO_PLAYERWARP / PLO_PLAYERWARP2).
+
+    A warp naming a loaded ``.gmap`` sets the level scope to that map and
+    clears the bound level; the entry stream then re-binds it
+    (TClient.cpp:3003-3004 and :3401-3402 for the plain warp, :3054-3060 for
+    the warp with a map position). A map that is not loaded changes nothing.
+    A plain level leaves the scope alone: the level load then sets the NPC
+    target to the new level only when the scope does not already name it
+    (TPlayer.cpp:941-946). A modern-flow server names every level, so the
+    scope follows PLO_LEVELNAME. A session on the original-client flow is the
+    exception, handled below.
+    """
+    if is_map_name(level):
+        if client.gmap_grid and _is_current_map(client, level):
+            client._level_scope = level
+    elif client._original_flow:
+        # The server's original-client flow (login type PLTYPE_CLIENT,
+        # GServer-v2 PlayerLogin.cpp:68-69) sends PLO_LEVELNAME only for the
+        # first level (PlayerClientOriginal.cpp:158-160). No reference client
+        # is served by that flow, so there is no reference behaviour to
+        # port: the warp itself names the player's level, and everything
+        # level-scoped lands there instead of stranding on the first level.
+        if not same_level(client._current_level_name, level):
+            client._current_level_name = level
+            client._plain_level_change_epoch += 1
+            client._reset_level_state()
+            client._restore_cached_npcs(level)
+            client._restore_cached_layers(level)
+        client._level_scope = level
+        client._level_scope_segment = level
+        client._npc_level = level
+    elif not same_level(client._level_scope, level):
+        client._npc_level = level
+
+
 @handles(PacketID.PLO_PLAYERWARP)
 def handle_player_warp(client, data):
     # Player warp/spawn position (packet 14) - non-GMAP levels
@@ -298,6 +354,7 @@ def handle_player_warp(client, data):
             client.player.y = warp.get('y', 0)
         if level:
             client.player.level = level
+            _own_warp_moves_targets(client, level)
 
 
 @handles(PacketID.PLO_PLAYERWARP2)
@@ -351,6 +408,8 @@ def handle_player_warp2(client, data):
         # Update level name from gmap grid if available
         if client.gmap_grid and (gmap_x, gmap_y) in client.gmap_grid:
             client._current_level_name = client.gmap_grid[(gmap_x, gmap_y)]
+        if level:
+            _own_warp_moves_targets(client, level)
         # Segment warp with the grid already loaded: the world frame
         # is established right here, so a held transition can end.
         client._maybe_release_local_transition()
@@ -360,7 +419,7 @@ def handle_player_warp2(client, data):
 def handle_level_link(client, data):
     # Level links
     link = parse_level_link(data)
-    level_for_link = client._pending_level_name or client._current_level_name
+    level_for_link = client._level_scope_name()
     if link and level_for_link:
         if level_for_link not in client.links:
             client.links[level_for_link] = []
@@ -381,9 +440,9 @@ def handle_level_chest(client, data):
     chest = parse_level_chest(data)
     if chest:
         # Match sign attribution exactly: during gmap preloading the
-        # pending board owns streamed local coordinates, not necessarily
-        # the segment containing the player.
-        lvl = client._pending_level_name or client._current_level_name
+        # level scope is the neighbour that owns the streamed local
+        # coordinates, not necessarily the segment containing the player.
+        lvl = client._level_scope_name()
         key = (chest['x'], chest['y'])
         client.chests.setdefault(lvl, {})[key] = chest['opened']
         # Remember the item an unopened chest holds (only sent on warp), and
@@ -404,7 +463,7 @@ def handle_level_sign(client, data):
         # Key signs by the level they belong to (the level whose board is
         # currently being received) so a sign never shows in another level
         # — local sign coords collide across segments otherwise.
-        lvl = client._pending_level_name or client._current_level_name
+        lvl = client._level_scope_name()
         client.signs.setdefault(lvl, {})[(sign['x'], sign['y'])] = sign['text']
         # Arrival-order list for `say <n>` index addressing - the dict
         # above collapses coordinate collisions (see client_state.py).
@@ -436,14 +495,11 @@ def handle_board_layer(client, data):
     # Board layer (packet 107)
     layer = parse_board_layer(data)
     if layer:
-        level_name = (client._pending_board_level_name
-                      or client._pending_level_name
-                      or client._current_level_name)
+        level_name = client._level_scope_name()
         # board_layers is a single-level store. Adjacent layers remain
         # available from their source board stream only for routing purposes;
         # merging them here would corrupt the active level's composite.
-        if (client._pending_board_level_name
-                and level_name != client._current_level_name):
+        if not client._scope_is_own_level():
             return
         if level_name != client._board_layers_level_name:
             client.board_layers.clear()
@@ -457,14 +513,12 @@ def handle_board_modify(client, data):
     # Single-level tile delta (packet 7). It carries no level, and the server
     # only relays it to players in (or beside) the sender's own level, so the
     # target is the level WE are standing in - segment-aware, exactly like
-    # Client.modify_board's local patch. Reading _pending_level_name first
-    # broke this on a gmap: streaming an adjacent segment moves that field
-    # without moving the player, so another builder's edit landed on whichever
-    # neighbour preloaded last and the painted tile never appeared.
+    # Client.modify_board's local patch. The level scope (the reference's
+    # target for this, TClient.cpp:3224-3241) is the neighbour only while an
+    # adjacent preload streams, and a `.gmap` scope resolves to the segment
+    # under the player, so another builder's edit lands in the player's level.
     info = parse_board_modify(data)
-    level_name = (client.get_current_level_from_position()
-                  or client._pending_level_name
-                  or client._current_level_name)
+    level_name = client._level_scope_name()
     if level_name:
         client._apply_board_modify(level_name, info)
     emit(client, 'on_board_modify', info)
@@ -478,7 +532,7 @@ def handle_board_modify2(client, data):
     info = parse_board_modify2(data)
     level_name = client.gmap_grid.get((info['map_x'], info['map_y']))
     if not level_name:
-        level_name = client._pending_level_name or client._current_level_name
+        level_name = client._level_scope_name()
     if level_name:
         client._apply_board_modify(level_name, info)
     emit(client, 'on_board_modify', info)
@@ -504,7 +558,7 @@ def handle_level_board(client, data):
     # triggered) but cheap to support if it ever is.
     if data:
         from ..packets import PacketReader as _PacketReader
-        level_name = client._pending_level_name or client._current_level_name
+        level_name = client._level_scope_name()
         reader = _PacketReader(data)
         while reader.pos < len(data):
             start = reader.pos
@@ -539,14 +593,14 @@ def handle_level_mod_time(client, data):
     # Mod time of the level being streamed (packet 39). The reference sends it
     # at the end of the static data (PlayerClient.cpp:1513), before the
     # set-active-level packet, so the active level is still the previous one.
-    level = (client.level_state.streaming_level_name or client.active_level
-             or client._pending_level_name)
+    level = (client.level_state.streaming_level_name
+             or client._level_scope_name())
     client.level_modtimes[level] = parse_level_modtime(data)
 
 
 @handles(PacketID.PLO_SETACTIVELEVEL)
 def handle_set_active_level(client, data):
-    # Active level for subsequent chest/baddy/npc/board packets (packet 156).
-    client.active_level = parse_set_active_level(data)
-    # Route level-scoped data (board/chest/sign) to this level too.
-    client._pending_level_name = client.active_level
+    # Owner of the NPC packets that follow (packet 156). The name may be a
+    # .gmap. It sets only the NPC target: level-scoped data keeps the
+    # PLO_LEVELNAME scope (TClient.cpp:3777-3784).
+    client._npc_level = parse_set_active_level(data)

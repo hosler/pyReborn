@@ -373,7 +373,7 @@ def test_updateboard_never_publishes_a_neighbor_as_the_senders_segment():
     from pyreborn.packets import parse_board_modify
     c = _gmap_client()
     send = _wire_recorder(c)
-    c._pending_level_name = 'zb.nw'  # adjacent preload must not redirect edit
+    c._level_scope = 'zb.nw'  # adjacent preload must not redirect edit
     board_update_region(c, 62, 0, 4, 1)
     assert send.call_count == 1
     assert parse_board_modify(send.call_args.args[1])['tiles'] == [1, 1]

@@ -25,7 +25,7 @@ Mutations (each fails the named assertion):
     -> test_a_warp_out_of_the_loaded_gmap_is_still_a_warp
   * drop the ``_restore_cached_layers`` call in warp_to_level
     -> test_extra_layers_survive_leaving_and_returning
-  * key handle_level_mod_time on ``client.active_level`` again (drop
+  * key handle_level_mod_time on ``client._npc_level`` again (drop
     ``level_state.streaming_level_name``)
     -> test_the_mod_time_is_stored_under_the_level_being_streamed and
        test_an_adjacent_preloads_mod_time_leaves_the_current_levels_alone
@@ -70,7 +70,7 @@ def _visit(client, name, mod_time):
     """Warp to `name`, let pygserver stream it, then record the mod time the
     way a reference server's PLO_LEVELMODTIME would (pygserver sends none)."""
     _warp(client, name, 10.0, 12.0)
-    assert client._pending_level_name == name
+    assert client._level_scope == name
     client.feed(PacketID.PLO_LEVELMODTIME, PacketBuilder().write_gint5(mod_time).build())
 
 
@@ -122,7 +122,7 @@ def test_the_level_store_does_not_evict(make_client):
 
 def test_a_resent_board_replaces_the_cached_level(make_client):
     client = make_client()
-    client._pending_level_name = "other.nw"
+    client._level_scope = "other.nw"
     client.levels["other.nw"] = list(TILES)
     client.links["other.nw"] = [{"stale": True}]
     client.signs["other.nw"] = {(1, 1): "old"}
@@ -139,7 +139,7 @@ def test_a_resent_board_replaces_the_cached_level(make_client):
 
 def test_an_empty_level_board_keeps_the_cached_level(make_client):
     client = make_client()
-    client._pending_level_name = "other.nw"
+    client._level_scope = "other.nw"
     client.levels["other.nw"] = list(TILES)
     client.links["other.nw"] = [{"keep": True}]
     client.signs["other.nw"] = {(1, 1): "kept"}
@@ -199,7 +199,7 @@ def test_a_warp_out_of_the_loaded_gmap_is_still_a_warp(make_client):
 
 def test_a_resent_board_clears_the_live_layers_of_its_level(make_client):
     client = make_client()
-    client._pending_level_name = "other.nw"
+    client._level_scope = "other.nw"
     client._board_layers_level_name = "other.nw"
     client.board_layers[1] = b"old-layer"
     client.feed(PacketID.PLO_BOARDPACKET, _board_bytes(9))
@@ -214,7 +214,7 @@ def test_the_mod_time_is_stored_under_the_level_being_streamed(make_client):
     # Reference order (PlayerClient.cpp:1513-1555): LEVELNAME, ..., MODTIME,
     # SETACTIVELEVEL. The mod time arrives while the previous level is active.
     client = make_client(extra_levels={"other.nw": None})
-    here = client.active_level = client._current_level_name
+    here = client._npc_level = client._current_level_name
     client.level_modtimes[here] = 100
     client.feed(PacketID.PLO_LEVELNAME, b"other.nw")
     client.feed(PacketID.PLO_LEVELMODTIME, _mod_time(900))
@@ -225,14 +225,14 @@ def test_the_mod_time_is_stored_under_the_level_being_streamed(make_client):
 
 def test_an_adjacent_preloads_mod_time_leaves_the_current_levels_alone(make_client):
     client = make_client(extra_levels={"other.nw": None})
-    here = client.active_level = client._current_level_name
+    here = client._npc_level = client._current_level_name
     client.level_modtimes[here] = 100
     client._adjacent_level_requests.add("other.nw")
     client.feed(PacketID.PLO_LEVELNAME, b"other.nw")
     client.feed(PacketID.PLO_LEVELMODTIME, _mod_time(5000))
     assert client.level_modtimes["other.nw"] == 5000
     assert client.level_modtimes[here] == 100
-    assert client.active_level == here
+    assert client._npc_level == here
 
 
 def test_a_new_connection_forgets_mod_times_and_layers(make_client, monkeypatch):

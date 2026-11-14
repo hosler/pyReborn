@@ -323,7 +323,7 @@ def test_sign_index_survives_stacked_say_only_signs():
 def test_sign_handler_builds_ordered_list_and_board_restream_resets_it():
     from pyreborn.handlers.level import handle_level_sign, handle_board_packet
     client = _fake_connected_client()
-    client._pending_level_name = "abermose7.nw"
+    client._level_scope = "abermose7.nw"
     # PLO_LEVELSIGN wire: gchar x, gchar y, encoded text ('A' is itself in
     # the sign alphabet region? use decode via real builder is overkill -
     # feed two signs at the same coords and just assert ordering/reset)

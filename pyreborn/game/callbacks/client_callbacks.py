@@ -352,7 +352,7 @@ def wire_client_callbacks(game):
         # coordinates on a gmap, like local lays and the lift/throw code.
         if not game.client.in_gmap_segment:
             return x, y
-        level = game.client.pending_level_name or game.client.current_level_name
+        level = game.client.own_level_name()
         return world_from_local(game.client.gmap_grid, level, x, y)
 
     def on_bomb_add(info):
@@ -368,7 +368,7 @@ def wire_client_callbacks(game):
         from ...liftobjects import LIFT_PROBE
         import math
         # GServer-v2 PlayerClientPackets.cpp:251: BOMBDEL only removes.
-        level = game.client.pending_level_name or game.client.current_level_name
+        level = game.client.own_level_name()
         origin_x, origin_y = level_origin(
             game.client.gmap_grid if game.client.in_gmap_segment else None, level)
         game.client.remove_bombs_at(level, x, y)

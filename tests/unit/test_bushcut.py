@@ -240,7 +240,9 @@ def gmap_client(new_client):
         c.player.x, c.player.y = 9.0 + 64, 6.0 + 64
         board = c.levels[c.current_level_name]
         # An adjacent preload must not replace the standing segment's board.
-        c._pending_level_name = c._tiles_level_name = 'neighbor.nw'
+        # (The level scope stays on the player's own level: the reference
+        # drops an explosion whose scope is another level, TClient.cpp:3595.)
+        c._tiles_level_name = 'neighbor.nw'
         c.tiles = [0] * 4096
         return c, board
     return build
@@ -289,3 +291,23 @@ def test_explosion_does_not_wrap_at_level_edge(new_client):
     plant(c.tiles, x=0)
     assert c._cut_bushes_at_explosion(63, 10) == set()
     assert c.modifications == []
+
+
+def test_adjacent_preload_leaves_the_standing_board_alone_for_explosions(gmap_client):
+    c, board = gmap_client()
+    plant(board)
+    before = list(board)
+    neighbour = c.gmap_grid[(0, 1)]
+    assert neighbour != c.current_level_name
+    c._adjacent_level_requests.add(neighbour)
+    c._handle_packet(PacketID.PLO_LEVELNAME, neighbour.encode())
+    # The neighbour is the level scope for the length of its static block:
+    # the explosion is dropped (TClient.cpp:3595) and the own board is intact.
+    handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
+    assert c.modifications == c.effects == []
+    assert c.active_explosions == []
+    assert board == before
+    # The closing PLO_LEVELNAME names the map again: the scope is the own level.
+    c._handle_packet(PacketID.PLO_LEVELNAME, c.gmap_name.encode())
+    handle_explosion(c, bytes((32, 32, 33, 52, 52, 33)))
+    assert c.effects == [(74, 74, 0)]

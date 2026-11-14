@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from . import tiletypes as _tiletypes
 from .clock import Clock
+from .protocol import VERSIONS, ClientType
 from .lru import LruCache as BoundedLRU  # noqa: F401  (client.py re-exports the name)
 
 # What an EntityState reads when no Client has rebound `item_clock`.
@@ -87,7 +88,8 @@ class SessionState(StateComponent):
     the session itself (flags, MOTD, freeze state, cookies)."""
 
     ALIAS_PRIVATE = frozenset({
-        'colors_len', 'file_no_modtime', 'use_pixel_props', 'authenticated',
+        'colors_len', 'file_no_modtime', 'use_pixel_props', 'original_flow',
+        'authenticated',
         'login_time', 'raw_data_expected', 'in_update'})
 
     @classmethod
@@ -111,6 +113,13 @@ class SessionState(StateComponent):
         # classic servers only track X/Y. Keyed off the negotiated version.
         self.use_pixel_props = not (str(version).startswith("1.")
                                     or str(version).startswith("2."))
+
+        # The server's original-client flow serves only login type
+        # PLTYPE_CLIENT (versions 1.411 and 2.17 here), and sends
+        # PLO_LEVELNAME only for the first level (GServer-v2
+        # PlayerLogin.cpp:68-69, PlayerClientOriginal.cpp:158-160).
+        self.original_flow = VERSIONS[version].client_type is ClientType.TYPE_CLIENT \
+            if version in VERSIONS else False
 
         # Authentication state
         self.authenticated = False
@@ -170,8 +179,8 @@ class LevelState(StateComponent):
     """The current level and every per-level thing keyed by level name."""
 
     ALIAS_PRIVATE = frozenset({
-        'tiles_level_name', 'current_level_name', 'pending_level_name',
-        'pending_board_level_name', 'adjacent_level_requests',
+        'tiles_level_name', 'current_level_name', 'level_scope',
+        'level_scope_segment', 'npc_level', 'adjacent_level_requests',
         'board_layers_level_name'})
     ALIAS_PROPERTIES = ('current_level_name',)
     NO_ALIAS = frozenset({'tiletypes', 'level_layers', 'streaming_level_name'})   # client.level_state.<name>
@@ -189,14 +198,25 @@ class LevelState(StateComponent):
         # reference client's level list has no cap either).
         self.levels: Dict[str, List[int]] = {}
         self.current_level_name = ""   # The player's actual level (set once at login)
-        self.pending_level_name = ""   # Track which level data is being received
-        self.pending_board_level_name = ""  # Adjacent preload board owner
+        # The reference client keeps two level targets. `level_scope` is the
+        # PLO_LEVELNAME one (TClient.cpp:3224-3241, `serverlevel`): signs,
+        # chests, links, boards, board changes, items, explosions, baddies and
+        # horses land there. It is a level name, or the current map's `.gmap`
+        # name, which stands for the player's own segment (the resolvers in
+        # client_gmap.py). An adjacent preload sets it to the neighbour for
+        # the length of that static block, and the closing PLO_LEVELNAME
+        # sets it back. `npc_level` is the PLO_SETACTIVELEVEL one
+        # (TClient.cpp:3777-3784, `npcserverlevel`) that NPC packets read.
+        self.level_scope = ""
+        self.npc_level = ""
+        # The last non-preload level PLO_LEVELNAME named: the segment a
+        # `.gmap` scope falls back to while no position places the player.
+        self.level_scope_segment = ""
         # The level whose static data is streaming right now (the last
         # PLO_LEVELNAME), adjacent preload or not. PLO_LEVELMODTIME ends that
         # data, before the set-active-level packet names the level.
         self.streaming_level_name = ""
         self.adjacent_level_requests: set[str] = set()
-        self.active_level = ""         # PLO_SETACTIVELEVEL routing target
         self.level_modtimes: Dict[str, int] = {}  # PLO_LEVELMODTIME per level
 
         # Links: maps level_name -> list of link dicts
@@ -303,7 +323,7 @@ class WarpState(StateComponent):
         self.awaiting_warp_confirm = ""
         # A client-initiated, standalone level change whose destination board
         # has not become the active board yet.  This is deliberately separate
-        # from pending_level_name: gmap neighbour streaming changes that field
+        # from level_scope: gmap neighbour streaming changes that field
         # without moving the local player.
         self.local_level_transition = ""
         # Bumped when a held transition finishes (or is rolled back).  The

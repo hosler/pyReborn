@@ -8,15 +8,56 @@ from typing import List
 from reborn_protocol.coords import local_to_world, segment_at, segment_origin
 
 from .gmap_coords import (
-    fold, grid_of, has_level, position_is_local, world_from_wire,
+    fold, grid_of, has_level, in_grid, position_is_local, same_level,
+    world_from_wire,
 )
-from .npc_handler import npc_cell, place_npc
+from .npc_handler import is_map_name, npc_cell, place_npc
 
 logger = logging.getLogger(__name__)
 
 
 
 class GmapMixin:
+    def own_level_name(self) -> str:
+        """The level the player stands in, never a ``.gmap`` name.
+
+        On a loaded gmap that is the segment under the player. With no grid
+        loaded, or with the player still at the unplaced origin (0, 0) of a
+        loaded grid, the position says nothing, so it is the last segment
+        PLO_LEVELNAME named (`level_scope_segment`, the entry segment).
+        """
+        name = self.get_current_level_from_position()
+        segment = self._level_scope_segment
+        if (segment and self.gmap_grid and self.player.x == 0
+                and self.player.y == 0 and in_grid(self.gmap_grid, segment)):
+            return segment
+        if is_map_name(name):
+            return segment or ""
+        return name
+
+    def _level_scope_name(self) -> str:
+        """The level that level-scoped packets (items, chests, signs, links,
+        horses, baddies, boards, board changes) are filed under.
+
+        The reference client keeps two level targets: PLO_LEVELNAME sets the
+        level scope and PLO_SETACTIVELEVEL sets only the NPC owner
+        (TClient.cpp:3224-3241 and :3777-3784). A ``.gmap`` level scope is the
+        player's own level, so it resolves to the segment under the player
+        (`own_level_name`). It never returns a map name.
+        """
+        name = self._level_scope
+        if not name or is_map_name(name):
+            return self.own_level_name()
+        return name
+
+    def _scope_is_own_level(self) -> bool:
+        """Whether the level scope is the player's own level. The reference
+        drops items and explosions otherwise (TClient.cpp:3595, :3665, :3719).
+        A scope or player level that is not known yet does not drop."""
+        scope = self._level_scope_name()
+        own = self.own_level_name()
+        return not scope or not own or same_level(scope, own)
+
     def _exit_gmap(self, level_name: str):
         """Leave gmap mode and become a standalone level.
 
@@ -38,7 +79,9 @@ class GmapMixin:
         self._gmap_spawn_y = 0
         self.player.level = level_name
         self._current_level_name = level_name
-        self._pending_level_name = level_name
+        self._level_scope = level_name
+        self._level_scope_segment = level_name
+        self._npc_level = level_name
 
     def restore_known_gmap(self, spawn_level: str) -> bool:
         """Rebuild the world grid for a segment we are warping back into.

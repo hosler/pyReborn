@@ -225,9 +225,10 @@ Painting the segment next door paints the same local square of your own
 segment instead. That is a mirrored edit to a level you never looked at.
 `LevelEditor._reject_other_segment` refuses those clicks and names the segment
 to walk into. The inbound delta follows the same rule.
-`handle_board_modify` applies it to the level the receiver stands in, not to
-`_pending_level_name`. An adjacent-segment preload moves that field without
-moving the player.
+`handle_board_modify` applies it to the level scope (`_level_scope`), which a
+`.gmap` scope resolves to the segment the receiver stands in. An adjacent
+preload holds the scope only for the length of its own block, which ends with
+the player's own PLO_LEVELNAME.
 
 **F10 and F12 stop movement. F11 does not, on purpose.** The panels are modal
 for events, but `_handle_input` polls `key.get_pressed()` every frame. The
@@ -318,8 +319,8 @@ nothing ever read the state back:
   relayed the sender's bytes verbatim, so the QA relay test passed while the
   server's own board filled with garbage ids — tile 314 stored as 23074. It
   surfaced only when a save refused to write an id above 4095.
-- `Client.modify_board` patched the level named by `_pending_level_name`,
-  which is stream-routing state: preloading an adjacent gmap segment moves it
+- `Client.modify_board` patched the level named by the old single stream
+  field (now `_level_scope`), which is stream-routing state: preloading an adjacent gmap segment moves it
   without moving the player. The edit went to the server correctly and then
   patched the wrong cached board, so the painter's own view never changed.
 - NC logins could not work at all. pygserver's login parser always consumed an
