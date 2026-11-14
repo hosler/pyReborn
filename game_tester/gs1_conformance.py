@@ -44,7 +44,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .game_bot import GameBot, Issue
 from .reporter import TestResult
@@ -90,6 +90,10 @@ class GS1Case:
     # red on a NEW divergence or a regression that makes them match). See the
     # `note` for the grounded explanation.
     expect_divergence: bool = False
+    # A pinned divergence asserts the CURRENT (pygserver, oracle) pair, so the
+    # row goes red when either side changes, unlike expect_divergence, which
+    # only needs the two to differ.
+    pinned: Optional[Tuple[str, str]] = None
     note: str = ""
 
 
@@ -136,39 +140,49 @@ CASES: List[GS1Case] = [
     GS1Case("color_npc_name", "setcharprop #C0,blue (name -> index 10)",
             "setcharprop #C0,blue;", "npc", "color0",
             note="'blue' is ClassicColors index 10."),
-    # --- #C0-#C7 READ side: a #C value is the classic colour NAME ------------
-    # C++ handleCharacterBasedMessageCode (GS1MessageCodes.cpp:347) + mc_C:
-    # the value is getClassicColorName(slot) — a NAME, not the raw index and
-    # not "". WHICH character is context-sensitive: #Cn(-1) = the source NPC,
-    # #Cn(0) = the acting player, and bare #Cn = the CURRENT SOURCE — inside a
-    # setcharprop/setplayerprop value arg that is the command's own pushed
-    # target (processBuiltInCommand pushSource, GS1Commands.cpp:430-453),
-    # elsewhere it falls back to the initiating player. gs1_host used to
-    # return "" for every #C read, so the real-corpus copy idiom
-    # `setcharprop #C0,#C0` zeroed the slot; fixed, so these must MATCH.
+    # --- #C0-#C7 READ side: PINNED DIVERGENCE from the oracle ------------------
+    # Before the oracle's script-variable rewrite (GServer-v2 commit dc3c24a7)
+    # a #C read as text was the classic colour NAME of the slot (a NAME, not
+    # the raw index and not ""), and WHICH character was read was
+    # context-sensitive: #Cn(-1) = the source NPC, #Cn(0) = the acting player,
+    # bare #Cn = the current source (inside a setcharprop/setplayerprop value
+    # argument that is the command's own target; elsewhere the initiating
+    # player). pygserver keeps that behaviour on purpose.
+    # Since the rewrite the oracle returns an EMPTY string for every #C read,
+    # so the copy idiom `setcharprop #C0,#C0` writes colour 0 and
+    # `message #C2` is empty. That is an upstream regression, reported as
+    # https://github.com/xtjoeytx/GServer-v2/issues/131
+    # Each row pins BOTH observed values (pygserver, oracle): it goes red when
+    # upstream fixes the read OR when pygserver changes.
     GS1Case("color_copy_idiom", "setcharprop #C0,#C0 (NPC self round-trip)",
             "setplayerprop #C0,green;\nsetcharprop #C0,brown;\n"
             "setcharprop #C0,#C0;", "npc", "color0",
-            note="bare #C0 inside setcharprop reads the NPC's OWN slot "
-                 "('brown' -> 12, NOT the player's green=7): setcharprop "
-                 "pushes the NPC as current source before evaluating its "
-                 "args. The old read-side bug zeroed the slot instead."),
+            pinned=("12", "0"),
+            note="pygserver: bare #C0 inside setcharprop reads the NPC's OWN "
+                 "slot ('brown' -> 12, not the player's green=7); the oracle "
+                 "reads '' and writes 0."),
     GS1Case("color_bare_playerprop", "setplayerprop #C3,#C1 (player source)",
             "setplayerprop #C1,darkred;\nsetplayerprop #C3,#C1;",
             "player", "color3",
-            note="bare #C1 inside setplayerprop reads the acting PLAYER's "
-                 "slot ('darkred' -> 5): the symmetric pushed source."),
+            pinned=("5", "0"),
+            note="pygserver: bare #C1 inside setplayerprop reads the acting "
+                 "PLAYER's slot ('darkred' -> 5); the oracle reads '' -> 0."),
     GS1Case("color_bare_message", "message #C2 (initiator-biased bare read)",
             "setplayerprop #C2,cynober;\nmessage #C2;", "npc", "message",
-            note="outside setcharprop/setplayerprop the source stack is "
-                 "empty, so bare #C2 resolves to the INITIATING player "
-                 "(getCurrentSource(true)): 'cynober'."),
+            pinned=("cynober", ""),
+            note="pygserver: outside setcharprop/setplayerprop bare #C2 "
+                 "resolves to the INITIATING player ('cynober'); the oracle's "
+                 "message is empty."),
     GS1Case("color_read_npc_self", "setcharprop #C1,#C0(-1) (NPC self slot)",
             "setcharprop #C0,pink;\nsetcharprop #C1,#C0(-1);", "npc", "color1",
-            note="#C0(-1) reads the source NPC's own slot 0: 'pink' -> 3."),
+            pinned=("3", "0"),
+            note="pygserver: #C0(-1) reads the source NPC's own slot 0 "
+                 "('pink' -> 3); the oracle reads '' -> 0."),
     GS1Case("color_read_player0", "setplayerprop #C2,#C1(0) (player self slot)",
             "setplayerprop #C1,red;\nsetplayerprop #C2,#C1(0);", "player", "color2",
-            note="#C1(0) reads the acting player's slot 1: 'red' -> 4."),
+            pinned=("4", "0"),
+            note="pygserver: #C1(0) reads the acting player's slot 1 "
+                 "('red' -> 4); the oracle reads '' -> 0."),
     # --- hurt: the argument is HALF-hearts -----------------------------------
     # C++ fn_hurt (GS1Commands.cpp:1346) floors the arg and hits the player
     # for that many half-hearts (on the oracle via PLO_HURTPLAYER power, which
@@ -486,7 +500,19 @@ def _diff_results(pyg: Dict[str, str],
         want = oracle.get(case.name, "<missing>")
         differ = got != want
         detail = f"{case.family}: pygserver={got!r} gs2emu(oracle)={want!r}"
-        if case.expect_divergence:
+        if case.pinned is not None:
+            passed = (got, want) == case.pinned
+            if passed:
+                detail = f"[PINNED DIVERGENCE] {detail}  ({case.note})"
+                issues = []
+            else:
+                detail = (f"[PINNED DIVERGENCE CHANGED, expected pygserver="
+                          f"{case.pinned[0]!r} oracle={case.pinned[1]!r}] "
+                          f"{detail}  ({case.note})")
+                issues = [_issue("MEDIUM",
+                                 f"{case.family}: pinned divergence changed - "
+                                 "revisit the case table")]
+        elif case.expect_divergence:
             # known bug: differing is the expected (green) state; MATCHING now
             # means behavior changed and the table needs revisiting.
             passed = differ
