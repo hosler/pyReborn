@@ -1468,10 +1468,14 @@
           "host": "127.0.0.1",
           "port": 14901
         },
+        "assets": {
+          "names": [],
+          "refused": 0
+        },
         "bytecodes": {
           "class": 0,
           "gani": 0,
-          "npc": 1,
+          "npc": 0,
           "weapon": 0
         },
         "connected_at_end": true,
@@ -1489,7 +1493,7 @@
           "filled_controls": [],
           "list_rows": 0,
           "max_depth": 0,
-          "named": 0,
+          "named": 5,
           "overflowing": [],
           "root_classes": {},
           "root_names": [],
@@ -1519,14 +1523,14 @@
         "vms": {
           "class": [],
           "gani_count": 0,
-          "npc_count": 1,
+          "npc_count": 0,
           "weapon": []
         },
         "wall_seconds": 15.0,
         "world": {
           "gs1_scripts": 0,
           "npcs": 1,
-          "weapons": 0
+          "weapons": 2
         }
       },
       "open_ui": [],
@@ -1540,7 +1544,7 @@
         "required_weapon_events": [],
         "required_weapons": []
       },
-      "recorded_at": "2026-07-25T01:25:21.975241+00:00",
+      "recorded_at": "2026-11-15T00:29:23.273786+00:00",
       "seconds": 15.0,
       "tolerance": {},
       "version": "6.037"
