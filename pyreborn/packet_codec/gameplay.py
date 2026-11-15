@@ -904,7 +904,9 @@ def build_putnpc(image: str, script_file: str, x: float, y: float) -> bytes:
 
     Wire format (GServer-v2 msgPLI_PUTNPC, PlayerClientPackets.cpp:753-760):
     {GUChar len}{image}{GUChar len}{scriptfile}{GUChar x*2}{GUChar y*2}.
-    x/y are level-local tiles at half-tile precision.
+    x/y are tiles at half-tile precision, 0 to 111.5. On a gmap the server
+    takes the cell from the value itself (Server.cpp:1485-1498), so they are
+    tiles of the whole map and only its first two cells per axis can be named.
     """
     builder = PacketBuilder()
     builder.write_gstring(image or '')
