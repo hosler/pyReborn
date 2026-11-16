@@ -212,6 +212,17 @@ CASES: List[GS1Case] = [
             "hurt 1;", "player", "hearts",
             note="fn_hurt hits for N half-hearts: 3 - 0.5 = 2.5 (the old bug "
                  "subtracted N full hearts -> 2)."),
+    # --- testplayer / testnpc return an index ---------------------------------
+    # One bot can only express the first slot of the list; the reference
+    # indexes the in-range candidate list (GS1Functions.cpp:1605, 1641), which
+    # on a plain level is the players[] / npcs[] order.
+    GS1Case("testplayer_self", "testplayer at the player's own spot is 0",
+            "message #v(testplayer(playerx+1,playery+2));", "npc", "message",
+            note="a single player is index 0 in the candidate list and players[]."),
+    GS1Case("testplayer_miss", "testplayer on an empty spot is -2",
+            "message #v(testplayer(1,1));", "npc", "message"),
+    GS1Case("testnpc_miss", "testnpc on an empty spot is -1",
+            "message #v(testnpc(1,1));", "npc", "message"),
     # --- gmap: script coordinates are whole-map tiles -------------------------
     # The reference loads a gmap as ONE level (Level.h sizeInTiles), so on a
     # 3x3 map an NPC at local (30,30) of the centre cell reads x = 94, and

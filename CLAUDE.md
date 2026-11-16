@@ -1024,6 +1024,26 @@ backgrounded subshell leaves its Python child holding the port. The manager
 tracks the Python PID, reports orphans, and prevents shared account writers;
 `--world` stages a private server directory with its own accounts.
 
+RC and NC coverage need a staff account, which a plain private server does not
+have (pygserver admits RC/NC only for an account in the `staff` option whose
+admin IP matches the peer, `player_login.py` `control_login_allowed`). `--staff`
+stages a private root (also for the default world: `<name>.world` in the state
+directory, never the checkout's `accounts/`) with that account at every right
+and admin IP `127.0.0.1`; `stop` removes the account file. The coverage runs log
+in as `qastaff` (`qa_staff.QA_STAFF_ACCOUNT`) and end with live checks (NC
+delete notice, RC player entry; the gmap-hop one skips without a gmap):
+
+Coverage commands default to `qastaff`; a server started without `--staff qastaff` needs `--account <staff account>`.
+
+```bash
+python -m game_tester.qa_server run --name rcnc --port 14960 --staff qastaff -- \
+    python -m game_tester --host 127.0.0.1 --port 14960 --coverage-rc   # then --coverage-nc
+```
+
+The instance listens on 0.0.0.0 (pygserver has no bind option), so only the
+`127.0.0.1` admin-IP match keeps the staff login local. pygserver has no packet
+trace, so PLO rows are what the client received.
+
 `--gmap` refuses to run when the server has no gmap loaded, because it used to
 pass *vacuously*. With `gmaps =` unset, every warp onto a segment fails silently
 and both bots stay on the start level. "Can they see each other" and "does chat

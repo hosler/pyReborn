@@ -516,3 +516,179 @@ def test_purge_unlinks_a_symlinked_world_without_following_it(managed, tmp_path)
     qa._purge("odd")
     assert not (state / "odd.world").exists()
     assert (target / "keep.txt").read_text() == "x"
+
+
+# --- staff provisioning (--staff) -------------------------------------------
+
+def _tree(root):
+    return sorted(str(p.relative_to(root)) for p in Path(root).rglob("*"))
+
+
+def test_staff_on_a_world_writes_only_into_the_private_root(managed, tmp_path):
+    state, checkout, _, _ = managed
+    source = _world_source(tmp_path)
+    (checkout / "accounts").mkdir()
+    before = (_tree(checkout), _tree(source))
+    assert qa.main(["start", "--name", "st", "--world", str(source),
+                    "--staff", "qastaff", "--staff", "other_one"]) == 0
+    record = read_record(state, "st")
+    accounts = state / "st.world" / "accounts"
+    data = json.loads((accounts / "qastaff.json").read_text())
+    assert data["account_name"] == "qastaff"
+    assert data["admin_rights"] == 0xFFFFF
+    assert data["admin_ip"] == "127.0.0.1"
+    assert data["folders"] == ["rw world/*"]
+    assert (accounts / "other_one.json").is_file()
+    assert "staff = qastaff,other_one\n" in Path(record["config_path"]).read_text()
+    assert record["staff"] == ["qastaff", "other_one"]
+    # Spar fixture aside (it lives in the source world and is removed on stop),
+    # nothing appeared in the checkout or the shared accounts directory.
+    assert _tree(checkout / "accounts") == []
+    assert qa.main(["stop", "st"]) == 0
+    assert (_tree(checkout), _tree(source)) == before
+    assert not (accounts / "qastaff.json").exists()
+    assert not (accounts / "other_one.json").exists()
+    assert not Path(record["config_path"]).exists()
+
+
+def test_staff_on_the_default_world_stages_a_private_root(managed):
+    state, checkout, _, launches = managed
+    (checkout / "levels").mkdir()
+    (checkout / "weapons").mkdir()
+    (checkout / "weapons" / "w.txt").write_text("w")
+    (checkout / "gani").mkdir()
+    (checkout / "accounts").mkdir()
+    assert qa.main(["start", "--name", "dflt", "--staff", "qastaff"]) == 0
+    record = read_record(state, "dflt")
+    server = state / "dflt.world"
+    assert launches[-1] == server
+    assert record["staged"] is True
+    assert (server / "world").resolve() == (checkout / "levels").resolve()
+    assert (server / "weapons" / "w.txt").read_text() == "w"
+    assert (server / "gani").resolve() == (checkout / "gani").resolve()
+    assert record["accounts_dir"] == str(server / "accounts")
+    assert (server / "accounts" / "qastaff.json").is_file()
+    assert _tree(checkout / "accounts") == []
+    # A staged default does not block a bare default start's accounts check.
+    assert qa.main(["stop", "dflt"]) == 0
+    assert not (server / "accounts" / "qastaff.json").exists()
+    assert _tree(checkout / "accounts") == []
+
+
+def test_no_staff_option_writes_no_staff_and_keeps_todays_options(managed, tmp_path):
+    state, checkout, _, launches = managed
+    assert qa.main(["start"]) == 0
+    record = read_record(state)
+    assert "staff" not in Path(record["config_path"]).read_text()
+    assert record["staff"] == []
+    assert "staged" not in record
+    assert launches[-1] == Path(record["config_path"])
+    assert not (state / "dev.world").exists()
+    assert qa.main(["stop", "dev"]) == 0
+    source = _world_source(tmp_path)
+    assert qa.main(["start", "--name", "w", "--world", str(source)]) == 0
+    assert "staff" not in Path(read_record(state, "w")["config_path"]).read_text()
+    assert _tree(state / "w.world" / "accounts") == []
+
+
+def test_existing_staff_account_is_refused_before_writes(managed, tmp_path, capsys):
+    state, _, _, _ = managed
+    source = _world_source(tmp_path)
+    accounts = state / "keep.world" / "accounts"
+    accounts.mkdir(parents=True)
+    saved = accounts / "testbot1.json"
+    original = b'{ "x": 7, "admin_rights": 1 }\n'
+    saved.write_bytes(original)
+    marker = accounts.parent / "keep.txt"
+    marker.write_text("untouched")
+    config = state / "keep.serveroptions.txt"
+    config.write_text("unchanged options\n")
+    before = _tree(state)
+    assert qa.main(["start", "--name", "keep", "--world", str(source),
+                    "--staff", "fresh", "--staff", "testbot1"]) == 2
+    assert str(saved) in capsys.readouterr().err
+    assert saved.read_bytes() == original
+    assert marker.read_text() == "untouched"
+    assert config.read_text() == "unchanged options\n"
+    assert [p for p in _tree(state) if p != ".lock"] == before
+    with pytest.raises(ValueError, match="testbot1.json"):
+        qa._write_staff_accounts(accounts, ["fresh", "testbot1"])
+    assert not (accounts / "fresh.json").exists()
+
+    assert qa.main(["start", "--name", "keep", "--world", str(source),
+                    "--staff", "fresh"]) == 0
+    assert read_record(state, "keep")["staff_files"] == [str(accounts / "fresh.json")]
+    assert qa.main(["stop", "keep"]) == 0
+    assert not (accounts / "fresh.json").exists()
+    assert saved.read_bytes() == original
+
+
+def test_bad_staff_names_are_refused(managed, tmp_path, capsys):
+    state, _, _, _ = managed
+    source = _world_source(tmp_path)
+    assert qa.main(["start", "--name", "bad", "--world", str(source), "--staff", "../evil"]) == 2
+    assert "staff account" in capsys.readouterr().err
+    assert not (state / "bad.json").exists()
+
+
+@pytest.mark.parametrize("phase", ["fixture", "launch", "wait"])
+@pytest.mark.parametrize("error", [OSError, KeyboardInterrupt])
+def test_failed_staff_start_removes_account_and_next_start_resets_options(
+        managed, tmp_path, monkeypatch, phase, error):
+    from game_tester.fixtures import FixtureFile
+
+    state, _, _, _ = managed
+    source = _world_source(tmp_path)
+    account = state / "dev.world" / "accounts" / "qastaff.json"
+    config = state / "dev.serveroptions.txt"
+
+    def fail(*args):
+        assert account.is_file()
+        assert "staff = qastaff\n" in config.read_text()
+        raise error("startup failed")
+
+    with monkeypatch.context() as patch:
+        if phase == "fixture":
+            patch.setattr(FixtureFile, "install", fail)
+        elif phase == "launch":
+            patch.setattr(qa, "_launch", fail)
+        else:
+            patch.setattr(qa, "_log_tail", fail)
+        with qa._locked(), pytest.raises(error, match="startup failed"):
+            qa.start(world=source, staff=["qastaff"])
+    assert not account.exists()
+    assert not (state / "dev.json").exists()
+    assert not config.exists()
+    # Every start rewrites options, including any stale generated staff line.
+    config.write_text("staff = qastaff\n")
+    assert qa.main(["start", "--world", str(source)]) == 0
+    assert _tree(account.parent) == []
+    assert "staff =" not in config.read_text()
+    assert qa.main(["stop", "dev"]) == 0
+
+
+def test_prune_removes_only_created_staff_accounts(managed, tmp_path):
+    state, _, children, _ = managed
+    source = _world_source(tmp_path)
+    accounts = state / "dev.world" / "accounts"
+    accounts.mkdir(parents=True)
+    saved = accounts / "saved.json"
+    saved.write_bytes(b'{"x": 5}\n')
+    assert qa.main(["start", "--world", str(source), "--staff", "qastaff"]) == 0
+    children[-1].kill()
+    children[-1].wait(timeout=5)
+    assert qa.main(["prune"]) == 0
+    assert not (accounts / "qastaff.json").exists()
+    assert saved.read_bytes() == b'{"x": 5}\n'
+
+
+def test_run_with_staff_restarts_a_live_server_that_lacks_it(managed, tmp_path):
+    state, checkout, _, _ = managed
+    (checkout / "levels").mkdir()
+    assert qa.main(["start", "--name", "r", "--port", "14903"]) == 0
+    first = read_record(state, "r")["pid"]
+    record = qa.ensure("r", 14903, fresh=True, staff=["qastaff"])
+    assert record["pid"] != first and record["staff"] == ["qastaff"]
+    again = qa.ensure("r", 14903, fresh=True, staff=["qastaff"])
+    assert again["pid"] == record["pid"]
+    assert qa.main(["stop", "r"]) == 0

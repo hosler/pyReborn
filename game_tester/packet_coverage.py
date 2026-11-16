@@ -36,6 +36,8 @@ except ImportError:  # pragma: no cover - PYTHONPATH fallback
                                     "reborn-protocol"))
     from reborn_protocol.constants import PLO, PLI
 
+from .qa_staff import QA_STAFF_ACCOUNT
+
 
 # Default location of the GServer-v2 packet trace, relative to the repo root.
 _DEFAULT_TRACE = os.path.normpath(os.path.join(
@@ -126,17 +128,29 @@ class CoverageReport:
     client_stats: Dict[int, Dict[str, object]] = field(default_factory=dict)
     trace_available: bool = True
     notes: List[str] = field(default_factory=list)
+    # Live assertions: (name, status, detail); failed preconditions fail too.
+    checks: List[Tuple[str, str, str]] = field(default_factory=list)
+
+    def failed_checks(self) -> List[Tuple[str, str, str]]:
+        return [row for row in self.checks if row[1] not in ("pass", "skip")]
 
     # ---- derived views -------------------------------------------------
 
     def plo_status(self) -> List[Tuple[int, str, int, int, int, int, str]]:
-        """One row per PLO id the server sent.
+        """One row per traced PLO id, or received PLO id without a trace.
 
         Returns tuples: (id, name, sent, received, handled, errors, verdict).
         """
         rows = []
-        for pid in sorted(self.server_out):
-            sent = self.server_out[pid]
+        # A server without a packet trace (pygserver) gives no list of what it
+        # sent. The rows then come from what the client received, and "sent"
+        # repeats that count: the verdicts still separate handled, unhandled
+        # and errored ids, but a packet the server dropped cannot be seen.
+        sent_counts = self.server_out if self.trace_available else {
+            pid: int(st.get("received", 0)) for pid, st in self.client_stats.items()
+            if int(st.get("received", 0)) > 0}
+        for pid in sorted(sent_counts):
+            sent = sent_counts[pid]
             st = self.client_stats.get(pid, {})
             recv = int(st.get("received", 0))
             handled = int(st.get("handled", 0))
@@ -225,6 +239,8 @@ class CoverageReport:
             "pli_gaps": [{"id": pid, "name": name, "verdict": v}
                          for pid, name, v in self.pli_gaps()],
             "notes": self.notes,
+            "checks": [{"name": n, "status": st, "detail": d}
+                       for n, st, d in self.checks],
         }
 
     # ---- rendering -----------------------------------------------------
@@ -234,8 +250,8 @@ class CoverageReport:
         print(f"  PACKET COVERAGE - account={self.account}")
         print("=" * 64)
         if not self.trace_available:
-            print("  [!] No packet trace found - is GS_PKTLOG=1 set on the server?")
-            print(f"      expected: {_DEFAULT_TRACE}")
+            print("  [i] No packet trace for this session (GS_PKTLOG is a GServer-v2 option):")
+            print("      PLO rows are what the client received; PLI rows are not round-trip checked.")
         rows = self.plo_status()
         if self.notes:
             for note in self.notes:
@@ -246,11 +262,18 @@ class CoverageReport:
             # zero packets read as a pass for a session that tested nothing.
             print("  [!] NO PACKETS: the session exercised nothing "
                   "(wrong account, or no RC/NC rights on this server?)")
-        print(f"  server sent {len(rows)} distinct PLO types this session")
-        print(f"  PLI types exercised: {len(self.server_in)}")
+        if self.trace_available:
+            print(f"  server sent {len(rows)} distinct PLO types this session")
+            print(f"  PLI types exercised: {len(self.server_in or self.client_sent)}")
+        else:
+            print(f"  client received {len(rows)} distinct PLO types "
+                  "(no server trace: bytes not compared)")
+            print(f"  client sent {len(self.client_sent)} distinct PLI types "
+                  "(no server trace: bytes not compared)")
         print(f"  PLO coverage: {self.coverage_pct():.0f}%")
         print("-" * 64)
-        print(f"  {'id':>3} {'name':<24} {'sent':>4} {'rcv':>4} "
+        count_label = "sent" if self.trace_available else "seen"
+        print(f"  {'id':>3} {'name':<24} {count_label:>4} {'rcv':>4} "
               f"{'hdl':>4} {'err':>4}  verdict")
         for pid, name, s, r, h, e, v in rows:
             flag = " " if v in ("OK", "IGNORED") else "*"
@@ -264,7 +287,10 @@ class CoverageReport:
         pli_rows = self.pli_status()
         if pli_rows:
             print("-" * 64)
-            print("  PLI builders (client-sent bytes vs server-received bytes)")
+            if self.trace_available:
+                print("  PLI builders (client-sent bytes vs server-received bytes)")
+            else:
+                print("  PLI builders (client sent; no server trace: bytes not compared)")
             print(f"  {'id':>3} {'name':<24} {'sent':>4} {'ok':>4} "
                   f"{'srv':>4}  verdict")
             for pid, name, s, m, t, v in pli_rows:
@@ -274,6 +300,11 @@ class CoverageReport:
             if pgaps:
                 print(f"  {len(pgaps)} PLI GAP(S): " +
                       ", ".join(f"{n}({v})" for _p, n, v in pgaps))
+        if self.checks:
+            print("-" * 64)
+            print("  LIVE CHECKS")
+            for name, status, detail in self.checks:
+                print(f"  [{status.upper():4}] {name}: {detail}")
         print("=" * 64)
 
 
@@ -282,8 +313,25 @@ def build_report(account: str, trace: PacketTrace,
                  sent_payloads: Optional[Dict[int, List[bytes]]] = None
                  ) -> CoverageReport:
     """Combine the server trace and the client's packet_stats into a report."""
-    report = CoverageReport(account=account, trace_available=trace.available())
-    for rec in trace.read_new(who=account):
+    session_records = trace.read_new()
+    records = [rec for rec in session_records if rec.who == account]
+    # Only records appended during this session enable trace comparisons;
+    # otherwise use the weaker client view.
+    report = CoverageReport(account=account,
+                            trace_available=bool(session_records))
+    if not session_records and trace.available() and os.path.getsize(trace.path) > 0:
+        report.notes.append(
+            f"Trace file at {trace.path} gained no records during this session "
+            "and is ignored; the run is reported from the client's view. "
+            "A traced server that has not flushed looks the same.")
+    if report.trace_available and not records:
+        accounts = sorted({rec.who for rec in session_records})
+        detail = (f"No trace records for account {account!r} in this session; "
+                  f"accounts present: {', '.join(accounts) or '(none parsed)'}. "
+                  "Check the account name and whether the trace was flushed.")
+        report.notes.append(detail)
+        report.checks.append(("trace_account", "fail", detail))
+    for rec in records:
         if rec.direction == "OUT":
             report.server_out[rec.pid] = report.server_out.get(rec.pid, 0) + 1
         else:  # IN
@@ -318,7 +366,7 @@ def run_coverage(host: str = "localhost", port: int = 14900,
     if not bot.connect():
         notes.append("bot failed to connect/login")
         report = build_report(account, trace, {})
-        report.notes = notes
+        report.notes.extend(notes)
         return report
 
     # Record outgoing payloads from here on (login is already done) so we can
@@ -334,14 +382,14 @@ def run_coverage(host: str = "localhost", port: int = 14900,
     finally:
         report = build_report(account, trace, bot.client.packet_stats,
                               bot.client._protocol.sent_payloads)
-        report.notes = notes
+        report.notes.extend(notes)
         bot.disconnect()
 
     return report
 
 
 def run_coverage_nc(host: str = "localhost", port: int = 14900,
-                    account: str = "testbot1", password: str = "testpass",
+                    account: str = QA_STAFF_ACCOUNT, password: str = "testpass",
                     trace_path: str = _DEFAULT_TRACE,
                     verbose: bool = True) -> CoverageReport:
     """Connect as an NC (npc-control) client, exercise the NC surface, report.
@@ -365,12 +413,12 @@ def run_coverage_nc(host: str = "localhost", port: int = 14900,
     if not nc.connect():
         notes.append("NC failed to connect")
         report = build_report(account, trace, {})
-        report.notes = notes
+        report.notes.extend(notes)
         return report
     if not nc.login(account, password, timeout=10.0):
         notes.append("NC login failed (staff rights / localhost mode?)")
         report = build_report(account, trace, nc.packet_stats)
-        report.notes = notes
+        report.notes.extend(notes)
         nc.disconnect()
         return report
 
@@ -389,14 +437,16 @@ def run_coverage_nc(host: str = "localhost", port: int = 14900,
     finally:
         report = build_report(account, trace, nc.packet_stats,
                               nc._protocol.sent_payloads)
-        report.notes = notes
+        report.notes.extend(notes)
         nc.disconnect()
 
+    from .live_checks_rcnc import run_live_checks
+    report.checks.extend(run_live_checks("nc", host, port, account, password))
     return report
 
 
 def run_coverage_rc(host: str = "localhost", port: int = 14900,
-                    account: str = "testbot1", password: str = "testpass",
+                    account: str = QA_STAFF_ACCOUNT, password: str = "testpass",
                     trace_path: str = _DEFAULT_TRACE,
                     verbose: bool = True) -> CoverageReport:
     """Connect as an RC admin, exercise the RC surface, and report coverage.
@@ -416,12 +466,12 @@ def run_coverage_rc(host: str = "localhost", port: int = 14900,
     if not rc.connect():
         notes.append("RC failed to connect")
         report = build_report(account, trace, {})
-        report.notes = notes
+        report.notes.extend(notes)
         return report
     if not rc.login(account, password, timeout=10.0):
         notes.append("RC login failed (staff rights / localhost mode?)")
         report = build_report(account, trace, rc.packet_stats)
-        report.notes = notes
+        report.notes.extend(notes)
         rc.disconnect()
         return report
 
@@ -439,7 +489,9 @@ def run_coverage_rc(host: str = "localhost", port: int = 14900,
     finally:
         report = build_report(account, trace, rc.packet_stats,
                               rc._protocol.sent_payloads)
-        report.notes = notes
+        report.notes.extend(notes)
         rc.disconnect()
 
+    from .live_checks_rcnc import run_live_checks
+    report.checks.extend(run_live_checks("rc", host, port, account, password))
     return report

@@ -523,7 +523,7 @@ Examples:
             with open(f"{args.report}{suffix}.json", "w") as f:
                 json.dump(report.to_dict(), f, indent=2)
             print(f"  wrote {args.report}{suffix}.json")
-        sys.exit(0 if not report.gaps() else 1)
+        sys.exit(0 if not (report.gaps() or report.failed_checks()) else 1)
 
     # Determine mode
     if args.explore:
