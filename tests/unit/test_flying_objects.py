@@ -10,7 +10,7 @@ from pyreborn.gs1_client import ClientGS1
 from pyreborn.npc_handler import NPCHandler
 from pyreborn.tiletypes import is_blocking
 
-from .test_gs1_npc_host_gaps import _client, _this
+from .gs1_helpers import _client, _this
 
 TICK = FLYING_TICK_SECONDS
 WALL = next(tile for tile in range(4096) if is_blocking(tile))

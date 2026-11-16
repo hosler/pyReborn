@@ -25,32 +25,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../reborn-prot
 
 import pytest
 
-from pyreborn import Client
 from pyreborn.gs1_client import ClientGS1
 from reborn_protocol.gs1.runtime import Context, VarStore
 
 from .bomber_room0_fixture import load_capture, load_flags, load_scripts
-
-
-class _SentRecorder:
-    connected = True
-
-    def __init__(self):
-        self.sent = []
-
-    def send_packet(self, packet_id, data=b""):
-        self.sent.append((int(packet_id), bytes(data)))
-        return True
-
-
-def _client(level="room0.nw", board_tile=0x278):
-    c = Client("localhost", 14900)
-    c._authenticated = True
-    c._protocol = _SentRecorder()
-    c._current_level_name = level
-    c.tiles = [board_tile] * 4096
-    c._tiles_level_name = level
-    return c
+from .gs1_helpers import _client, _this
 
 
 def _engine(scripts, level="room0.nw", board_tile=0x278):
@@ -64,10 +43,6 @@ def _engine(scripts, level="room0.nw", board_tile=0x278):
         gs1.load_script("npc_%d" % npc_id, src, npc_id=npc_id,
                         x=float(npc_id), y=1.0)
     return c, gs1
-
-
-def _this(gs1, npc_id):
-    return gs1._progs["npc_%d" % npc_id]["scopes"]["this"]
 
 
 def _finish_ready_slices(gs1):

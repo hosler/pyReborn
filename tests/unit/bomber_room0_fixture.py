@@ -20,43 +20,36 @@ from __future__ import annotations
 import json
 import os
 
-FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           '..', 'fixtures', 'bomber_room0')
+from .captured_fixtures import require_capture
 
 
-def _require_fixture() -> None:
+def _require_fixture():
     """Skip instead of failing when the captured data is absent.
 
     The scripts in this fixture are byte-identical third-party server content,
     so they are deliberately NOT committed (see .gitignore). Re-capture them
     from a live session to run the room0 furniture/arcade tests.
     """
-    if not os.path.isdir(FIXTURE_DIR):
-        import pytest
-        pytest.skip("bomber_room0 fixture data not present (uncommitted:"
-                    " third-party server scripts)", allow_module_level=True)
-
-
-_require_fixture()
+    return require_capture("bomber_room0")
 
 
 def load_capture() -> dict:
     """The capture manifest: level name, player position, per-NPC position."""
-    with open(os.path.join(FIXTURE_DIR, 'capture.json'), encoding='utf-8') as f:
+    with open(os.path.join(_require_fixture(), 'capture.json'), encoding='utf-8') as f:
         return json.load(f)
 
 
 def load_flags() -> dict:
     """The client's flag set at capture time, wire-named (`server.`/`client.`
     prefixes intact) so it can be fed through ClientGS1.recv_flag."""
-    with open(os.path.join(FIXTURE_DIR, 'flags.json'), encoding='utf-8') as f:
+    with open(os.path.join(_require_fixture(), 'flags.json'), encoding='utf-8') as f:
         return json.load(f)
 
 
 def load_script(npc_id: int) -> str:
     """One NPC's script, exactly as the server sent it (0xa7 line separators
     intact — the GS1 lexer translates them)."""
-    with open(os.path.join(FIXTURE_DIR, 'npc_%d.gs1' % npc_id),
+    with open(os.path.join(_require_fixture(), 'npc_%d.gs1' % npc_id),
               encoding='utf-8') as f:
         return f.read()
 

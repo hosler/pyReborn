@@ -25,7 +25,7 @@ from pyreborn.gs1_client import ClientGS1
 from pyreborn.npc_script_display import take_display, timer_text
 from pyreborn.packets import PacketID
 
-from .test_gs1_npc_host_gaps import _client, _this
+from .gs1_helpers import _client, _this
 
 
 def _engine(scripts, level="room0.nw"):

@@ -28,24 +28,18 @@ from __future__ import annotations
 import json
 import os
 
-FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           '..', 'fixtures', 'bomber_lobby_tailor')
+from .captured_fixtures import require_capture
 
 
-def _require_fixture() -> None:
+def _require_fixture():
     """Skip instead of failing when the captured data is absent.
 
     The scripts in this fixture are byte-identical third-party server content,
     so they are deliberately NOT committed (see .gitignore). Re-capture them
     from a live session to run the Jonah tailor GUI tests.
     """
-    if not os.path.isdir(FIXTURE_DIR):
-        import pytest
-        pytest.skip("bomber_lobby_tailor fixture data not present (uncommitted:"
-                    " third-party server scripts)", allow_module_level=True)
+    return require_capture("bomber_lobby_tailor")
 
-
-_require_fixture()
 
 #: fixture NPC id of the tailor NPC (Jonah — the one with the touch handler)
 JONAH_ID = 1
@@ -53,19 +47,19 @@ JONAH_ID = 1
 
 def load_capture() -> dict:
     """The manifest: level, NPC image/position, weapon list, player look."""
-    with open(os.path.join(FIXTURE_DIR, 'capture.json'), encoding='utf-8') as f:
+    with open(os.path.join(_require_fixture(), 'capture.json'), encoding='utf-8') as f:
         return json.load(f)
 
 
 def load_npc_script(npc_id: int = JONAH_ID) -> str:
     """The NPC's script, exactly as the level file holds it."""
-    with open(os.path.join(FIXTURE_DIR, 'npc_%d.gs1' % npc_id),
+    with open(os.path.join(_require_fixture(), 'npc_%d.gs1' % npc_id),
               encoding='utf-8') as f:
         return f.read()
 
 
 def load_weapon_script() -> str:
     """The `-tailor` weapon's script, exactly as the weapon file holds it."""
-    with open(os.path.join(FIXTURE_DIR, 'weapon_tailor.gs1'),
+    with open(os.path.join(_require_fixture(), 'weapon_tailor.gs1'),
               encoding='utf-8') as f:
         return f.read()

@@ -16,6 +16,7 @@ from pyreborn.game.level_arrival import LevelArrival
 from pyreborn.client import Client
 from pyreborn.packets import PacketID
 
+from .captured_fixtures import CAPTURE_NAMES, fixtures_root, missing_capture_reason
 from .sibling_repos import PROTOCOL_FIXTURES, pygserver_root
 
 SERVER = pygserver_root()
@@ -46,8 +47,23 @@ def corpus_cases():
                                      id=str(path.relative_to(path_root(path)))))
     # Level NPC blocks and animation SCRIPT blocks contain source, not the
     # surrounding level/animation metadata. Empty blocks have no language.
-    for root in (SERVER / 'levels', Path(__file__).resolve().parents[1] / 'fixtures'):
-        for path in sorted(root.rglob('*')):
+    local_fixtures = Path(__file__).resolve().parents[1] / 'fixtures'
+    for root in (SERVER / 'levels', local_fixtures):
+        paths = list(root.rglob('*'))
+        if root == local_fixtures:
+            # Only the optional captures use the override; committed sources
+            # remain in the corpus even when the capture root is empty.
+            paths = [path for path in paths
+                     if path.relative_to(root).parts[0] not in CAPTURE_NAMES]
+            for name in CAPTURE_NAMES:
+                capture = fixtures_root() / name
+                if capture.is_dir():
+                    paths.extend(capture.rglob('*'))
+                else:
+                    cases.append(pytest.param(
+                        None, False, id=name,
+                        marks=pytest.mark.skip(reason=missing_capture_reason(name))))
+        for path in sorted(paths):
             if path.suffix not in ('.nw', '.gani', '.gs1'):
                 continue
             source = path.read_text(encoding='latin-1')
