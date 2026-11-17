@@ -1,5 +1,6 @@
 from .common import *
 from .common import _CARRY_PLAYER_PROPS, _set_carry, _set_z2
+from reborn_protocol import encode_client_tile_coordinate
 import logging
 from ..logutil import log_swallowed
 logger = logging.getLogger(__name__)
@@ -184,26 +185,27 @@ def parse_newworldtime(data: bytes) -> dict:
 def parse_playerwarp(data: bytes) -> dict:
     """
     Parse PLO_PLAYERWARP (packet 14) - player warp/spawn position.
-    Format: x*2(gchar) y*2(gchar) level_name
+    Format: x(tile byte) y(tile byte) level_name
 
-    x, y are sent as half-tile coordinates (multiplied by 2).
-    We convert to full tile coordinates for consistency.
+    x, y are one-byte half-tile coordinates, -16..111.5 tiles.
 
     Returns dict with:
-        x, y: position in tiles (local coordinates 0-63)
+        x, y: position in tiles (local coordinates, may be negative)
         level: level name
     """
     if len(data) < 2:
         return {}
 
     reader = PacketReader(data)
-    x_halftile = reader.read_gchar()
-    y_halftile = reader.read_gchar()
+    # PropertyTileCoordinate bytes (GServer-v2 PlayerClient.cpp:1273,
+    # PropertySerializers.cpp:499-509): -16..111.5 tiles, not a clamped gchar.
+    x = reader.read_tile_coordinate()
+    y = reader.read_tile_coordinate()
     level = reader.remaining().decode('latin-1', errors='replace').strip()
 
     return {
-        'x': float(x_halftile) / 2.0,
-        'y': float(y_halftile) / 2.0,
+        'x': x,
+        'y': y,
         'level': level
     }
 
@@ -211,10 +213,9 @@ def parse_playerwarp(data: bytes) -> dict:
 def parse_playerwarp2(data: bytes) -> dict:
     """
     Parse PLO_PLAYERWARP2 (packet 49) - player position in GMAP.
-    Format: x(gchar) y(gchar) z(gchar) gmap_x(gchar) gmap_y(gchar) level_name
+    Format: x(tile byte) y(tile byte) z(gchar) gmap_x(gchar) gmap_y(gchar) level_name
 
-    x, y are sent as half-tile coordinates (8 pixels per unit).
-    We convert to full tile coordinates for consistency.
+    x, y are one-byte half-tile coordinates, -16..111.5 tiles.
 
     Returns dict with:
         x, y: position in tiles (GMAP-relative, can be > 63)
@@ -226,17 +227,17 @@ def parse_playerwarp2(data: bytes) -> dict:
         return {}
 
     reader = PacketReader(data)
-    x_halftile = reader.read_gchar()
-    y_halftile = reader.read_gchar()
+    # X/Y are PropertyTileCoordinate bytes (PlayerClient.cpp:1262).
+    x = reader.read_tile_coordinate()
+    y = reader.read_tile_coordinate()
     z = reader.read_gchar()
     gmap_x = reader.read_gchar()
     gmap_y = reader.read_gchar()
     level = reader.remaining().decode('latin-1', errors='replace').strip()
 
-    # Convert half-tiles to tiles
     return {
-        'x': float(x_halftile) / 2.0,
-        'y': float(y_halftile) / 2.0,
+        'x': x,
+        'y': y,
         'z': z,
         'gmap_x': gmap_x,
         'gmap_y': gmap_y,
@@ -440,15 +441,15 @@ def build_player_props(x: Optional[float] = None, y: Optional[float] = None,
     """
     packet = bytearray()
 
-    # X coordinate (prop 15)
+    # X/Y (props 15/16): the reference client's tile byte, see
+    # encode_client_tile_coordinate.
     if x is not None:
         packet.append(15 + 32)  # prop_id
-        packet.append(int(x * 2) + 32)  # half-tiles
+        packet.append(encode_client_tile_coordinate(x))
 
-    # Y coordinate (prop 16)
     if y is not None:
         packet.append(16 + 32)  # prop_id
-        packet.append(int(y * 2) + 32)  # half-tiles
+        packet.append(encode_client_tile_coordinate(y))
 
     return bytes(packet)
 
@@ -526,24 +527,14 @@ def build_movement(x: float, y: float, direction: int = 2,
         packet.append(((value >> 7) & 0x7F) + 32)
         packet.append((value & 0x7F) + 32)
     else:
-        # For pre-2.30 clients: use PLPROP_X (15) and PLPROP_Y (16)
-        # Position is in half-tiles: x_byte = x * 2 (GUChar format)
-        # Server reads: x = pPacket.readGUChar() / 2.0f
-        # So we send: (x * 2) + 32
-        x_byte = _round_position(x, 2)
-        y_byte = _round_position(y, 2)
-
-        # Clamp to valid range (0-223 after +32 = 32-255)
-        x_byte = max(0, min(223, x_byte))
-        y_byte = max(0, min(223, y_byte))
-
-        # PLPROP_X (15)
+        # For pre-2.30 clients: PLPROP_X (15) and PLPROP_Y (16), one tile
+        # byte each, written as the reference client does (round half up,
+        # -16..111.5, TPlayer.cpp:3213-3216); the server reads it with
+        # PropertyTileCoordinate::deserialize, so negatives survive.
         packet.append(15 + 32)
-        packet.append(x_byte + 32)
-
-        # PLPROP_Y (16)
+        packet.append(encode_client_tile_coordinate(x))
         packet.append(16 + 32)
-        packet.append(y_byte + 32)
+        packet.append(encode_client_tile_coordinate(y))
 
     # PLPROP_CURLEVEL (prop 20) - current level name (for GMAP level changes)
     if level_name:

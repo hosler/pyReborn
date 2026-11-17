@@ -1,4 +1,5 @@
 from .common import *
+from reborn_protocol import encode_client_tile_coordinate
 from reborn_protocol.coords import world_to_local
 import logging
 from ..logutil import log_swallowed
@@ -271,11 +272,12 @@ def build_hurt_response(hearts: float, x: float, y: float, direction: int,
     packet.append((int(direction) & 3) + 32)
 
     if not use_new_format:
-        # Classic PLPROP_X (15) / PLPROP_Y (16), half-tiles.
+        # Classic PLPROP_X (15) / PLPROP_Y (16): the reference client's tile
+        # byte (TPlayer.cpp:3213-3216), -16..111.5, no 0..223 clamp.
         packet.append(15 + 32)
-        packet.append(max(0, min(223, _round_position(x, 2))) + 32)
+        packet.append(encode_client_tile_coordinate(x))
         packet.append(16 + 32)
-        packet.append(max(0, min(223, _round_position(y, 2))) + 32)
+        packet.append(encode_client_tile_coordinate(y))
         return bytes(packet)
 
     # PLPROP_X2 (78) - pixel X position
