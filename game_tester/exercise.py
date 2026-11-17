@@ -65,9 +65,9 @@ def run_exercise_battery(bot: GameBot, verbose: bool = True) -> List[str]:
 
     # --- files ------------------------------------------------------------
     def _file_ok():
-        c.request_file("onlinestartlocal.nw")
+        c.request_file("qa_script.gani")
         deadline = time.time() + 6.0
-        while time.time() < deadline and not c.has_file("onlinestartlocal.nw"):
+        while time.time() < deadline and not c.has_file("qa_script.gani"):
             bot.update(0.1)
     _step(notes, "file_request", _file_ok, verbose)
 

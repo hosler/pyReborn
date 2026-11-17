@@ -78,6 +78,18 @@ def _login(client, account: str, password: str) -> bool:
     return True
 
 
+def roster_level(bot) -> str:
+    """The level name the reference puts in an RC add-player entry.
+
+    PlayerProp::LEVEL is getLevelName(), i.e. the name of the Level object the
+    player holds (PlayerClient.cpp:1157-1164). A player on a gmap holds the
+    gmap's own Level, whose levelName is the .gmap file name, not the segment
+    (Level.cpp:3114; the same value feeds the add-player packet at
+    PlayerClient.cpp:1346-1347). Off a gmap it is the plain level name.
+    """
+    return bot.client.gmap_name or bot.level
+
+
 def _entries(raw: List[bytes], account: str) -> List[dict]:
     parsed = [parse_rc_add_player(data) for data in raw]
     return [entry for entry in parsed if entry.get("account") == account]
@@ -167,7 +179,7 @@ def check_rc_roster_entries(host: str, port: int, account: str,
         for _ in range(15):
             _pump([rc, bot.client], 0.2)
         entries = _entries(raw, PROBE_ACCOUNT)
-        start_level = bot.level
+        start_level = roster_level(bot)
         complete = all(e.get("level") and "status" in e and e.get("nickname") is not None
                        and e.get("community") == PROBE_ACCOUNT for e in entries)
         ok = (len(entries) == 2 and complete

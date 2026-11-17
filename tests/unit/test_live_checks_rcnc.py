@@ -92,7 +92,8 @@ def sessions(monkeypatch):
         def __init__(self, account, *args):
             self.account = account
             self.level = live.LEVEL_A
-            self.client = SimpleNamespace(gmap_width=settings.gmap_width)
+            self.client = SimpleNamespace(gmap_width=settings.gmap_width,
+                                          gmap_name="")
 
         def emit(self, count, level):
             for _ in range(count):
@@ -202,3 +203,23 @@ def test_fake_session_statuses_preserve_cli_exit_contract(sessions, monkeypatch,
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == exit_code
+
+
+def test_roster_level_is_the_gmap_name_on_a_gmap_and_the_level_elsewhere():
+    on_gmap = SimpleNamespace(level="chicken1.nw",
+                              client=SimpleNamespace(gmap_name="chicken.gmap"))
+    plain = SimpleNamespace(level="start.nw", client=SimpleNamespace(gmap_name=""))
+    assert live.roster_level(on_gmap) == "chicken.gmap"
+    assert live.roster_level(plain) == "start.nw"
+
+
+def test_file_download_verdict_and_candidates():
+    from game_tester.test_scenarios import (FILE_DOWNLOAD_CANDIDATES,
+                                            file_download_verdict)
+    names = [c[0] for c in FILE_DOWNLOAD_CANDIDATES]
+    assert names[0] == "qa_script.gani" and "chickenmap.png" in names
+    png = b"\x89PNG\r\n\x1a\n"
+    assert file_download_verdict(None, png, 10) == "no data"
+    assert file_download_verdict(b"GIF89a" + b"x" * 200, png, 10) == "wrong header"
+    assert file_download_verdict(png + b"x", png, 100) == "too small"
+    assert file_download_verdict(png + b"x" * 200, png, 100) == "ok"

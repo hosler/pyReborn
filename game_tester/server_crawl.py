@@ -161,6 +161,7 @@ def empty_crawl_record() -> dict[str, Any]:
         "levels_visited": [],
         "counts": {"levels": 0, "signs": 0, "links": 0, "npcs": 0,
                    "baddies": 0, "chests": 0},
+        # Downloaded .gani and .gmap assets only; level files are never fetched.
         "files_parsed": {"ok": 0, "failed": 0},
         "gmap": {"name": "", "grid_size": [0, 0], "segments_visited": 0,
                  "segments_skipped": []},
@@ -599,21 +600,6 @@ def run_gs2_bounded(blob: bytes, name: str = "script",
                 ref_kind: sorted(names - before_refs.get(ref_kind, set()),
                                  key=str.casefold)
                 for ref_kind, names in host.script_refs.items()}}
-
-
-def parse_nw(data: bytes) -> None:
-    """Validate a downloaded text level through its board/entity grammar."""
-    text = data.decode("latin-1")
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "GLEVNW01":
-        raise ValueError("missing GLEVNW01 level header")
-    board_rows = [line for line in lines if line.startswith("BOARD ")]
-    if board_rows and len(board_rows) != 64:
-        raise ValueError(f"expected 64 BOARD rows, got {len(board_rows)}")
-    for line in board_rows:
-        parts = line.split(maxsplit=5)
-        if len(parts) != 6 or int(parts[3]) <= 0:
-            raise ValueError("malformed BOARD row")
 
 
 def parse_gmap(data: bytes) -> tuple[int, int, list[str]]:
@@ -1059,10 +1045,11 @@ class DeepCrawler:
     def _parse_assets(self) -> None:
         downloaded = getattr(self.client, "_received_files", {})
         eligible = (name for name in downloaded
-                    if str(name).lower().endswith((".gani", ".nw", ".gmap")))
+                    if str(name).lower().endswith((".gani", ".gmap")))
         gmap_name = str(getattr(self.client, "gmap_name", ""))
+        # Level files are not requested: the reference server refuses them
+        # over PLI_WANTFILE (levels arrive as board packets on entry).
         names = list(dict.fromkeys([*sorted(self._assets),
-                                    *(x["name"] for x in self.result["levels_visited"]),
                                     *([gmap_name] if gmap_name else []),
                                     *sorted(eligible)]))[:MAX_FILES]
         for name in names:
@@ -1080,8 +1067,6 @@ class DeepCrawler:
                 if name.lower().endswith(".gani"):
                     parser = GaniParser([])
                     parser.parse_content(data.decode("latin-1"), Path(name).stem)
-                elif name.lower().endswith(".nw"):
-                    parse_nw(data)
                 elif name.lower().endswith(".gmap"):
                     width, height, _segments = parse_gmap(data)
                     self.result["gmap"]["name"] = name

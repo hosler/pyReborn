@@ -712,3 +712,27 @@ def test_wander_aborts_when_level_changes():
     client = _WanderClient(level_change_after=3)
     _exercise_probe_movement(client, 8, float("inf"))
     assert len(client.moves) == 3
+
+
+@pytest.mark.parametrize('host, applicable', [
+    ('127.0.0.1', True), ('localhost', True), ('game.example.test', False),
+    ('10.0.0.61', False)])
+def test_catalog_qa_world_scenarios_not_applicable_off_qa_worlds(
+        catalog_run, monkeypatch, capsys, host, applicable):
+    ran = []
+
+    def scenario(bot):
+        ran.append(bot)
+        return SimpleNamespace(passed=True, name='x', details='ok')
+
+    monkeypatch.setattr('game_tester.test_scenarios.TestScenarios.test_file_download',
+                        scenario)
+    monkeypatch.setattr('game_tester.test_scenarios.TestScenarios.test_level_file_refused',
+                        scenario)
+    catalog_run.record['address']['host'] = host
+    catalog_run.record['active_ok'] = True
+    catalog_run.record['testable_tests'] = ['file_download', 'level_file_refused']
+    save_catalog(catalog_run.catalog, catalog_run.path)
+    assert server_probe.run_catalog_tests(catalog_path=catalog_run.path, fingerprint=False)
+    assert len(ran) == (2 if applicable else 0)
+    assert ('N/A' in capsys.readouterr().out) == (not applicable)

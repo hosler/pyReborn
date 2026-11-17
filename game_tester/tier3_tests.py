@@ -149,6 +149,8 @@ def test_synthetic_parsers(bot: GameBot) -> TestResult:
     checks = {}
 
     # PLO_PROFILE: {gstr account}{9 x gstr fields}{gstr time}{gstr name:=value}*
+    # Parser-only: the reference sends no PLO_PROFILE about a 6.015+ target, so
+    # a live v6 session never produces this packet; older targets still do.
     payload = (gstr("testacct") + gstr("Real Name") + gstr("25") + gstr("male")
                + gstr("US") + gstr("icq") + gstr("a@b.c") + gstr("web.site")
                + gstr("hangout") + gstr("a quote") + gstr("1 hrs 2 mins 3 secs")

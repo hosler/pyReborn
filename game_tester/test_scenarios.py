@@ -235,6 +235,26 @@ def single_bot_scenarios() -> List[Callable]:
 
 #: The QA fixture level and the open-ground spawn point inside it.
 QA_FIXTURE_LEVEL = "onlinestartlocal.nw"
+
+#: Non-level assets for file_download, in order: (name, required header, min
+#: size). qa_script.gani ships in the pygserver default world and the
+#: reference's bin/servers/default; chickenmap.png is the one asset present
+#: in both funtimes/world and funtimes-pygserver/world.
+FILE_DOWNLOAD_CANDIDATES = (
+    ("qa_script.gani", b"SPRITE", 1000),
+    ("chickenmap.png", b"\x89PNG\r\n\x1a\n", 100),
+)
+
+
+def file_download_verdict(data, magic: bytes, min_size: int) -> str:
+    """'ok' or a short reason the downloaded bytes are not acceptable."""
+    if not data:
+        return "no data"
+    if not data.startswith(magic):
+        return "wrong header"
+    if len(data) < min_size:
+        return "too small"
+    return "ok"
 QA_FIXTURE_SPAWN = (30.0, 30.0)
 
 
@@ -720,37 +740,85 @@ class TestScenarios:
     def test_file_download(bot: GameBot) -> TestResult:
         """Request a known file from the server and verify it downloads intact.
 
-        Exercises PLI_WANTFILE -> PLO_RAWDATA -> PLO_FILE assembly. The level
-        file is served by the default world (onlinestartlocal.nw) and must come
-        back byte-for-byte (a double trailing-newline strip used to drop a byte).
+        Exercises PLI_WANTFILE -> PLO_RAWDATA -> PLO_FILE assembly. The asset is
+        the first of FILE_DOWNLOAD_CANDIDATES the server serves. Level files
+        cannot be used here: the reference refuses to send them over the
+        file-request path (see test_level_file_refused). At least one
+        candidate must download with a valid header; none does -> FAIL.
+        """
+        start = time.time()
+        issues = []
+        tried = []
+
+        for filename, magic, min_size in FILE_DOWNLOAD_CANDIDATES:
+            bot.client.request_file(filename)
+            deadline = time.time() + 6.0
+            while (time.time() < deadline and not bot.client.has_file(filename)
+                   and not bot.client.server_refused(filename)):
+                bot.update(0.1)
+            data = bot.client.get_file(filename)
+            verdict = file_download_verdict(data, magic, min_size)
+            if verdict == "ok":
+                return TestResult(
+                    name="file_download", passed=True, duration=time.time() - start,
+                    details=f"{filename}: {len(data)} bytes, header=ok", issues=issues)
+            tried.append(f"{filename}: {verdict}")
+
+        issues.append(Issue(timestamp=time.time(), severity="HIGH", category="file",
+                            description="No candidate file downloaded intact",
+                            context={"tried": tried}))
+        return TestResult(name="file_download", passed=False,
+                          duration=time.time() - start,
+                          details="no candidate downloaded: " + "; ".join(tried),
+                          issues=issues)
+
+    @staticmethod
+    @single_bot_scenario(115)
+    def test_level_file_refused(bot: GameBot) -> TestResult:
+        """A level requested over PLI_WANTFILE is refused, with no data sent.
+
+        The reference (GServer-v2 beta4 Player::sendFile) answers a name
+        ending .nw, .graal or .zelda with PLO_FILESENDFAILED; levels reach a
+        client only through the board packets of a warp or PLI_ADJACENTLEVEL.
+        Strict: a server that still serves levels over file requests (older
+        GServer-v2 builds, older pygserver) fails this scenario. The
+        scenario framework has no server-capability notion to gate on.
         """
         start = time.time()
         issues = []
 
-        filename = "onlinestartlocal.nw"
+        filename = QA_FIXTURE_LEVEL
+        # A refusal from earlier in the session must not count: this request
+        # has to raise the server's refusal counter.
+        attempts_before = bot.client._file_attempts.get(filename, 0)
         bot.client.request_file(filename)
-        deadline = time.time() + 8.0
-        while time.time() < deadline and not bot.client.has_file(filename):
+        deadline = time.time() + 6.0
+        while (time.time() < deadline
+               and bot.client._file_attempts.get(filename, 0) <= attempts_before
+               and not bot.client.has_file(filename)):
             bot.update(0.1)
-
+        refused = bot.client._file_attempts.get(filename, 0) > attempts_before
+        if refused:
+            # Bounded grace window in which data would arrive if the server
+            # sent the level after refusing it.
+            grace = time.time() + 1.0
+            while time.time() < grace and not bot.client.has_file(filename):
+                bot.update(0.1)
         data = bot.client.get_file(filename)
-        if not data:
-            issues.append(Issue(timestamp=time.time(), severity="HIGH", category="file",
-                                description=f"File {filename} did not download",
-                                context={"failed": bot.client.did_file_fail(filename)}))
-            passed = False
-            details = f"{filename}: no data"
+        passed = refused and not data
+        if not refused:
+            description = f"Server did not refuse level file {filename}"
+        elif data:
+            description = f"Server refused but data of {filename} is present"
         else:
-            # A .nw level must start with the GLEVNW01 magic and be non-trivial.
-            valid_header = data[:8] == b"GLEVNW01"
-            passed = valid_header and len(data) > 1000
-            if not valid_header:
-                issues.append(Issue(timestamp=time.time(), severity="HIGH", category="file",
-                                    description="Downloaded file has wrong header",
-                                    context={"head": data[:16].hex()}))
-            details = f"{filename}: {len(data)} bytes, header={'ok' if valid_header else 'BAD'}"
-
-        return TestResult(name="file_download", passed=passed,
+            description = ""
+        if description:
+            issues.append(Issue(timestamp=time.time(), severity="HIGH", category="file",
+                                description=description,
+                                context={"bytes": len(data or b"")}))
+        details = (f"{filename}: refused, no data" if passed
+                   else f"{filename}: refused={refused}, bytes={len(data or b'')}")
+        return TestResult(name="level_file_refused", passed=passed,
                           duration=time.time() - start, details=details, issues=issues)
 
     @staticmethod

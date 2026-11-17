@@ -31,8 +31,15 @@ PASSIVE_TESTS = {"connection_stability", "level_data", "npc_visibility"}
 ACTIVE_TESTS = {
     "movement_all_directions", "collision_detection", "swimming_detection",
     "walk_to_target", "chat_roundtrip", "sword_attack", "item_detection",
-    "file_download", "chest_interaction", "level_parsing",
+    "file_download", "level_file_refused", "chest_interaction", "level_parsing",
 }
+#: Scenarios that need an asset or a rule only our own QA worlds guarantee:
+#: file_download fetches qa_script.gani (shipped by the QA worlds, absent from
+#: every foreign server), and level_file_refused asserts the reference rule
+#: that level files are refused over the file-request path (older servers still
+#: serve them). On any other server they are "not applicable", never a result.
+QA_WORLD_TESTS = {"file_download", "level_file_refused"}
+QA_WORLD_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _redact(text: str, username: str, password: str) -> str:
@@ -84,6 +91,11 @@ def is_owned_server(host: str, name: str = "") -> bool:
     return normalized in {"localhost", "127.0.0.1", "::1", "10.0.0.61"} and (
         normalized != "10.0.0.61" or "funtimes" in name.lower()
     )
+
+
+def is_qa_world(host: str) -> bool:
+    """True for a server on this machine, where the QA worlds are started."""
+    return host.strip().lower() in QA_WORLD_HOSTS
 
 
 def probe_status(capabilities: dict[str, Any]) -> str:
@@ -621,6 +633,7 @@ def run_catalog_tests(selected: str | None = None,
         "sword_attack": TestScenarios.test_sword_attack,
         "item_detection": TestScenarios.test_item_detection,
         "file_download": TestScenarios.test_file_download,
+        "level_file_refused": TestScenarios.test_level_file_refused,
         "chest_interaction": TestScenarios.test_chest_interaction,
         "level_parsing": TestScenarios.test_level_parsing,
     }
@@ -656,6 +669,10 @@ def run_catalog_tests(selected: str | None = None,
                 allowed &= PASSIVE_TESTS
             for test_name in record.get("testable_tests", []):
                 if test_name not in allowed or test_name not in scenario_map:
+                    continue
+                if test_name in QA_WORLD_TESTS and not is_qa_world(address["host"]):
+                    print(f"  N/A  {test_name}: needs a QA world (qa_script.gani, "
+                          f"reference level-file refusal); not run on {address['host']}")
                     continue
                 result = scenario_map[test_name](bot)
                 print(f"  {'PASS' if result.passed else 'FAIL'} {result.name}: {result.details}")

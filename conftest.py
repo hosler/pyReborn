@@ -40,6 +40,10 @@ RUN_SERVER = PYGSERVER_DIR / "run_server.py"
 # rather than the shared funtimes/ world so the fixture is self-contained.
 FIXTURE_LEVELS = ["onlinestartlocal.nw", "qa_testlevel.nw", "qa_tier3.nw"]
 
+#: Non-level files the file_download scenario requests (it cannot use a level:
+#: the reference refuses level files over PLI_WANTFILE).
+FIXTURE_ASSETS = ["qa_script.gani"]
+
 #: Every environment variable pyreborn/ and game_tester/ read a per-user path
 #: from (asset_paths, prefs, rc_link, gs2_server_crawl, gs2_ui_explorer
 #: capture). Unset, each falls back to a directory under $HOME.
@@ -130,6 +134,10 @@ def pygserver(tmp_path_factory):
     world_dir = tmp_path_factory.mktemp("pygserver_qa_levels")
     for name in FIXTURE_LEVELS:
         src = PYGSERVER_LEVELS_DIR / name
+        if src.exists():
+            shutil.copy(src, world_dir / name)
+    for name in FIXTURE_ASSETS:
+        src = PYGSERVER_DIR / "gani" / name
         if src.exists():
             shutil.copy(src, world_dir / name)
     world = LocalWorld(world_dir, start_level="onlinestartlocal.nw",

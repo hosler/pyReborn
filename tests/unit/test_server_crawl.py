@@ -3,7 +3,7 @@ import json
 from game_tester.server_crawl import (CrawlSession, DeepCrawler,
                                       RecordingHost, empty_crawl_record,
                                       classify_host_call, enumerate_gs2_events,
-                                      other_gs2_functions, parse_nw,
+                                      other_gs2_functions,
                                       real_gs1_surface, real_gs2_surface,
                                       run_gs1_bounded, run_gs2_bounded,
                                       shaped_error)
@@ -156,8 +156,9 @@ def test_error_record_shape_is_bounded_and_contextual():
     assert record["traceback"] == "trace"
 
 
-def test_nw_parser_accepts_latin1_level_text():
-    parse_nw(b"GLEVNW01\nSIGN 1 1\nnonbreaking:\xa0\nSIGNEND\n")
+def test_crawl_has_no_level_file_parser():
+    import game_tester.server_crawl as crawl
+    assert not hasattr(crawl, "parse_nw")
 
 
 def test_gani_parameters_are_removed_before_download_and_parse():
@@ -170,6 +171,16 @@ def test_gani_parameters_are_removed_before_download_and_parse():
     assert result["files_parsed"]["failed"] == 0
     assert not any("eye_bombsprites" in error.get("asset", "")
                    for error in result["errors"])
+
+
+def test_crawl_never_requests_level_files_over_the_file_path():
+    clock = _Clock()
+    client = _Client(clock, {"a.nw": [_link("b.nw")], "b.nw": []})
+    requested = []
+    client.request_file = lambda name: requested.append(name) or True
+    DeepCrawler(client, timeout=20, clock=clock, sleep=clock.advance,
+                renderer=lambda client, level: None).crawl()
+    assert not [n for n in requested if n.lower().endswith(".nw")]
 
 
 def test_shaped_error_includes_optional_context():
